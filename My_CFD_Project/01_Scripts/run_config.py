@@ -97,6 +97,10 @@ save_surface_mesh_checkpoint = True
 # where empty_inlet_area_mm2 = 2.66805 for W = 3.465 mm and H = 0.77 mm.
 inlet_velocity_value = REQUIRED
 
+# Boundary values
+operating_pressure = 101325.0
+outlet_gauge_pressure = REQUIRED
+
 # Template/UDF file names relative to project_root.
 template_case_file_name = "template_RO_setup.cas.h5"
 udf_source_file_name = "260612_RO_UDF.c"
@@ -123,10 +127,6 @@ mixture_name = "mixture-template"
 mixture_density = 998.2
 mixture_viscosity = 8.93e-4
 mass_diffusivity = 2.0e-9
-
-# Boundary values
-operating_pressure = 101325.0
-outlet_gauge_pressure = 6.0e6
 
 # UDM/UDF settings
 udm_count = 13
