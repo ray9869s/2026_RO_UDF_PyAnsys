@@ -47,3 +47,5 @@ My_CFD_Project/03_Results/
 *.bak
 ~$*
 My_CFD_Project/00_Geometries/
+
+My_CFD_Project/jupyter_notebook/
