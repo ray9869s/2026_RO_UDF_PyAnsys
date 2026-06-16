@@ -12,19 +12,24 @@ from pathlib import Path
 # ==========================================================
 
 SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
-CONFIG_PATH = SCRIPT_DIR / "run_config.py"
+_default_config = SCRIPT_DIR / "run_config.py"
+_env = os.environ.get("PYFLUENT_RUN_CONFIG")
+CONFIG_PATH = Path(_env or str(_default_config)).resolve()
 
 if not CONFIG_PATH.is_file():
     raise FileNotFoundError(
-        f"Mesh/solver config file not found: {CONFIG_PATH}. "
-        "Place run_config.py in the same folder as this meshing script."
+        f"Run config file not found: {CONFIG_PATH}. "
+        "Set PYFLUENT_RUN_CONFIG or place run_config.py next to this meshing script."
     )
 
-config_spec = importlib.util.spec_from_file_location("run_config", CONFIG_PATH)
+config_spec = importlib.util.spec_from_file_location("active_run_config", CONFIG_PATH)
 cfg = importlib.util.module_from_spec(config_spec)
 config_spec.loader.exec_module(cfg)
 
-cfg.validate_for_meshing()
+print(f"Loaded run config: {CONFIG_PATH}")
+
+if not _env:
+    cfg.validate_for_meshing()
 
 # [Common project/case settings]
 project_root = cfg.project_root

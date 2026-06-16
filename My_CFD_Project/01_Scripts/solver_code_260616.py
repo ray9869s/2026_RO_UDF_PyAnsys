@@ -13,27 +13,34 @@ from pathlib import Path
 # ==========================================================
 
 SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
-CONFIG_PATH = SCRIPT_DIR / "run_config.py"
+_default_config = SCRIPT_DIR / "run_config.py"
+_env = os.environ.get("PYFLUENT_RUN_CONFIG")
+CONFIG_PATH = Path(_env or str(_default_config)).resolve()
 
 if not CONFIG_PATH.is_file():
     raise FileNotFoundError(
-        f"Mesh/solver config file not found: {CONFIG_PATH}. "
-        "Place run_config.py in the same folder as this solver script."
+        f"Run config file not found: {CONFIG_PATH}. "
+        "Set PYFLUENT_RUN_CONFIG or place run_config.py next to this solver script."
     )
 
-config_spec = importlib.util.spec_from_file_location("run_config", CONFIG_PATH)
+config_spec = importlib.util.spec_from_file_location("active_run_config", CONFIG_PATH)
 cfg = importlib.util.module_from_spec(config_spec)
 config_spec.loader.exec_module(cfg)
 
-cfg.validate_for_solver()
+print(f"Loaded run config: {CONFIG_PATH}")
+
+if not _env:
+    cfg.validate_for_solver()
 
 # Project paths
 project_root = cfg.project_root
 geo_name = cfg.geo_name
 case_name = cfg.case_name
+mesh_case_name = getattr(cfg, "mesh_case_name", case_name)
 
 case_path = os.path.join(project_root, "03_Results", geo_name, case_name)
-mesh_file_path = os.path.join(case_path, f"{geo_name}_{case_name}.msh.h5")
+mesh_case_path = os.path.join(project_root, "03_Results", geo_name, mesh_case_name)
+mesh_file_path = os.path.join(mesh_case_path, f"{geo_name}_{mesh_case_name}.msh.h5")
 
 # Inlet velocity setting
 inlet_velocity_value = cfg.inlet_velocity_value
