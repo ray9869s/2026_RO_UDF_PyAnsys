@@ -1,0 +1,49 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Fluent / ANSYS generated files
+*.cas
+*.dat
+*.cas.h5
+*.dat.h5
+*.msh
+*.msh.h5
+*.trn
+*.jou
+*.out
+*.log
+*.log.*
+*.rfile
+*.rfile.out
+
+# UDF compiled libraries and build outputs
+libudf/
+*.dll
+*.obj
+*.exp
+*.lib
+*.pdb
+
+# Project results
+My_CFD_Project/03_Results/
+
+# Temporary files
+*.tmp
+*.bak
+~$*
+My_CFD_Project/00_Geometries/
