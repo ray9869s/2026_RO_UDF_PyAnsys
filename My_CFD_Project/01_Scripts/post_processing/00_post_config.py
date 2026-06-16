@@ -1,7 +1,9 @@
 project_root = r"C:/PyFluent/My_CFD_Project"
 
-geo_name = "Diamond_Spacer"
-case_name = "260615_u0p2_p6M"
+REQUIRED = "===== Edit here ====="
+
+geo_name = REQUIRED
+case_name = REQUIRED
 
 rho = 998.2
 mu = 8.93e-4
