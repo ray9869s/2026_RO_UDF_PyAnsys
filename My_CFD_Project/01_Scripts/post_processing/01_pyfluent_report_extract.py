@@ -13,6 +13,18 @@ from pprint import pprint
 import pandas as pd
 import ansys.fluent.core as pyfluent
 
+try:
+    from IPython.display import display
+    import IPython
+    if not IPython.get_ipython():
+        raise RuntimeError("Not in Jupyter")
+except Exception:
+    def display(obj):
+        if hasattr(obj, "to_string"):
+            print(obj.to_string(index=False))
+        else:
+            print(obj)
+
 
 # ----------------------------------------------------------
 # Edit this path if needed.
