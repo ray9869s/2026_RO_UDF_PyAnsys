@@ -74,16 +74,20 @@ case_name = cfg.case_name
 
 case_path = project_root / "03_Results" / geo_name / case_name
 
-final_case_file = getattr(
-    cfg,
-    "final_case_file",
-    case_path / f"{geo_name}_{case_name}_final.cas.h5",
+final_case_file = Path(
+    getattr(
+        cfg,
+        "final_case_file",
+        case_path / f"{geo_name}_{case_name}_final.cas.h5",
+    )
 )
 
-final_data_file = getattr(
-    cfg,
-    "final_data_file",
-    case_path / f"{geo_name}_{case_name}_final.dat.h5",
+final_data_file = Path(
+    getattr(
+        cfg,
+        "final_data_file",
+        case_path / f"{geo_name}_{case_name}_final.dat.h5",
+    )
 )
 
 post_path = case_path / "post"

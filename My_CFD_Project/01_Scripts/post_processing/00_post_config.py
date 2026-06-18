@@ -31,3 +31,7 @@ graphics_driver = "dx11"
 
 fluent_start_timeout = 300
 fluent_health_timeout = 300
+
+domain_x_min_m = 0.0
+domain_length_m = 0.017325
+buffer_length_m = 0.003465

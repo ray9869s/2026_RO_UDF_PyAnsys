@@ -6,21 +6,21 @@
 
 # --- Run control flags ---
 
-DRY_RUN = True
+DRY_RUN = False
 CONTINUE_ON_FAILURE = True
-SKIP_EXISTING_REPORTS = True
-MAX_CASES = None
+SKIP_EXISTING_REPORTS = False
+MAX_CASES = 1
 
 # --- Paths ---
 
-project_root         = "C:/PyFluent/My_CFD_Project"
-post_processing_dir  = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing"
-single_case_worker   = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing/01_pyfluent_report_extract.py"
-base_post_config     = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing/00_post_config.py"
-temporary_config_dir = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing/_batch_post_configs"
+project_root         = "/home/jongwookim/code/PyFluent/My_CFD_Project"
+post_processing_dir  = "/home/jongwookim/code/PyFluent/My_CFD_Project/01_Scripts/post_processing"
+single_case_worker   = "/home/jongwookim/code/PyFluent/My_CFD_Project/01_Scripts/post_processing/01_pyfluent_report_extract.py"
+base_post_config     = "/home/jongwookim/code/PyFluent/My_CFD_Project/01_Scripts/post_processing/00_post_config.py"
+temporary_config_dir = "/home/jongwookim/code/PyFluent/My_CFD_Project/01_Scripts/post_processing/_batch_post_configs"
 
-merged_summary_csv   = "C:/PyFluent/My_CFD_Project/03_Results/all_cases_post_summary.csv"
-status_csv           = "C:/PyFluent/My_CFD_Project/03_Results/all_cases_post_status.csv"
+merged_summary_csv   = "/home/jongwookim/code/PyFluent/My_CFD_Project/03_Results/all_cases_post_summary.csv"
+status_csv           = "/home/jongwookim/code/PyFluent/My_CFD_Project/03_Results/all_cases_post_status.csv"
 
 # --- Case definitions ---
 
