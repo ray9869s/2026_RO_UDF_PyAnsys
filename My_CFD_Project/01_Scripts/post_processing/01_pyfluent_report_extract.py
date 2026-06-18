@@ -385,6 +385,47 @@ def compute_one_report(solution, report_name, verbose=True):
 
     return value, result
 
+
+def create_x_normal_plane(solver_obj, surface_name, x_value_m):
+    """Create an x-normal iso-surface at x_value_m (meters). Overwrites if it exists."""
+    # Try settings API first.
+    e_settings = None
+    try:
+        iso_group = solver_obj.settings.results.surfaces.iso_surface
+        existing = list_named_object_names(iso_group, "results.surfaces.iso_surface")
+        if surface_name in existing:
+            try:
+                iso_group.delete(surface_name)
+                print(f"Deleted existing iso-surface: {surface_name}")
+            except Exception as del_e:
+                print(f"Could not delete iso-surface {surface_name}: {del_e}")
+
+        iso_group.create(surface_name)
+        iso_group[surface_name].field = "x-coordinate"
+        iso_group[surface_name].iso_values = [x_value_m]
+        print(f"Created iso-surface '{surface_name}' at x = {x_value_m:.6e} m (settings API)")
+        return
+    except Exception as exc:
+        e_settings = exc
+        print(f"Settings API failed for iso-surface '{surface_name}': {exc}")
+
+    # Fallback: TUI iso-surface command.
+    try:
+        solver_obj.tui.surface.iso_surface(
+            "x-coordinate",
+            surface_name,
+            "()",
+            "()",
+            str(x_value_m),
+            "0",
+        )
+        print(f"Created iso-surface '{surface_name}' at x = {x_value_m:.6e} m (TUI fallback)")
+    except Exception as e_tui:
+        raise RuntimeError(
+            f"Could not create iso-surface '{surface_name}'. "
+            f"Settings error: {e_settings}. TUI error: {e_tui}"
+        )
+
 # ==========================================================
 # Cell 4. Launch Fluent through meshing mode and switch to solver
 # ==========================================================
@@ -563,6 +604,30 @@ try:
         print(f"  {name}: {value}")
 
     # ==========================================================
+    # Cell 6.5. Compute spacer geometry parameters
+    # ==========================================================
+
+    domain_x_min_m = getattr(cfg, "domain_x_min_m", 0.0)
+    domain_length_m = getattr(cfg, "domain_length_m", 0.017325)
+    buffer_length_m = getattr(cfg, "buffer_length_m", 0.003465)
+
+    domain_x_max_m = domain_x_min_m + domain_length_m
+    spacer_x_in_m = domain_x_min_m + buffer_length_m
+    spacer_x_out_m = domain_x_max_m - buffer_length_m
+    spacer_length_m = domain_length_m - 2.0 * buffer_length_m
+
+    if spacer_length_m <= 0.0:
+        raise ValueError(
+            f"spacer_length_m must be > 0, got {spacer_length_m}. "
+            f"Check domain_length_m={domain_length_m} and buffer_length_m={buffer_length_m}."
+        )
+
+    print("\nSpacer plane locations:")
+    print(f"  spacer_x_in_m   = {spacer_x_in_m:.6e} m")
+    print(f"  spacer_x_out_m  = {spacer_x_out_m:.6e} m")
+    print(f"  spacer_length_m = {spacer_length_m:.6e} m")
+
+    # ==========================================================
     # Cell 7. Create report definitions
     # ==========================================================
 
@@ -645,6 +710,44 @@ try:
             solution,
             "pp_pressure_drop",
             pressure_drop_definition,
+        )
+    )
+
+    # ----------------------------------------------------------
+    # Spacer internal plane surfaces and spacer pressure reports.
+    # ----------------------------------------------------------
+
+    print("\nCreating internal plane surfaces for spacer pressure drop...")
+    create_x_normal_plane(solver, "pp_plane_spacer_in", spacer_x_in_m)
+    create_x_normal_plane(solver, "pp_plane_spacer_out", spacer_x_out_m)
+
+    report_names.append(
+        create_or_update_surface_report(
+            solution,
+            "pp_p_spacer_in_avg",
+            SURFACE_AREA_WEIGHTED_AVG,
+            FIELD_PRESSURE,
+            ["pp_plane_spacer_in"],
+        )
+    )
+
+    report_names.append(
+        create_or_update_surface_report(
+            solution,
+            "pp_p_spacer_out_avg",
+            SURFACE_AREA_WEIGHTED_AVG,
+            FIELD_PRESSURE,
+            ["pp_plane_spacer_out"],
+        )
+    )
+
+    pressure_drop_spacer_definition = "pp_p_spacer_in_avg - pp_p_spacer_out_avg"
+
+    report_names.append(
+        create_or_update_single_expression_report(
+            solution,
+            "pp_pressure_drop_spacer",
+            pressure_drop_spacer_definition,
         )
     )
 
@@ -854,17 +957,20 @@ try:
         mass_balance_relative_error = mass_balance_error / abs(total_sink_volint)
 
     # ----------------------------------------------------------
-    # Pressure drop per length
+    # Pressure drop per length (full inlet-to-outlet)
     # ----------------------------------------------------------
-    # Current Diamond_Spacer case length from mesh extents:
-    # x max - x min = 17.325 mm = 0.017325 m.
-    # For other cases, add domain_length_m to 00_post_config.py if needed.
-    # Example:
-    # domain_length_m = 0.017325
-
-    domain_length_m = getattr(cfg, "domain_length_m", 0.017325)
 
     pressure_drop_per_m = safe_divide(pressure_drop, domain_length_m)
+
+    # ----------------------------------------------------------
+    # Spacer-only pressure drop
+    # ----------------------------------------------------------
+
+    p_spacer_in_avg = get_value("pp_p_spacer_in_avg")
+    p_spacer_out_avg = get_value("pp_p_spacer_out_avg")
+    pressure_drop_spacer = get_value("pp_pressure_drop_spacer")
+
+    pressure_drop_spacer_per_m = safe_divide(pressure_drop_spacer, spacer_length_m)
 
     # ----------------------------------------------------------
     # LMH consistency check
@@ -906,6 +1012,13 @@ try:
         {"metric": "pressure_drop", "value": pressure_drop, "unit": "Pa"},
         {"metric": "domain_length_m", "value": domain_length_m, "unit": "m"},
         {"metric": "pressure_drop_per_m", "value": pressure_drop_per_m, "unit": "Pa/m"},
+        {"metric": "spacer_x_in_m", "value": spacer_x_in_m, "unit": "m"},
+        {"metric": "spacer_x_out_m", "value": spacer_x_out_m, "unit": "m"},
+        {"metric": "spacer_length_m", "value": spacer_length_m, "unit": "m"},
+        {"metric": "p_spacer_in_avg", "value": p_spacer_in_avg, "unit": "Pa"},
+        {"metric": "p_spacer_out_avg", "value": p_spacer_out_avg, "unit": "Pa"},
+        {"metric": "pressure_drop_spacer", "value": pressure_drop_spacer, "unit": "Pa"},
+        {"metric": "pressure_drop_spacer_per_m", "value": pressure_drop_spacer_per_m, "unit": "Pa/m"},
 
         {"metric": "jw_avg", "value": jw_avg, "unit": "m/s"},
         {"metric": "jw_max", "value": jw_max, "unit": "m/s"},
@@ -966,6 +1079,11 @@ try:
         {"metric": "pressure_drop", "value": pressure_drop, "unit": "Pa"},
         {"metric": "domain_length_m", "value": domain_length_m, "unit": "m"},
         {"metric": "pressure_drop_per_m", "value": pressure_drop_per_m, "unit": "Pa/m"},
+        {"metric": "p_spacer_in_avg", "value": p_spacer_in_avg, "unit": "Pa"},
+        {"metric": "p_spacer_out_avg", "value": p_spacer_out_avg, "unit": "Pa"},
+        {"metric": "pressure_drop_spacer", "value": pressure_drop_spacer, "unit": "Pa"},
+        {"metric": "spacer_length_m", "value": spacer_length_m, "unit": "m"},
+        {"metric": "pressure_drop_spacer_per_m", "value": pressure_drop_spacer_per_m, "unit": "Pa/m"},
         {"metric": "expected_outlet_gauge_pressure", "value": expected_outlet_pressure, "unit": "Pa"},
     ]
 
@@ -1077,6 +1195,10 @@ try:
             "lmh_relative_difference": lmh_relative_difference,
             "domain_length_m": domain_length_m,
             "pressure_drop_per_m": pressure_drop_per_m,
+            "spacer_x_in_m": spacer_x_in_m,
+            "spacer_x_out_m": spacer_x_out_m,
+            "spacer_length_m": spacer_length_m,
+            "pressure_drop_spacer_per_m": pressure_drop_spacer_per_m,
             "wall_shear_rate_avg": wall_shear_rate_avg,
             "wall_shear_rate_max": wall_shear_rate_max,
             "wall_shear_rate_min": wall_shear_rate_min,
