@@ -50,3 +50,4 @@ My_CFD_Project/00_Geometries/
 
 My_CFD_Project/jupyter_notebook/
 My_CFD_Project/01_Scripts/_batch_run_configs/
+My_CFD_Project/01_Scripts/post_processing/_batch_post_configs/
