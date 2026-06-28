@@ -8,6 +8,22 @@ import pandas as pd
 
 
 # ============================================================
+# Critical columns required to be present and non-NaN/empty
+# in summary_metrics_wide.csv for a case to be considered valid.
+# These must match the "metric" strings in the worker's summary_rows.
+# ============================================================
+
+CRITICAL_SUMMARY_COLUMNS = [
+    "lmh_mass_balance",
+    "pressure_drop_spacer",
+    "pressure_drop_spacer_per_m",
+    "cp_inlet_avg",
+    "wall_shear_rate_avg",
+    "mass_balance_relative_error",
+]
+
+
+# ============================================================
 # Load batch config and base post config
 # ============================================================
 
@@ -19,6 +35,43 @@ def load_python_config(config_path, module_name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def validate_summary_wide_csv(summary_wide_csv):
+    """
+    Validate a per-case summary_metrics_wide.csv against CRITICAL_SUMMARY_COLUMNS.
+
+    Returns (True, "OK") when all critical columns are present and non-NaN/empty.
+    Returns (False, detailed_message) on any validation failure.
+
+    Uses pd.isna for NaN/None detection. Empty string "" is also treated as invalid.
+    Numeric zero (0.0) is valid.
+    """
+    if not summary_wide_csv.is_file():
+        return False, f"summary_metrics_wide.csv not found: {summary_wide_csv}"
+
+    try:
+        df = pd.read_csv(summary_wide_csv, encoding="utf-8-sig")
+    except Exception as exc:
+        return False, f"Could not read summary_metrics_wide.csv: {exc}"
+
+    if len(df) == 0:
+        return False, "summary_metrics_wide.csv has no data rows."
+
+    missing_cols = [col for col in CRITICAL_SUMMARY_COLUMNS if col not in df.columns]
+    if missing_cols:
+        return False, f"Missing critical columns: {missing_cols}"
+
+    row = df.iloc[0]
+    invalid_cols = [
+        col for col in CRITICAL_SUMMARY_COLUMNS
+        if pd.isna(row[col]) or row[col] == ""
+    ]
+
+    if invalid_cols:
+        return False, f"NaN/None/empty in critical columns: {invalid_cols}"
+
+    return True, "OK"
 
 
 BATCH_CONFIG_PATH = Path(__file__).parent / "00_batch_post_config.py"
@@ -186,13 +239,21 @@ for idx, (geo_name, inlet_velocity_value, outlet_gauge_pressure) in enumerate(ca
         continue
 
     # --- Gate 2: SKIP_EXISTING ---
+    # If an existing report passes validation, skip. If it fails, fall through
+    # and re-run the case so the invalid report is replaced.
     if bcfg.SKIP_EXISTING_REPORTS and summary_wide_csv.is_file():
-        print(f"  SKIPPED_EXISTING: {summary_wide_csv}")
-        record["status"] = "SKIPPED_EXISTING"
-        record["return_code"] = 0
-        record["message"] = "summary_metrics_wide.csv already exists"
-        status_records.append(record)
-        continue
+        is_valid, validation_msg = validate_summary_wide_csv(summary_wide_csv)
+        if is_valid:
+            print(f"  SKIPPED_EXISTING: {summary_wide_csv}")
+            record["status"] = "SKIPPED_EXISTING"
+            record["return_code"] = 0
+            record["message"] = "summary_metrics_wide.csv already exists and passed validation"
+            status_records.append(record)
+            continue
+        else:
+            print(f"  SKIP_EXISTING: existing report failed validation — will re-run.")
+            print(f"  Validation failure: {validation_msg}")
+            # Fall through: do not skip; re-run this case.
 
     # --- Gate 3: MISSING_CASE_DATA ---
     missing_files = [
@@ -238,11 +299,7 @@ for idx, (geo_name, inlet_velocity_value, outlet_gauge_pressure) in enumerate(ca
 
     record["return_code"] = return_code
 
-    if return_code == 0:
-        record["status"] = "SUCCESS"
-        record["message"] = "OK"
-        print(f"  SUCCESS")
-    else:
+    if return_code != 0:
         record["status"] = "FAILED"
         if not record["message"]:
             record["message"] = f"Worker exited with return code {return_code}"
@@ -252,6 +309,25 @@ for idx, (geo_name, inlet_velocity_value, outlet_gauge_pressure) in enumerate(ca
             status_records.append(record)
             print("CONTINUE_ON_FAILURE=False — stopping batch.")
             break
+
+    else:
+        # Worker returned exit 0 — validate the output before recording SUCCESS.
+        is_valid, validation_msg = validate_summary_wide_csv(summary_wide_csv)
+        if is_valid:
+            record["status"] = "SUCCESS"
+            record["message"] = "OK"
+            print(f"  SUCCESS")
+        else:
+            record["status"] = "FAILED_METRIC_VALIDATION"
+            record["message"] = (
+                f"Worker returned exit 0 but output validation failed: {validation_msg}"
+            )
+            print(f"  FAILED_METRIC_VALIDATION: {validation_msg}")
+
+            if not bcfg.CONTINUE_ON_FAILURE:
+                status_records.append(record)
+                print("CONTINUE_ON_FAILURE=False — stopping batch.")
+                break
 
     status_records.append(record)
 
@@ -342,5 +418,34 @@ else:
         print(f"Total rows               : {len(merged_df)}")
     except Exception as exc:
         print(f"Warning: could not save merged summary CSV: {exc}")
+
+
+# ============================================================
+# Final validation summary
+# ============================================================
+
+print(f"\n{'='*60}")
+print("Batch run validation summary:")
+
+if status_records:
+    all_status_labels = [
+        "SUCCESS",
+        "SKIPPED_EXISTING",
+        "FAILED",
+        "MISSING_CASE_DATA",
+        "FAILED_METRIC_VALIDATION",
+        "DRY_RUN",
+    ]
+    counts = status_df["status"].value_counts().to_dict()
+    for label in all_status_labels:
+        print(f"  {label:<30}: {counts.get(label, 0)}")
+
+    failed_validation = status_df[status_df["status"] == "FAILED_METRIC_VALIDATION"]
+    if not failed_validation.empty:
+        print(f"\nFAILED_METRIC_VALIDATION cases ({len(failed_validation)}):")
+        for _, row in failed_validation.iterrows():
+            print(f"  [{row['geo_name']} / {row['case_name']}] {row['message']}")
+else:
+    print("No cases were processed.")
 
 print("\nBatch post-processing complete.")
