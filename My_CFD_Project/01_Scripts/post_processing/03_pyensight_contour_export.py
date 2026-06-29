@@ -14,6 +14,8 @@ Fields exported:
 Usage:
   python 03_pyensight_contour_export.py --geo-name Diamond_Spacer --case-name u0p2_p6M
   python 03_pyensight_contour_export.py --dry-run --fields cp_inlet,lmh
+  python 03_pyensight_contour_export.py --cp-range 1.00,1.15 --lmh-range 20,30
+  python 03_pyensight_contour_export.py --auto-range --membrane-surface both
   python 03_pyensight_contour_export.py --skip-existing --image-width 2560 --image-height 1440
 """
 from __future__ import annotations
@@ -22,11 +24,12 @@ import argparse
 import importlib.util
 import json
 import os
-import sys
+import platform
+import re
 import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, FrozenSet, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # PyEnSight import guard — fail early with a clear message if not installed
@@ -42,7 +45,7 @@ except ImportError as _exc:
     _PYENSIGHT_IMPORT_ERROR = str(_exc)
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths — all relative to this script; never hard-code C:\ or Windows paths
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -51,12 +54,33 @@ DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
 # ---------------------------------------------------------------------------
+# Path safety helpers
+# ---------------------------------------------------------------------------
+
+def _has_windows_drive(p: Path) -> bool:
+    """Return True if any component of p looks like a Windows drive letter (e.g. 'C:').
+    On WSL/Linux such paths are resolved as relative subdirectories, so creating
+    them is almost always unintentional."""
+    return any(re.match(r"^[A-Za-z]:$", part) for part in p.parts)
+
+
+def _safe_mkdir(p: Path) -> bool:
+    """Create p and its parents only if the path is safe on the current OS.
+    On Linux/WSL, skips creation and returns False when a Windows drive component
+    is detected. Returns True on success."""
+    if platform.system() != "Windows" and _has_windows_drive(p):
+        return False
+    p.mkdir(parents=True, exist_ok=True)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Field specifications
 # ---------------------------------------------------------------------------
 
 DEFAULT_FIELDS: List[str] = ["cp_inlet", "lmh", "wall_shear_rate", "velocity_midplane"]
 
-# Candidates are tried in order (exact, then normalised) against ENS_VAR.DESCRIPTION
+# Candidates are tried in order (exact, then normalised) against ENS_VAR.DESCRIPTION.
 FIELD_SPECS: dict = {
     "cp_inlet": {
         "display_label": "CP_inlet [-]",
@@ -95,7 +119,20 @@ FIELD_SPECS: dict = {
 }
 
 # ---------------------------------------------------------------------------
-# Status constants and record dataclass
+# EDITABLE: Default fixed color ranges per field.
+# Set a field to None to use EnSight auto-range for that field.
+# These are applied unless --auto-range or a per-field CLI override is given.
+# ---------------------------------------------------------------------------
+
+FIELD_COLOR_RANGES: dict = {
+    "cp_inlet":          (1.00, 1.15),
+    "lmh":               (20.0, 30.0),
+    "wall_shear_rate":   None,           # None = auto-range
+    "velocity_midplane": (0.0,  0.7),
+}
+
+# ---------------------------------------------------------------------------
+# Status / range-mode constants
 # ---------------------------------------------------------------------------
 
 STATUS_SUCCESS = "SUCCESS"
@@ -103,6 +140,15 @@ STATUS_WARN = "WARN"
 STATUS_FAILED = "FAILED"
 STATUS_SKIPPED_EXISTING = "SKIPPED_EXISTING"
 STATUS_DRY_RUN = "DRY_RUN"
+
+RANGE_MODE_FIXED = "fixed"   # script default applied
+RANGE_MODE_CLI   = "cli"     # user-supplied CLI override
+RANGE_MODE_AUTO  = "auto"    # EnSight auto-range
+RANGE_MODE_NONE  = "none"    # palette not found; range not applied
+
+# ---------------------------------------------------------------------------
+# Status record dataclass
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -115,6 +161,13 @@ class ExportRecord:
     output_file: str
     status: str
     message: str = ""
+    selected_variable: str = ""
+    selected_surfaces: str = ""
+    color_range_mode: str = ""
+    color_range_min: Optional[float] = None
+    color_range_max: Optional[float] = None
+    clean_scene_status: str = ""
+    palette_diagnostics: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -183,51 +236,135 @@ def get_case_paths(
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# CLI helpers
+# ---------------------------------------------------------------------------
+
+def _parse_range(s: str) -> Tuple[float, float]:
+    """Parse 'min,max' string. Raises ValueError on bad input."""
+    parts = s.strip().split(",")
+    if len(parts) != 2:
+        raise ValueError(f"Expected 'min,max' but got '{s}'.")
+    return float(parts[0]), float(parts[1])
+
+
+# ---------------------------------------------------------------------------
+# CLI argument parsing
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export contour images from a solved Fluent case via PyEnSight.",
+        description="Export presentation-ready contour images from a solved Fluent case via PyEnSight.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Fields available: " + ", ".join(FIELD_SPECS) + "\n\n"
+            "Fields: " + ", ".join(FIELD_SPECS) + "\n\n"
+            "Default color ranges (edit FIELD_COLOR_RANGES in script to change):\n"
+            "  cp_inlet:          1.00 – 1.15\n"
+            "  lmh:               20.0 – 30.0\n"
+            "  wall_shear_rate:   auto\n"
+            "  velocity_midplane: 0.0  – 0.7\n\n"
             "Examples:\n"
             "  python 03_pyensight_contour_export.py "
             "--geo-name Diamond_Spacer --case-name u0p2_p6M\n"
             "  python 03_pyensight_contour_export.py --dry-run --fields cp_inlet,lmh\n"
+            "  python 03_pyensight_contour_export.py "
+            "--cp-range 1.00,1.15 --membrane-surface top\n"
         ),
     )
+
+    # --- core ---
     parser.add_argument(
-        "--config",
-        type=str,
+        "--config", type=str,
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
-        help=(
-            "Path to the post-processing config Python file. "
-            f"Defaults to ${CONFIG_ENV_VAR} or 00_post_config.py."
-        ),
+        help=f"Post-processing config Python file. Defaults to ${CONFIG_ENV_VAR} or 00_post_config.py.",
     )
     parser.add_argument("--geo-name", type=str, default=None, help="Override geo_name from config.")
     parser.add_argument("--case-name", type=str, default=None, help="Override case_name from config.")
     parser.add_argument(
-        "--fields",
-        type=str,
-        default=None,
-        help="Comma-separated fields to export. Default: all four fields.",
+        "--fields", type=str, default=None,
+        help="Comma-separated fields to export. Default: all four.",
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate config and plan only; do not launch PyEnSight or write images.",
+        "--dry-run", action="store_true",
+        help="Validate paths and plan only; do not launch PyEnSight or write images.",
     )
     parser.add_argument(
-        "--skip-existing",
-        action="store_true",
+        "--skip-existing", action="store_true",
         help="Skip export if the output PNG already exists.",
     )
-    parser.add_argument("--image-width", type=int, default=1920, help="Image width in pixels (default: 1920).")
+    parser.add_argument("--image-width",  type=int, default=1920, help="Image width in pixels (default: 1920).")
     parser.add_argument("--image-height", type=int, default=1080, help="Image height in pixels (default: 1080).")
+
+    # --- color range ---
+    rg = parser.add_argument_group("Color range options")
+    rg.add_argument(
+        "--auto-range", action="store_true",
+        help="Use EnSight auto-range for all fields (ignores defaults and per-field overrides).",
+    )
+    rg.add_argument(
+        "--cp-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for cp_inlet, e.g. --cp-range 1.00,1.15",
+    )
+    rg.add_argument(
+        "--lmh-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for lmh, e.g. --lmh-range 20,30",
+    )
+    rg.add_argument(
+        "--velocity-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for velocity_midplane, e.g. --velocity-range 0,0.7",
+    )
+    rg.add_argument(
+        "--wall-shear-rate-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for wall_shear_rate, e.g. --wall-shear-rate-range 0,5000",
+    )
+
+    # --- scene / presentation ---
+    sg = parser.add_argument_group("Scene and presentation options")
+    sg.add_argument(
+        "--membrane-surface", type=str, default="top",
+        choices=["top", "bottom", "both"],
+        help="Which membrane surface to show for cp_inlet and lmh. Default: top.",
+    )
+    sg.add_argument(
+        "--show-triad", action="store_true",
+        help="Keep the axis triad visible (default: hidden).",
+    )
+    sg.add_argument(
+        "--background", type=str, default="white",
+        choices=["white", "transparent", "default"],
+        help="Viewport background: white (default), transparent, or default (leave as-is).",
+    )
+
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Resolve per-field color ranges from CLI args
+# ---------------------------------------------------------------------------
+
+def _resolve_field_ranges(args: argparse.Namespace) -> dict:
+    """
+    Returns a dict mapping field_key -> (min, max) or None.
+    None means auto-range. Raises ValueError on bad range strings.
+    """
+    if args.auto_range:
+        return {k: None for k in FIELD_SPECS}
+
+    ranges = dict(FIELD_COLOR_RANGES)
+
+    cli_map = {
+        "cp_inlet":          args.cp_range,
+        "lmh":               args.lmh_range,
+        "velocity_midplane": args.velocity_range,
+        "wall_shear_rate":   args.wall_shear_rate_range,
+    }
+    for key, raw in cli_map.items():
+        if raw is not None:
+            try:
+                ranges[key] = _parse_range(raw)
+            except ValueError as exc:
+                raise ValueError(f"--{key.replace('_', '-')}-range: {exc}") from exc
+
+    return ranges
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +375,8 @@ def build_export_plan(
     cfg: Any,
     paths: dict,
     field_keys: List[str],
+    field_ranges: dict,
+    auto_range: bool,
 ) -> List[dict]:
     geo_name = paths["geo_name"]
     case_name = paths["case_name"]
@@ -259,6 +398,15 @@ def build_export_plan(
             continue
         spec = FIELD_SPECS[key]
         out_file = figures_dir / f"{geo_name}_{case_name}_{spec['output_suffix']}.png"
+
+        rng = field_ranges.get(key)
+        if auto_range or rng is None:
+            r_min, r_max = None, None
+            r_mode = RANGE_MODE_AUTO
+        else:
+            r_min, r_max = rng
+            r_mode = RANGE_MODE_CLI if (FIELD_COLOR_RANGES.get(key) != rng) else RANGE_MODE_FIXED
+
         plan.append({
             "field_key": key,
             "field_name": spec["display_label"],
@@ -270,13 +418,16 @@ def build_export_plan(
             "active_membrane_base_names": active_membrane_base_names,
             "buffer_wall_base_names": buffer_wall_base_names,
             "wall_spacer_labels": wall_spacer_labels,
+            "color_range_min": r_min,
+            "color_range_max": r_max,
+            "color_range_mode": r_mode,
         })
 
     return plan
 
 
 # ---------------------------------------------------------------------------
-# Surface matching helpers (mirrors 01_pyfluent_report_extract.py conventions)
+# Surface matching helpers
 # ---------------------------------------------------------------------------
 
 def _normalize(name: str) -> str:
@@ -333,21 +484,19 @@ def find_surfaces(
         return [], f"Could not list EnSight parts: {exc}"
 
     if surface_type == "midplane":
-        # Prefer parts already named as a plane/interior slice
         plane_kws = ["midplane", "mid_plane", "interior", "mid-plane", "plane_mid", "symm"]
         matched = _find_by_keywords(all_names, plane_kws)
         if matched:
             return matched, ""
-        # Fall back: select 3D volume parts
         try:
             vol_parts = session.ensight.utils.parts.select_parts_by_dimension(3)
             vol_names = [p.DESCRIPTION for p in vol_parts if p.DESCRIPTION]
             if vol_names:
                 return vol_names, (
                     "No named mid-plane part found; using 3D volume parts for velocity. "
-                    "For a true cross-section, pre-create a mid-plane surface in Fluent/EnSight."
+                    "Pre-create a mid-plane surface in Fluent/EnSight for a true cross-section."
                 )
-        except Exception as exc_dim:
+        except Exception:
             pass
         return all_names[:10], "Mid-plane and 3D part lookup both failed; using first available parts."
 
@@ -358,21 +507,18 @@ def find_surfaces(
     else:
         target_bases = active_membrane
 
-    # Tier 1: exact / base.N match
     matched = _find_by_base_names(all_names, target_bases)
     if matched:
         return matched, ""
 
-    # Tier 2: normalised match
     matched = _find_normalized(all_names, target_bases)
     if matched:
         return matched, f"Used normalised name matching for bases: {target_bases}"
 
-    # Tier 3: keyword contains
     keywords = [b.split("_")[-1] for b in target_bases if "_" in b] + target_bases
     matched = _find_by_keywords(all_names, keywords)
     if matched:
-        return matched, f"Keyword-matched surfaces {matched}; verify. Available ({len(all_names)}): {all_names[:20]}"
+        return matched, f"Keyword-matched surfaces {matched}. Available ({len(all_names)}): {all_names[:20]}"
 
     return [], (
         f"No surfaces found for base names {target_bases}. "
@@ -410,6 +556,394 @@ def find_ensight_variable(
 
 
 # ---------------------------------------------------------------------------
+# Filter membrane surfaces by side (top / bottom / both)
+# ---------------------------------------------------------------------------
+
+def filter_membrane_surface(
+    surface_names: List[str],
+    membrane_side: str,
+) -> Tuple[List[str], str]:
+    """Filter surface_names to top, bottom, or both. Returns (filtered, warning_msg)."""
+    if membrane_side == "both":
+        return surface_names, ""
+
+    if membrane_side == "top":
+        tops = [n for n in surface_names if "top" in _normalize(n)]
+        if tops:
+            return tops, ""
+        return surface_names, (
+            f"--membrane-surface top: no 'top' surface found among {surface_names}; using all."
+        )
+
+    if membrane_side == "bottom":
+        bots = [n for n in surface_names if "bot" in _normalize(n)]
+        if bots:
+            return bots, ""
+        return surface_names, (
+            f"--membrane-surface bottom: no 'bottom' surface found among {surface_names}; using all."
+        )
+
+    return surface_names, ""
+
+
+# ---------------------------------------------------------------------------
+# Find ENS_PALETTE — legacy helper (normalized DESCRIPTION match only)
+# ---------------------------------------------------------------------------
+
+def find_palette_for_variable(session: Any, var_desc: str) -> Optional[Any]:
+    """Return the ENS_PALETTE matching var_desc, or None. Normalized match."""
+    try:
+        all_palettes = list(session.ensight.objs.core.PALETTES)
+        desc_to_pal = {p.DESCRIPTION: p for p in all_palettes if p.DESCRIPTION}
+
+        if var_desc in desc_to_pal:
+            return desc_to_pal[var_desc]
+
+        norm_map = {_normalize(k): v for k, v in desc_to_pal.items()}
+        cn = _normalize(var_desc)
+        if cn in norm_map:
+            return norm_map[cn]
+
+        return None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-strategy palette finder — called after COLORBYPALETTE has been applied
+# ---------------------------------------------------------------------------
+
+def get_palette_after_colorby(
+    session: Any,
+    variable: Any,
+    var_desc: str,
+    selected_parts: List[Any],
+    pre_palette_descs: Optional[FrozenSet[str]] = None,
+) -> Tuple[Optional[Any], str]:
+    """
+    Find the active ENS_PALETTE after COLORBYPALETTE has been applied.
+    Tries multiple strategies in order. Returns (palette_or_None, diagnostic_str).
+
+    pre_palette_descs: frozenset of DESCRIPTION strings from PALETTES *before*
+    COLORBYPALETTE was called (used for snapshot-diff, Strategy 4).
+    DESCRIPTION keys are used rather than Python id() because PyEnSight may
+    return fresh wrapper objects on each PALETTES access.
+    """
+    tried: List[str] = []
+
+    # Strategy 1: variable object has a palette attribute
+    for attr in ("PALETTE", "palette", "ENS_PALETTE"):
+        try:
+            raw = getattr(variable, attr, None)
+            if raw is None:
+                continue
+            # Guard against list/collection return — take first element
+            if hasattr(raw, "__iter__") and not hasattr(raw, "MINMAX"):
+                items = list(raw)
+                raw = items[0] if items else None
+            if raw is not None:
+                tried.append(f"S1(var.{attr}=found)")
+                return raw, "; ".join(tried)
+        except Exception as exc:
+            tried.append(f"S1(var.{attr}=err:{exc})")
+
+    # Strategy 2: selected parts expose the active palette
+    for p in selected_parts[:3]:
+        part_lbl = getattr(p, "DESCRIPTION", "?")
+        for attr in ("COLORBYPALETTE_OBJ", "palette", "PALETTE", "ENS_PALETTE"):
+            try:
+                raw = getattr(p, attr, None)
+                if raw is None:
+                    continue
+                if hasattr(raw, "__iter__") and not hasattr(raw, "MINMAX"):
+                    items = list(raw)
+                    raw = items[0] if items else None
+                if raw is not None:
+                    tried.append(f"S2(part[{part_lbl}].{attr}=found)")
+                    return raw, "; ".join(tried)
+            except Exception:
+                pass
+    tried.append("S2(part-attrs=not-found)")
+
+    # Strategy 3: core object has a current/active palette attribute
+    try:
+        core = session.ensight.objs.core
+        for attr in ("CURRENTPALETTE", "current_palette", "ACTIVE_PALETTE", "active_palette"):
+            try:
+                raw = getattr(core, attr, None)
+                if raw is None:
+                    continue
+                if hasattr(raw, "__iter__") and not hasattr(raw, "MINMAX"):
+                    items = list(raw)
+                    raw = items[0] if items else None
+                if raw is not None:
+                    tried.append(f"S3(core.{attr}=found)")
+                    return raw, "; ".join(tried)
+            except Exception:
+                pass
+    except Exception as exc:
+        tried.append(f"S3(core-active=err:{exc})")
+    tried.append("S3(core-active=not-found)")
+
+    # Collect all current palettes for remaining strategies
+    all_palettes: List[Any] = []
+    all_descs: List[str] = []
+    try:
+        all_palettes = list(session.ensight.objs.core.PALETTES)
+        all_descs = [getattr(p, "DESCRIPTION", "") for p in all_palettes]
+    except Exception as exc:
+        tried.append(f"PALETTES-list-err:{exc}")
+        return None, "; ".join(tried)
+
+    # Strategy 4: snapshot diff by DESCRIPTION — find palettes added after COLORBYPALETTE
+    if pre_palette_descs is not None:
+        new_pals = [
+            p for p, d in zip(all_palettes, all_descs) if d not in pre_palette_descs
+        ]
+        if len(new_pals) == 1:
+            desc = getattr(new_pals[0], "DESCRIPTION", "?")
+            tried.append(f"S4(snapshot-diff,1-new='{desc}'=found)")
+            return new_pals[0], "; ".join(tried)
+        elif new_pals:
+            new_descs = [getattr(p, "DESCRIPTION", "?") for p in new_pals]
+            tried.append(f"S4(snapshot-diff,{len(new_pals)}-new=ambiguous:{new_descs})")
+        else:
+            tried.append(
+                f"S4(snapshot-diff=no-new; pre={sorted(pre_palette_descs)[:5]})"
+            )
+
+    # Strategy 5: exactly one palette in the collection
+    if len(all_palettes) == 1:
+        tried.append(f"S5(single-palette='{all_descs[0]}'=found)")
+        return all_palettes[0], "; ".join(tried)
+
+    # Fallback S6: normalized DESCRIPTION match
+    norm_var = _normalize(var_desc)
+    for pal, desc in zip(all_palettes, all_descs):
+        if _normalize(desc) == norm_var:
+            tried.append(f"S6(norm-desc-match='{desc}'=found)")
+            return pal, "; ".join(tried)
+
+    # Fallback S7: partial fragment match
+    frags = [f for f in re.split(r"[-_ ]+", var_desc.lower()) if len(f) >= 2]
+    for pal, desc in zip(all_palettes, all_descs):
+        if any(frag in _normalize(desc) for frag in frags):
+            tried.append(f"S7(frag-match='{desc}'=found)")
+            return pal, "; ".join(tried)
+
+    tried.append(
+        f"all-strategies-failed for '{var_desc}'. "
+        f"available({len(all_palettes)}): {all_descs[:15]}"
+    )
+    return None, "; ".join(tried)
+
+
+# ---------------------------------------------------------------------------
+# Apply palette color range
+# ---------------------------------------------------------------------------
+
+def apply_palette_range(
+    session: Any,
+    var_obj: Any,
+    display_var_desc: str,
+    selected_parts: List[Any],
+    range_min: Optional[float],
+    range_max: Optional[float],
+    auto_range: bool,
+    pre_palette_descs: Optional[FrozenSet[str]] = None,
+) -> Tuple[str, Optional[float], Optional[float], str, Optional[Any]]:
+    """
+    Find the active palette and set its color range.
+    Returns (mode_str, applied_min, applied_max, warn_msg, palette_obj_or_None).
+    """
+    palette, diag = get_palette_after_colorby(
+        session, var_obj, display_var_desc, selected_parts, pre_palette_descs
+    )
+
+    if auto_range or (range_min is None or range_max is None):
+        if palette is not None:
+            try:
+                palette.set_range_to_part_minmax()
+                return RANGE_MODE_AUTO, None, None, "", palette
+            except Exception as e1:
+                try:
+                    palette.set_range_to_viewport_minmax()
+                    return RANGE_MODE_AUTO, None, None, (
+                        f"Part minmax failed ({e1}); used viewport minmax."
+                    ), palette
+                except Exception as e2:
+                    return RANGE_MODE_AUTO, None, None, (
+                        f"Auto range failed: part={e1}, viewport={e2}."
+                    ), palette
+        return (
+            RANGE_MODE_AUTO, None, None,
+            f"Palette not found for '{display_var_desc}'; auto-range not applied. Diag: {diag}",
+            None,
+        )
+
+    # Fixed range requested
+    if palette is None:
+        try:
+            avail = [getattr(p, "DESCRIPTION", "?") for p in session.ensight.objs.core.PALETTES]
+        except Exception:
+            avail = ["<error listing palettes>"]
+        return (
+            RANGE_MODE_NONE, None, None,
+            (
+                f"Palette not found for '{display_var_desc}'; "
+                f"range [{range_min},{range_max}] not applied. "
+                f"Diag: {diag}. Available ({len(avail)}): {avail}"
+            ),
+            None,
+        )
+
+    try:
+        palette.MINMAX = [range_min, range_max]
+        # Verify readback
+        try:
+            actual = list(palette.MINMAX)
+            if abs(actual[0] - range_min) < 1e-9 and abs(actual[1] - range_max) < 1e-9:
+                return RANGE_MODE_FIXED, range_min, range_max, "", palette
+            return (
+                RANGE_MODE_FIXED, float(actual[0]), float(actual[1]),
+                f"Range set [{range_min},{range_max}] but readback: "
+                f"[{actual[0]:.4g},{actual[1]:.4g}].",
+                palette,
+            )
+        except Exception:
+            return RANGE_MODE_FIXED, range_min, range_max, "", palette
+    except Exception as exc1:
+        try:
+            palette.set_minmax(range_min, range_max)
+            return RANGE_MODE_FIXED, range_min, range_max, "", palette
+        except Exception as exc2:
+            return (
+                RANGE_MODE_NONE, None, None,
+                f"Range setting failed: MINMAX={exc1}; set_minmax={exc2}",
+                palette,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Apply colorbar label (best-effort)
+# ---------------------------------------------------------------------------
+
+def apply_palette_label(
+    session: Any,
+    display_var_desc: str,
+    field_label: str,
+    palette: Optional[Any] = None,
+) -> str:
+    """Try to set the colorbar title. Returns warning string on failure, '' on success."""
+    # Approach 1: command language
+    try:
+        session.ensight.palette.select_palette_begin(display_var_desc)
+        session.ensight.palette.title(field_label)
+        session.ensight.palette.select_palette_end()
+        return ""
+    except Exception:
+        pass
+
+    # Approach 2: rename DESCRIPTION on the palette object
+    pal = palette
+    if pal is None:
+        pal = find_palette_for_variable(session, display_var_desc)
+    if pal is not None:
+        try:
+            pal.DESCRIPTION = field_label
+            return ""
+        except Exception:
+            pass
+
+    return (
+        f"Could not set colorbar label to '{field_label}' "
+        f"(command language and DESCRIPTION rename both failed)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Clean scene setup — call once after loading the case
+# ---------------------------------------------------------------------------
+
+def setup_clean_scene(
+    session: Any,
+    background_mode: str,
+    show_triad: bool,
+) -> List[str]:
+    """
+    Configure the EnSight viewport for a presentation-ready appearance.
+    All steps are best-effort; returns a list of warning strings.
+    """
+    warnings: List[str] = []
+
+    # 1. Background colour
+    try:
+        vport = session.ensight.objs.core.VPORTS[0]
+        if background_mode == "white":
+            vport.BACKGROUNDTYPE = session.ensight.objs.enums.VPORT_CONS
+            vport.CONSTANTRGB = [1.0, 1.0, 1.0]
+        elif background_mode == "transparent":
+            try:
+                vport.BACKGROUNDTYPE = session.ensight.objs.enums.VPORT_TRANSPARENT
+            except Exception as exc_t:
+                warnings.append(
+                    f"Transparent background unsupported ({exc_t}); falling back to white."
+                )
+                vport.BACKGROUNDTYPE = session.ensight.objs.enums.VPORT_CONS
+                vport.CONSTANTRGB = [1.0, 1.0, 1.0]
+        # "default" → leave untouched
+    except Exception as exc:
+        warnings.append(f"Background setup failed: {exc}")
+
+    # 2. Orthographic projection
+    try:
+        vport = session.ensight.objs.core.VPORTS[0]
+        vport.PERSPECTIVE = False
+        session.ensight.view.perspective("OFF")
+    except Exception as exc:
+        warnings.append(f"Orthographic projection not set: {exc}")
+
+    # 3. Axis / triad visibility
+    if not show_triad:
+        try:
+            session.ensight.annotation.axis_global("off")
+            session.ensight.annotation.axis_local("off")
+            session.ensight.annotation.axis_model("off")
+        except Exception as exc:
+            warnings.append(f"Axis annotation hide failed: {exc}")
+        try:
+            vport = session.ensight.objs.core.VPORTS[0]
+            vport.GLOBALAXISVISIBLE = 0
+        except Exception:
+            pass
+
+    # 4. Disable floor / grid
+    try:
+        session.ensight.view.floor("OFF")
+    except Exception as exc:
+        warnings.append(f"Floor disable failed: {exc}")
+
+    # 5. Disable shadow casting
+    try:
+        lights = session.ensight.objs.core.LIGHTSOURCES
+        for light in lights:
+            try:
+                light.CASTS_SHADOWS = 0
+            except Exception:
+                pass
+    except Exception as exc:
+        warnings.append(f"Shadow disable failed: {exc}")
+
+    # 6. Disable ambient occlusion
+    try:
+        session.ensight.view.ambient_occlusion("OFF")
+    except Exception:
+        pass
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Open case in PyEnSight
 # ---------------------------------------------------------------------------
 
@@ -435,7 +969,6 @@ def open_case_in_pyensight(paths: dict) -> Tuple[Optional[Any], str]:
     session = None
     try:
         print("Launching PyEnSight (batch/headless mode)...")
-        # LocalLauncher defaults to batch=True; finds EnSight via ANS_SENV_* env vars
         session = LocalLauncher().start()
         print("PyEnSight session started.")
 
@@ -447,7 +980,6 @@ def open_case_in_pyensight(paths: dict) -> Tuple[Optional[Any], str]:
         errors: List[str] = []
         loaded = False
 
-        # Attempt 1: standard Fluent dual-file (case = geometry, result = data)
         try:
             session.load_data(case_str, result_file=data_str)
             loaded = True
@@ -455,7 +987,6 @@ def open_case_in_pyensight(paths: dict) -> Tuple[Optional[Any], str]:
         except Exception as e1:
             errors.append(f"attempt1 (dual-file): {e1}")
 
-        # Attempt 2: case file only (EnSight may locate paired .dat.h5 automatically)
         if not loaded:
             try:
                 session.load_data(case_str)
@@ -464,7 +995,6 @@ def open_case_in_pyensight(paths: dict) -> Tuple[Optional[Any], str]:
             except Exception as e2:
                 errors.append(f"attempt2 (case only): {e2}")
 
-        # Attempt 3: explicit Fluent reader hint
         if not loaded:
             try:
                 session.load_data(case_str, result_file=data_str, file_format="Fluent Fluent")
@@ -491,20 +1021,31 @@ def export_contour(
     plan_item: dict,
     image_width: int,
     image_height: int,
+    membrane_side: str,
     records: List[ExportRecord],
     geo_name: str,
     case_name: str,
+    scene_setup_warnings: List[str],
 ) -> None:
-    field_key = plan_item["field_key"]
-    field_name = plan_item["field_name"]
-    output_file = Path(plan_item["output_file"])
-    surface_type = plan_item["surface_type"]
-    var_candidates = plan_item["var_candidates"]
+    field_key       = plan_item["field_key"]
+    field_name      = plan_item["field_name"]
+    output_file     = Path(plan_item["output_file"])
+    surface_type    = plan_item["surface_type"]
+    var_candidates  = plan_item["var_candidates"]
     derive_shear_rate = plan_item["derive_shear_rate"]
-    mu = plan_item["mu"]
+    mu              = plan_item["mu"]
+    color_range_min = plan_item["color_range_min"]
+    color_range_max = plan_item["color_range_max"]
+    color_range_mode = plan_item["color_range_mode"]
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    _safe_mkdir(output_file.parent)
     warnings: List[str] = []
+    selected_var_str      = ""
+    selected_surfaces_str = ""
+    applied_mode  = color_range_mode
+    applied_min: Optional[float] = color_range_min
+    applied_max: Optional[float] = color_range_max
+    palette_diag_str: Optional[str] = None
 
     def _record(status: str, surface_desc: str, message: str) -> None:
         records.append(ExportRecord(
@@ -516,6 +1057,13 @@ def export_contour(
             output_file=str(output_file),
             status=status,
             message=message,
+            selected_variable=selected_var_str,
+            selected_surfaces=selected_surfaces_str,
+            color_range_mode=applied_mode,
+            color_range_min=applied_min,
+            color_range_max=applied_max,
+            clean_scene_status="; ".join(scene_setup_warnings) if scene_setup_warnings else "ok",
+            palette_diagnostics=palette_diag_str,
         ))
 
     # 1. Locate surfaces
@@ -528,22 +1076,33 @@ def export_contour(
         _record(STATUS_WARN, surface_desc, f"No surfaces found: {surface_warn}")
         return
 
-    # 2. Locate variable
+    # 2. Apply membrane-side filter for membrane fields
+    if surface_type == "membrane":
+        surface_names, side_warn = filter_membrane_surface(surface_names, membrane_side)
+        if side_warn:
+            warnings.append(side_warn)
+        surface_desc = ", ".join(surface_names) if surface_names else "none"
+        if not surface_names:
+            _record(STATUS_WARN, surface_desc, f"Membrane-side filter removed all surfaces: {side_warn}")
+            return
+
+    selected_surfaces_str = surface_desc
+
+    # 3. Locate variable
     var_obj, matched_var_desc = find_ensight_variable(session, var_candidates)
     if var_obj is None:
         _record(
             STATUS_WARN, surface_desc,
             f"Variable not found among candidates {var_candidates}. "
-            "Ensure the .dat.h5 contains UDM/field data and the file loaded correctly."
+            "Ensure the .dat.h5 contains UDM/field data and loaded correctly."
         )
         return
 
-    # 3. Optionally derive wall shear rate (wall-shear / mu)
+    # 4. Optionally derive wall shear rate (wall-shear / mu)
     display_var_desc = matched_var_desc
     if derive_shear_rate:
         try:
             derived_name = "pp_wall_shear_rate"
-            # EnSight expression language requires quoting names containing hyphens or spaces
             safe_src = (
                 f"'{matched_var_desc}'"
                 if ("-" in matched_var_desc or " " in matched_var_desc)
@@ -563,52 +1122,112 @@ def export_contour(
                 )
         except Exception as exc_derive:
             warnings.append(
-                f"Derivation failed ({exc_derive}); "
-                f"using '{matched_var_desc}' (Pa, not 1/s)."
+                f"Derivation failed ({exc_derive}); using '{matched_var_desc}' (Pa, not 1/s)."
             )
 
-    # 4. Select parts and apply palette coloring
+    selected_var_str = display_var_desc
+
+    # 5. Hide all parts, show only target parts
+    all_parts = session.ensight.objs.core.PARTS
+    surface_name_set = set(surface_names)
+    target_parts = [p for p in all_parts if p.DESCRIPTION in surface_name_set]
+
     try:
-        all_parts = session.ensight.objs.core.PARTS
-
-        # Clear all selections
-        all_parts.set_attr("SELECTED", False)
-
-        surface_name_set = set(surface_names)
-        target_parts = [p for p in all_parts if p.DESCRIPTION in surface_name_set]
-
-        if not target_parts:
-            _record(
-                STATUS_WARN, surface_desc,
-                f"Found {len(surface_names)} surface name(s) but none matched a loaded part."
-            )
-            return
-
-        # Synchronise selection into EnSight command language
-        session.ensight.utils.parts.select_parts(target_parts)
-
-        # Assign the variable palette to each target part
+        for p in all_parts:
+            try:
+                p.VISIBLE = 0
+            except Exception:
+                pass
         for p in target_parts:
-            p.COLORBYPALETTE = display_var_desc
+            try:
+                p.VISIBLE = 1
+            except Exception:
+                pass
+    except Exception as exc_vis:
+        warnings.append(f"Part visibility control failed: {exc_vis}")
 
-        # Fit view to selected geometry
-        try:
-            session.ensight.view_transf.fit(0)
-        except Exception:
-            pass
-
-    except Exception as exc_setup:
-        _record(STATUS_FAILED, surface_desc, f"Part selection/coloring failed: {exc_setup}")
+    if not target_parts:
+        for p in all_parts:
+            try:
+                p.VISIBLE = 1
+            except Exception:
+                pass
+        _record(
+            STATUS_WARN, surface_desc,
+            f"Found {len(surface_names)} surface name(s) but none matched a loaded part."
+        )
         return
 
-    # 5. Render and save image
-    # session.ensight.utils.export.image() saves to the LOCAL client filesystem (not EnSight server).
+    # 6. Select target parts and apply COLORBYPALETTE
+    # Take a pre-snapshot of palette DESCRIPTIONs for snapshot-diff (Strategy 4).
+    # DESCRIPTIONs are used as keys rather than Python id() because PyEnSight may
+    # return fresh wrapper objects on each PALETTES access.
+    pre_palette_descs: FrozenSet[str] = frozenset()
+    try:
+        pre_palette_descs = frozenset(
+            getattr(p, "DESCRIPTION", "") for p in session.ensight.objs.core.PALETTES
+        )
+    except Exception:
+        pass
+
+    try:
+        all_parts.set_attr("SELECTED", False)
+        session.ensight.utils.parts.select_parts(target_parts)
+        for p in target_parts:
+            p.COLORBYPALETTE = display_var_desc
+    except Exception as exc_color:
+        for p in all_parts:
+            try:
+                p.VISIBLE = 1
+            except Exception:
+                pass
+        _record(STATUS_FAILED, surface_desc, f"Part selection/coloring failed: {exc_color}")
+        return
+
+    # 7. Apply color range and colorbar label
+    mode_str, rmin, rmax, range_warn, found_palette = apply_palette_range(
+        session, var_obj, display_var_desc, target_parts,
+        color_range_min, color_range_max,
+        auto_range=(color_range_mode == RANGE_MODE_AUTO),
+        pre_palette_descs=pre_palette_descs,
+    )
+    applied_mode = mode_str
+    applied_min  = rmin
+    applied_max  = rmax
+    if range_warn:
+        warnings.append(range_warn)
+        if applied_mode == RANGE_MODE_NONE:
+            palette_diag_str = range_warn
+
+    label_warn = apply_palette_label(session, display_var_desc, field_name, found_palette)
+    if label_warn:
+        warnings.append(label_warn)
+
+    # 8. Fit view to visible geometry
+    try:
+        session.ensight.view_transf.fit(0)
+    except Exception:
+        pass
+
+    # 9. Render and save image
     try:
         png_path = str(output_file).replace("\\", "/")
         session.ensight.utils.export.image(png_path, width=image_width, height=image_height, passes=4)
     except Exception as exc_export:
+        for p in all_parts:
+            try:
+                p.VISIBLE = 1
+            except Exception:
+                pass
         _record(STATUS_FAILED, surface_desc, f"Image export failed: {exc_export}")
         return
+
+    # 10. Restore full part visibility for next contour
+    for p in all_parts:
+        try:
+            p.VISIBLE = 1
+        except Exception:
+            pass
 
     if output_file.is_file():
         final_status = STATUS_WARN if warnings else STATUS_SUCCESS
@@ -632,21 +1251,29 @@ def save_status(
     case_name: str,
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
-    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Guard: don't create Windows-style paths on Linux/WSL
+    if not _safe_mkdir(figures_dir):
+        print(
+            f"  NOTE: Output directory contains a Windows drive path ({figures_dir}); "
+            "skipping directory creation and status JSON write on Linux/WSL. "
+            "Status will be written on the server after pull."
+        )
+        return
 
     n_success = sum(1 for r in records if r.status == STATUS_SUCCESS)
-    n_warn = sum(1 for r in records if r.status == STATUS_WARN)
-    n_failed = sum(1 for r in records if r.status == STATUS_FAILED)
+    n_warn    = sum(1 for r in records if r.status == STATUS_WARN)
+    n_failed  = sum(1 for r in records if r.status == STATUS_FAILED)
     n_skipped = sum(1 for r in records if r.status in (STATUS_SKIPPED_EXISTING, STATUS_DRY_RUN))
 
     payload = {
         "geo_name": geo_name,
         "case_name": case_name,
         "summary": {
-            "total": len(records),
+            "total":   len(records),
             "success": n_success,
-            "warn": n_warn,
-            "failed": n_failed,
+            "warn":    n_warn,
+            "failed":  n_failed,
             "skipped": n_skipped,
         },
         "records": [asdict(r) for r in records],
@@ -664,8 +1291,8 @@ def save_status(
 
 def _print_summary(records: List[ExportRecord], figures_dir: Path) -> None:
     n_success = sum(1 for r in records if r.status == STATUS_SUCCESS)
-    n_warn = sum(1 for r in records if r.status == STATUS_WARN)
-    n_failed = sum(1 for r in records if r.status == STATUS_FAILED)
+    n_warn    = sum(1 for r in records if r.status == STATUS_WARN)
+    n_failed  = sum(1 for r in records if r.status == STATUS_FAILED)
     n_skipped = sum(1 for r in records if r.status in (STATUS_SKIPPED_EXISTING, STATUS_DRY_RUN))
 
     print()
@@ -680,8 +1307,16 @@ def _print_summary(records: List[ExportRecord], figures_dir: Path) -> None:
     print(f"  Output dir: {figures_dir}")
     print("-" * 72)
     for r in records:
-        msg_short = r.message[:56] if len(r.message) > 56 else r.message
-        print(f"  [{r.status:<18}] {r.field_key:<22} {msg_short}")
+        rng = (
+            f"[{r.color_range_min:.3g},{r.color_range_max:.3g}]"
+            if (r.color_range_min is not None and r.color_range_max is not None)
+            else f"[{r.color_range_mode}]"
+        )
+        var_str = f" var={r.selected_variable[:20]}" if r.selected_variable else ""
+        print(f"  [{r.status:<18}] {r.field_key:<22} range={rng:<16}{var_str}")
+        if r.message:
+            msg_short = r.message[:100] if len(r.message) > 100 else r.message
+            print(f"    {msg_short}")
     print("=" * 72)
 
 
@@ -691,6 +1326,13 @@ def _print_summary(records: List[ExportRecord], figures_dir: Path) -> None:
 
 def main() -> int:
     args = parse_args()
+
+    # Resolve color ranges (raises ValueError on bad CLI input)
+    try:
+        field_ranges = _resolve_field_ranges(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 3
 
     config_path = Path(args.config).resolve()
     try:
@@ -707,29 +1349,37 @@ def main() -> int:
         print(f"ERROR: {exc}")
         return 3
 
-    geo_name = paths["geo_name"]
-    case_name = paths["case_name"]
+    geo_name   = paths["geo_name"]
+    case_name  = paths["case_name"]
     figures_dir = Path(paths["figures_dir"])
 
-    print(f"Geo    : {geo_name}")
-    print(f"Case   : {case_name}")
-    print(f"Case f : {paths['final_case_file']}")
-    print(f"Data f : {paths['final_data_file']}")
-    print(f"Output : {figures_dir}")
+    print(f"Geo       : {geo_name}")
+    print(f"Case      : {case_name}")
+    print(f"Case file : {paths['final_case_file']}")
+    print(f"Data file : {paths['final_data_file']}")
+    print(f"Output    : {figures_dir}")
+    print(f"Background: {args.background}  |  Triad: {'show' if args.show_triad else 'hide'}")
+    print(f"Membrane  : {args.membrane_surface}")
 
     if args.fields:
         field_keys = [k.strip() for k in args.fields.split(",") if k.strip()]
     else:
         field_keys = list(DEFAULT_FIELDS)
-    print(f"Fields : {field_keys}")
+    print(f"Fields    : {field_keys}")
 
-    plan = build_export_plan(cfg, paths, field_keys)
+    # Show planned ranges
+    for k in field_keys:
+        rng = field_ranges.get(k)
+        rng_str = f"{rng[0]} – {rng[1]}" if rng else "auto"
+        print(f"  {k}: range = {rng_str}")
+
+    plan = build_export_plan(cfg, paths, field_keys, field_ranges, auto_range=args.auto_range)
     records: List[ExportRecord] = []
 
     # ---- Dry-run ----
     if args.dry_run:
         print("\nDRY RUN — PyEnSight will not be launched; no images will be written.\n")
-        figures_dir.mkdir(parents=True, exist_ok=True)
+        _safe_mkdir(figures_dir)
         for item in plan:
             records.append(ExportRecord(
                 geo_name=geo_name,
@@ -740,6 +1390,9 @@ def main() -> int:
                 output_file=str(item["output_file"]),
                 status=STATUS_DRY_RUN,
                 message="dry-run: no export performed",
+                color_range_mode=item["color_range_mode"],
+                color_range_min=item["color_range_min"],
+                color_range_max=item["color_range_max"],
             ))
         save_status(records, figures_dir, geo_name, case_name)
         _print_summary(records, figures_dir)
@@ -759,24 +1412,26 @@ def main() -> int:
                     output_file=str(item["output_file"]),
                     status=STATUS_SKIPPED_EXISTING,
                     message=f"Already exists: {Path(item['output_file']).name}",
+                    color_range_mode=item["color_range_mode"],
+                    color_range_min=item["color_range_min"],
+                    color_range_max=item["color_range_max"],
                 ))
             else:
                 remaining.append(item)
         plan = remaining
 
     if not plan:
-        figures_dir.mkdir(parents=True, exist_ok=True)
+        _safe_mkdir(figures_dir)
         save_status(records, figures_dir, geo_name, case_name)
         _print_summary(records, figures_dir)
         return 0
 
-    # ---- PyEnSight must be importable ----
     if not _PYENSIGHT_AVAILABLE:
         print(f"\nFATAL: PyEnSight is not importable.\n  {_PYENSIGHT_IMPORT_ERROR}")
         print("  Install: pip install ansys-pyensight-core")
         return 2
 
-    figures_dir.mkdir(parents=True, exist_ok=True)
+    _safe_mkdir(figures_dir)
     session = None
 
     try:
@@ -799,6 +1454,18 @@ def main() -> int:
             _print_summary(records, figures_dir)
             return 2
 
+        # Apply clean scene settings once, after loading
+        print("Applying clean scene settings...")
+        scene_warnings = setup_clean_scene(
+            session,
+            background_mode=args.background,
+            show_triad=args.show_triad,
+        )
+        if scene_warnings:
+            print("  Scene setup warnings:")
+            for w in scene_warnings:
+                print(f"    {w}")
+
         for item in plan:
             try:
                 export_contour(
@@ -806,9 +1473,11 @@ def main() -> int:
                     plan_item=item,
                     image_width=args.image_width,
                     image_height=args.image_height,
+                    membrane_side=args.membrane_surface,
                     records=records,
                     geo_name=geo_name,
                     case_name=case_name,
+                    scene_setup_warnings=scene_warnings,
                 )
             except Exception as exc_item:
                 records.append(ExportRecord(
@@ -820,6 +1489,9 @@ def main() -> int:
                     output_file=str(item["output_file"]),
                     status=STATUS_FAILED,
                     message=f"Unhandled exception: {exc_item}",
+                    color_range_mode=item["color_range_mode"],
+                    color_range_min=item["color_range_min"],
+                    color_range_max=item["color_range_max"],
                 ))
 
     except Exception as exc_outer:
