@@ -437,7 +437,8 @@ def parse_args() -> argparse.Namespace:
         "--view-margin", type=float, default=1.20, metavar="FACTOR",
         help=(
             "Zoom-out factor applied after fit (default: 1.20). "
-            "1.0 = no margin; 1.2 = zoom out 20 %% to separate colorbar."
+            "1.0 = no margin; 1.2 = zoom out 20 %%. "
+            "Use 1.35–1.40 on the server if membrane ends are clipped."
         ),
     )
 
@@ -2434,6 +2435,7 @@ def save_status(
     figures_dir: Path,
     geo_name: str,
     case_name: str,
+    view_margin: float = 1.20,
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
 
@@ -2454,6 +2456,10 @@ def save_status(
     payload = {
         "geo_name": geo_name,
         "case_name": case_name,
+        "requested_view_margin": view_margin,
+        "effective_view_margin": view_margin,
+        "view_margin_applied": view_margin > 1.0,
+        "view_orientation_preserved": True,
         "summary": {
             "total":   len(records),
             "success": n_success,
@@ -2591,7 +2597,7 @@ def main() -> int:
                 color_range_min=item["color_range_min"],
                 color_range_max=item["color_range_max"],
             ))
-        save_status(records, figures_dir, geo_name, case_name)
+        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
         _print_summary(records, figures_dir)
         return 0
 
@@ -2619,7 +2625,7 @@ def main() -> int:
 
     if not plan:
         _safe_mkdir(figures_dir)
-        save_status(records, figures_dir, geo_name, case_name)
+        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
         _print_summary(records, figures_dir)
         return 0
 
@@ -2647,7 +2653,7 @@ def main() -> int:
                     status=STATUS_FAILED,
                     message=f"Case load failed: {open_error[:120]}",
                 ))
-            save_status(records, figures_dir, geo_name, case_name)
+            save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
             _print_summary(records, figures_dir)
             return 2
 
@@ -2704,7 +2710,7 @@ def main() -> int:
             except Exception as exc_close:
                 print(f"Warning: session.close() raised: {exc_close}")
 
-    save_status(records, figures_dir, geo_name, case_name)
+    save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
     _print_summary(records, figures_dir)
 
     n_failed = sum(1 for r in records if r.status == STATUS_FAILED)

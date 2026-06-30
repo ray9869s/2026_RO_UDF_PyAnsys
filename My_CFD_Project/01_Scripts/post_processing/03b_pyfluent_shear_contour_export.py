@@ -885,6 +885,7 @@ def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str
         "fluent_view_name": "",
         "view_direction_requested": "",
         "view_up_vector_requested": "",
+        "matched_debug_candidate": "",
         "view_debug_sweep_attempted": False,
         "view_debug_sweep_outputs": [],
     }
@@ -925,6 +926,7 @@ def _merge_scene_cleanup_diag(
         "view_up_vector_used",
         "match_pyensight_status",
         "match_pyensight_error",
+        "matched_debug_candidate",
         "fluent_view_name",
         "view_direction_requested",
         "view_up_vector_requested",
@@ -1454,21 +1456,69 @@ def setup_fluent_clean_scene(
                 "session.ensight.view_transf.zoom(1/margin); "
                 "no named view preset; no explicit camera direction set"
             )
-            # Strategy: skip any named view or explicit camera vectors.
-            # auto_scale (called below) is called with whatever camera direction
-            # Fluent holds after contour.display() — the closest equivalent to
-            # PyEnSight's view_transf.fit(0).
-            # Named top/bottom views and explicit z-normal vectors both previously
-            # produced blank images on the server; they are excluded from this path.
-            all_cam_attempts.append("match_pyensight:auto_fit_only:no_named_view")
-            diag["camera_mode_used"] = "match_pyensight_auto_fit"
-            diag["camera_method_used"] = "auto_fit_only"
-            diag["match_pyensight_status"] = (
-                "applied_auto_fit_only; skip named view; auto_scale determines view; "
-                "native Fluent camera may not exactly match PyEnSight; "
-                "run --view-debug-sweep on server to compare candidates"
-            )
-            successful_steps += 1
+            # Debug sweep confirmed dbg_04_z_pos_up_y as the desired top view.
+            # Bottom uses the symmetric dbg_05_z_neg_up_y (unverified visually;
+            # symmetry assumed — run --view-debug-sweep to confirm on server).
+            # Named top/bottom views remain EXPERIMENTAL (produced blank images).
+            if membrane_side == "bottom":
+                _match_pos: List[float] = [0., 0., -1.]
+                _match_tgt: List[float] = [0., 0.,  0.]
+                _match_up:  List[float] = [0., 1.,  0.]
+                _cand_name = "dbg_05_z_neg_up_y"
+            else:
+                _match_pos = [0., 0.,  1.]
+                _match_tgt = [0., 0.,  0.]
+                _match_up  = [0., 1.,  0.]
+                _cand_name = "dbg_04_z_pos_up_y"
+            diag["matched_debug_candidate"] = _cand_name
+            if diag.get("camera_mode_used"):
+                # CLI override (--view-direction or --fluent-view-name) already set
+                # the camera; respect it and skip the z-normal set.
+                diag["match_pyensight_status"] = (
+                    f"skipped_camera_set: CLI override already set "
+                    f"camera_mode={diag.get('camera_mode_used')}; "
+                    f"candidate {_cand_name} noted for reference only"
+                )
+                successful_steps += 1
+            else:
+                vec_method, _vec_dir_str = _attempt_camera_direction_vectors(
+                    camera, _match_pos, _match_tgt, _match_up,
+                    f"match_pyensight:{_cand_name}", camera_errors,
+                )
+                if vec_method:
+                    all_cam_attempts.append(vec_method)
+                    diag["camera_mode_used"] = f"match_pyensight_z_normal:{_cand_name}"
+                    diag["camera_method_used"] = vec_method
+                    diag["view_direction_used"] = (
+                        f"pos={_match_pos},tgt={_match_tgt},up={_match_up}"
+                    )
+                    diag["view_up_vector_used"] = "0,1,0"
+                    _bottom_note = (
+                        "; NOTE: bottom candidate unverified visually — run "
+                        "--view-debug-sweep on server to confirm"
+                        if membrane_side == "bottom" else ""
+                    )
+                    diag["match_pyensight_status"] = (
+                        f"applied z-normal camera from {_cand_name}; "
+                        f"pos={_match_pos}, up={_match_up}{_bottom_note}"
+                    )
+                    successful_steps += 1
+                else:
+                    # Camera API unavailable; fall back to auto_fit only
+                    all_cam_attempts.append(
+                        f"match_pyensight:{_cand_name}:camera_dir_failed"
+                        ":fallback_auto_fit"
+                    )
+                    diag["camera_mode_used"] = "match_pyensight_auto_fit_fallback"
+                    diag["camera_method_used"] = "auto_fit_only"
+                    diag["match_pyensight_status"] = (
+                        f"camera_dir API failed for {_cand_name}; "
+                        "fell back to auto_fit; check camera_errors"
+                    )
+                    diag["match_pyensight_error"] = (
+                        "; ".join(camera_errors[-3:]) if camera_errors else ""
+                    )
+                    successful_steps += 1
 
         elif effective_view in ("top", "bottom"):
             # EXPERIMENTAL: previously produced blank images on server.
@@ -2197,6 +2247,7 @@ def build_status_payload(
     fluent_view_name: str = "",
     view_direction_requested: str = "",
     view_up_vector_requested: str = "",
+    matched_debug_candidate: str = "",
     view_debug_sweep_attempted: bool = False,
     view_debug_sweep_outputs: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
@@ -2310,6 +2361,7 @@ def build_status_payload(
         "match_pyensight_attempted": match_pyensight_attempted,
         "match_pyensight_status": match_pyensight_status,
         "match_pyensight_error": match_pyensight_error,
+        "matched_debug_candidate": matched_debug_candidate,
         "fluent_view_name": fluent_view_name,
         "view_direction_requested": view_direction_requested,
         "view_up_vector_requested": view_up_vector_requested,
@@ -2403,11 +2455,13 @@ def parse_args() -> argparse.Namespace:
         choices=["match_pyensight", "auto", "top", "bottom", "front", "iso"],
         help=(
             "Camera view preset for contour display (default: match_pyensight). "
-            "match_pyensight: no named view; auto_scale determines view (matches "
-            "PyEnSight view_transf.fit(0) behaviour). "
+            "match_pyensight: z-normal camera direction confirmed by debug sweep "
+            "(dbg_04_z_pos_up_y for top, dbg_05_z_neg_up_y for bottom); "
+            "recommended production view. "
             "auto: legacy — resolves to top/bottom based on --membrane-surface. "
-            "top/bottom: EXPERIMENTAL — previously produced blank images on server. "
-            "front: Fluent default front view (known oblique; useful as debug baseline). "
+            "top/bottom: EXPERIMENTAL — previously produced blank images on server; "
+            "kept for debug only. "
+            "front: Fluent default front view (oblique; useful as debug baseline). "
             "iso: isometric view (debug)."
         ),
     )
@@ -3033,6 +3087,7 @@ def main() -> int:
         ),
         match_pyensight_status=str(scene_cleanup_diag.get("match_pyensight_status", "SKIPPED")),
         match_pyensight_error=str(scene_cleanup_diag.get("match_pyensight_error", "")),
+        matched_debug_candidate=str(scene_cleanup_diag.get("matched_debug_candidate", "")),
         fluent_view_name=str(scene_cleanup_diag.get("fluent_view_name", "")),
         view_direction_requested=str(scene_cleanup_diag.get("view_direction_requested", "")),
         view_up_vector_requested=str(scene_cleanup_diag.get("view_up_vector_requested", "")),
