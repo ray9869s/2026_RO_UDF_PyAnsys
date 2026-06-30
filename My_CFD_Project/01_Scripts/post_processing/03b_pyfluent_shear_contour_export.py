@@ -71,6 +71,7 @@ DEFAULT_CFF_NAME = "cff_wall_shear_rate"
 CONTOUR_NAME = "pp_shear_rate"
 DEFAULT_MU = 8.93e-4
 CFF_CELL_FUNCTION_TOKEN = "wall_shear"
+CLEAN_DISPLAY_STATE_NAME = "pp_shear_clean_scene"
 
 # Candidate Fluent scalar variable names for wall shear stress magnitude.
 # These are searched against the Fluent field_info registry; only confirmed
@@ -845,6 +846,397 @@ def prepare_native_cff(
     return result
 
 
+def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str, Any]:
+    return {
+        "scene_cleanup_attempted": False,
+        "scene_cleanup_status": "SKIPPED",
+        "scene_cleanup_error": "",
+        "camera_mode_used": "",
+        "projection_mode_used": "",
+        "floor_hidden": None,
+        "shadow_hidden": None,
+        "reflection_hidden": None,
+        "triad_hidden": None,
+        "logo_hidden": None,
+        "background_used": background,
+        "view_margin_used": view_margin,
+    }
+
+
+def _merge_scene_cleanup_diag(
+    current: Dict[str, Any],
+    new: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not current.get("scene_cleanup_attempted"):
+        return dict(new)
+    if not new.get("scene_cleanup_attempted"):
+        return dict(current)
+
+    merged = dict(current)
+    status_rank = {"SKIPPED": 0, "SUCCESS": 1, "WARN": 2, "FAILED": 3}
+    current_status = str(current.get("scene_cleanup_status", "SKIPPED"))
+    new_status = str(new.get("scene_cleanup_status", "SKIPPED"))
+    merged["scene_cleanup_status"] = (
+        current_status
+        if status_rank.get(current_status, 0) >= status_rank.get(new_status, 0)
+        else new_status
+    )
+
+    errors = [
+        str(current.get("scene_cleanup_error", "")),
+        str(new.get("scene_cleanup_error", "")),
+    ]
+    merged["scene_cleanup_error"] = " | ".join(e for e in errors if e)
+
+    for key in ("camera_mode_used", "projection_mode_used"):
+        values = _unique_preserve_order([
+            str(current.get(key, "")),
+            str(new.get(key, "")),
+        ])
+        merged[key] = ";".join(v for v in values if v)
+
+    for key in (
+        "floor_hidden",
+        "shadow_hidden",
+        "reflection_hidden",
+        "triad_hidden",
+        "logo_hidden",
+    ):
+        cur = current.get(key)
+        nxt = new.get(key)
+        if cur is False or nxt is False:
+            merged[key] = False
+        elif cur is True or nxt is True:
+            merged[key] = True
+        else:
+            merged[key] = None
+
+    merged["background_used"] = new.get("background_used", current.get("background_used", ""))
+    merged["view_margin_used"] = new.get("view_margin_used", current.get("view_margin_used", ""))
+    return merged
+
+
+def _try_scene_call(
+    label: str,
+    variants: List[Tuple[str, Any]],
+    errors: List[str],
+) -> str:
+    variant_errors: List[str] = []
+    for method_label, func in variants:
+        try:
+            func()
+            return method_label
+        except Exception as exc:
+            variant_errors.append(f"{label} via {method_label}: {_format_exception(exc)}")
+    errors.extend(variant_errors)
+    return ""
+
+
+def _try_assign_child(
+    parent: Any,
+    child_name: str,
+    value: Any,
+    label: str,
+    errors: List[str],
+) -> bool:
+    if child_name not in _safe_public_attrs(parent, limit=10000):
+        errors.append(f"{label}: child {child_name!r} not available")
+        return False
+    try:
+        setattr(parent, child_name, value)
+        return True
+    except Exception as exc:
+        errors.append(f"{label}: {_format_exception(exc)}")
+        return False
+
+
+def _get_or_create_named_object(
+    collection: Any,
+    name: str,
+    errors: List[str],
+) -> Optional[Any]:
+    attrs = set(_safe_public_attrs(collection, limit=10000))
+
+    if "create" in attrs:
+        create_errors: List[str] = []
+        for method_label, func in (
+            ("create(name)", lambda: collection.create(name)),
+            ("create(name=name)", lambda: collection.create(name=name)),
+        ):
+            try:
+                obj = func()
+                if obj is not None:
+                    return obj
+                break
+            except Exception as exc:
+                create_errors.append(f"display state {method_label}: {_format_exception(exc)}")
+    else:
+        create_errors = ["display state create: method not available"]
+
+    if hasattr(collection, "__getitem__"):
+        try:
+            return collection[name]
+        except Exception as exc:
+            errors.append(f"display state getitem {name!r}: {_format_exception(exc)}")
+
+    errors.extend(create_errors)
+    return None
+
+
+def _configure_display_state(graphics: Any, errors: List[str]) -> Dict[str, Optional[bool]]:
+    """Configure and restore a clean display state when Fluent exposes it."""
+    flags: Dict[str, Optional[bool]] = {
+        "floor_hidden": None,
+        "shadow_hidden": None,
+        "reflection_hidden": None,
+        "triad_hidden": None,
+    }
+
+    try:
+        states = graphics.views.display_states
+    except Exception as exc:
+        errors.append(f"display_states access: {_format_exception(exc)}")
+        return flags
+
+    state = _get_or_create_named_object(states, CLEAN_DISPLAY_STATE_NAME, errors)
+    if state is None:
+        errors.append("display state object not available")
+        return flags
+
+    state_attrs = set(_safe_public_attrs(state, limit=10000))
+    requested = {
+        "projection": "orthographic",
+        "axes": "off",
+        "ruler": "off",
+        "title": "off",
+        "boundary_marker": "off",
+        "reflections": "off",
+        "static_shadows": "off",
+        "dynamic_shadows": "off",
+        "grid_plane": "off",
+    }
+    set_ok: Dict[str, bool] = {}
+    for child_name, value in requested.items():
+        if child_name not in state_attrs:
+            continue
+        try:
+            setattr(state, child_name, value)
+            set_ok[child_name] = True
+        except Exception as exc:
+            errors.append(f"display state {child_name}={value!r}: {_format_exception(exc)}")
+
+    restore_ok = bool(_try_scene_call(
+        "display state restore",
+        [
+            (
+                "settings.views.display_states.restore_state(state_name=...)",
+                lambda: states.restore_state(state_name=CLEAN_DISPLAY_STATE_NAME),
+            ),
+            (
+                "settings.views.display_states.restore_state(...)",
+                lambda: states.restore_state(CLEAN_DISPLAY_STATE_NAME),
+            ),
+        ],
+        errors,
+    ))
+
+    if restore_ok:
+        if set_ok.get("grid_plane"):
+            flags["floor_hidden"] = True
+        if set_ok.get("static_shadows") or set_ok.get("dynamic_shadows"):
+            flags["shadow_hidden"] = True
+        if set_ok.get("reflections"):
+            flags["reflection_hidden"] = True
+        if set_ok.get("axes") or set_ok.get("ruler"):
+            flags["triad_hidden"] = True
+
+    return flags
+
+
+def setup_fluent_clean_scene(
+    solver: Any,
+    background: str,
+    view_margin: float,
+) -> Dict[str, Any]:
+    """Best-effort Fluent scene cleanup to match the CP contour presentation style."""
+    diag = _default_scene_cleanup_diag(background, view_margin)
+    diag["scene_cleanup_attempted"] = True
+    errors: List[str] = []
+    successful_steps = 0
+
+    try:
+        graphics = solver.settings.results.graphics
+    except Exception as exc:
+        diag["scene_cleanup_status"] = "FAILED"
+        diag["scene_cleanup_error"] = (
+            f"solver.settings.results.graphics unavailable: {_format_exception(exc)}"
+        )
+        return diag
+
+    try:
+        colors = graphics.colors
+        if background == "white":
+            if _try_assign_child(colors, "background", "white", "graphics.colors.background", errors):
+                diag["background_used"] = "white"
+                successful_steps += 1
+            _try_assign_child(colors, "foreground", "black", "graphics.colors.foreground", errors)
+        elif background == "black":
+            if _try_assign_child(colors, "background", "black", "graphics.colors.background", errors):
+                diag["background_used"] = "black"
+                successful_steps += 1
+            _try_assign_child(colors, "foreground", "white", "graphics.colors.foreground", errors)
+    except Exception as exc:
+        errors.append(f"graphics.colors setup: {_format_exception(exc)}")
+
+    try:
+        pic = graphics.picture
+        _try_assign_child(pic, "use_window_resolution", False, "picture.use_window_resolution", errors)
+        _try_assign_child(pic, "invert_background", False, "picture.invert_background", errors)
+        if _try_assign_child(pic, "raytracer_image", False, "picture.raytracer_image", errors):
+            successful_steps += 1
+    except Exception as exc:
+        errors.append(f"picture cleanup: {_format_exception(exc)}")
+
+    try:
+        windows = graphics.windows
+        try:
+            axes = windows.axes
+            if _try_assign_child(axes, "visible", False, "graphics.windows.axes.visible", errors):
+                diag["triad_hidden"] = True
+                successful_steps += 1
+        except Exception as exc:
+            errors.append(f"graphics.windows.axes cleanup: {_format_exception(exc)}")
+        if _try_assign_child(windows, "logo", False, "graphics.windows.logo", errors):
+            diag["logo_hidden"] = True
+            successful_steps += 1
+        if _try_assign_child(windows, "ruler", False, "graphics.windows.ruler", errors):
+            if diag["triad_hidden"] is None:
+                diag["triad_hidden"] = True
+            successful_steps += 1
+    except Exception as exc:
+        errors.append(f"graphics.windows cleanup: {_format_exception(exc)}")
+
+    state_flags = _configure_display_state(graphics, errors)
+    for key, value in state_flags.items():
+        if value is not None:
+            diag[key] = value
+            successful_steps += 1
+
+    try:
+        ray_bg = graphics.raytracing_options.background
+        if _try_assign_child(ray_bg, "activate_env_ground", False,
+                             "raytracing.background.activate_env_ground", errors):
+            diag["floor_hidden"] = True
+            successful_steps += 1
+        if _try_assign_child(ray_bg, "activate_env_ground_shadow", False,
+                             "raytracing.background.activate_env_ground_shadow", errors):
+            diag["shadow_hidden"] = True
+            successful_steps += 1
+        _try_assign_child(ray_bg, "show_backplate", False,
+                          "raytracing.background.show_backplate", errors)
+    except Exception as exc:
+        errors.append(f"raytracing background cleanup: {_format_exception(exc)}")
+
+    try:
+        views = graphics.views
+        camera = views.camera
+        default_method = _try_scene_call(
+            "front/default view",
+            [
+                ("settings.views.reset_to_default_view()", lambda: views.reset_to_default_view()),
+                ("tui.display.views.default_view()", lambda: solver.tui.display.views.default_view()),
+            ],
+            errors,
+        )
+        if default_method:
+            diag["camera_mode_used"] = "front_default_view"
+            successful_steps += 1
+
+        projection_method = _try_scene_call(
+            "orthographic projection",
+            [
+                (
+                    "settings.views.camera.projection(type='orthographic')",
+                    lambda: camera.projection(type="orthographic"),
+                ),
+                (
+                    "settings.views.camera.projection('orthographic')",
+                    lambda: camera.projection("orthographic"),
+                ),
+                (
+                    "settings.views.camera.projection(type='parallel')",
+                    lambda: camera.projection(type="parallel"),
+                ),
+                (
+                    "tui.display.views.camera.projection('orthographic')",
+                    lambda: solver.tui.display.views.camera.projection("orthographic"),
+                ),
+            ],
+            errors,
+        )
+        if projection_method:
+            diag["projection_mode_used"] = "orthographic"
+            successful_steps += 1
+
+        _try_scene_call(
+            "camera up vector",
+            [
+                (
+                    "settings.views.camera.up_vector(xyz=[0, 1, 0])",
+                    lambda: camera.up_vector(xyz=[0.0, 1.0, 0.0]),
+                ),
+                (
+                    "settings.views.camera.up_vector([0, 1, 0])",
+                    lambda: camera.up_vector([0.0, 1.0, 0.0]),
+                ),
+            ],
+            errors,
+        )
+
+        if _try_scene_call(
+            "view auto-scale",
+            [
+                ("settings.views.auto_scale()", lambda: views.auto_scale()),
+                ("tui.display.views.auto_scale()", lambda: solver.tui.display.views.auto_scale()),
+            ],
+            errors,
+        ):
+            successful_steps += 1
+
+        if view_margin > 1.0:
+            zoom_factor = 1.0 / float(view_margin)
+            if _try_scene_call(
+                "view margin zoom",
+                [
+                    (
+                        "settings.views.camera.zoom(factor=...)",
+                        lambda: camera.zoom(factor=zoom_factor),
+                    ),
+                    (
+                        "settings.views.camera.zoom(...)",
+                        lambda: camera.zoom(zoom_factor),
+                    ),
+                    (
+                        "tui.display.views.camera.zoom_camera(...)",
+                        lambda: solver.tui.display.views.camera.zoom_camera(zoom_factor),
+                    ),
+                ],
+                errors,
+            ):
+                successful_steps += 1
+    except Exception as exc:
+        errors.append(f"camera/view cleanup: {_format_exception(exc)}")
+
+    if successful_steps > 0 and errors:
+        diag["scene_cleanup_status"] = "WARN"
+    elif successful_steps > 0:
+        diag["scene_cleanup_status"] = "SUCCESS"
+    else:
+        diag["scene_cleanup_status"] = "FAILED"
+    diag["scene_cleanup_error"] = " | ".join(errors)
+    return diag
+
+
 def try_native_cff_export(
     solver: Any,
     cff_name: str,
@@ -853,22 +1245,30 @@ def try_native_cff_export(
     output_file: Path,
     image_width: int,
     image_height: int,
-) -> Tuple[bool, str, str, str]:
+    background: str,
+    view_margin: float,
+) -> Tuple[bool, str, str, str, Dict[str, Any]]:
     """Attempt native Fluent contour export using a prepared CFF variable.
 
-    Returns (success, native_status, used_var, error_msg).
+    Returns (success, native_status, used_var, error_msg, scene_cleanup_diag).
     success=True means the output_file was written.
     """
+    scene_diag = _default_scene_cleanup_diag(background, view_margin)
     try:
-        _export_contour_cff(
+        scene_diag = _export_contour_cff(
             solver, cff_name, membrane_zones, shear_range, output_file,
-            image_width, image_height
+            image_width, image_height, background, view_margin
         )
         if output_file.is_file():
-            return True, "SUCCESS", cff_name, ""
-        return False, "FAILED", cff_name, "File not written after native contour export"
+            scene_error = str(scene_diag.get("scene_cleanup_error", ""))
+            return True, "SUCCESS", cff_name, scene_error, scene_diag
+        return (
+            False, "FAILED", cff_name,
+            "File not written after native contour export",
+            scene_diag,
+        )
     except Exception as exc:
-        return False, "FAILED", cff_name, _format_exception(exc)
+        return False, "FAILED", cff_name, _format_exception(exc), scene_diag
 
 
 def _export_contour_cff(
@@ -879,7 +1279,9 @@ def _export_contour_cff(
     output_file: Path,
     image_width: int,
     image_height: int,
-) -> None:
+    background: str,
+    view_margin: float,
+) -> Dict[str, Any]:
     """Create Fluent contour using a shear-rate CFF, display, and save."""
     if output_file.exists():
         output_file.unlink()
@@ -909,6 +1311,16 @@ def _export_contour_cff(
 
     print(f"  Displaying on: {membrane_zones}")
     contour.display()
+    scene_diag = setup_fluent_clean_scene(
+        solver=solver,
+        background=background,
+        view_margin=view_margin,
+    )
+    if scene_diag.get("scene_cleanup_status") == "FAILED":
+        print(f"  WARN: scene cleanup failed: {scene_diag.get('scene_cleanup_error', '')}")
+    elif scene_diag.get("scene_cleanup_status") == "WARN":
+        print(f"  WARN: scene cleanup partially applied: "
+              f"{scene_diag.get('scene_cleanup_error', '')}")
 
     pic = solver.settings.results.graphics.picture
     pic.x_resolution = image_width
@@ -933,6 +1345,7 @@ def _export_contour_cff(
             f"save_picture appeared to succeed but file is missing: {output_file}"
         )
     print(f"  CFF contour image saved: {output_file}")
+    return scene_diag
 
 
 # ---------------------------------------------------------------------------
@@ -1195,6 +1608,18 @@ def build_status_payload(
     tui_journal_style_error: str = "",
     cff_creation_method_used: str = "",
     cff_expression: str = "",
+    scene_cleanup_attempted: bool = False,
+    scene_cleanup_status: str = "SKIPPED",
+    scene_cleanup_error: str = "",
+    camera_mode_used: str = "",
+    projection_mode_used: str = "",
+    floor_hidden: Optional[bool] = None,
+    shadow_hidden: Optional[bool] = None,
+    reflection_hidden: Optional[bool] = None,
+    triad_hidden: Optional[bool] = None,
+    logo_hidden: Optional[bool] = None,
+    background_used: Optional[str] = None,
+    view_margin_used: Optional[float] = None,
 ) -> Dict[str, Any]:
     cff_attempted = (
         cff_file_load_attempted
@@ -1279,6 +1704,18 @@ def build_status_payload(
         "all_scalar_field_names_head": all_scalar_field_names_head or [],
         "background": background,
         "view_margin": view_margin,
+        "scene_cleanup_attempted": scene_cleanup_attempted,
+        "scene_cleanup_status": scene_cleanup_status,
+        "scene_cleanup_error": scene_cleanup_error,
+        "camera_mode_used": camera_mode_used,
+        "projection_mode_used": projection_mode_used,
+        "floor_hidden": floor_hidden,
+        "shadow_hidden": shadow_hidden,
+        "reflection_hidden": reflection_hidden,
+        "triad_hidden": triad_hidden,
+        "logo_hidden": logo_hidden,
+        "background_used": background_used if background_used is not None else background,
+        "view_margin_used": view_margin_used if view_margin_used is not None else view_margin,
         "image_width": image_width,
         "image_height": image_height,
     }
@@ -1355,14 +1792,14 @@ def parse_args() -> argparse.Namespace:
                         help="Image width (px); if given, overrides --image-width.")
     parser.add_argument("--height", type=int, default=None,
                         help="Image height (px); if given, overrides --image-height.")
-    # New visual options (applied in matplotlib fallback; logged for CFF path)
+    # Visual options for native Fluent scene cleanup and matplotlib fallback
     parser.add_argument(
         "--background", type=str, default="white", choices=["white", "black"],
-        help="Background colour (default: white). Applied in matplotlib fallback.",
+        help="Background colour (default: white). Applied to native scene and fallback.",
     )
     parser.add_argument(
         "--view-margin", type=float, default=1.20, metavar="FACTOR",
-        help="View zoom margin factor (default: 1.20). Logged; applied if possible.",
+        help="View zoom margin factor (default: 1.20). Applied when supported.",
     )
     return parser.parse_args()
 
@@ -1580,6 +2017,7 @@ def main() -> int:
     inferred_cff_candidates: List[str] = []
     cff_candidate_source = "none"
     all_scalar_names_head:  List[str] = []
+    scene_cleanup_diag = _default_scene_cleanup_diag(args.background, args.view_margin)
 
     try:
         # --- Launch ---
@@ -1707,7 +2145,7 @@ def main() -> int:
             # A. Try native Fluent CFF contour export first.
             if native_ready:
                 print(f"\n  [A] Attempting native Fluent CFF contour export ...")
-                native_ok, nat_st, nat_var, nat_err = try_native_cff_export(
+                native_ok, nat_st, nat_var, nat_err, scene_diag = try_native_cff_export(
                     solver=solver,
                     cff_name=args.cff_name,
                     membrane_zones=membrane_zones,
@@ -1715,6 +2153,12 @@ def main() -> int:
                     output_file=output_file,
                     image_width=eff_width,
                     image_height=eff_height,
+                    background=args.background,
+                    view_margin=args.view_margin,
+                )
+                scene_cleanup_diag = _merge_scene_cleanup_diag(
+                    scene_cleanup_diag,
+                    scene_diag,
                 )
                 native_side_results.append((native_ok, side, nat_err))
 
@@ -1897,6 +2341,18 @@ def main() -> int:
         all_scalar_field_names_head=all_scalar_names_head,
         background=args.background,
         view_margin=args.view_margin,
+        scene_cleanup_attempted=bool(scene_cleanup_diag.get("scene_cleanup_attempted", False)),
+        scene_cleanup_status=str(scene_cleanup_diag.get("scene_cleanup_status", "SKIPPED")),
+        scene_cleanup_error=str(scene_cleanup_diag.get("scene_cleanup_error", "")),
+        camera_mode_used=str(scene_cleanup_diag.get("camera_mode_used", "")),
+        projection_mode_used=str(scene_cleanup_diag.get("projection_mode_used", "")),
+        floor_hidden=scene_cleanup_diag.get("floor_hidden"),
+        shadow_hidden=scene_cleanup_diag.get("shadow_hidden"),
+        reflection_hidden=scene_cleanup_diag.get("reflection_hidden"),
+        triad_hidden=scene_cleanup_diag.get("triad_hidden"),
+        logo_hidden=scene_cleanup_diag.get("logo_hidden"),
+        background_used=scene_cleanup_diag.get("background_used"),
+        view_margin_used=scene_cleanup_diag.get("view_margin_used"),
         image_width=eff_width,
         image_height=eff_height,
     )
