@@ -149,6 +149,13 @@ UDF_C_INLET_REF = 597.8268309  # Inlet NaCl concentration [mol/m³]
 # Fallback CP denominator when center-plane average is unavailable.
 INLET_SALT_MASS_FRAC_REF: float = UDF_C_INLET_REF * UDF_MW_SALT / UDF_RHO_REF
 
+# Channel geometry constants for center-plane z fallback.
+# Membrane-normal direction is z; channel height = 0.77 mm.
+CHANNEL_HEIGHT_M: float = 0.00077
+# Candidate z values tried when bounding-box extraction fails.
+# 0.0 = geometry centred about z=0; 0.000385 = geometry running 0→0.00077 m.
+CENTER_PLANE_Z_CANDIDATES: List[float] = [0.0, CHANNEL_HEIGHT_M / 2.0]
+
 # ---------------------------------------------------------------------------
 # Salt variable name candidates for primitive matching (tried in order)
 # ---------------------------------------------------------------------------
@@ -212,6 +219,7 @@ class ExportRecord:
     bulk_reference_units_or_type: str = ""
     center_plane_name: str = ""
     formula_summary: str = ""
+    center_plane_diagnostics: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1180,68 +1188,34 @@ def get_part_bounding_box(parts: List[Any]) -> Optional[Tuple[float, float, floa
     return None
 
 
-def create_center_bulk_plane(
+def _try_create_clip_at_z(
     session: Any,
-    fluid_parts: List[Any],
-) -> Tuple[Optional[Any], Optional[str], str]:
-    """Create a z-mid clip plane through the fluid volume.
-    Returns (plane_part, plane_name, diag_str)."""
+    z_val: float,
+    source_parts: List[Any],
+    plane_name: str,
+    parts_before: set,
+) -> Tuple[Optional[Any], str, str]:
+    """Create a z-normal clip plane at z=z_val using command language.
+    Returns (plane_part_or_None, method_used, diag)."""
     diag: List[str] = []
-    plane_name = "pp_center_bulk_plane"
 
-    # Reuse if already created
     try:
-        existing_parts = list(session.ensight.objs.core.PARTS)
-        for p in existing_parts:
-            if getattr(p, "DESCRIPTION", "") == plane_name:
-                diag.append("reused_existing_plane")
-                return p, plane_name, "; ".join(diag)
-    except Exception:
-        pass
-
-    # Determine z_mid from fluid volume bounding box
-    source_parts = fluid_parts if fluid_parts else []
-    if not source_parts:
-        try:
-            source_parts = list(session.ensight.objs.core.PARTS)
-        except Exception:
-            pass
-
-    bbox = get_part_bounding_box(source_parts)
-    if bbox is None:
-        return None, None, "bounding_box_failed"
-
-    _, _, _, _, z0, z1 = bbox
-    z_mid = 0.5 * (z0 + z1)
-    diag.append(f"z_mid={z_mid:.6g} from bbox z=[{z0:.4g},{z1:.4g}]")
-
-    # Get part IDs to clip from
-    clip_source = fluid_parts if fluid_parts else source_parts
-    try:
-        part_nums = [p.PARTNUMBER for p in clip_source if hasattr(p, "PARTNUMBER")]
-    except Exception:
-        part_nums = []
+        part_nums = [p.PARTNUMBER for p in source_parts if hasattr(p, "PARTNUMBER")]
+    except Exception as e:
+        return None, "", f"part_nums_err:{e}"
     if not part_nums:
-        return None, None, "no_part_numbers_for_clip"
+        return None, "", "no_part_numbers"
 
-    # Snapshot part set before clip creation
-    try:
-        parts_before = {p.PARTNUMBER for p in session.ensight.objs.core.PARTS if hasattr(p, "PARTNUMBER")}
-    except Exception:
-        parts_before = set()
-
-    # Strategy 1: clip via command language
     try:
         session.ensight.part.select_begin(*part_nums)
         session.ensight.clip.begin()
         session.ensight.clip.axis("z")
-        session.ensight.clip.value(z_mid)
+        session.ensight.clip.value(z_val)
         session.ensight.clip.end()
-        diag.append("S1(clip_cmd=ok)")
+        diag.append(f"clip_cmd=ok,z={z_val:.6g}")
     except Exception as e:
-        diag.append(f"S1(clip_cmd=err:{e})")
+        diag.append(f"clip_cmd=err:{e}")
 
-    # Find newly created part
     try:
         all_parts_after = list(session.ensight.objs.core.PARTS)
         new_parts = [
@@ -1254,13 +1228,13 @@ def create_center_bulk_plane(
                 plane_part.DESCRIPTION = plane_name
             except Exception:
                 pass
-            diag.append(f"clip_part='{getattr(plane_part, 'DESCRIPTION', '?')}'")
-            return plane_part, plane_name, "; ".join(diag)
+            diag.append(f"new_part='{getattr(plane_part, 'DESCRIPTION', '?')}'")
+            return plane_part, "clip_cmd", "; ".join(diag)
         diag.append("no_new_parts_after_clip")
     except Exception as e:
-        diag.append(f"new_part_detection_err:{e}")
+        diag.append(f"new_part_detect_err:{e}")
 
-    return None, None, "; ".join(diag)
+    return None, "", "; ".join(diag)
 
 
 def compute_area_weighted_average_on_part(
@@ -1309,16 +1283,166 @@ def compute_bulk_center_average(
     session: Any,
     salt_var_desc: str,
     fluid_parts: List[Any],
-) -> Tuple[Optional[float], Optional[str], str]:
-    """Create center-plane and compute area-weighted average of salt_var_desc.
-    Returns (value, center_plane_name, diag_str)."""
-    plane_part, plane_name, plane_diag = create_center_bulk_plane(session, fluid_parts)
-    if plane_part is None:
-        return None, None, f"center_plane_failed: {plane_diag}"
-    avg_val, avg_diag = compute_area_weighted_average_on_part(session, salt_var_desc, plane_part)
-    if avg_val is None:
-        return None, plane_name, f"area_average_failed: {avg_diag}"
-    return avg_val, plane_name, f"ok: {plane_diag}; {avg_diag}"
+) -> Tuple[Optional[float], Optional[str], str, dict]:
+    """Create a center bulk plane and compute area-weighted average of salt_var_desc.
+
+    Tries multiple z candidates in order:
+      1. z_mid from fluid-part bounding box
+      2. z = 0.0  (geometry centred about z=0)
+      3. z = CHANNEL_HEIGHT_M / 2  (geometry running 0 → CHANNEL_HEIGHT_M)
+
+    For each candidate the plausibility of the area-average is verified before
+    accepting, so implausible values from an off-location plane are skipped.
+
+    Returns (avg_value, plane_name, summary_diag, full_diag_dict).
+    full_diag_dict keys: strategy_attempts, candidate_z_values_tried,
+    z_mid_from_bbox, center_plane_name, center_plane_creation_method,
+    area_average_method, raw_area_average_value, plausibility_check,
+    final_result.
+    """
+    plane_name = "pp_center_bulk_plane"
+    full_diag: dict = {
+        "strategy_attempts": [],
+        "candidate_z_values_tried": [],
+        "z_mid_from_bbox": None,
+        "center_plane_name": None,
+        "center_plane_creation_method": None,
+        "area_average_method": None,
+        "raw_area_average_value": None,
+        "plausibility_check": None,
+        "final_result": "failed",
+    }
+
+    # Reuse an already-created plane (avoids duplicate clip parts across fields)
+    try:
+        for p in list(session.ensight.objs.core.PARTS):
+            if getattr(p, "DESCRIPTION", "") == plane_name:
+                avg_val, avg_diag = compute_area_weighted_average_on_part(
+                    session, salt_var_desc, p
+                )
+                if avg_val is not None:
+                    full_diag.update({
+                        "center_plane_name": plane_name,
+                        "center_plane_creation_method": "reused_existing",
+                        "area_average_method": avg_diag,
+                        "raw_area_average_value": avg_val,
+                        "final_result": "success_reuse",
+                    })
+                    full_diag["strategy_attempts"].append(
+                        f"reused_existing: avg={avg_val:.6g}"
+                    )
+                    return avg_val, plane_name, f"reused_existing: avg={avg_val:.6g}", full_diag
+    except Exception:
+        pass
+
+    # Build source part list for clip
+    source_parts = fluid_parts if fluid_parts else []
+    if not source_parts:
+        try:
+            source_parts = list(session.ensight.objs.core.PARTS)
+        except Exception:
+            pass
+
+    # Build z-candidate list: bbox first, then known geometry fallbacks
+    z_candidates: List[float] = []
+
+    bbox = get_part_bounding_box(source_parts)
+    if bbox is not None:
+        _, _, _, _, z0, z1 = bbox
+        z_mid = 0.5 * (z0 + z1)
+        full_diag["z_mid_from_bbox"] = z_mid
+        z_candidates.append(z_mid)
+        full_diag["strategy_attempts"].append(
+            f"bbox: z_mid={z_mid:.6g} from z=[{z0:.4g},{z1:.4g}]"
+        )
+    else:
+        full_diag["strategy_attempts"].append("bbox: failed_to_get_bounding_box")
+
+    for z_cand in CENTER_PLANE_Z_CANDIDATES:
+        if not any(abs(z_cand - z) < 1e-9 for z in z_candidates):
+            z_candidates.append(z_cand)
+
+    full_diag["candidate_z_values_tried"] = list(z_candidates)
+
+    is_conc = any(
+        kw in _normalize(salt_var_desc)
+        for kw in ["mol", "conc", "concentration"]
+    )
+
+    # Snapshot current part numbers before any clip
+    try:
+        parts_before = {
+            p.PARTNUMBER
+            for p in session.ensight.objs.core.PARTS
+            if hasattr(p, "PARTNUMBER")
+        }
+    except Exception:
+        parts_before = set()
+
+    for z_cand in z_candidates:
+        attempt_key = f"z={z_cand:.6g}"
+
+        plane_part, method, clip_diag = _try_create_clip_at_z(
+            session, z_cand, source_parts, plane_name, parts_before
+        )
+
+        if plane_part is None:
+            full_diag["strategy_attempts"].append(
+                f"{attempt_key}: clip_failed({clip_diag})"
+            )
+            continue
+
+        # Update snapshot so next candidate detects only newly added parts
+        try:
+            parts_before = {
+                p.PARTNUMBER
+                for p in session.ensight.objs.core.PARTS
+                if hasattr(p, "PARTNUMBER")
+            }
+        except Exception:
+            pass
+
+        avg_val, avg_diag = compute_area_weighted_average_on_part(
+            session, salt_var_desc, plane_part
+        )
+
+        if avg_val is None:
+            full_diag["strategy_attempts"].append(
+                f"{attempt_key}: avg_failed({avg_diag})"
+            )
+            continue
+
+        if is_conc:
+            plausible = 50.0 <= avg_val <= 3000.0
+            range_str = "[50,3000] mol/m³"
+        else:
+            plausible = 1e-4 <= avg_val <= 0.20
+            range_str = "[1e-4,0.20] mass-frac"
+
+        if not plausible:
+            full_diag["strategy_attempts"].append(
+                f"{attempt_key}: implausible(val={avg_val:.6g}, range={range_str})"
+            )
+            continue
+
+        # Success
+        full_diag.update({
+            "center_plane_name": plane_name,
+            "center_plane_creation_method": method,
+            "area_average_method": avg_diag,
+            "raw_area_average_value": avg_val,
+            "plausibility_check": f"ok (val={avg_val:.6g}, range={range_str})",
+            "final_result": "success",
+        })
+        full_diag["strategy_attempts"].append(
+            f"{attempt_key}: success(method={method}, avg={avg_val:.6g})"
+        )
+        summary = f"ok: z={z_cand:.6g}, method={method}, avg={avg_val:.6g}"
+        return avg_val, plane_name, summary, full_diag
+
+    full_diag["final_result"] = "all_candidates_failed"
+    summary = "all_candidates_failed: " + " | ".join(full_diag["strategy_attempts"])
+    return None, None, summary, full_diag
 
 
 def create_cp_wall_direct(
@@ -1515,6 +1639,7 @@ def export_contour(
 
     _safe_mkdir(output_file.parent)
     warnings: List[str] = []
+    info_msgs: List[str] = []
     selected_var_str      = ""
     selected_surfaces_str = ""
     applied_mode  = color_range_mode
@@ -1528,6 +1653,7 @@ def export_contour(
     bulk_reference_units_str: str = ""
     center_plane_name_str: str = ""
     formula_summary_str: str = ""
+    center_plane_diagnostics_dict: Optional[dict] = None
 
     def _record(status: str, surface_desc: str, message: str) -> None:
         records.append(ExportRecord(
@@ -1554,6 +1680,7 @@ def export_contour(
             bulk_reference_units_or_type=bulk_reference_units_str,
             center_plane_name=center_plane_name_str,
             formula_summary=formula_summary_str,
+            center_plane_diagnostics=center_plane_diagnostics_dict,
         ))
 
     # 1. Locate surfaces
@@ -1600,30 +1727,14 @@ def export_contour(
             if salt_obj is not None:
                 primitive_variables_used_str = salt_desc
 
-                # Primary: center-plane area-weighted bulk average
+                # Primary: center-plane area-weighted bulk average.
+                # Plausibility filtering and multi-z fallback are handled inside
+                # compute_bulk_center_average; no redundant guard needed here.
                 fluid_vol_parts = find_fluid_volume_parts(session)
-                bulk_avg, cp_plane, plane_diag = compute_bulk_center_average(
+                bulk_avg, cp_plane, plane_diag, cp_full_diag = compute_bulk_center_average(
                     session, salt_desc, fluid_vol_parts
                 )
-
-                if bulk_avg is not None and bulk_avg > 0:
-                    # Plausibility guard: reject garbage AMEAN results
-                    _is_conc_var = any(
-                        kw in _normalize(salt_desc)
-                        for kw in ["mol", "conc", "concentration"]
-                    )
-                    if _is_conc_var:
-                        _plausible = 50.0 <= bulk_avg <= 3000.0
-                    else:
-                        _plausible = 1e-4 <= bulk_avg <= 0.20
-                    if not _plausible:
-                        warnings.append(
-                            f"WARN: bulk_avg={bulk_avg:.6g} outside plausible range "
-                            f"for {'molar' if _is_conc_var else 'mass-frac'} salt "
-                            f"variable; treating as area_average_failed"
-                        )
-                        derived_variable_mode = "area_average_failed"
-                        bulk_avg = None
+                center_plane_diagnostics_dict = cp_full_diag
 
                 if bulk_avg is not None and bulk_avg > 0:
                     center_plane_name_str = cp_plane or ""
@@ -1641,7 +1752,7 @@ def export_contour(
                             f"CP_WALL_DIRECT={salt_desc}/{bulk_avg:.6g} "
                             f"(center-plane area-wtd avg)"
                         )
-                        warnings.append(
+                        info_msgs.append(
                             f"CP_WALL_DIRECT created: {cp_diag}; "
                             f"bulk_avg={bulk_avg:.6g} from {cp_plane}"
                         )
@@ -1650,7 +1761,12 @@ def export_contour(
                         derived_variable_mode = "calculator_failed"
                         bulk_avg = None  # trigger inlet-ref fallback below
                 else:
-                    derived_variable_mode = "center_plane_failed" if "center_plane" in plane_diag else "area_average_failed"
+                    fr = cp_full_diag.get("final_result", "")
+                    derived_variable_mode = (
+                        "center_plane_failed"
+                        if "all_candidates_failed" in fr or "clip_failed" in fr
+                        else "area_average_failed"
+                    )
                     warnings.append(f"WARN: bulk center avg failed ({plane_diag})")
 
                 # Fallback 1: inlet reference
@@ -1716,7 +1832,7 @@ def export_contour(
                         var_obj = lmh_var
                         matched_var_desc = lmh_desc
                         derived_variable_mode = "direct_lmh"
-                        warnings.append(
+                        info_msgs.append(
                             f"LMH_WALL_DIRECT created: {lmh_diag}; "
                             f"pressure={pres_diag}"
                         )
@@ -1842,7 +1958,7 @@ def export_contour(
 
     label_warn = apply_palette_label(session, display_var_desc, field_name, found_palette)
     if label_warn:
-        warnings.append(label_warn)
+        info_msgs.append(label_warn)
 
     # 8. Fit view to visible geometry, then apply view margin
     try:
@@ -1877,8 +1993,13 @@ def export_contour(
 
     if output_file.is_file():
         final_status = STATUS_WARN if warnings else STATUS_SUCCESS
-        msg = "; ".join(warnings) if warnings else f"Exported {output_file.name}"
-        _record(final_status, surface_desc, msg)
+        if warnings:
+            msg_parts = list(warnings)
+        else:
+            msg_parts = [f"Exported {output_file.name}"]
+        if info_msgs:
+            msg_parts += [f"[INFO] {m}" for m in info_msgs]
+        _record(final_status, surface_desc, "; ".join(msg_parts))
     else:
         _record(
             STATUS_FAILED, surface_desc,
