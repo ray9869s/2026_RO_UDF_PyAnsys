@@ -852,6 +852,7 @@ def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str
         "scene_cleanup_status": "SKIPPED",
         "scene_cleanup_error": "",
         "requested_view_preset": "",
+        "effective_view_preset": "",
         "camera_mode_used": "",
         "camera_method_used": "",
         "camera_method_attempts": [],
@@ -867,6 +868,25 @@ def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str
         "logo_hidden": None,
         "background_used": background,
         "view_margin_used": view_margin,
+        # PyEnSight reference (03_pyensight_contour_export.py::export_contour)
+        "pyensight_reference_view_function": (
+            "03_pyensight_contour_export.py:export_contour():"
+            "view_transf.fit(0)+view_transf.zoom(1/margin)"
+        ),
+        "pyensight_reference_view_summary": (
+            "PyEnSight approach: hide non-target parts; apply COLORBYPALETTE; "
+            "session.ensight.view_transf.fit(0) to fit visible geometry; "
+            "session.ensight.view_transf.zoom(1/margin); "
+            "no named view preset; no explicit camera direction set"
+        ),
+        "match_pyensight_attempted": False,
+        "match_pyensight_status": "SKIPPED",
+        "match_pyensight_error": "",
+        "fluent_view_name": "",
+        "view_direction_requested": "",
+        "view_up_vector_requested": "",
+        "view_debug_sweep_attempted": False,
+        "view_debug_sweep_outputs": [],
     }
 
 
@@ -899,9 +919,15 @@ def _merge_scene_cleanup_diag(
         "camera_mode_used",
         "projection_mode_used",
         "requested_view_preset",
+        "effective_view_preset",
         "camera_method_used",
         "view_direction_used",
         "view_up_vector_used",
+        "match_pyensight_status",
+        "match_pyensight_error",
+        "fluent_view_name",
+        "view_direction_requested",
+        "view_up_vector_requested",
     ):
         values = _unique_preserve_order([
             str(current.get(key, "")),
@@ -914,9 +940,25 @@ def _merge_scene_cleanup_diag(
         new_list = [x for x in new.get(key, []) if x not in set(cur_list)]
         merged[key] = cur_list + new_list
 
+    # view_debug_sweep_outputs: accumulate across both (each entry is a separate sweep run)
+    merged["view_debug_sweep_outputs"] = (
+        list(current.get("view_debug_sweep_outputs", []))
+        + list(new.get("view_debug_sweep_outputs", []))
+    )
+
     merged["view_fit_applied"] = bool(current.get("view_fit_applied")) or bool(
         new.get("view_fit_applied")
     )
+    merged["match_pyensight_attempted"] = bool(
+        current.get("match_pyensight_attempted")
+    ) or bool(new.get("match_pyensight_attempted"))
+    merged["view_debug_sweep_attempted"] = bool(
+        current.get("view_debug_sweep_attempted")
+    ) or bool(new.get("view_debug_sweep_attempted"))
+
+    # fixed reference strings: always use the non-empty value (same in all calls)
+    for key in ("pyensight_reference_view_function", "pyensight_reference_view_summary"):
+        merged[key] = new.get(key) or current.get(key, "")
 
     for key in (
         "floor_hidden",
@@ -1192,12 +1234,71 @@ def _attempt_camera_direction(
     return "", ""
 
 
+def _parse_vector_arg(s: str) -> Optional[List[float]]:
+    """Parse 'X,Y,Z' string to [x, y, z] floats. Returns None on parse error."""
+    try:
+        parts = [p.strip() for p in str(s).split(",")]
+        if len(parts) != 3:
+            return None
+        return [float(p) for p in parts]
+    except (ValueError, AttributeError):
+        return None
+
+
+def _attempt_camera_direction_vectors(
+    camera: Any,
+    pos: List[float],
+    tgt: List[float],
+    up: List[float],
+    label: str,
+    errors: List[str],
+) -> Tuple[str, str]:
+    """Try to set camera position/target/up via explicit world-coordinate vectors.
+
+    Returns (method_label, dir_str) on first success, ("", "") if all fail.
+    Errors appended to errors on failure.
+    """
+    _pos, _tgt, _up = list(pos), list(tgt), list(up)
+    dir_str = f"pos={_pos},tgt={_tgt},up={_up}"
+    variants: List[Tuple[str, Any]] = [
+        (
+            f"{label}:camera.position+target+up_vector(xyz=...)",
+            lambda: (
+                camera.position(xyz=_pos),
+                camera.target(xyz=_tgt),
+                camera.up_vector(xyz=_up),
+            ),
+        ),
+        (
+            f"{label}:camera.position+target+up_vector([...])",
+            lambda: (
+                camera.position(_pos),
+                camera.target(_tgt),
+                camera.up_vector(_up),
+            ),
+        ),
+        (
+            f"{label}:camera.look_at(position=...,target=...,up=...)",
+            lambda: camera.look_at(position=_pos, target=_tgt, up=_up),
+        ),
+    ]
+    for vlabel, func in variants:
+        ok, err = _try_call(vlabel, func)
+        if ok:
+            return vlabel, dir_str
+        errors.append(f"{vlabel}: {err}")
+    return "", ""
+
+
 def setup_fluent_clean_scene(
     solver: Any,
     background: str,
     view_margin: float,
-    view_preset: str = "auto",
+    view_preset: str = "match_pyensight",
     membrane_side: str = "top",
+    fluent_view_name: Optional[str] = None,
+    view_direction: Optional[List[float]] = None,
+    view_up: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """Best-effort Fluent scene cleanup to match the CP contour presentation style."""
     diag = _default_scene_cleanup_diag(background, view_margin)
@@ -1285,55 +1386,154 @@ def setup_fluent_clean_scene(
         camera_errors: List[str] = []
 
         # Resolve effective view name from preset + membrane side
-        if view_preset == "auto":
+        if view_preset == "match_pyensight":
+            effective_view = "match_pyensight"
+        elif view_preset == "auto":
             effective_view = "bottom" if membrane_side == "bottom" else "top"
         elif view_preset in ("top", "bottom", "front", "iso"):
             effective_view = view_preset
         else:
-            effective_view = "top"
+            effective_view = "match_pyensight"
         diag["requested_view_preset"] = view_preset
+        diag["effective_view_preset"] = effective_view
         all_cam_attempts: List[str] = []
 
-        # Rung 1 + 2: named view via settings/TUI APIs
-        view_method, view_attempts = _attempt_named_view(solver, views, effective_view, camera_errors)
-        all_cam_attempts.extend(view_attempts)
-
-        if view_method:
-            diag["camera_mode_used"] = f"{effective_view}_view"
-            diag["camera_method_used"] = view_method
-            diag["view_direction_used"] = f"preset:{effective_view}"
-            successful_steps += 1
-        else:
-            # Rung 3: explicit camera position/target along ±z axis
-            dir_method, dir_str = _attempt_camera_direction(camera, effective_view, camera_errors)
-            if dir_method:
-                all_cam_attempts.append(dir_method)
-                diag["camera_mode_used"] = f"{effective_view}_view_camera_dir"
-                diag["camera_method_used"] = dir_method
-                diag["view_direction_used"] = dir_str
+        # --- CLI override: --fluent-view-name (highest precedence) ---
+        if fluent_view_name:
+            diag["fluent_view_name"] = fluent_view_name
+            fn_method, fn_attempts = _attempt_named_view(
+                solver, views, fluent_view_name, camera_errors
+            )
+            all_cam_attempts.extend(fn_attempts)
+            if fn_method:
+                diag["camera_mode_used"] = f"fluent_view_name:{fluent_view_name}"
+                diag["camera_method_used"] = fn_method
+                diag["view_direction_used"] = f"named:{fluent_view_name}"
                 successful_steps += 1
-            elif effective_view != "front":
-                # Fallback to front/default view — triggers WARN
-                fallback_method, fallback_attempts = _attempt_named_view(
-                    solver, views, "front", camera_errors
+            else:
+                camera_errors.append(
+                    f"--fluent-view-name={fluent_view_name!r}: named view not found; "
+                    "continuing with preset handling"
                 )
-                all_cam_attempts.extend(fallback_attempts)
-                if fallback_method:
-                    diag["camera_mode_used"] = "fallback_front_default_view"
-                    diag["camera_method_used"] = fallback_method
-                    diag["view_direction_used"] = "preset:front"
+
+        # --- CLI override: --view-direction / --view-up ---
+        if view_direction is not None:
+            vd_str = ",".join(f"{v:.4g}" for v in view_direction)
+            diag["view_direction_requested"] = vd_str
+            vu = view_up if view_up is not None else [0.0, 1.0, 0.0]
+            vu_str = ",".join(f"{v:.4g}" for v in vu)
+            diag["view_up_vector_requested"] = vu_str
+            # position vector used directly as camera position (unit direction from origin)
+            vec_method, vec_dir_str = _attempt_camera_direction_vectors(
+                camera, list(view_direction), [0.0, 0.0, 0.0], vu,
+                "cli_view_direction", camera_errors
+            )
+            if vec_method:
+                all_cam_attempts.append(vec_method)
+                if not diag.get("camera_mode_used"):
+                    diag["camera_mode_used"] = "cli_view_direction"
+                    diag["camera_method_used"] = vec_method
+                    diag["view_direction_used"] = vd_str
+                    diag["view_up_vector_used"] = vu_str
+                    successful_steps += 1
+            else:
+                camera_errors.append(
+                    f"--view-direction={vd_str}: Fluent camera API rejected explicit vectors"
+                )
+
+        # --- Main preset handling (skipped if CLI overrides already set a mode) ---
+        if effective_view == "match_pyensight":
+            diag["match_pyensight_attempted"] = True
+            diag["pyensight_reference_view_function"] = (
+                "03_pyensight_contour_export.py:export_contour():"
+                "view_transf.fit(0)+view_transf.zoom(1/margin)"
+            )
+            diag["pyensight_reference_view_summary"] = (
+                "PyEnSight approach: hide non-target parts; apply COLORBYPALETTE; "
+                "session.ensight.view_transf.fit(0) to fit visible geometry; "
+                "session.ensight.view_transf.zoom(1/margin); "
+                "no named view preset; no explicit camera direction set"
+            )
+            # Strategy: skip any named view or explicit camera vectors.
+            # auto_scale (called below) is called with whatever camera direction
+            # Fluent holds after contour.display() — the closest equivalent to
+            # PyEnSight's view_transf.fit(0).
+            # Named top/bottom views and explicit z-normal vectors both previously
+            # produced blank images on the server; they are excluded from this path.
+            all_cam_attempts.append("match_pyensight:auto_fit_only:no_named_view")
+            diag["camera_mode_used"] = "match_pyensight_auto_fit"
+            diag["camera_method_used"] = "auto_fit_only"
+            diag["match_pyensight_status"] = (
+                "applied_auto_fit_only; skip named view; auto_scale determines view; "
+                "native Fluent camera may not exactly match PyEnSight; "
+                "run --view-debug-sweep on server to compare candidates"
+            )
+            successful_steps += 1
+
+        elif effective_view in ("top", "bottom"):
+            # EXPERIMENTAL: previously produced blank images on server.
+            # Kept for completeness; match_pyensight is recommended.
+            view_method, view_attempts = _attempt_named_view(
+                solver, views, effective_view, camera_errors
+            )
+            all_cam_attempts.extend(view_attempts)
+
+            if view_method:
+                diag["camera_mode_used"] = f"{effective_view}_view_experimental"
+                diag["camera_method_used"] = view_method
+                diag["view_direction_used"] = f"preset:{effective_view}(experimental-may-blank)"
+                successful_steps += 1
+                errors.append(
+                    f"EXPERIMENTAL: preset={effective_view!r} previously produced blank "
+                    "images on server. Prefer --view-preset match_pyensight."
+                )
+            else:
+                dir_method, dir_str = _attempt_camera_direction(
+                    camera, effective_view, camera_errors
+                )
+                if dir_method:
+                    all_cam_attempts.append(dir_method)
+                    diag["camera_mode_used"] = f"{effective_view}_view_camera_dir_experimental"
+                    diag["camera_method_used"] = dir_method
+                    diag["view_direction_used"] = dir_str
                     successful_steps += 1
                     errors.append(
-                        f"membrane-normal view ({effective_view!r}) unavailable; "
-                        "fell back to front/default_view"
+                        f"EXPERIMENTAL: z-camera for {effective_view!r} applied but "
+                        "may produce blank image on server."
                     )
                 else:
-                    errors.extend(camera_errors)
-                    camera_errors = []
-                    errors.append(f"all view attempts failed (preset={view_preset!r})")
+                    fallback_method, fallback_attempts = _attempt_named_view(
+                        solver, views, "front", camera_errors
+                    )
+                    all_cam_attempts.extend(fallback_attempts)
+                    if fallback_method:
+                        diag["camera_mode_used"] = "fallback_front_default_view"
+                        diag["camera_method_used"] = fallback_method
+                        diag["view_direction_used"] = "preset:front"
+                        successful_steps += 1
+                        errors.append(
+                            f"membrane-normal view ({effective_view!r}) unavailable; "
+                            "fell back to front/default_view"
+                        )
+                    else:
+                        errors.extend(camera_errors)
+                        camera_errors = []
+                        errors.append(f"all view attempts failed (preset={view_preset!r})")
+
+        elif effective_view in ("front", "iso"):
+            view_method, view_attempts = _attempt_named_view(
+                solver, views, effective_view, camera_errors
+            )
+            all_cam_attempts.extend(view_attempts)
+            if view_method:
+                diag["camera_mode_used"] = f"{effective_view}_view"
+                diag["camera_method_used"] = view_method
+                diag["view_direction_used"] = f"preset:{effective_view}"
+                successful_steps += 1
             else:
                 errors.extend(camera_errors)
                 camera_errors = []
+                errors.append(f"all view attempts failed (preset={view_preset!r})")
 
         diag["camera_method_attempts"] = all_cam_attempts
         diag["camera_errors"] = camera_errors
@@ -1437,8 +1637,12 @@ def try_native_cff_export(
     image_height: int,
     background: str,
     view_margin: float,
-    view_preset: str = "auto",
+    view_preset: str = "match_pyensight",
     membrane_side: str = "top",
+    fluent_view_name: Optional[str] = None,
+    view_direction: Optional[List[float]] = None,
+    view_up: Optional[List[float]] = None,
+    view_debug_sweep: bool = False,
 ) -> Tuple[bool, str, str, str, Dict[str, Any]]:
     """Attempt native Fluent contour export using a prepared CFF variable.
 
@@ -1451,6 +1655,9 @@ def try_native_cff_export(
             solver, cff_name, membrane_zones, shear_range, output_file,
             image_width, image_height, background, view_margin,
             view_preset=view_preset, membrane_side=membrane_side,
+            fluent_view_name=fluent_view_name,
+            view_direction=view_direction, view_up=view_up,
+            view_debug_sweep=view_debug_sweep,
         )
         if output_file.is_file():
             scene_error = str(scene_diag.get("scene_cleanup_error", ""))
@@ -1474,8 +1681,12 @@ def _export_contour_cff(
     image_height: int,
     background: str,
     view_margin: float,
-    view_preset: str = "auto",
+    view_preset: str = "match_pyensight",
     membrane_side: str = "top",
+    fluent_view_name: Optional[str] = None,
+    view_direction: Optional[List[float]] = None,
+    view_up: Optional[List[float]] = None,
+    view_debug_sweep: bool = False,
 ) -> Dict[str, Any]:
     """Create Fluent contour using a shear-rate CFF, display, and save."""
     if output_file.exists():
@@ -1512,6 +1723,9 @@ def _export_contour_cff(
         view_margin=view_margin,
         view_preset=view_preset,
         membrane_side=membrane_side,
+        fluent_view_name=fluent_view_name,
+        view_direction=view_direction,
+        view_up=view_up,
     )
     if scene_diag.get("scene_cleanup_status") == "FAILED":
         print(f"  WARN: scene cleanup failed: {scene_diag.get('scene_cleanup_error', '')}")
@@ -1542,7 +1756,157 @@ def _export_contour_cff(
             f"save_picture appeared to succeed but file is missing: {output_file}"
         )
     print(f"  CFF contour image saved: {output_file}")
+
+    # --- Optional view-debug sweep ---
+    # IMPORTANT: candidates are stateful (camera state persists between saves).
+    # Candidate 01 (auto_fit_only) MUST remain first to capture the pristine
+    # post-display camera orientation from contour.display() + auto_scale above.
+    # Do not reorder these candidates or the baseline will be corrupted.
+    if view_debug_sweep:
+        scene_diag["view_debug_sweep_attempted"] = True
+        print("  View debug sweep: exporting candidate views...")
+        sweep_candidates = _run_view_debug_sweep(
+            solver=solver,
+            output_file=output_file,
+            image_width=image_width,
+            image_height=image_height,
+            background=background,
+            view_margin=view_margin,
+            membrane_side=membrane_side,
+        )
+        scene_diag["view_debug_sweep_outputs"] = sweep_candidates
+        n_ok = sum(1 for c in sweep_candidates if c.get("file_exists"))
+        print(f"  View debug sweep: {n_ok}/{len(sweep_candidates)} candidate files written")
+
     return scene_diag
+
+
+def _run_view_debug_sweep(
+    solver: Any,
+    output_file: Path,
+    image_width: int,
+    image_height: int,
+    background: str,
+    view_margin: float,
+    membrane_side: str,
+) -> List[Dict[str, Any]]:
+    """Export multiple candidate view images for visual selection on the server.
+
+    IMPORTANT: Candidates are stateful — the camera state from one candidate
+    persists to the next because they share the same Fluent session. Candidate 01
+    (auto_fit_only) is deliberately first to capture the pristine post-display
+    orientation (from the main contour.display() + auto_scale). Do NOT reorder.
+
+    Returns a list of candidate dicts with keys:
+        candidate_name, camera_method, camera_errors, output_file, file_exists
+    """
+    stem = output_file.stem
+    parent = output_file.parent
+
+    # Fixed candidate list — order is load-bearing; do not reorder.
+    # Each entry: (short_name, method, pos_or_None, tgt_or_None, up_or_None)
+    CANDIDATES = [
+        # 01: pristine post-display state (no named view, just auto_scale)
+        ("auto_fit_only",  "auto_fit",    None,              None,              None           ),
+        # 02-03: named view presets (previously blank on server; confirm or rule out)
+        ("top_named",      "named",       None,              None,              None           ),
+        ("bottom_named",   "named",       None,              None,              None           ),
+        # 04-07: explicit z-normal camera vectors (both sides × both up vectors)
+        ("z_pos_up_y",     "camera_dir",  [0., 0.,  1.],    [0., 0., 0.],    [0., 1., 0.]  ),
+        ("z_neg_up_y",     "camera_dir",  [0., 0., -1.],    [0., 0., 0.],    [0., 1., 0.]  ),
+        ("z_pos_up_x",     "camera_dir",  [0., 0.,  1.],    [0., 0., 0.],    [1., 0., 0.]  ),
+        ("z_neg_up_x",     "camera_dir",  [0., 0., -1.],    [0., 0., 0.],    [1., 0., 0.]  ),
+        # 08: front named view (known: shows surface but oblique)
+        ("front_named",    "named",       None,              None,              None           ),
+    ]
+    # Map short_name to the named-view string for the "named" method
+    _NAMED_VIEW_MAP = {
+        "top_named": "top",
+        "bottom_named": "bottom",
+        "front_named": "front",
+    }
+
+    candidates: List[Dict[str, Any]] = []
+
+    try:
+        graphics = solver.settings.results.graphics
+        views = graphics.views
+        camera = views.camera
+        pic = graphics.picture
+    except Exception as exc:
+        return [{"candidate_name": "setup_error", "camera_method": "", "camera_errors": [
+            f"graphics/views unavailable: {_format_exception(exc)}"
+        ], "output_file": "", "file_exists": False}]
+
+    for idx, (name, method, pos, tgt, up) in enumerate(CANDIDATES):
+        cand_file = parent / f"{stem}_dbg_{idx+1:02d}_{name}.png"
+        cand_errors: List[str] = []
+        method_used = ""
+
+        try:
+            if method == "auto_fit":
+                # No camera change — preserve whatever state the prior save left
+                method_used = "auto_fit_only:no_view_change"
+            elif method == "named":
+                named_view = _NAMED_VIEW_MAP.get(name, name.replace("_named", ""))
+                vm, _ = _attempt_named_view(solver, views, named_view, cand_errors)
+                method_used = vm if vm else f"{named_view}_named_view_failed"
+            elif method == "camera_dir" and pos is not None:
+                vm, _ = _attempt_camera_direction_vectors(
+                    camera, pos, tgt, up, name, cand_errors
+                )
+                method_used = vm if vm else f"{name}_camera_dir_failed"
+        except Exception as exc:
+            cand_errors.append(f"view_setup: {_format_exception(exc)}")
+
+        # Auto-scale after each view change
+        _try_scene_call(
+            "auto_scale",
+            [
+                ("views.auto_scale()", lambda: views.auto_scale()),
+                ("tui.display.views.auto_scale()",
+                 lambda: solver.tui.display.views.auto_scale()),
+            ],
+            cand_errors,
+        )
+
+        # Apply view margin zoom
+        if view_margin > 1.0:
+            _zoom_factor = 1.0 / float(view_margin)
+            _try_scene_call(
+                "view margin zoom",
+                [
+                    ("camera.zoom(factor=...)", lambda: camera.zoom(factor=_zoom_factor)),
+                    ("camera.zoom(...)", lambda: camera.zoom(_zoom_factor)),
+                    ("tui.zoom_camera(...)",
+                     lambda: solver.tui.display.views.camera.zoom_camera(_zoom_factor)),
+                ],
+                cand_errors,
+            )
+
+        # Save picture
+        try:
+            pic.x_resolution = image_width
+            pic.y_resolution = image_height
+            cand_posix = as_fluent_path(cand_file)
+            try:
+                pic.save_picture(file_name=cand_posix)
+            except Exception:
+                solver.tui.display.save_picture(cand_posix)
+        except Exception as exc:
+            cand_errors.append(f"save_picture: {_format_exception(exc)}")
+
+        candidates.append({
+            "candidate_name": name,
+            "camera_method": method_used,
+            "camera_errors": cand_errors,
+            "output_file": str(cand_file),
+            "file_exists": cand_file.is_file(),
+        })
+        exists_str = "OK" if cand_file.is_file() else "MISSING"
+        print(f"  sweep {idx+1:02d}/{len(CANDIDATES)} {name}: {exists_str}")
+
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -1817,6 +2181,24 @@ def build_status_payload(
     logo_hidden: Optional[bool] = None,
     background_used: Optional[str] = None,
     view_margin_used: Optional[float] = None,
+    requested_view_preset: str = "",
+    effective_view_preset: str = "",
+    camera_method_used: str = "",
+    camera_method_attempts: Optional[List[str]] = None,
+    camera_errors: Optional[List[str]] = None,
+    view_direction_used: str = "",
+    view_up_vector_used: str = "",
+    view_fit_applied: bool = False,
+    pyensight_reference_view_function: str = "",
+    pyensight_reference_view_summary: str = "",
+    match_pyensight_attempted: bool = False,
+    match_pyensight_status: str = "SKIPPED",
+    match_pyensight_error: str = "",
+    fluent_view_name: str = "",
+    view_direction_requested: str = "",
+    view_up_vector_requested: str = "",
+    view_debug_sweep_attempted: bool = False,
+    view_debug_sweep_outputs: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     cff_attempted = (
         cff_file_load_attempted
@@ -1915,6 +2297,24 @@ def build_status_payload(
         "view_margin_used": view_margin_used if view_margin_used is not None else view_margin,
         "image_width": image_width,
         "image_height": image_height,
+        "requested_view_preset": requested_view_preset,
+        "effective_view_preset": effective_view_preset,
+        "camera_method_used": camera_method_used,
+        "camera_method_attempts": camera_method_attempts or [],
+        "camera_errors": camera_errors or [],
+        "view_direction_used": view_direction_used,
+        "view_up_vector_used": view_up_vector_used,
+        "view_fit_applied": view_fit_applied,
+        "pyensight_reference_view_function": pyensight_reference_view_function,
+        "pyensight_reference_view_summary": pyensight_reference_view_summary,
+        "match_pyensight_attempted": match_pyensight_attempted,
+        "match_pyensight_status": match_pyensight_status,
+        "match_pyensight_error": match_pyensight_error,
+        "fluent_view_name": fluent_view_name,
+        "view_direction_requested": view_direction_requested,
+        "view_up_vector_requested": view_up_vector_requested,
+        "view_debug_sweep_attempted": view_debug_sweep_attempted,
+        "view_debug_sweep_outputs": view_debug_sweep_outputs or [],
     }
 
 
@@ -1999,14 +2399,48 @@ def parse_args() -> argparse.Namespace:
         help="View zoom margin factor (default: 1.20). Applied when supported.",
     )
     parser.add_argument(
-        "--view-preset", type=str, default="auto",
-        choices=["auto", "top", "bottom", "front", "iso"],
+        "--view-preset", type=str, default="match_pyensight",
+        choices=["match_pyensight", "auto", "top", "bottom", "front", "iso"],
         help=(
-            "Camera view preset for contour display (default: auto). "
-            "auto: top view for --membrane-surface top, bottom for bottom. "
-            "top/bottom: z-normal membrane view (looking down/up z axis). "
-            "front: Fluent default front view (legacy/debug). "
+            "Camera view preset for contour display (default: match_pyensight). "
+            "match_pyensight: no named view; auto_scale determines view (matches "
+            "PyEnSight view_transf.fit(0) behaviour). "
+            "auto: legacy — resolves to top/bottom based on --membrane-surface. "
+            "top/bottom: EXPERIMENTAL — previously produced blank images on server. "
+            "front: Fluent default front view (known oblique; useful as debug baseline). "
             "iso: isometric view (debug)."
+        ),
+    )
+    parser.add_argument(
+        "--view-debug-sweep", action="store_true", default=False,
+        help=(
+            "After the main export, save additional candidate PNG files with "
+            "different camera orientations (auto_fit, top, bottom, z+/z- × up-x/up-y, "
+            "front) for visual comparison on the server. "
+            "Output files are named <stem>_dbg_NN_<candidate>.png in the same directory."
+        ),
+    )
+    parser.add_argument(
+        "--fluent-view-name", type=str, default=None, metavar="NAME",
+        help=(
+            "Restore a Fluent saved view by name before export (e.g. a view saved "
+            "interactively in the Fluent GUI on the server). Overrides --view-preset "
+            "camera direction when the named view is found."
+        ),
+    )
+    parser.add_argument(
+        "--view-direction", type=str, default=None, metavar="X,Y,Z",
+        help=(
+            "Explicit camera direction vector as 'X,Y,Z' (e.g. '0,0,-1' for top-down). "
+            "Used as the camera position relative to origin; requires Fluent camera "
+            "position/target API support. Overrides --view-preset camera direction."
+        ),
+    )
+    parser.add_argument(
+        "--view-up", type=str, default=None, metavar="X,Y,Z",
+        help=(
+            "Explicit camera up vector as 'X,Y,Z' (e.g. '1,0,0' for streamwise-horizontal). "
+            "Only used when --view-direction is also provided."
         ),
     )
     return parser.parse_args()
@@ -2090,8 +2524,17 @@ def main() -> int:
         print(f"CFF file     : {cff_file}")
     print(f"Membrane side: {args.membrane_surface}")
     print(f"Background   : {args.background}")
+    print(f"View preset  : {args.view_preset}")
     print(f"View margin  : {args.view_margin}")
     print(f"Resolution   : {eff_width} x {eff_height} px")
+    if args.fluent_view_name:
+        print(f"Named view   : {args.fluent_view_name}")
+    if args.view_direction:
+        print(f"View direction: {args.view_direction}")
+    if args.view_up:
+        print(f"View up       : {args.view_up}")
+    if args.view_debug_sweep:
+        print("View debug sweep: ENABLED — candidate files will be written")
     if shear_range:
         print(f"Shear range  : {shear_range[0]} – {shear_range[1]} [1/s]")
 
@@ -2365,6 +2808,12 @@ def main() -> int:
                     view_margin=args.view_margin,
                     view_preset=args.view_preset,
                     membrane_side=side,
+                    fluent_view_name=args.fluent_view_name,
+                    view_direction=_parse_vector_arg(args.view_direction)
+                        if args.view_direction else None,
+                    view_up=_parse_vector_arg(args.view_up)
+                        if args.view_up else None,
+                    view_debug_sweep=args.view_debug_sweep,
                 )
                 scene_cleanup_diag = _merge_scene_cleanup_diag(
                     scene_cleanup_diag,
@@ -2565,17 +3014,34 @@ def main() -> int:
         view_margin_used=scene_cleanup_diag.get("view_margin_used"),
         image_width=eff_width,
         image_height=eff_height,
+        requested_view_preset=str(scene_cleanup_diag.get("requested_view_preset", "")),
+        effective_view_preset=str(scene_cleanup_diag.get("effective_view_preset", "")),
+        camera_method_used=str(scene_cleanup_diag.get("camera_method_used", "")),
+        camera_method_attempts=list(scene_cleanup_diag.get("camera_method_attempts", [])),
+        camera_errors=list(scene_cleanup_diag.get("camera_errors", [])),
+        view_direction_used=str(scene_cleanup_diag.get("view_direction_used", "")),
+        view_up_vector_used=str(scene_cleanup_diag.get("view_up_vector_used", "")),
+        view_fit_applied=bool(scene_cleanup_diag.get("view_fit_applied", False)),
+        pyensight_reference_view_function=str(
+            scene_cleanup_diag.get("pyensight_reference_view_function", "")
+        ),
+        pyensight_reference_view_summary=str(
+            scene_cleanup_diag.get("pyensight_reference_view_summary", "")
+        ),
+        match_pyensight_attempted=bool(
+            scene_cleanup_diag.get("match_pyensight_attempted", False)
+        ),
+        match_pyensight_status=str(scene_cleanup_diag.get("match_pyensight_status", "SKIPPED")),
+        match_pyensight_error=str(scene_cleanup_diag.get("match_pyensight_error", "")),
+        fluent_view_name=str(scene_cleanup_diag.get("fluent_view_name", "")),
+        view_direction_requested=str(scene_cleanup_diag.get("view_direction_requested", "")),
+        view_up_vector_requested=str(scene_cleanup_diag.get("view_up_vector_requested", "")),
+        view_debug_sweep_attempted=bool(
+            scene_cleanup_diag.get("view_debug_sweep_attempted", False)
+        ),
+        view_debug_sweep_outputs=list(scene_cleanup_diag.get("view_debug_sweep_outputs", [])),
     )
-    payload.update({
-        "requested_view_preset": str(scene_cleanup_diag.get("requested_view_preset", "")),
-        "camera_method_used": str(scene_cleanup_diag.get("camera_method_used", "")),
-        "camera_method_attempts": list(scene_cleanup_diag.get("camera_method_attempts", [])),
-        "camera_errors": list(scene_cleanup_diag.get("camera_errors", [])),
-        "view_direction_used": str(scene_cleanup_diag.get("view_direction_used", "")),
-        "view_up_vector_used": str(scene_cleanup_diag.get("view_up_vector_used", "")),
-        "view_fit_applied": bool(scene_cleanup_diag.get("view_fit_applied", False)),
-        "cli_view_preset_arg": str(args.view_preset),
-    })
+    payload["cli_view_preset_arg"] = str(args.view_preset)
     write_status_json(status_file, payload)
 
     return 0 if final_status in (STATUS_OK, STATUS_WARN) else 2
