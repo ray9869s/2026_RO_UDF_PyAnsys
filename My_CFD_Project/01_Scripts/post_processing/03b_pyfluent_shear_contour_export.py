@@ -851,7 +851,14 @@ def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str
         "scene_cleanup_attempted": False,
         "scene_cleanup_status": "SKIPPED",
         "scene_cleanup_error": "",
+        "requested_view_preset": "",
         "camera_mode_used": "",
+        "camera_method_used": "",
+        "camera_method_attempts": [],
+        "camera_errors": [],
+        "view_direction_used": "",
+        "view_up_vector_used": "",
+        "view_fit_applied": False,
         "projection_mode_used": "",
         "floor_hidden": None,
         "shadow_hidden": None,
@@ -888,12 +895,28 @@ def _merge_scene_cleanup_diag(
     ]
     merged["scene_cleanup_error"] = " | ".join(e for e in errors if e)
 
-    for key in ("camera_mode_used", "projection_mode_used"):
+    for key in (
+        "camera_mode_used",
+        "projection_mode_used",
+        "requested_view_preset",
+        "camera_method_used",
+        "view_direction_used",
+        "view_up_vector_used",
+    ):
         values = _unique_preserve_order([
             str(current.get(key, "")),
             str(new.get(key, "")),
         ])
         merged[key] = ";".join(v for v in values if v)
+
+    for key in ("camera_method_attempts", "camera_errors"):
+        cur_list = list(current.get(key, []))
+        new_list = [x for x in new.get(key, []) if x not in set(cur_list)]
+        merged[key] = cur_list + new_list
+
+    merged["view_fit_applied"] = bool(current.get("view_fit_applied")) or bool(
+        new.get("view_fit_applied")
+    )
 
     for key in (
         "floor_hidden",
@@ -1053,10 +1076,128 @@ def _configure_display_state(graphics: Any, errors: List[str]) -> Dict[str, Opti
     return flags
 
 
+def _attempt_named_view(
+    solver: Any,
+    views: Any,
+    view_name: str,
+    errors: List[str],
+) -> Tuple[str, List[str]]:
+    """Try to set a named Fluent view via settings/TUI paths.
+
+    Returns (method_label_on_success_or_empty, list_of_labels_attempted).
+    Errors from failed attempts are appended to errors.
+    """
+    if view_name == "top":
+        variants: List[Tuple[str, Any]] = [
+            ("views.restore_view('top')", lambda: views.restore_view("top")),
+            ("views.restore_view(view_name='top')", lambda: views.restore_view(view_name="top")),
+            ("views.top()", lambda: views.top()),
+            ("tui.display.views.restore_view('top')", lambda: solver.tui.display.views.restore_view("top")),
+            ("tui.display.views.top()", lambda: solver.tui.display.views.top()),
+        ]
+    elif view_name == "bottom":
+        variants = [
+            ("views.restore_view('bottom')", lambda: views.restore_view("bottom")),
+            ("views.restore_view(view_name='bottom')", lambda: views.restore_view(view_name="bottom")),
+            ("views.bottom()", lambda: views.bottom()),
+            ("tui.display.views.restore_view('bottom')", lambda: solver.tui.display.views.restore_view("bottom")),
+            ("tui.display.views.bottom()", lambda: solver.tui.display.views.bottom()),
+        ]
+    elif view_name == "front":
+        variants = [
+            ("views.reset_to_default_view()", lambda: views.reset_to_default_view()),
+            ("tui.display.views.restore_view('front')", lambda: solver.tui.display.views.restore_view("front")),
+            ("views.restore_view('front')", lambda: views.restore_view("front")),
+            ("views.front()", lambda: views.front()),
+            ("tui.display.views.default_view()", lambda: solver.tui.display.views.default_view()),
+            ("tui.display.views.front()", lambda: solver.tui.display.views.front()),
+        ]
+    elif view_name == "iso":
+        variants = [
+            ("views.restore_view('isometric')", lambda: views.restore_view("isometric")),
+            ("tui.display.views.restore_view('isometric')", lambda: solver.tui.display.views.restore_view("isometric")),
+            ("views.isometric()", lambda: views.isometric()),
+            ("tui.display.views.isometric()", lambda: solver.tui.display.views.isometric()),
+        ]
+    else:
+        return "", []
+
+    attempted: List[str] = []
+    for label, func in variants:
+        attempted.append(label)
+        ok, err = _try_call(label, func)
+        if ok:
+            return label, attempted
+        errors.append(f"named view {view_name!r} via {label}: {err}")
+
+    return "", attempted
+
+
+def _attempt_camera_direction(
+    camera: Any,
+    effective_view: str,
+    errors: List[str],
+) -> Tuple[str, str]:
+    """Try to orient camera along ±z axis via position/target/look APIs.
+
+    Returns (method_label_on_success_or_empty, direction_str).
+    Errors appended to errors on failure.
+    """
+    if effective_view == "top":
+        # Camera above, looking down -z
+        pos = [0.0, 0.0, 1.0]
+        tgt = [0.0, 0.0, 0.0]
+        up = [0.0, 1.0, 0.0]
+        dir_str = "0,0,-1"
+    elif effective_view == "bottom":
+        # Camera below, looking up +z
+        pos = [0.0, 0.0, -1.0]
+        tgt = [0.0, 0.0, 0.0]
+        up = [0.0, 1.0, 0.0]
+        dir_str = "0,0,1"
+    else:
+        return "", ""
+
+    # Capture loop variables before lambdas
+    _pos, _tgt, _up = pos, tgt, up
+    variants: List[Tuple[str, Any]] = [
+        (
+            "camera.position+target+up_vector",
+            lambda: (
+                camera.position(xyz=_pos),
+                camera.target(xyz=_tgt),
+                camera.up_vector(xyz=_up),
+            ),
+        ),
+        (
+            "camera.position([...])+target([...])+up_vector([...])",
+            lambda: (
+                camera.position(_pos),
+                camera.target(_tgt),
+                camera.up_vector(_up),
+            ),
+        ),
+        (
+            "camera.look_at(position=...,target=...,up=...)",
+            lambda: camera.look_at(position=_pos, target=_tgt, up=_up),
+        ),
+    ]
+
+    for label, func in variants:
+        ok, err = _try_call(label, func)
+        if ok:
+            return label, dir_str
+        errors.append(f"camera direction ({effective_view}) via {label}: {err}")
+
+    return "", ""
+
+
 def setup_fluent_clean_scene(
     solver: Any,
     background: str,
     view_margin: float,
+    view_preset: str = "auto",
+    membrane_side: str = "top",
 ) -> Dict[str, Any]:
     """Best-effort Fluent scene cleanup to match the CP contour presentation style."""
     diag = _default_scene_cleanup_diag(background, view_margin)
@@ -1141,17 +1282,61 @@ def setup_fluent_clean_scene(
     try:
         views = graphics.views
         camera = views.camera
-        default_method = _try_scene_call(
-            "front/default view",
-            [
-                ("settings.views.reset_to_default_view()", lambda: views.reset_to_default_view()),
-                ("tui.display.views.default_view()", lambda: solver.tui.display.views.default_view()),
-            ],
-            errors,
-        )
-        if default_method:
-            diag["camera_mode_used"] = "front_default_view"
+        camera_errors: List[str] = []
+
+        # Resolve effective view name from preset + membrane side
+        if view_preset == "auto":
+            effective_view = "bottom" if membrane_side == "bottom" else "top"
+        elif view_preset in ("top", "bottom", "front", "iso"):
+            effective_view = view_preset
+        else:
+            effective_view = "top"
+        diag["requested_view_preset"] = view_preset
+        all_cam_attempts: List[str] = []
+
+        # Rung 1 + 2: named view via settings/TUI APIs
+        view_method, view_attempts = _attempt_named_view(solver, views, effective_view, camera_errors)
+        all_cam_attempts.extend(view_attempts)
+
+        if view_method:
+            diag["camera_mode_used"] = f"{effective_view}_view"
+            diag["camera_method_used"] = view_method
+            diag["view_direction_used"] = f"preset:{effective_view}"
             successful_steps += 1
+        else:
+            # Rung 3: explicit camera position/target along ±z axis
+            dir_method, dir_str = _attempt_camera_direction(camera, effective_view, camera_errors)
+            if dir_method:
+                all_cam_attempts.append(dir_method)
+                diag["camera_mode_used"] = f"{effective_view}_view_camera_dir"
+                diag["camera_method_used"] = dir_method
+                diag["view_direction_used"] = dir_str
+                successful_steps += 1
+            elif effective_view != "front":
+                # Fallback to front/default view — triggers WARN
+                fallback_method, fallback_attempts = _attempt_named_view(
+                    solver, views, "front", camera_errors
+                )
+                all_cam_attempts.extend(fallback_attempts)
+                if fallback_method:
+                    diag["camera_mode_used"] = "fallback_front_default_view"
+                    diag["camera_method_used"] = fallback_method
+                    diag["view_direction_used"] = "preset:front"
+                    successful_steps += 1
+                    errors.append(
+                        f"membrane-normal view ({effective_view!r}) unavailable; "
+                        "fell back to front/default_view"
+                    )
+                else:
+                    errors.extend(camera_errors)
+                    camera_errors = []
+                    errors.append(f"all view attempts failed (preset={view_preset!r})")
+            else:
+                errors.extend(camera_errors)
+                camera_errors = []
+
+        diag["camera_method_attempts"] = all_cam_attempts
+        diag["camera_errors"] = camera_errors
 
         projection_method = _try_scene_call(
             "orthographic projection",
@@ -1179,7 +1364,7 @@ def setup_fluent_clean_scene(
             diag["projection_mode_used"] = "orthographic"
             successful_steps += 1
 
-        _try_scene_call(
+        up_vector_method = _try_scene_call(
             "camera up vector",
             [
                 (
@@ -1193,6 +1378,8 @@ def setup_fluent_clean_scene(
             ],
             errors,
         )
+        if up_vector_method:
+            diag["view_up_vector_used"] = "0,1,0"
 
         if _try_scene_call(
             "view auto-scale",
@@ -1202,6 +1389,7 @@ def setup_fluent_clean_scene(
             ],
             errors,
         ):
+            diag["view_fit_applied"] = True
             successful_steps += 1
 
         if view_margin > 1.0:
@@ -1249,6 +1437,8 @@ def try_native_cff_export(
     image_height: int,
     background: str,
     view_margin: float,
+    view_preset: str = "auto",
+    membrane_side: str = "top",
 ) -> Tuple[bool, str, str, str, Dict[str, Any]]:
     """Attempt native Fluent contour export using a prepared CFF variable.
 
@@ -1259,7 +1449,8 @@ def try_native_cff_export(
     try:
         scene_diag = _export_contour_cff(
             solver, cff_name, membrane_zones, shear_range, output_file,
-            image_width, image_height, background, view_margin
+            image_width, image_height, background, view_margin,
+            view_preset=view_preset, membrane_side=membrane_side,
         )
         if output_file.is_file():
             scene_error = str(scene_diag.get("scene_cleanup_error", ""))
@@ -1283,6 +1474,8 @@ def _export_contour_cff(
     image_height: int,
     background: str,
     view_margin: float,
+    view_preset: str = "auto",
+    membrane_side: str = "top",
 ) -> Dict[str, Any]:
     """Create Fluent contour using a shear-rate CFF, display, and save."""
     if output_file.exists():
@@ -1317,6 +1510,8 @@ def _export_contour_cff(
         solver=solver,
         background=background,
         view_margin=view_margin,
+        view_preset=view_preset,
+        membrane_side=membrane_side,
     )
     if scene_diag.get("scene_cleanup_status") == "FAILED":
         print(f"  WARN: scene cleanup failed: {scene_diag.get('scene_cleanup_error', '')}")
@@ -1803,6 +1998,17 @@ def parse_args() -> argparse.Namespace:
         "--view-margin", type=float, default=1.20, metavar="FACTOR",
         help="View zoom margin factor (default: 1.20). Applied when supported.",
     )
+    parser.add_argument(
+        "--view-preset", type=str, default="auto",
+        choices=["auto", "top", "bottom", "front", "iso"],
+        help=(
+            "Camera view preset for contour display (default: auto). "
+            "auto: top view for --membrane-surface top, bottom for bottom. "
+            "top/bottom: z-normal membrane view (looking down/up z axis). "
+            "front: Fluent default front view (legacy/debug). "
+            "iso: isometric view (debug)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2157,6 +2363,8 @@ def main() -> int:
                     image_height=eff_height,
                     background=args.background,
                     view_margin=args.view_margin,
+                    view_preset=args.view_preset,
+                    membrane_side=side,
                 )
                 scene_cleanup_diag = _merge_scene_cleanup_diag(
                     scene_cleanup_diag,
@@ -2358,6 +2566,16 @@ def main() -> int:
         image_width=eff_width,
         image_height=eff_height,
     )
+    payload.update({
+        "requested_view_preset": str(scene_cleanup_diag.get("requested_view_preset", "")),
+        "camera_method_used": str(scene_cleanup_diag.get("camera_method_used", "")),
+        "camera_method_attempts": list(scene_cleanup_diag.get("camera_method_attempts", [])),
+        "camera_errors": list(scene_cleanup_diag.get("camera_errors", [])),
+        "view_direction_used": str(scene_cleanup_diag.get("view_direction_used", "")),
+        "view_up_vector_used": str(scene_cleanup_diag.get("view_up_vector_used", "")),
+        "view_fit_applied": bool(scene_cleanup_diag.get("view_fit_applied", False)),
+        "cli_view_preset_arg": str(args.view_preset),
+    })
     write_status_json(status_file, payload)
 
     return 0 if final_status in (STATUS_OK, STATUS_WARN) else 2
