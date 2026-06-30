@@ -5,15 +5,18 @@
 Export presentation-quality contour images from a solved Fluent case using
 PyEnSight (ansys.pyensight.core v0.11+, EnSight 25.1).
 
-Fields exported:
-  cp_inlet         - UDM-9  on membrane walls
-  lmh              - UDM-8  on membrane walls
-  wall_shear_rate  - wall-shear / mu on membrane + spacer walls
+Fields exported (membrane wall unless noted):
+  cp_inlet         - CP = salt_conc / bulk_center_avg  on membrane walls
+  water_flux       - Jw [m/s] from solution-diffusion formula on membrane walls
+  lmh              - Jw * 3.6e6 [LMH] on membrane walls
+  salt_flux        - salt mass flux [kg/m2/s] on membrane walls
+  shear_rate       - wall-shear / mu [1/s] on membrane walls
+  wall_shear_rate  - wall-shear / mu [1/s] on membrane + spacer walls
   velocity_midplane- velocity-magnitude on best-available plane/fluid surface
 
 Usage:
   python 03_pyensight_contour_export.py --geo-name Diamond_Spacer --case-name u0p2_p6M
-  python 03_pyensight_contour_export.py --dry-run --fields cp_inlet,lmh
+  python 03_pyensight_contour_export.py --dry-run --fields cp_inlet,water_flux,lmh,salt_flux,shear_rate
   python 03_pyensight_contour_export.py --cp-range 1.00,1.15 --lmh-range 20,30
   python 03_pyensight_contour_export.py --auto-range --membrane-surface both
   python 03_pyensight_contour_export.py --skip-existing --image-width 2560 --image-height 1440
@@ -96,6 +99,32 @@ FIELD_SPECS: dict = {
         "output_suffix": "lmh_membrane",
         "derive_shear_rate": False,
     },
+    "water_flux": {
+        "display_label": "Water flux Jw [m/s]",
+        "var_candidates": ["udm-6", "UDM-6", "User Defined Memory 6", "udm_6"],
+        "surface_type": "membrane",
+        "output_suffix": "water_flux_membrane",
+        "derive_shear_rate": False,
+    },
+    "salt_flux": {
+        "display_label": "Salt flux Js [kg/m²/s]",
+        "var_candidates": ["udm-12", "UDM-12", "User Defined Memory 12", "udm_12"],
+        "surface_type": "membrane",
+        "output_suffix": "salt_flux_membrane",
+        "derive_shear_rate": False,
+    },
+    "shear_rate": {
+        "display_label": "Wall shear rate [1/s]",
+        "var_candidates": [
+            "wall-shear", "Wall Shear Stress", "wall_shear",
+            "wall-shear-stress", "Wall Shear", "wall-shear-1",
+            "Wall Shear Stress Magnitude", "wall shear magnitude",
+            "wall-shear-magnitude",
+        ],
+        "surface_type": "membrane",
+        "output_suffix": "shear_rate_membrane",
+        "derive_shear_rate": False,
+    },
     "wall_shear_rate": {
         "display_label": "Wall shear rate [1/s]",
         "var_candidates": [
@@ -126,7 +155,10 @@ FIELD_SPECS: dict = {
 
 FIELD_COLOR_RANGES: dict = {
     "cp_inlet":          (1.00, 1.15),
+    "water_flux":        None,           # None = auto-range
     "lmh":               (20.0, 30.0),
+    "salt_flux":         None,           # None = auto-range
+    "shear_rate":        None,           # None = auto-range
     "wall_shear_rate":   None,           # None = auto-range
     "velocity_midplane": (0.0,  0.7),
 }
@@ -311,13 +343,17 @@ def parse_args() -> argparse.Namespace:
             "Fields: " + ", ".join(FIELD_SPECS) + "\n\n"
             "Default color ranges (edit FIELD_COLOR_RANGES in script to change):\n"
             "  cp_inlet:          1.00 – 1.15\n"
+            "  water_flux:        auto\n"
             "  lmh:               20.0 – 30.0\n"
+            "  salt_flux:         auto\n"
+            "  shear_rate:        auto\n"
             "  wall_shear_rate:   auto\n"
             "  velocity_midplane: 0.0  – 0.7\n\n"
             "Examples:\n"
             "  python 03_pyensight_contour_export.py "
             "--geo-name Diamond_Spacer --case-name u0p2_p6M\n"
-            "  python 03_pyensight_contour_export.py --dry-run --fields cp_inlet,lmh\n"
+            "  python 03_pyensight_contour_export.py --dry-run "
+            "--fields cp_inlet,water_flux,lmh,salt_flux,shear_rate\n"
             "  python 03_pyensight_contour_export.py "
             "--cp-range 1.00,1.15 --membrane-surface top\n"
         ),
@@ -367,6 +403,18 @@ def parse_args() -> argparse.Namespace:
     rg.add_argument(
         "--wall-shear-rate-range", type=str, default=None, metavar="MIN,MAX",
         help="Fixed colorbar range for wall_shear_rate, e.g. --wall-shear-rate-range 0,5000",
+    )
+    rg.add_argument(
+        "--water-flux-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for water_flux [m/s], e.g. --water-flux-range 0,5e-7",
+    )
+    rg.add_argument(
+        "--salt-flux-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for salt_flux [kg/m2/s], e.g. --salt-flux-range 0,1e-5",
+    )
+    rg.add_argument(
+        "--shear-rate-range", type=str, default=None, metavar="MIN,MAX",
+        help="Fixed colorbar range for shear_rate [1/s], e.g. --shear-rate-range 0,5000",
     )
 
     # --- scene / presentation ---
@@ -423,9 +471,12 @@ def _resolve_field_ranges(args: argparse.Namespace) -> dict:
 
     cli_map = {
         "cp_inlet":          args.cp_range,
+        "water_flux":        args.water_flux_range,
         "lmh":               args.lmh_range,
-        "velocity_midplane": args.velocity_range,
+        "salt_flux":         args.salt_flux_range,
+        "shear_rate":        args.shear_rate_range,
         "wall_shear_rate":   args.wall_shear_rate_range,
+        "velocity_midplane": args.velocity_range,
     }
     for key, raw in cli_map.items():
         if raw is not None:
@@ -1528,24 +1579,25 @@ def find_pressure_variable(
     return None, False, "; ".join(diag)
 
 
-def create_lmh_wall_direct(
+def create_water_flux_wall_direct(
     session: Any,
     salt_var_desc: str,
     pabs_var_desc: str,
     plan_item: dict,
 ) -> Tuple[Optional[Any], Optional[str], str, str]:
-    """Create LMH_WALL_DIRECT using the UDF solution-diffusion formula on all parts.
+    """Create WATER_FLUX_WALL_DIRECT (Jw [m/s]) via the UDF solution-diffusion formula.
+    Also creates intermediate pp_lmh_* variables shared with LMH and salt-flux derivation.
+    Reuses any step variable already present from a prior field in the same session.
     Returns (var_obj, var_desc, diag_str, formula_summary)."""
-    A   = plan_item["udf_a_perm"]
-    B   = plan_item["udf_b_perm"]
-    k   = plan_item["udf_kappa"]
-    pperm = plan_item["udf_p_perm"]
-    mw  = plan_item["udf_mw_salt"]
-    rho = plan_item["udf_rho_ref"]
-    ms2lmh = plan_item["udf_ms_to_lmh"]
+    A      = plan_item["udf_a_perm"]
+    B      = plan_item["udf_b_perm"]
+    k      = plan_item["udf_kappa"]
+    pperm  = plan_item["udf_p_perm"]
+    mw     = plan_item["udf_mw_salt"]
+    rho    = plan_item["udf_rho_ref"]
 
     formula_summary = (
-        f"LMH_WALL_DIRECT: Jw=0.5*(S-B+sqrt((S+B)^2+4ABkC)); "
+        f"WATER_FLUX_WALL_DIRECT [m/s]: Jw=0.5*(S-B+sqrt((S+B)^2+4ABkC)); "
         f"S=A*(pabs-p_perm-k*C); C=rho*Y/mw; "
         f"A={A:.2e}, B={B:.2e}, k={k:.0f}, p_perm={pperm:.0f}, "
         f"mw={mw}, rho={rho}"
@@ -1564,36 +1616,37 @@ def create_lmh_wall_direct(
 
     diag: List[str] = []
     steps = [
-        # Step: molar concentration [mol/m³]
+        # molar concentration [mol/m³]
         ("pp_lmh_cm",
          f"pp_lmh_cm = {rho:.4f} * {safe_salt} / {mw:.5f}"),
-        # Step: transmembrane pressure [Pa]
+        # transmembrane pressure [Pa]
         ("pp_lmh_dp",
          f"pp_lmh_dp = {safe_pabs} - {pperm:.2f}"),
-        # Step: S = A*(dp - k*cm)
+        # S = A*(dp - k*cm)
         ("pp_lmh_sval",
          f"pp_lmh_sval = {A:.10e} * (pp_lmh_dp - {k:.4f} * pp_lmh_cm)"),
-        # Step: discriminant (should be >= 0 for physical cm)
+        # discriminant (>= 0 for physical concentrations)
         ("pp_lmh_disc",
          f"pp_lmh_disc = (pp_lmh_sval + {B:.10e}) * (pp_lmh_sval + {B:.10e}) "
          f"+ 4.0 * {A:.10e} * {B:.10e} * {k:.4f} * pp_lmh_cm"),
-        # Step: sqrt(max(disc, 0)) using 0.5*(disc + |disc|)
+        # sqrt(max(disc, 0)) via 0.5*(disc + |disc|)
         ("pp_lmh_disc_safe",
          "pp_lmh_disc_safe = 0.5 * (pp_lmh_disc + abs(pp_lmh_disc))"),
-        # Step: Jw_raw (may be negative near very high-concentration regions)
+        # Jw_raw (may be negative near very high-concentration regions)
         ("pp_lmh_jw_raw",
          f"pp_lmh_jw_raw = 0.5 * (pp_lmh_sval - {B:.10e} + sqrt(pp_lmh_disc_safe))"),
-        # Step: Jw = max(Jw_raw, 0) = 0.5*(Jw_raw + |Jw_raw|)
-        ("pp_lmh_jw",
-         "pp_lmh_jw = 0.5 * (pp_lmh_jw_raw + abs(pp_lmh_jw_raw))"),
-        # Step: LMH
-        ("LMH_WALL_DIRECT",
-         f"LMH_WALL_DIRECT = pp_lmh_jw * {ms2lmh:.1f}"),
+        # Jw = max(Jw_raw, 0) = 0.5*(Jw_raw + |Jw_raw|)
+        ("WATER_FLUX_WALL_DIRECT",
+         "WATER_FLUX_WALL_DIRECT = 0.5 * (pp_lmh_jw_raw + abs(pp_lmh_jw_raw))"),
     ]
 
     try:
         session.ensight.part.select_all()
         for step_var, expr in steps:
+            existing, _ = find_ensight_variable(session, [step_var])
+            if existing is not None:
+                diag.append(f"{step_var}=reused")
+                continue
             session.ensight.variables.evaluate(expr)
             check, _ = find_ensight_variable(session, [step_var])
             if check is None:
@@ -1601,10 +1654,140 @@ def create_lmh_wall_direct(
                 return None, None, "; ".join(diag), formula_summary
             diag.append(f"{step_var}=ok")
 
+        var_obj, var_desc = find_ensight_variable(session, ["WATER_FLUX_WALL_DIRECT"])
+        if var_obj is not None:
+            return var_obj, "WATER_FLUX_WALL_DIRECT", "; ".join(diag), formula_summary
+        return None, None, "WATER_FLUX_WALL_DIRECT_not_found", formula_summary
+    except Exception as e:
+        diag.append(f"calculator_err:{e}")
+        return None, None, "; ".join(diag), formula_summary
+
+
+def create_lmh_wall_direct(
+    session: Any,
+    salt_var_desc: str,
+    pabs_var_desc: str,
+    plan_item: dict,
+) -> Tuple[Optional[Any], Optional[str], str, str]:
+    """Create LMH_WALL_DIRECT [LMH] = WATER_FLUX_WALL_DIRECT * ms2lmh.
+    Calls create_water_flux_wall_direct internally (reuses variables if already present).
+    Returns (var_obj, var_desc, diag_str, formula_summary)."""
+    ms2lmh = plan_item["udf_ms_to_lmh"]
+
+    jw_var, _, jw_diag, jw_formula = create_water_flux_wall_direct(
+        session, salt_var_desc, pabs_var_desc, plan_item
+    )
+
+    formula_summary = (
+        f"LMH_WALL_DIRECT = WATER_FLUX_WALL_DIRECT * {ms2lmh:.1f} [m/s -> LMH]; "
+        f"{jw_formula}"
+    )
+
+    if jw_var is None:
+        return None, None, f"water_flux_step_failed: {jw_diag}", formula_summary
+
+    existing, _ = find_ensight_variable(session, ["LMH_WALL_DIRECT"])
+    if existing is not None:
+        return existing, "LMH_WALL_DIRECT", f"{jw_diag}; LMH_WALL_DIRECT=reused", formula_summary
+
+    try:
+        session.ensight.part.select_all()
+        session.ensight.variables.evaluate(
+            f"LMH_WALL_DIRECT = WATER_FLUX_WALL_DIRECT * {ms2lmh:.1f}"
+        )
         var_obj, var_desc = find_ensight_variable(session, ["LMH_WALL_DIRECT"])
         if var_obj is not None:
-            return var_obj, "LMH_WALL_DIRECT", "; ".join(diag), formula_summary
-        return None, None, "LMH_WALL_DIRECT_var_not_found", formula_summary
+            return var_obj, "LMH_WALL_DIRECT", f"{jw_diag}; LMH_WALL_DIRECT=ok", formula_summary
+        return None, None, f"{jw_diag}; LMH_WALL_DIRECT_not_found", formula_summary
+    except Exception as e:
+        return None, None, f"{jw_diag}; LMH_WALL_DIRECT_err:{e}", formula_summary
+
+
+def create_salt_flux_wall_direct(
+    session: Any,
+    plan_item: dict,
+) -> Tuple[Optional[Any], Optional[str], str, str]:
+    """Create SALT_FLUX_WALL_DIRECT [kg/m2/s] = B*cm*Jw/(Jw+B)*MW_SALT.
+    Requires pp_lmh_cm and WATER_FLUX_WALL_DIRECT to be present
+    (call create_water_flux_wall_direct first).
+    Returns (var_obj, var_desc, diag_str, formula_summary)."""
+    B  = plan_item["udf_b_perm"]
+    mw = plan_item["udf_mw_salt"]
+
+    formula_summary = (
+        f"SALT_FLUX_WALL_DIRECT [kg/m2/s]: "
+        f"Js=B*cm*Jw/(Jw+B)*MW_SALT; "
+        f"B={B:.2e}, MW_salt={mw:.5f}"
+    )
+
+    diag: List[str] = []
+
+    existing, _ = find_ensight_variable(session, ["SALT_FLUX_WALL_DIRECT"])
+    if existing is not None:
+        diag.append("SALT_FLUX_WALL_DIRECT=reused")
+        return existing, "SALT_FLUX_WALL_DIRECT", "; ".join(diag), formula_summary
+
+    jw_var, _ = find_ensight_variable(session, ["WATER_FLUX_WALL_DIRECT"])
+    cm_var, _ = find_ensight_variable(session, ["pp_lmh_cm"])
+
+    if jw_var is None:
+        return None, None, "prerequisite_missing:WATER_FLUX_WALL_DIRECT", formula_summary
+    if cm_var is None:
+        return None, None, "prerequisite_missing:pp_lmh_cm", formula_summary
+
+    try:
+        session.ensight.part.select_all()
+        expr = (
+            f"SALT_FLUX_WALL_DIRECT = "
+            f"{B:.10e} * pp_lmh_cm * WATER_FLUX_WALL_DIRECT / "
+            f"(WATER_FLUX_WALL_DIRECT + {B:.10e}) * {mw:.5f}"
+        )
+        session.ensight.variables.evaluate(expr)
+        var_obj, var_desc = find_ensight_variable(session, ["SALT_FLUX_WALL_DIRECT"])
+        if var_obj is not None:
+            diag.append("ok")
+            return var_obj, "SALT_FLUX_WALL_DIRECT", "; ".join(diag), formula_summary
+        diag.append("var_not_found_after_evaluate")
+        return None, None, "; ".join(diag), formula_summary
+    except Exception as e:
+        diag.append(f"calculator_err:{e}")
+        return None, None, "; ".join(diag), formula_summary
+
+
+def create_shear_rate_wall_direct(
+    session: Any,
+    wall_shear_var_desc: str,
+    mu: float,
+) -> Tuple[Optional[Any], Optional[str], str, str]:
+    """Create SHEAR_RATE_WALL_DIRECT [1/s] = wall_shear_var / mu.
+    Returns (var_obj, var_desc, diag_str, formula_summary)."""
+    formula_summary = (
+        f"SHEAR_RATE_WALL_DIRECT [1/s] = {wall_shear_var_desc} / mu; "
+        f"mu={mu:.4e} Pa*s"
+    )
+    diag: List[str] = []
+
+    existing, _ = find_ensight_variable(session, ["SHEAR_RATE_WALL_DIRECT"])
+    if existing is not None:
+        diag.append("SHEAR_RATE_WALL_DIRECT=reused")
+        return existing, "SHEAR_RATE_WALL_DIRECT", "; ".join(diag), formula_summary
+
+    safe_src = (
+        f"'{wall_shear_var_desc}'"
+        if ("-" in wall_shear_var_desc or " " in wall_shear_var_desc)
+        else wall_shear_var_desc
+    )
+
+    try:
+        session.ensight.part.select_all()
+        expr = f"SHEAR_RATE_WALL_DIRECT = {safe_src} / {mu:.6e}"
+        session.ensight.variables.evaluate(expr)
+        var_obj, var_desc = find_ensight_variable(session, ["SHEAR_RATE_WALL_DIRECT"])
+        if var_obj is not None:
+            diag.append("ok")
+            return var_obj, "SHEAR_RATE_WALL_DIRECT", "; ".join(diag), formula_summary
+        diag.append("var_not_found_after_evaluate")
+        return None, None, "; ".join(diag), formula_summary
     except Exception as e:
         diag.append(f"calculator_err:{e}")
         return None, None, "; ".join(diag), formula_summary
@@ -1715,9 +1898,9 @@ def export_contour(
         )
         return
 
-    # 3b. For cp_inlet / lmh: attempt to build a direct derived variable from
-    #     primitive EnSight fields.  Falls back to UDM when any step fails.
-    if field_key in ("cp_inlet", "lmh"):
+    # 3b. Attempt to build a direct derived variable from primitive EnSight fields.
+    #     Falls back to UDM candidate (matched_var_desc from step 3) when any step fails.
+    if field_key in ("cp_inlet", "lmh", "water_flux", "salt_flux"):
         salt_obj, salt_desc, _ = find_primitive_variable(
             session, SALT_MASS_FRAC_CANDIDATES, "salt mass fraction"
         )
@@ -1854,6 +2037,107 @@ def export_contour(
                     "WARN: no primitive salt variable found; "
                     "fallback to UDM_8; wall mapping may be unreliable"
                 )
+
+        # ---- water_flux wall direct ----
+        elif field_key == "water_flux":
+            if salt_obj is not None:
+                primitive_variables_used_str = salt_desc
+                p_op = float(plan_item.get("operating_pressure", 101325.0))
+                pabs_desc, _is_abs, pres_diag = find_pressure_variable(session, p_op)
+                if pabs_desc is not None:
+                    jw_var, jw_desc, jw_diag, formula_summary_str = \
+                        create_water_flux_wall_direct(
+                            session, salt_desc, pabs_desc, plan_item
+                        )
+                    if jw_var is not None:
+                        var_obj = jw_var
+                        matched_var_desc = jw_desc
+                        derived_variable_mode = "direct_water_flux"
+                        info_msgs.append(
+                            f"WATER_FLUX_WALL_DIRECT created: {jw_diag}; "
+                            f"pressure={pres_diag}"
+                        )
+                    else:
+                        derived_variable_mode = "calculator_failed"
+                        warnings.append(
+                            f"WARN: WATER_FLUX_WALL_DIRECT calculator failed ({jw_diag}); "
+                            f"fallback to UDM_6; wall mapping may be unreliable"
+                        )
+                else:
+                    derived_variable_mode = "primitive_unavailable"
+                    warnings.append(
+                        f"WARN: no pressure variable found ({pres_diag}); "
+                        f"fallback to UDM_6; wall mapping may be unreliable"
+                    )
+            else:
+                derived_variable_mode = "primitive_unavailable"
+                warnings.append(
+                    "WARN: no primitive salt variable found; "
+                    "fallback to UDM_6; wall mapping may be unreliable"
+                )
+
+        # ---- salt_flux wall direct ----
+        elif field_key == "salt_flux":
+            if salt_obj is not None:
+                primitive_variables_used_str = salt_desc
+                p_op = float(plan_item.get("operating_pressure", 101325.0))
+                pabs_desc, _is_abs, pres_diag = find_pressure_variable(session, p_op)
+                if pabs_desc is not None:
+                    jw_var, _, jw_diag, _ = create_water_flux_wall_direct(
+                        session, salt_desc, pabs_desc, plan_item
+                    )
+                    if jw_var is not None:
+                        sf_var, sf_desc, sf_diag, formula_summary_str = \
+                            create_salt_flux_wall_direct(session, plan_item)
+                        if sf_var is not None:
+                            var_obj = sf_var
+                            matched_var_desc = sf_desc
+                            derived_variable_mode = "direct_salt_flux"
+                            info_msgs.append(
+                                f"SALT_FLUX_WALL_DIRECT created: {sf_diag}"
+                            )
+                        else:
+                            derived_variable_mode = "calculator_failed"
+                            warnings.append(
+                                f"WARN: SALT_FLUX_WALL_DIRECT calculator failed ({sf_diag}); "
+                                f"fallback to UDM_12; wall mapping may be unreliable"
+                            )
+                    else:
+                        derived_variable_mode = "calculator_failed"
+                        warnings.append(
+                            f"WARN: WATER_FLUX_WALL_DIRECT failed ({jw_diag}); "
+                            f"fallback to UDM_12; wall mapping may be unreliable"
+                        )
+                else:
+                    derived_variable_mode = "primitive_unavailable"
+                    warnings.append(
+                        f"WARN: no pressure variable found ({pres_diag}); "
+                        f"fallback to UDM_12; wall mapping may be unreliable"
+                    )
+            else:
+                derived_variable_mode = "primitive_unavailable"
+                warnings.append(
+                    "WARN: no primitive salt variable found; "
+                    "fallback to UDM_12; wall mapping may be unreliable"
+                )
+
+    # ---- shear_rate wall direct (membrane only, no salt needed) ----
+    elif field_key == "shear_rate":
+        primitive_variables_used_str = matched_var_desc
+        sr_var, sr_desc, sr_diag, formula_summary_str = create_shear_rate_wall_direct(
+            session, matched_var_desc, mu
+        )
+        if sr_var is not None:
+            var_obj = sr_var
+            matched_var_desc = sr_desc
+            derived_variable_mode = "direct_shear_rate"
+            info_msgs.append(f"SHEAR_RATE_WALL_DIRECT created: {sr_diag}")
+        else:
+            derived_variable_mode = "wall_shear_unavailable"
+            warnings.append(
+                f"WARN: SHEAR_RATE_WALL_DIRECT calculator failed ({sr_diag}); "
+                f"wall shear unavailable; result will use raw wall-shear [Pa]"
+            )
 
     # 4. Optionally derive wall shear rate (wall-shear / mu)
     display_var_desc = matched_var_desc
