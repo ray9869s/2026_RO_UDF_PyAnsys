@@ -213,14 +213,18 @@ def collect_wall_zones(setup: Any) -> List[str]:
 # Diagnostic: detect shear-related field and CFF candidates
 # ---------------------------------------------------------------------------
 
-def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str]]:
-    """Return (scalar_candidates, cff_candidates) for wall-shear fields.
+def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str], List[str]]:
+    """Return (scalar_candidates, cff_candidates, all_scalar_names_head).
 
-    scalar_candidates: solverName keys from field_info that match shear/wall keywords.
-    cff_candidates:    names from list_valid_cell_function_names that match.
+    scalar_candidates:    solverName keys from field_info that match shear/wall keywords.
+    cff_candidates:       names from list_valid_cell_function_names that match.
+    all_scalar_names_head: first 100 scalar field names when scalar_candidates is empty
+                           (populated so a single server run reveals the actual names);
+                           empty list when scalar_candidates is non-empty.
     """
     scalar_candidates: List[str] = []
     cff_candidates: List[str] = []
+    all_scalar_names_head: List[str] = []
 
     # Method 1: enumerate scalar fields via field_data field_info
     print("  [Diag] Enumerating scalar field names via field_info ...")
@@ -233,6 +237,10 @@ def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str]]:
             if any(k in name.lower() for k in kw)
         ]
         print(f"  [Diag] Wall/shear scalar fields ({len(scalar_candidates)}): {scalar_candidates}")
+        if not scalar_candidates:
+            all_scalar_names_head = list(all_fields.keys())[:100]
+            print(f"  [Diag] (No wall/shear match — full scalar field list head): "
+                  f"{all_scalar_names_head!r}")
     except Exception as exc:
         print(f"  [Diag] scalar field enumeration failed: {exc}")
 
@@ -253,7 +261,7 @@ def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str]]:
     except Exception as exc:
         print(f"  [Diag] CFF name listing failed: {exc}")
 
-    return scalar_candidates, cff_candidates
+    return scalar_candidates, cff_candidates, all_scalar_names_head
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +625,7 @@ def build_status_payload(
     view_margin: float,
     image_width: int,
     image_height: int,
+    all_scalar_field_names_head: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     return {
         "geo_name": geo_name,
@@ -640,6 +649,7 @@ def build_status_payload(
         "fallback_error": fallback_error,
         "shear_related_field_candidates": shear_related_field_candidates,
         "shear_related_cff_candidates": shear_related_cff_candidates,
+        "all_scalar_field_names_head": all_scalar_field_names_head or [],
         "background": background,
         "view_margin": view_margin,
         "image_width": image_width,
@@ -859,8 +869,9 @@ def main() -> int:
     fb_attempted        = False
     fb_status_str       = "SKIPPED"
     fb_error_str        = ""
-    scalar_candidates:  List[str] = []
-    cff_candidates:     List[str] = []
+    scalar_candidates:      List[str] = []
+    cff_candidates:         List[str] = []
+    all_scalar_names_head:  List[str] = []
 
     try:
         # --- Launch ---
@@ -901,7 +912,7 @@ def main() -> int:
 
         # --- Diagnostics: detect shear-related candidates ---
         print("\nRunning field/CFF diagnostics ...")
-        scalar_candidates, cff_candidates = detect_shear_candidates(solver)
+        scalar_candidates, cff_candidates, all_scalar_names_head = detect_shear_candidates(solver)
 
         # --- Process each side ---
         side_results: List[Tuple[bool, str, str]] = []  # (success, side, output_path)
@@ -1048,6 +1059,7 @@ def main() -> int:
         fallback_error=fb_error_str,
         shear_related_field_candidates=scalar_candidates,
         shear_related_cff_candidates=cff_candidates,
+        all_scalar_field_names_head=all_scalar_names_head,
         background=args.background,
         view_margin=args.view_margin,
         image_width=eff_width,
