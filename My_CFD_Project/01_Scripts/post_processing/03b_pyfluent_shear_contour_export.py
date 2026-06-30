@@ -1006,14 +1006,14 @@ def _configure_display_state(graphics: Any, errors: List[str]) -> Dict[str, Opti
     state_attrs = set(_safe_public_attrs(state, limit=10000))
     requested = {
         "projection": "orthographic",
-        "axes": "off",
-        "ruler": "off",
-        "title": "off",
-        "boundary_marker": "off",
-        "reflections": "off",
-        "static_shadows": "off",
-        "dynamic_shadows": "off",
-        "grid_plane": "off",
+        "axes": "disable",
+        "ruler": "disable",
+        "title": "disable",
+        "boundary_marker": "disable",
+        "reflections": "disable",
+        "static_shadows": "disable",
+        "dynamic_shadows": "disable",
+        "grid_plane": "disable",
     }
     set_ok: Dict[str, bool] = {}
     for child_name, value in requested.items():
@@ -1062,6 +1062,7 @@ def setup_fluent_clean_scene(
     diag = _default_scene_cleanup_diag(background, view_margin)
     diag["scene_cleanup_attempted"] = True
     errors: List[str] = []
+    non_critical_errors: List[str] = []
     successful_steps = 0
 
     try:
@@ -1076,17 +1077,17 @@ def setup_fluent_clean_scene(
     try:
         colors = graphics.colors
         if background == "white":
-            if _try_assign_child(colors, "background", "white", "graphics.colors.background", errors):
+            if _try_assign_child(colors, "background", "white", "graphics.colors.background", non_critical_errors):
                 diag["background_used"] = "white"
                 successful_steps += 1
-            _try_assign_child(colors, "foreground", "black", "graphics.colors.foreground", errors)
+            _try_assign_child(colors, "foreground", "black", "graphics.colors.foreground", non_critical_errors)
         elif background == "black":
-            if _try_assign_child(colors, "background", "black", "graphics.colors.background", errors):
+            if _try_assign_child(colors, "background", "black", "graphics.colors.background", non_critical_errors):
                 diag["background_used"] = "black"
                 successful_steps += 1
-            _try_assign_child(colors, "foreground", "white", "graphics.colors.foreground", errors)
+            _try_assign_child(colors, "foreground", "white", "graphics.colors.foreground", non_critical_errors)
     except Exception as exc:
-        errors.append(f"graphics.colors setup: {_format_exception(exc)}")
+        non_critical_errors.append(f"graphics.colors setup: {_format_exception(exc)}")
 
     try:
         pic = graphics.picture
@@ -1233,7 +1234,8 @@ def setup_fluent_clean_scene(
         diag["scene_cleanup_status"] = "SUCCESS"
     else:
         diag["scene_cleanup_status"] = "FAILED"
-    diag["scene_cleanup_error"] = " | ".join(errors)
+    all_errors = errors + non_critical_errors
+    diag["scene_cleanup_error"] = " | ".join(all_errors)
     return diag
 
 
