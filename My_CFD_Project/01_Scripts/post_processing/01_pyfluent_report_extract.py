@@ -432,6 +432,46 @@ def create_x_normal_plane(solver_obj, surface_name, x_value_m):
             f"Settings error: {e_settings}. TUI error: {e_tui}"
         )
 
+
+def create_z_normal_plane(solver_obj, surface_name, z_value_m):
+    """Create a z-normal iso-surface at z_value_m (meters). Overwrites if it exists."""
+    e_settings = None
+    try:
+        iso_group = solver_obj.settings.results.surfaces.iso_surface
+        existing = list_named_object_names(iso_group, "results.surfaces.iso_surface")
+        if surface_name in existing:
+            try:
+                iso_group.delete(surface_name)
+                print(f"Deleted existing iso-surface: {surface_name}")
+            except Exception as del_e:
+                print(f"Could not delete iso-surface {surface_name}: {del_e}")
+
+        iso_group.create(surface_name)
+        iso_group[surface_name].field = "z-coordinate"
+        iso_group[surface_name].iso_values = [z_value_m]
+        print(f"Created iso-surface '{surface_name}' at z = {z_value_m:.6e} m (settings API)")
+        return
+    except Exception as exc:
+        e_settings = exc
+        print(f"Settings API failed for iso-surface '{surface_name}': {exc}")
+
+    try:
+        solver_obj.tui.surface.iso_surface(
+            "z-coordinate",
+            surface_name,
+            "()",
+            "()",
+            str(z_value_m),
+            "0",
+        )
+        print(f"Created iso-surface '{surface_name}' at z = {z_value_m:.6e} m (TUI fallback)")
+    except Exception as e_tui:
+        raise RuntimeError(
+            f"Could not create iso-surface '{surface_name}'. "
+            f"Settings error: {e_settings}. TUI error: {e_tui}"
+        )
+
+
 # ==========================================================
 # Cell 4. Launch Fluent through meshing mode and switch to solver
 # ==========================================================
@@ -858,6 +898,95 @@ try:
     pprint(computed_values)
 
     # ==========================================================
+    # Cell 8.5. Center-plane bulk salt average for CP denominator
+    # ==========================================================
+
+    _CHANNEL_HEIGHT_M = getattr(cfg, "channel_height_m", 0.00077)
+    _z_center_m = _CHANNEL_HEIGHT_M / 2.0
+    _z_candidates_center = [_z_center_m, 0.0]
+    _SALT_FIELD_CANDIDATES_CENTER = [
+        "nacl", "mass-fraction-of-nacl", "yi-0", "species-0", "udm-7",
+    ]
+
+    c_bulk_center_area_avg = None
+    c_bulk_center_area_avg_source = None
+    c_bulk_center_area_avg_units_or_type = None
+    c_bulk_center_plane_name = None
+    _c_bulk_center_diag = "not_attempted"
+
+    try:
+        _found_center_z = None
+        _found_center_pname = None
+
+        for _z_val in _z_candidates_center:
+            _pname = (
+                f"pp_plane_zc_{abs(_z_val):.7f}"
+                .replace(".", "p")
+            )
+            try:
+                create_z_normal_plane(solver, _pname, _z_val)
+                _found_center_z = _z_val
+                _found_center_pname = _pname
+                _c_bulk_center_diag = f"plane_at_z={_z_val}"
+                break
+            except Exception as _e_plane:
+                _c_bulk_center_diag = f"plane_z_{_z_val}_failed:{_e_plane}"
+                print(f"Center plane creation at z={_z_val} failed: {_e_plane}")
+
+        if _found_center_pname is not None:
+            for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
+                try:
+                    create_or_update_surface_report(
+                        solution,
+                        "pp_c_bulk_center",
+                        SURFACE_AREA_WEIGHTED_AVG,
+                        _salt_field,
+                        [_found_center_pname],
+                    )
+                    _val_center, _ = compute_one_report(
+                        solution, "pp_c_bulk_center", verbose=False
+                    )
+                    if _val_center is None:
+                        _c_bulk_center_diag = f"field={_salt_field},val=None"
+                        continue
+                    if 1e-4 <= _val_center <= 0.20:
+                        c_bulk_center_area_avg = _val_center
+                        c_bulk_center_area_avg_source = _salt_field
+                        c_bulk_center_area_avg_units_or_type = "mass_fraction"
+                        c_bulk_center_plane_name = _found_center_pname
+                        _c_bulk_center_diag = (
+                            f"ok,field={_salt_field},z={_found_center_z},"
+                            f"val={_val_center:.6g}"
+                        )
+                        break
+                    elif 50 <= _val_center <= 3000:
+                        c_bulk_center_area_avg = _val_center
+                        c_bulk_center_area_avg_source = _salt_field
+                        c_bulk_center_area_avg_units_or_type = "molar_mol_m3"
+                        c_bulk_center_plane_name = _found_center_pname
+                        _c_bulk_center_diag = (
+                            f"ok,field={_salt_field},z={_found_center_z},"
+                            f"val={_val_center:.6g}"
+                        )
+                        break
+                    else:
+                        _c_bulk_center_diag = (
+                            f"field={_salt_field},val={_val_center:.4g},not_plausible"
+                        )
+                except Exception as _e_salt:
+                    _c_bulk_center_diag = f"field={_salt_field},err:{_e_salt}"
+    except Exception as _e_center:
+        _c_bulk_center_diag = f"exception:{_e_center}"
+        print(f"WARNING: center-plane bulk salt average failed: {_e_center}")
+
+    print(
+        f"\nCenter-plane bulk salt average: {c_bulk_center_area_avg} "
+        f"({c_bulk_center_area_avg_units_or_type})"
+    )
+    print(f"  Plane : {c_bulk_center_plane_name}  Field: {c_bulk_center_area_avg_source}")
+    print(f"  Diag  : {_c_bulk_center_diag}")
+
+    # ==========================================================
     # Cell 9. Build summary tables
     # ==========================================================
 
@@ -1058,6 +1187,11 @@ try:
         {"metric": "total_sink_volume_integral_UDM2", "value": total_sink_volint, "unit": "kg/s"},
         {"metric": "mass_balance_error_boundary_minus_total_sink", "value": mass_balance_error, "unit": "kg/s"},
         {"metric": "mass_balance_relative_error", "value": mass_balance_relative_error, "unit": "-"},
+
+        {"metric": "c_bulk_center_area_avg",               "value": c_bulk_center_area_avg,                          "unit": c_bulk_center_area_avg_units_or_type or "-"},
+        {"metric": "c_bulk_center_area_avg_source",        "value": c_bulk_center_area_avg_source or "",              "unit": "-"},
+        {"metric": "c_bulk_center_area_avg_units_or_type", "value": c_bulk_center_area_avg_units_or_type or "",       "unit": "-"},
+        {"metric": "c_bulk_center_plane_name",             "value": c_bulk_center_plane_name or "",                   "unit": "-"},
     ]
 
     # ----------------------------------------------------------
@@ -1208,6 +1342,11 @@ try:
             "wall_shear_rate_avg": wall_shear_rate_avg,
             "wall_shear_rate_max": wall_shear_rate_max,
             "wall_shear_rate_min": wall_shear_rate_min,
+            "c_bulk_center_area_avg": c_bulk_center_area_avg,
+            "c_bulk_center_area_avg_source": c_bulk_center_area_avg_source,
+            "c_bulk_center_area_avg_units_or_type": c_bulk_center_area_avg_units_or_type,
+            "c_bulk_center_plane_name": c_bulk_center_plane_name,
+            "c_bulk_center_diag": _c_bulk_center_diag,
         },
         "raw_results": raw_results,
     }

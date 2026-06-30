@@ -560,6 +560,7 @@ def build_export_plan(
             "udf_ms_to_lmh":  UDF_MS_TO_LMH,
             "c_inlet_ref_mol": c_inlet_ref_mol,
             "operating_pressure": p_op,
+            "case_path": str(paths["case_path"]),
         })
 
     return plan
@@ -1794,6 +1795,88 @@ def create_shear_rate_wall_direct(
 
 
 # ---------------------------------------------------------------------------
+# PyFluent report CSV reader for CP bulk reference
+# ---------------------------------------------------------------------------
+
+def _read_pyfluent_bulk_center_avg(
+    plan_item: dict,
+) -> Tuple[Optional[float], str, str]:
+    """Read c_bulk_center_area_avg from the PyFluent summary_metrics_wide.csv.
+
+    Returns (value, units_or_type, diag). value is None when unavailable.
+    units_or_type is 'mass_fraction' or 'molar_mol_m3' as written by 01_pyfluent_report_extract.py.
+    """
+    import csv as _csv
+
+    case_path = Path(plan_item.get("case_path", ""))
+    if not case_path.is_dir():
+        return None, "", f"case_path_not_dir:{case_path}"
+
+    csv_path = case_path / "post" / "reports" / "summary_metrics_wide.csv"
+    if not csv_path.is_file():
+        return None, "", f"csv_not_found:{csv_path}"
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+            reader = _csv.DictReader(fh)
+            rows = list(reader)
+    except Exception as exc:
+        return None, "", f"csv_read_err:{exc}"
+
+    if not rows:
+        return None, "", "csv_empty"
+
+    row = rows[0]
+    val_str = (row.get("c_bulk_center_area_avg") or "").strip()
+    units_str = (row.get("c_bulk_center_area_avg_units_or_type") or "").strip()
+
+    if not val_str or val_str.lower() in ("none", "nan", ""):
+        return None, units_str, f"c_bulk_center_area_avg_missing_in_csv"
+
+    try:
+        value = float(val_str)
+    except ValueError:
+        return None, units_str, f"c_bulk_center_area_avg_not_numeric:{val_str!r}"
+
+    return value, units_str, f"read_ok,val={value:.6g},units={units_str}"
+
+
+# ---------------------------------------------------------------------------
+# EnSight variable inventory dump (for shear_rate diagnostics)
+# ---------------------------------------------------------------------------
+
+def _dump_variable_inventory(session: Any, output_path: Path) -> str:
+    """Dump all EnSight variable DESCRIPTION/TYPE/LOCATION metadata to JSON.
+
+    Returns the path string on success, or an error note string on failure.
+    """
+    inventory: List[dict] = []
+    try:
+        for var in session.ensight.objs.core.VARIABLES:
+            entry: dict = {}
+            for attr in ("DESCRIPTION", "TYPE", "LOCATION", "DIMENSION", "UNITS", "VARTYPE"):
+                try:
+                    entry[attr] = str(getattr(var, attr, ""))
+                except Exception:
+                    entry[attr] = ""
+            inventory.append(entry)
+    except Exception as exc:
+        inventory = [{"error": str(exc)}]
+
+    _safe_mkdir(output_path.parent)
+    try:
+        with open(output_path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"variable_count": len(inventory), "variables": inventory},
+                fh,
+                indent=2,
+            )
+        return str(output_path)
+    except Exception as exc:
+        return f"write_failed:{exc}"
+
+
+# ---------------------------------------------------------------------------
 # Export one contour image
 # ---------------------------------------------------------------------------
 
@@ -1891,11 +1974,22 @@ def export_contour(
     # 3. Locate UDM variable (used as fallback for cp_inlet / lmh)
     var_obj, matched_var_desc = find_ensight_variable(session, var_candidates)
     if var_obj is None:
-        _record(
-            STATUS_WARN, surface_desc,
-            f"Variable not found among candidates {var_candidates}. "
-            "Ensure the .dat.h5 contains UDM/field data and loaded correctly."
-        )
+        if field_key == "shear_rate":
+            derived_variable_mode = "wall_shear_unavailable"
+            _inv_path = output_file.parent / "ensight_variable_inventory.json"
+            _inv_written = _dump_variable_inventory(session, _inv_path)
+            _record(
+                STATUS_WARN, surface_desc,
+                f"Wall shear stress variable not found among candidates {var_candidates}. "
+                f"EnSight variable inventory written to: {_inv_written}. "
+                "Inspect the inventory to find the correct wall shear variable name."
+            )
+        else:
+            _record(
+                STATUS_WARN, surface_desc,
+                f"Variable not found among candidates {var_candidates}. "
+                "Ensure the .dat.h5 contains UDM/field data and loaded correctly."
+            )
         return
 
     # 3b. Attempt to build a direct derived variable from primitive EnSight fields.
@@ -1910,17 +2004,54 @@ def export_contour(
             if salt_obj is not None:
                 primitive_variables_used_str = salt_desc
 
-                # Primary: center-plane area-weighted bulk average.
-                # Plausibility filtering and multi-z fallback are handled inside
-                # compute_bulk_center_average; no redundant guard needed here.
-                fluid_vol_parts = find_fluid_volume_parts(session)
-                bulk_avg, cp_plane, plane_diag, cp_full_diag = compute_bulk_center_average(
-                    session, salt_desc, fluid_vol_parts
-                )
+                # Strategy 0: pre-computed bulk avg from PyFluent CSV (most reliable).
+                pf_val, pf_units, pf_diag = _read_pyfluent_bulk_center_avg(plan_item)
+                bulk_avg: Optional[float] = None
+                cp_full_diag: dict = {}
+                cp_plane: Optional[str] = None
+                plane_diag: str = ""
+
+                if pf_val is not None:
+                    is_conc = any(
+                        kw in _normalize(salt_desc)
+                        for kw in ["mol", "conc", "concentration"]
+                    )
+                    pf_ok = (50 <= pf_val <= 3000) if is_conc else (1e-4 <= pf_val <= 0.20)
+                    if pf_ok:
+                        bulk_avg = pf_val
+                        bulk_reference_mode_str = (
+                            "center_plane_area_weighted_average_from_pyfluent_report"
+                        )
+                        bulk_reference_value_float = pf_val
+                        bulk_reference_units_str = pf_units
+                        center_plane_name_str = "pyfluent_report_csv"
+                        cp_full_diag = {"pyfluent_source": pf_diag, "units": pf_units}
+                        info_msgs.append(
+                            f"CP bulk avg from PyFluent CSV: {pf_val:.6g} "
+                            f"({pf_units}); {pf_diag}"
+                        )
+                    else:
+                        info_msgs.append(
+                            f"PyFluent CSV val={pf_val:.4g} ({pf_units}) not plausible "
+                            f"for salt_desc={salt_desc} (is_conc={is_conc}); "
+                            "trying EnSight AMEAN"
+                        )
+                else:
+                    info_msgs.append(
+                        f"PyFluent CSV unavailable ({pf_diag}); trying EnSight AMEAN"
+                    )
+
+                # Strategy 1: center-plane area-weighted average from EnSight.
+                if bulk_avg is None:
+                    fluid_vol_parts = find_fluid_volume_parts(session)
+                    bulk_avg, cp_plane, plane_diag, cp_full_diag = (
+                        compute_bulk_center_average(session, salt_desc, fluid_vol_parts)
+                    )
                 center_plane_diagnostics_dict = cp_full_diag
 
                 if bulk_avg is not None and bulk_avg > 0:
-                    center_plane_name_str = cp_plane or ""
+                    if not center_plane_name_str:
+                        center_plane_name_str = cp_plane or ""
                     cp_var, cp_desc, cp_diag = create_cp_wall_direct(
                         session, salt_desc, bulk_avg
                     )
@@ -1928,16 +2059,19 @@ def export_contour(
                         var_obj = cp_var
                         matched_var_desc = cp_desc
                         derived_variable_mode = "direct_cp_center_avg"
-                        bulk_reference_mode_str = "center_plane_area_weighted_average"
-                        bulk_reference_value_float = bulk_avg
-                        bulk_reference_units_str = "same_as_salt_variable"
+                        if not bulk_reference_mode_str:
+                            bulk_reference_mode_str = "center_plane_area_weighted_average"
+                        if bulk_reference_value_float is None:
+                            bulk_reference_value_float = bulk_avg
+                        if not bulk_reference_units_str:
+                            bulk_reference_units_str = "same_as_salt_variable"
                         formula_summary_str = (
                             f"CP_WALL_DIRECT={salt_desc}/{bulk_avg:.6g} "
                             f"(center-plane area-wtd avg)"
                         )
                         info_msgs.append(
                             f"CP_WALL_DIRECT created: {cp_diag}; "
-                            f"bulk_avg={bulk_avg:.6g} from {cp_plane}"
+                            f"bulk_avg={bulk_avg:.6g}"
                         )
                     else:
                         warnings.append(f"WARN: CP_WALL_DIRECT calculator failed ({cp_diag})")
