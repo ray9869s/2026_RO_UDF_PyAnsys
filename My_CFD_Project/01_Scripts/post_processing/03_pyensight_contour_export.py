@@ -1980,9 +1980,9 @@ def export_contour(
             _inv_written = _dump_variable_inventory(session, _inv_path)
             _record(
                 STATUS_WARN, surface_desc,
-                f"Wall shear stress variable not found among candidates {var_candidates}. "
+                f"Wall shear stress not found in EnSight inventory (candidates: {var_candidates}). "
                 f"EnSight variable inventory written to: {_inv_written}. "
-                "Inspect the inventory to find the correct wall shear variable name."
+                "Use 03b_pyfluent_shear_contour_export.py to export shear_rate via PyFluent (wall-shear / mu)."
             )
         else:
             _record(
