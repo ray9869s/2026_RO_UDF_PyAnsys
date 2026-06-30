@@ -40,6 +40,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -216,18 +218,35 @@ def collect_wall_zones(setup: Any) -> List[str]:
 # Diagnostic: detect shear-related field and CFF candidates
 # ---------------------------------------------------------------------------
 
-def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str], List[str]]:
-    """Return (scalar_candidates, cff_candidates, all_scalar_names_head).
+def _unique_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in items:
+        if item and item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
+def detect_shear_candidates(
+    solver: Any,
+) -> Tuple[List[str], List[str], List[str], List[str], str]:
+    """Return shear-related scalar/CFF diagnostics.
 
     scalar_candidates:    solverName keys from field_info that match shear/wall keywords.
     cff_candidates:       names from list_valid_cell_function_names that match.
     all_scalar_names_head: first 100 scalar field names when scalar_candidates is empty
                            (populated so a single server run reveals the actual names);
                            empty list when scalar_candidates is non-empty.
+    inferred_cff_candidates: CFF tokens inferred from scalar names when the valid CFF
+                             list cannot be captured programmatically.
+    cff_candidate_source: valid_cff_list, inferred_from_scalar_field_name, mixed, or none.
     """
     scalar_candidates: List[str] = []
     cff_candidates: List[str] = []
     all_scalar_names_head: List[str] = []
+    inferred_cff_candidates: List[str] = []
+    cff_candidate_source = "none"
 
     # Method 1: enumerate scalar fields via field_data field_info
     print("  [Diag] Enumerating scalar field names via field_info ...")
@@ -250,21 +269,53 @@ def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str], List[str
     # Method 2: list valid CFF cell function names
     print("  [Diag] Listing valid CFF cell function names ...")
     try:
-        result = solver.tui.define.custom_field_functions.list_valid_cell_function_names()
-        raw = str(result) if result is not None else ""
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+            result = solver.tui.define.custom_field_functions.list_valid_cell_function_names()
+        raw_parts = []
+        if result is not None:
+            raw_parts.append(str(result))
+        if stdout_buf.getvalue():
+            raw_parts.append(stdout_buf.getvalue())
+        if stderr_buf.getvalue():
+            raw_parts.append(stderr_buf.getvalue())
+        raw = "\n".join(raw_parts)
         # The output is typically a multiline string of names
-        tokens = re.split(r"[\s,]+", raw)
-        cff_candidates = [
+        tokens = [t.strip("()[]{}'\",;") for t in re.split(r"[\s,]+", raw)]
+        cff_candidates = _unique_preserve_order([
             t for t in tokens
             if t and any(k in t.lower() for k in ("wall", "shear"))
-        ]
+        ])
         print(f"  [Diag] Wall/shear CFF candidates ({len(cff_candidates)}): {cff_candidates}")
         if not cff_candidates:
             print(f"  [Diag] (Full CFF list head): {raw[:500]!r}")
     except Exception as exc:
         print(f"  [Diag] CFF name listing failed: {exc}")
 
-    return scalar_candidates, cff_candidates, all_scalar_names_head
+    # Fluent display/contour scalar fields may use hyphens (wall-shear) while
+    # Custom Field Function cell function tokens may use underscores (wall_shear).
+    # If the valid CFF list could not be captured but wall-shear is visible as a
+    # scalar field, record wall_shear as inferred, not confirmed.
+    scalar_norms = {str(name).strip().lower() for name in scalar_candidates}
+    if "wall-shear" in scalar_norms and "wall_shear" not in cff_candidates:
+        inferred_cff_candidates.append("wall_shear")
+
+    inferred_cff_candidates = _unique_preserve_order(inferred_cff_candidates)
+    if cff_candidates and inferred_cff_candidates:
+        cff_candidate_source = "valid_cff_list+inferred_from_scalar_field_name"
+    elif cff_candidates:
+        cff_candidate_source = "valid_cff_list"
+    elif inferred_cff_candidates:
+        cff_candidate_source = "inferred_from_scalar_field_name"
+
+    return (
+        scalar_candidates,
+        cff_candidates,
+        all_scalar_names_head,
+        inferred_cff_candidates,
+        cff_candidate_source,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +327,15 @@ def _manual_cff_steps(cff_name: str, mu: float = DEFAULT_MU) -> str:
         "\nManual Fluent CFF setup steps for server use\n"
         "============================================\n"
         f"Recommended CFF name: {cff_name}\n"
-        f"Intended definition : wall-shear / {mu:.6f}\n\n"
+        f"Try this Fluent CFF expression first: wall_shear / {mu:.6f}\n\n"
         "On the Windows server, open the solved case/data in Fluent and create a "
         "Custom Field Function in the Fluent GUI with the name and definition "
-        "above. If your Fluent GUI version supports saving/exporting Custom Field "
+        "above. If the GUI inserts a different token automatically, use the "
+        "GUI-inserted wall shear magnitude token. If your Fluent GUI version "
+        "supports saving/exporting Custom Field "
         "Functions, save/export that CFF file.\n\n"
+        "Note: the display/contour field may appear as wall-shear, but the CFF "
+        "cell function token may be wall_shear.\n\n"
         "Then rerun this script with:\n"
         f"  --cff-file <path_to_saved_cff_file> --cff-name {cff_name}\n\n"
         "Exact GUI menu names vary by Fluent version, so use the Custom Field "
@@ -341,11 +396,17 @@ def _load_cff_file(solver: Any, cff_file: Path) -> Tuple[bool, str, str]:
 
 def _cff_expression_variants(mu: float) -> List[str]:
     return [
+        f"wall_shear / {mu:.6e}",
         f"wall-shear / {mu:.6e}",
         f'"wall-shear" / {mu:.6e}',
         f"{{wall-shear}} / {mu:.6e}",
         f"[wall-shear] / {mu:.6e}",
     ]
+
+
+def _cell_function_token_from_expression(expression: str) -> str:
+    token = expression.split("/", 1)[0].strip()
+    return token.strip("\"'{}[]")
 
 
 def _delete_cff_if_exists(solver: Any, cff_name: str) -> None:
@@ -381,6 +442,7 @@ def _create_cff_direct(
             attempts.append({
                 "cff_name": cff_name,
                 "expression": expression,
+                "cell_function_token": _cell_function_token_from_expression(expression),
                 "status": "SUCCESS",
                 "error": "",
             })
@@ -391,6 +453,7 @@ def _create_cff_direct(
             attempts.append({
                 "cff_name": cff_name,
                 "expression": expression,
+                "cell_function_token": _cell_function_token_from_expression(expression),
                 "status": "FAILED",
                 "error": err,
             })
@@ -416,6 +479,7 @@ def prepare_native_cff(
         "cff_direct_create_status": "SKIPPED",
         "cff_direct_create_errors": [],
         "cff_expression_attempts": [],
+        "selected_cff_cell_function": "",
         "ready": False,
         "error": "",
     }
@@ -426,6 +490,7 @@ def prepare_native_cff(
         if ok:
             result["cff_file_load_status"] = "SUCCESS"
             result["native_variable_used"] = cff_name
+            result["selected_cff_cell_function"] = "from_cff_file"
             result["ready"] = True
             return result
         result["cff_file_load_status"] = "FAILED"
@@ -439,6 +504,13 @@ def prepare_native_cff(
     if ok:
         result["cff_direct_create_status"] = "SUCCESS"
         result["native_variable_used"] = cff_name
+        success_attempt = next(
+            (attempt for attempt in attempts if attempt.get("status") == "SUCCESS"),
+            {},
+        )
+        result["selected_cff_cell_function"] = success_attempt.get(
+            "cell_function_token", ""
+        )
         result["ready"] = True
         return result
 
@@ -758,6 +830,9 @@ def build_status_payload(
     output_files: List[Path],
     message: str,
     selected_variable: Optional[str],
+    selected_variable_for_field_data: Optional[str],
+    selected_cff_cell_function: str,
+    selected_wall_shear_source: str,
     derived_variable_mode: str,
     native_attempted: bool,
     native_status: str,
@@ -777,6 +852,8 @@ def build_status_payload(
     fallback_error: str,
     shear_related_field_candidates: List[str],
     shear_related_cff_candidates: List[str],
+    inferred_cff_cell_function_candidates: List[str],
+    cff_candidate_source: str,
     background: str,
     view_margin: float,
     image_width: int,
@@ -789,6 +866,9 @@ def build_status_payload(
         "field_key": "shear_rate",
         "status": status,
         "selected_variable": selected_variable,
+        "selected_variable_for_field_data": selected_variable_for_field_data,
+        "selected_cff_cell_function": selected_cff_cell_function,
+        "selected_wall_shear_source": selected_wall_shear_source,
         "derived_variable_mode": derived_variable_mode,
         "formula_summary": "wall-shear / mu",
         "contour_target_type": "membrane_wall",
@@ -825,6 +905,8 @@ def build_status_payload(
         "fallback_error": fallback_error,
         "shear_related_field_candidates": shear_related_field_candidates,
         "shear_related_cff_candidates": shear_related_cff_candidates,
+        "inferred_cff_cell_function_candidates": inferred_cff_cell_function_candidates,
+        "cff_candidate_source": cff_candidate_source,
         "all_scalar_field_names_head": all_scalar_field_names_head or [],
         "background": background,
         "view_margin": view_margin,
@@ -1009,6 +1091,9 @@ def main() -> int:
             mu_used=mu, output_files=list(output_files_by_side.values()),
             message="dry-run only",
             selected_variable=None,
+            selected_variable_for_field_data=None,
+            selected_cff_cell_function="",
+            selected_wall_shear_source="",
             derived_variable_mode="pyfluent_native_cff_wall_shear_over_mu",
             native_attempted=False, native_status="SKIPPED", native_error="",
             native_variable_used=None,
@@ -1021,6 +1106,8 @@ def main() -> int:
             cff_expression_attempts=[],
             fallback_attempted=False, fallback_status="SKIPPED", fallback_error="",
             shear_related_field_candidates=[], shear_related_cff_candidates=[],
+            inferred_cff_cell_function_candidates=[],
+            cff_candidate_source="none",
             background=args.background, view_margin=args.view_margin,
             image_width=eff_width, image_height=eff_height,
         )
@@ -1038,6 +1125,9 @@ def main() -> int:
                 mu_used=mu, output_files=list(output_files_by_side.values()),
                 message="Skipped: all output files already exist.",
                 selected_variable=None,
+                selected_variable_for_field_data=None,
+                selected_cff_cell_function="",
+                selected_wall_shear_source="",
                 derived_variable_mode="pyfluent_native_cff_wall_shear_over_mu",
                 native_attempted=False, native_status="SKIPPED", native_error="",
                 native_variable_used=None,
@@ -1050,6 +1140,8 @@ def main() -> int:
                 cff_expression_attempts=[],
                 fallback_attempted=False, fallback_status="SKIPPED", fallback_error="",
                 shear_related_field_candidates=[], shear_related_cff_candidates=[],
+                inferred_cff_cell_function_candidates=[],
+                cff_candidate_source="none",
                 background=args.background, view_margin=args.view_margin,
                 image_width=eff_width, image_height=eff_height,
             )
@@ -1078,6 +1170,9 @@ def main() -> int:
     all_selected_surfs: List[str] = []
     all_output_files:   List[Path] = []
     used_variable:      Optional[str] = None
+    selected_variable_for_field_data: Optional[str] = None
+    selected_cff_cell_function = ""
+    selected_wall_shear_source = ""
     successful_side_modes: List[str] = []
     derived_mode        = "pyfluent_native_cff_wall_shear_over_mu"
     native_attempted    = False
@@ -1098,6 +1193,8 @@ def main() -> int:
     fallback_side_results: List[Tuple[bool, str, str]] = []
     scalar_candidates:      List[str] = []
     cff_candidates:         List[str] = []
+    inferred_cff_candidates: List[str] = []
+    cff_candidate_source = "none"
     all_scalar_names_head:  List[str] = []
 
     try:
@@ -1139,7 +1236,13 @@ def main() -> int:
 
         # --- Diagnostics: detect shear-related candidates ---
         print("\nRunning field/CFF diagnostics ...")
-        scalar_candidates, cff_candidates, all_scalar_names_head = detect_shear_candidates(solver)
+        (
+            scalar_candidates,
+            cff_candidates,
+            all_scalar_names_head,
+            inferred_cff_candidates,
+            cff_candidate_source,
+        ) = detect_shear_candidates(solver)
 
         # --- Prepare native Fluent CFF for wall shear rate ---
         native_attempted = True
@@ -1151,6 +1254,7 @@ def main() -> int:
             mu=mu,
         )
         native_variable_used = cff_prep["native_variable_used"] or None
+        selected_cff_cell_function = str(cff_prep["selected_cff_cell_function"])
         cff_file_load_attempted = bool(cff_prep["cff_file_load_attempted"])
         cff_file_load_status = str(cff_prep["cff_file_load_status"])
         cff_file_load_error = str(cff_prep["cff_file_load_error"])
@@ -1248,6 +1352,8 @@ def main() -> int:
                 if fb_ok:
                     side_ok   = True
                     side_var  = fb_var
+                    if selected_variable_for_field_data is None:
+                        selected_variable_for_field_data = fb_var
                     side_mode = "pyfluent_field_data_wall_shear_over_mu"
                     print(f"  [B] Fallback SUCCESS: {output_file.name}")
                 else:
@@ -1295,6 +1401,16 @@ def main() -> int:
                 derived_mode = unique_modes[0]
             else:
                 derived_mode = "mixed_native_cff_and_field_data_wall_shear_over_mu"
+
+        if derived_mode == "pyfluent_native_cff_wall_shear_over_mu":
+            selected_wall_shear_source = selected_cff_cell_function
+        elif derived_mode == "pyfluent_field_data_wall_shear_over_mu":
+            selected_wall_shear_source = selected_variable_for_field_data or ""
+        elif derived_mode == "mixed_native_cff_and_field_data_wall_shear_over_mu":
+            selected_wall_shear_source = (
+                f"native:{selected_cff_cell_function}; "
+                f"fallback:{selected_variable_for_field_data or ''}"
+            )
 
         # --- Overall status ---
         any_ok  = any(ok for ok, _, _ in side_results)
@@ -1344,6 +1460,9 @@ def main() -> int:
         output_files=all_output_files if all_output_files else list(output_files_by_side.values()),
         message=final_message,
         selected_variable=used_variable,
+        selected_variable_for_field_data=selected_variable_for_field_data,
+        selected_cff_cell_function=selected_cff_cell_function,
+        selected_wall_shear_source=selected_wall_shear_source,
         derived_variable_mode=derived_mode,
         native_attempted=native_attempted,
         native_status=native_status_str,
@@ -1363,6 +1482,8 @@ def main() -> int:
         fallback_error=fb_error_str,
         shear_related_field_candidates=scalar_candidates,
         shear_related_cff_candidates=cff_candidates,
+        inferred_cff_cell_function_candidates=inferred_cff_candidates,
+        cff_candidate_source=cff_candidate_source,
         all_scalar_field_names_head=all_scalar_names_head,
         background=args.background,
         view_margin=args.view_margin,
