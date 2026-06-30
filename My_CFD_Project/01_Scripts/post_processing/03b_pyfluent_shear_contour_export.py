@@ -70,6 +70,7 @@ CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 DEFAULT_CFF_NAME = "cff_wall_shear_rate"
 CONTOUR_NAME = "pp_shear_rate"
 DEFAULT_MU = 8.93e-4
+CFF_CELL_FUNCTION_TOKEN = "wall_shear"
 
 # Candidate Fluent scalar variable names for wall shear stress magnitude.
 # These are searched against the Fluent field_info registry; only confirmed
@@ -347,6 +348,33 @@ def _format_exception(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _short_text(value: Any, limit: int = 2000) -> str:
+    try:
+        text = json.dumps(value, default=str, sort_keys=True)
+    except Exception:
+        text = repr(value)
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
+
+
+def _safe_public_attrs(obj: Any, limit: int = 120) -> List[str]:
+    try:
+        names = [str(name) for name in dir(obj) if not str(name).startswith("_")]
+    except Exception as exc:
+        return [f"<dir failed: {_format_exception(exc)}>"]
+    return sorted(names)[:limit]
+
+
+def _safe_state_head(obj: Any, limit: int = 2000) -> str:
+    if not hasattr(obj, "get_state"):
+        return ""
+    try:
+        return _short_text(obj.get_state(), limit=limit)
+    except Exception as exc:
+        return f"<get_state failed: {_format_exception(exc)}>"
+
+
 def _try_call(label: str, func: Any) -> Tuple[bool, str]:
     try:
         func()
@@ -396,7 +424,7 @@ def _load_cff_file(solver: Any, cff_file: Path) -> Tuple[bool, str, str]:
 
 def _cff_expression_variants(mu: float) -> List[str]:
     return [
-        f"wall_shear / {mu:.6e}",
+        f"{CFF_CELL_FUNCTION_TOKEN} / {mu:.6e}",
         f"wall-shear / {mu:.6e}",
         f'"wall-shear" / {mu:.6e}',
         f"{{wall-shear}} / {mu:.6e}",
@@ -404,9 +432,254 @@ def _cff_expression_variants(mu: float) -> List[str]:
     ]
 
 
+def _default_cff_expression(mu: float) -> str:
+    return f"{CFF_CELL_FUNCTION_TOKEN} / {mu:.6e}"
+
+
 def _cell_function_token_from_expression(expression: str) -> str:
     token = expression.split("/", 1)[0].strip()
     return token.strip("\"'{}[]")
+
+
+def _find_expression_state_key(state: Dict[Any, Any]) -> Optional[Any]:
+    for key in state.keys():
+        key_l = str(key).lower().replace("-", "_")
+        if any(marker in key_l for marker in ("definition", "expression", "formula")):
+            return key
+    return None
+
+
+def _try_set_settings_target_expression(
+    target: Any,
+    expression: str,
+    errors: List[str],
+) -> Tuple[bool, str]:
+    target_attrs = _safe_public_attrs(target, limit=10000)
+
+    for attr_name in (
+        "definition",
+        "expression",
+        "field_function",
+        "field_function_definition",
+        "formula",
+    ):
+        if attr_name not in target_attrs:
+            continue
+        try:
+            setattr(target, attr_name, expression)
+            return True, f"target setattr {attr_name}"
+        except Exception as exc:
+            errors.append(f"target setattr {attr_name}: {_format_exception(exc)}")
+
+    if "get_state" in target_attrs and "set_state" in target_attrs:
+        try:
+            state = target.get_state()
+            if isinstance(state, dict):
+                key = _find_expression_state_key(state)
+                if key is not None:
+                    new_state = dict(state)
+                    new_state[key] = expression
+                    target.set_state(new_state)
+                    return True, f"target set_state key {key!r}"
+                errors.append("target set_state: no expression/definition/formula key")
+            else:
+                errors.append(f"target get_state returned {type(state).__name__}, not dict")
+        except Exception as exc:
+            errors.append(f"target set_state: {_format_exception(exc)}")
+
+    return False, ""
+
+
+def _try_get_settings_named_object(
+    collection: Any,
+    cff_name: str,
+    errors: List[str],
+) -> Optional[Any]:
+    if hasattr(collection, "__getitem__"):
+        try:
+            return collection[cff_name]
+        except Exception as exc:
+            errors.append(f"settings getitem {cff_name!r}: {_format_exception(exc)}")
+    else:
+        errors.append("settings getitem: __getitem__ not available")
+
+    attrs = _safe_public_attrs(collection, limit=10000)
+    if "get" in attrs:
+        try:
+            return collection.get(cff_name)
+        except Exception as exc:
+            errors.append(f"settings get {cff_name!r}: {_format_exception(exc)}")
+
+    return None
+
+
+def _try_settings_collection_state(
+    collection: Any,
+    cff_name: str,
+    expression: str,
+    errors: List[str],
+) -> Tuple[bool, str]:
+    attrs = _safe_public_attrs(collection, limit=10000)
+    if "get_state" not in attrs or "set_state" not in attrs:
+        return False, ""
+
+    try:
+        state = collection.get_state()
+    except Exception as exc:
+        errors.append(f"collection get_state: {_format_exception(exc)}")
+        return False, ""
+
+    if not isinstance(state, dict):
+        errors.append(f"collection get_state returned {type(state).__name__}, not dict")
+        return False, ""
+
+    new_state = dict(state)
+    if cff_name in new_state and isinstance(new_state[cff_name], dict):
+        entry = dict(new_state[cff_name])
+        key = _find_expression_state_key(entry)
+        if key is not None:
+            entry[key] = expression
+            new_state[cff_name] = entry
+            try:
+                collection.set_state(new_state)
+                return True, f"collection set_state existing {cff_name!r} key {key!r}"
+            except Exception as exc:
+                errors.append(f"collection set_state existing: {_format_exception(exc)}")
+
+    for exemplar_name, exemplar in state.items():
+        if not isinstance(exemplar, dict):
+            continue
+        key = _find_expression_state_key(exemplar)
+        if key is None:
+            continue
+        entry = dict(exemplar)
+        entry[key] = expression
+        name_key = next(
+            (k for k in entry.keys() if str(k).lower() in ("name", "field_function_name")),
+            None,
+        )
+        if name_key is not None:
+            entry[name_key] = cff_name
+        new_state[cff_name] = entry
+        try:
+            collection.set_state(new_state)
+            return (
+                True,
+                f"collection set_state cloned {exemplar_name!r} with key {key!r}",
+            )
+        except Exception as exc:
+            errors.append(f"collection set_state cloned exemplar: {_format_exception(exc)}")
+        break
+
+    errors.append("collection set_state: no existing state shape with expression key")
+    return False, ""
+
+
+def create_cff_via_settings_api(
+    solver: Any,
+    cff_name: str,
+    expression: str,
+) -> Dict[str, Any]:
+    """Best-effort CFF creation through discovered settings API objects."""
+    result: Dict[str, Any] = {
+        "attempted": True,
+        "status": "FAILED",
+        "error": "",
+        "available_attrs": [],
+        "state_head": "",
+        "method_used": "",
+        "errors": [],
+        "selected_cff_cell_function": _cell_function_token_from_expression(expression),
+    }
+    errors: List[str] = []
+
+    try:
+        cff_settings = solver.settings.results.custom_field_functions
+    except Exception as exc:
+        err = f"solver.settings.results.custom_field_functions: {_format_exception(exc)}"
+        result["error"] = err
+        result["errors"] = [err]
+        return result
+
+    result["available_attrs"] = _safe_public_attrs(cff_settings)
+    result["state_head"] = _safe_state_head(cff_settings)
+    attrs = set(_safe_public_attrs(cff_settings, limit=10000))
+
+    print("  Trying settings API CFF creation ...")
+    print(f"  Settings CFF expression: {cff_name!r} = {expression!r}")
+
+    target = _try_get_settings_named_object(cff_settings, cff_name, errors)
+    if target is not None:
+        ok, method = _try_set_settings_target_expression(target, expression, errors)
+        if ok:
+            result["status"] = "SUCCESS"
+            result["method_used"] = f"settings existing object via {method}"
+            return result
+
+    if "delete" in attrs:
+        try:
+            cff_settings.delete(cff_name)
+        except Exception as exc:
+            errors.append(f"settings delete existing {cff_name!r}: {_format_exception(exc)}")
+
+    if "create" in attrs:
+        create_attempts: List[Tuple[str, Any]] = [
+            ("create(cff_name)", lambda: cff_settings.create(cff_name)),
+            ("create(name=cff_name)", lambda: cff_settings.create(name=cff_name)),
+        ]
+        for label, create_call in create_attempts:
+            try:
+                created = create_call()
+                target = created
+                if target is None:
+                    target = _try_get_settings_named_object(cff_settings, cff_name, errors)
+                if target is None:
+                    errors.append(f"settings {label}: created object was not retrievable")
+                    continue
+                ok, method = _try_set_settings_target_expression(target, expression, errors)
+                if ok:
+                    result["status"] = "SUCCESS"
+                    result["method_used"] = f"settings {label} + {method}"
+                    return result
+                retrieved = _try_get_settings_named_object(cff_settings, cff_name, errors)
+                if retrieved is not None and retrieved is not target:
+                    ok, method = _try_set_settings_target_expression(
+                        retrieved, expression, errors
+                    )
+                    if ok:
+                        result["status"] = "SUCCESS"
+                        result["method_used"] = (
+                            f"settings {label} + retrieved object + {method}"
+                        )
+                        return result
+                errors.append(f"settings {label}: could not set expression on target")
+            except Exception as exc:
+                errors.append(f"settings {label}: {_format_exception(exc)}")
+    else:
+        errors.append("settings create: method not available")
+
+    ok, method = _try_settings_collection_state(cff_settings, cff_name, expression, errors)
+    if ok:
+        result["status"] = "SUCCESS"
+        result["method_used"] = f"settings {method}"
+        return result
+
+    result["errors"] = errors
+    result["error"] = " | ".join(errors) or "Settings API CFF creation failed"
+    return result
+
+
+def try_tui_journal_style_cff_creation(
+    solver: Any,
+    cff_name: str,
+    expression: str,
+) -> Dict[str, Any]:
+    """Record journal-style status without inventing an unverified CFF sequence."""
+    return {
+        "attempted": False,
+        "status": "SKIPPED",
+        "error": "No verified command-string CFF definition sequence found in repo/static inspection.",
+    }
 
 
 def _delete_cff_if_exists(solver: Any, cff_name: str) -> None:
@@ -475,6 +748,19 @@ def prepare_native_cff(
         "cff_file_load_attempted": False,
         "cff_file_load_status": "SKIPPED",
         "cff_file_load_error": "",
+        "settings_cff_attempted": False,
+        "settings_cff_status": "SKIPPED",
+        "settings_cff_error": "",
+        "settings_cff_available_attrs": [],
+        "settings_cff_state_head": "",
+        "tui_direct_attempted": False,
+        "tui_direct_status": "SKIPPED",
+        "tui_direct_errors": [],
+        "tui_journal_style_attempted": False,
+        "tui_journal_style_status": "SKIPPED",
+        "tui_journal_style_error": "",
+        "cff_creation_method_used": "",
+        "cff_expression": _default_cff_expression(mu),
         "cff_direct_create_attempted": False,
         "cff_direct_create_status": "SKIPPED",
         "cff_direct_create_errors": [],
@@ -491,18 +777,48 @@ def prepare_native_cff(
             result["cff_file_load_status"] = "SUCCESS"
             result["native_variable_used"] = cff_name
             result["selected_cff_cell_function"] = "from_cff_file"
+            result["cff_creation_method_used"] = f"cff_file:{method}"
             result["ready"] = True
             return result
         result["cff_file_load_status"] = "FAILED"
         result["cff_file_load_error"] = err or "CFF file load failed"
 
+    result["settings_cff_attempted"] = True
+    settings_result = create_cff_via_settings_api(
+        solver=solver,
+        cff_name=cff_name,
+        expression=result["cff_expression"],
+    )
+    result["settings_cff_status"] = settings_result["status"]
+    result["settings_cff_error"] = settings_result["error"]
+    result["settings_cff_available_attrs"] = settings_result["available_attrs"]
+    result["settings_cff_state_head"] = settings_result["state_head"]
+    if settings_result["status"] == "SUCCESS":
+        result["native_variable_used"] = cff_name
+        result["selected_cff_cell_function"] = settings_result["selected_cff_cell_function"]
+        result["cff_creation_method_used"] = settings_result["method_used"]
+        result["ready"] = True
+        return result
+
+    journal_result = try_tui_journal_style_cff_creation(
+        solver=solver,
+        cff_name=cff_name,
+        expression=result["cff_expression"],
+    )
+    result["tui_journal_style_attempted"] = journal_result["attempted"]
+    result["tui_journal_style_status"] = journal_result["status"]
+    result["tui_journal_style_error"] = journal_result["error"]
+
+    result["tui_direct_attempted"] = True
     result["cff_direct_create_attempted"] = True
     ok, attempts, errors = _create_cff_direct(solver, cff_name, mu)
     result["cff_expression_attempts"] = attempts
     result["cff_direct_create_errors"] = errors
+    result["tui_direct_errors"] = errors
 
     if ok:
         result["cff_direct_create_status"] = "SUCCESS"
+        result["tui_direct_status"] = "SUCCESS"
         result["native_variable_used"] = cff_name
         success_attempt = next(
             (attempt for attempt in attempts if attempt.get("status") == "SUCCESS"),
@@ -511,13 +827,20 @@ def prepare_native_cff(
         result["selected_cff_cell_function"] = success_attempt.get(
             "cell_function_token", ""
         )
+        result["cff_creation_method_used"] = "tui_direct_define"
         result["ready"] = True
         return result
 
     result["cff_direct_create_status"] = "FAILED"
-    result["error"] = (
-        result["cff_file_load_error"]
-        or "Direct CFF creation failed for all expression variants."
+    result["tui_direct_status"] = "FAILED"
+    error_parts = [
+        str(result["cff_file_load_error"]),
+        str(result["settings_cff_error"]),
+        str(result["tui_journal_style_error"]),
+        "; ".join(errors),
+    ]
+    result["error"] = " | ".join(part for part in error_parts if part) or (
+        "Direct CFF creation failed for all expression variants."
     )
     return result
 
@@ -859,7 +1182,46 @@ def build_status_payload(
     image_width: int,
     image_height: int,
     all_scalar_field_names_head: Optional[List[str]] = None,
+    settings_cff_attempted: bool = False,
+    settings_cff_status: str = "SKIPPED",
+    settings_cff_error: str = "",
+    settings_cff_available_attrs: Optional[List[str]] = None,
+    settings_cff_state_head: str = "",
+    tui_direct_attempted: bool = False,
+    tui_direct_status: str = "SKIPPED",
+    tui_direct_errors: Optional[List[str]] = None,
+    tui_journal_style_attempted: bool = False,
+    tui_journal_style_status: str = "SKIPPED",
+    tui_journal_style_error: str = "",
+    cff_creation_method_used: str = "",
+    cff_expression: str = "",
 ) -> Dict[str, Any]:
+    cff_attempted = (
+        cff_file_load_attempted
+        or settings_cff_attempted
+        or cff_direct_create_attempted
+    )
+    cff_status = (
+        "SUCCESS"
+        if (
+            cff_file_load_status == "SUCCESS"
+            or settings_cff_status == "SUCCESS"
+            or cff_direct_create_status == "SUCCESS"
+        )
+        else "FAILED"
+        if (
+            cff_file_load_status == "FAILED"
+            or settings_cff_status == "FAILED"
+            or cff_direct_create_status == "FAILED"
+        )
+        else "SKIPPED"
+    )
+    cff_error = (
+        cff_file_load_error
+        or settings_cff_error
+        or "; ".join(cff_direct_create_errors)
+    )
+
     return {
         "geo_name": geo_name,
         "case_name": case_name,
@@ -883,23 +1245,30 @@ def build_status_payload(
         "native_variable_used": native_variable_used,
         "cff_name": cff_name,
         "cff_file": "" if cff_file is None else str(cff_file),
+        "cff_expression": cff_expression,
+        "cff_creation_method_used": cff_creation_method_used,
         "cff_file_load_attempted": cff_file_load_attempted,
         "cff_file_load_status": cff_file_load_status,
         "cff_file_load_error": cff_file_load_error,
+        "settings_cff_attempted": settings_cff_attempted,
+        "settings_cff_status": settings_cff_status,
+        "settings_cff_error": settings_cff_error,
+        "settings_cff_available_attrs": settings_cff_available_attrs or [],
+        "settings_cff_state_head": settings_cff_state_head,
+        "tui_direct_attempted": tui_direct_attempted,
+        "tui_direct_status": tui_direct_status,
+        "tui_direct_errors": tui_direct_errors or [],
+        "tui_journal_style_attempted": tui_journal_style_attempted,
+        "tui_journal_style_status": tui_journal_style_status,
+        "tui_journal_style_error": tui_journal_style_error,
         "cff_direct_create_attempted": cff_direct_create_attempted,
         "cff_direct_create_status": cff_direct_create_status,
         "cff_direct_create_errors": cff_direct_create_errors,
         "cff_expression_attempts": cff_expression_attempts,
         # Backward-compatible aliases for older status readers.
-        "cff_attempted": cff_file_load_attempted or cff_direct_create_attempted,
-        "cff_status": (
-            "SUCCESS"
-            if cff_file_load_status == "SUCCESS" or cff_direct_create_status == "SUCCESS"
-            else "FAILED"
-            if cff_file_load_status == "FAILED" or cff_direct_create_status == "FAILED"
-            else "SKIPPED"
-        ),
-        "cff_error": cff_file_load_error or "; ".join(cff_direct_create_errors),
+        "cff_attempted": cff_attempted,
+        "cff_status": cff_status,
+        "cff_error": cff_error,
         "fallback_attempted": fallback_attempted,
         "fallback_status": fallback_status,
         "fallback_error": fallback_error,
@@ -1110,6 +1479,7 @@ def main() -> int:
             cff_candidate_source="none",
             background=args.background, view_margin=args.view_margin,
             image_width=eff_width, image_height=eff_height,
+            cff_expression=_default_cff_expression(mu),
         )
         write_status_json(status_file, payload)
         return 0
@@ -1144,6 +1514,7 @@ def main() -> int:
                 cff_candidate_source="none",
                 background=args.background, view_margin=args.view_margin,
                 image_width=eff_width, image_height=eff_height,
+                cff_expression=_default_cff_expression(mu),
             )
             write_status_json(status_file, payload)
             return 0
@@ -1182,6 +1553,19 @@ def main() -> int:
     cff_file_load_attempted = False
     cff_file_load_status    = "SKIPPED"
     cff_file_load_error     = ""
+    settings_cff_attempted  = False
+    settings_cff_status     = "SKIPPED"
+    settings_cff_error      = ""
+    settings_cff_available_attrs: List[str] = []
+    settings_cff_state_head = ""
+    tui_direct_attempted    = False
+    tui_direct_status       = "SKIPPED"
+    tui_direct_errors: List[str] = []
+    tui_journal_style_attempted = False
+    tui_journal_style_status    = "SKIPPED"
+    tui_journal_style_error     = ""
+    cff_creation_method_used    = ""
+    cff_expression              = _default_cff_expression(mu)
     cff_direct_create_attempted = False
     cff_direct_create_status    = "SKIPPED"
     cff_direct_create_errors: List[str] = []
@@ -1258,6 +1642,19 @@ def main() -> int:
         cff_file_load_attempted = bool(cff_prep["cff_file_load_attempted"])
         cff_file_load_status = str(cff_prep["cff_file_load_status"])
         cff_file_load_error = str(cff_prep["cff_file_load_error"])
+        settings_cff_attempted = bool(cff_prep["settings_cff_attempted"])
+        settings_cff_status = str(cff_prep["settings_cff_status"])
+        settings_cff_error = str(cff_prep["settings_cff_error"])
+        settings_cff_available_attrs = list(cff_prep["settings_cff_available_attrs"])
+        settings_cff_state_head = str(cff_prep["settings_cff_state_head"])
+        tui_direct_attempted = bool(cff_prep["tui_direct_attempted"])
+        tui_direct_status = str(cff_prep["tui_direct_status"])
+        tui_direct_errors = list(cff_prep["tui_direct_errors"])
+        tui_journal_style_attempted = bool(cff_prep["tui_journal_style_attempted"])
+        tui_journal_style_status = str(cff_prep["tui_journal_style_status"])
+        tui_journal_style_error = str(cff_prep["tui_journal_style_error"])
+        cff_creation_method_used = str(cff_prep["cff_creation_method_used"])
+        cff_expression = str(cff_prep["cff_expression"])
         cff_direct_create_attempted = bool(cff_prep["cff_direct_create_attempted"])
         cff_direct_create_status = str(cff_prep["cff_direct_create_status"])
         cff_direct_create_errors = list(cff_prep["cff_direct_create_errors"])
@@ -1473,6 +1870,19 @@ def main() -> int:
         cff_file_load_attempted=cff_file_load_attempted,
         cff_file_load_status=cff_file_load_status,
         cff_file_load_error=cff_file_load_error,
+        settings_cff_attempted=settings_cff_attempted,
+        settings_cff_status=settings_cff_status,
+        settings_cff_error=settings_cff_error,
+        settings_cff_available_attrs=settings_cff_available_attrs,
+        settings_cff_state_head=settings_cff_state_head,
+        tui_direct_attempted=tui_direct_attempted,
+        tui_direct_status=tui_direct_status,
+        tui_direct_errors=tui_direct_errors,
+        tui_journal_style_attempted=tui_journal_style_attempted,
+        tui_journal_style_status=tui_journal_style_status,
+        tui_journal_style_error=tui_journal_style_error,
+        cff_creation_method_used=cff_creation_method_used,
+        cff_expression=cff_expression,
         cff_direct_create_attempted=cff_direct_create_attempted,
         cff_direct_create_status=cff_direct_create_status,
         cff_direct_create_errors=cff_direct_create_errors,
