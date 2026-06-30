@@ -34,6 +34,8 @@ Usage:
       --geo-name Diamond_Spacer --case-name u0p2_p6M
   python 03b_pyfluent_shear_contour_export.py --membrane-surface both
   python 03b_pyfluent_shear_contour_export.py --shear-range 0,5000
+  python 03b_pyfluent_shear_contour_export.py --print-cff-manual-steps
+  python 03b_pyfluent_shear_contour_export.py --cff-file C:/path/to/shear_rate.cff
 """
 from __future__ import annotations
 
@@ -63,8 +65,9 @@ DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
 # Fluent CFF and contour object names
-CFF_NAME = "cff_shear_rate"
+DEFAULT_CFF_NAME = "cff_wall_shear_rate"
 CONTOUR_NAME = "pp_shear_rate"
+DEFAULT_MU = 8.93e-4
 
 # Candidate Fluent scalar variable names for wall shear stress magnitude.
 # These are searched against the Fluent field_info registry; only confirmed
@@ -268,78 +271,221 @@ def detect_shear_candidates(solver: Any) -> Tuple[List[str], List[str], List[str
 # CFF direct path
 # ---------------------------------------------------------------------------
 
-def _attempt_cff_define(solver: Any, cff_expr_var: str, mu: float) -> str:
-    """Try to define a CFF with one expression variable. Returns expression on success."""
-    definition = f"{cff_expr_var} / {mu:.6e}"
+def _manual_cff_steps(cff_name: str, mu: float = DEFAULT_MU) -> str:
+    return (
+        "\nManual Fluent CFF setup steps for server use\n"
+        "============================================\n"
+        f"Recommended CFF name: {cff_name}\n"
+        f"Intended definition : wall-shear / {mu:.6f}\n\n"
+        "On the Windows server, open the solved case/data in Fluent and create a "
+        "Custom Field Function in the Fluent GUI with the name and definition "
+        "above. If your Fluent GUI version supports saving/exporting Custom Field "
+        "Functions, save/export that CFF file.\n\n"
+        "Then rerun this script with:\n"
+        f"  --cff-file <path_to_saved_cff_file> --cff-name {cff_name}\n\n"
+        "Exact GUI menu names vary by Fluent version, so use the Custom Field "
+        "Function editor provided by your installed Fluent GUI.\n"
+    )
+
+
+def _format_exception(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _try_call(label: str, func: Any) -> Tuple[bool, str]:
     try:
-        solver.tui.define.custom_field_functions.delete(CFF_NAME)
+        func()
+        return True, ""
+    except Exception as exc:
+        return False, f"{label}: {_format_exception(exc)}"
+
+
+def _load_cff_file(solver: Any, cff_file: Path) -> Tuple[bool, str, str]:
+    """Best-effort CFF file load through likely Fluent TUI entry points.
+
+    Returns (success, method_label, error_summary). The exact PyFluent TUI path
+    varies by Fluent version, so each attempt is isolated and recorded.
+    """
+    cff_path = as_fluent_path(cff_file)
+    attempts: List[Tuple[str, Any]] = [
+        (
+            "tui.define.custom_field_functions.read",
+            lambda: solver.tui.define.custom_field_functions.read(cff_path),
+        ),
+        (
+            "tui.define.custom_field_functions.load",
+            lambda: solver.tui.define.custom_field_functions.load(cff_path),
+        ),
+        (
+            "tui.define.custom_field_functions.read_cff_file",
+            lambda: solver.tui.define.custom_field_functions.read_cff_file(cff_path),
+        ),
+        (
+            "tui.file.read_custom_field_functions",
+            lambda: solver.tui.file.read_custom_field_functions(cff_path),
+        ),
+    ]
+
+    errors: List[str] = []
+    for label, func in attempts:
+        print(f"  Trying CFF file load via {label}: {cff_path}")
+        ok, err = _try_call(label, func)
+        if ok:
+            print(f"  CFF file load succeeded via {label}")
+            return True, label, ""
+        errors.append(err)
+        print(f"  CFF file load failed: {err}")
+
+    return False, "", " | ".join(errors)
+
+
+def _cff_expression_variants(mu: float) -> List[str]:
+    return [
+        f"wall-shear / {mu:.6e}",
+        f'"wall-shear" / {mu:.6e}',
+        f"{{wall-shear}} / {mu:.6e}",
+        f"[wall-shear] / {mu:.6e}",
+    ]
+
+
+def _delete_cff_if_exists(solver: Any, cff_name: str) -> None:
+    try:
+        solver.tui.define.custom_field_functions.delete(cff_name)
     except Exception:
         pass
-    solver.tui.define.custom_field_functions.define(CFF_NAME, definition)
-    print(f"  CFF defined: {CFF_NAME!r} = {definition!r}")
-    return definition
 
 
-def try_cff_path(
+def _try_define_cff_expression(
     solver: Any,
+    cff_name: str,
+    expression: str,
+) -> Tuple[bool, str]:
+    _delete_cff_if_exists(solver, cff_name)
+    solver.tui.define.custom_field_functions.define(cff_name, expression)
+    return True, ""
+
+
+def _create_cff_direct(
+    solver: Any,
+    cff_name: str,
     mu: float,
-    scalar_candidates: List[str],
-    cff_candidates: List[str],
+) -> Tuple[bool, List[Dict[str, str]], List[str]]:
+    """Try bounded CFF expression variants for wall-shear/mu."""
+    attempts: List[Dict[str, str]] = []
+    errors: List[str] = []
+
+    for expression in _cff_expression_variants(mu):
+        print(f"  Trying direct CFF: {cff_name!r} = {expression!r}")
+        try:
+            _try_define_cff_expression(solver, cff_name, expression)
+            attempts.append({
+                "cff_name": cff_name,
+                "expression": expression,
+                "status": "SUCCESS",
+                "error": "",
+            })
+            print(f"  Direct CFF created: {cff_name!r}")
+            return True, attempts, errors
+        except Exception as exc:
+            err = _format_exception(exc)
+            attempts.append({
+                "cff_name": cff_name,
+                "expression": expression,
+                "status": "FAILED",
+                "error": err,
+            })
+            errors.append(f"{expression}: {err}")
+            print(f"  Direct CFF failed: {err}")
+
+    return False, attempts, errors
+
+
+def prepare_native_cff(
+    solver: Any,
+    cff_name: str,
+    cff_file: Optional[Path],
+    mu: float,
+) -> Dict[str, Any]:
+    """Load or create a CFF whose value is wall shear rate [1/s]."""
+    result: Dict[str, Any] = {
+        "native_variable_used": "",
+        "cff_file_load_attempted": False,
+        "cff_file_load_status": "SKIPPED",
+        "cff_file_load_error": "",
+        "cff_direct_create_attempted": False,
+        "cff_direct_create_status": "SKIPPED",
+        "cff_direct_create_errors": [],
+        "cff_expression_attempts": [],
+        "ready": False,
+        "error": "",
+    }
+
+    if cff_file is not None:
+        result["cff_file_load_attempted"] = True
+        ok, method, err = _load_cff_file(solver, cff_file)
+        if ok:
+            result["cff_file_load_status"] = "SUCCESS"
+            result["native_variable_used"] = cff_name
+            result["ready"] = True
+            return result
+        result["cff_file_load_status"] = "FAILED"
+        result["cff_file_load_error"] = err or "CFF file load failed"
+
+    result["cff_direct_create_attempted"] = True
+    ok, attempts, errors = _create_cff_direct(solver, cff_name, mu)
+    result["cff_expression_attempts"] = attempts
+    result["cff_direct_create_errors"] = errors
+
+    if ok:
+        result["cff_direct_create_status"] = "SUCCESS"
+        result["native_variable_used"] = cff_name
+        result["ready"] = True
+        return result
+
+    result["cff_direct_create_status"] = "FAILED"
+    result["error"] = (
+        result["cff_file_load_error"]
+        or "Direct CFF creation failed for all expression variants."
+    )
+    return result
+
+
+def try_native_cff_export(
+    solver: Any,
+    cff_name: str,
     membrane_zones: List[str],
     shear_range: Optional[Tuple[float, float]],
     output_file: Path,
     image_width: int,
     image_height: int,
 ) -> Tuple[bool, str, str, str]:
-    """Attempt CFF-based contour export.
+    """Attempt native Fluent contour export using a prepared CFF variable.
 
-    Returns (success, cff_status, used_var, error_msg).
+    Returns (success, native_status, used_var, error_msg).
     success=True means the output_file was written.
     """
-    # Build ordered list of candidates to try in the CFF expression.
-    # Prefer names confirmed from list_valid_cell_function_names, then
-    # from scalar_fields_info, then the hardcoded fallback list.
-    ordered: List[str] = []
-    for c in cff_candidates:
-        if c not in ordered:
-            ordered.append(c)
-    for c in scalar_candidates:
-        if c not in ordered:
-            ordered.append(c)
-    for c in SHEAR_FIELD_CANDIDATES:
-        if c not in ordered:
-            ordered.append(c)
-
-    print(f"  CFF candidates to try: {ordered[:10]}")
-
-    last_exc = "No candidates available"
-    for var_name in ordered:
-        print(f"  Trying CFF expression variable: {var_name!r}")
-        try:
-            definition = _attempt_cff_define(solver, var_name, mu)
-            # CFF defined — now export the contour
-            _export_contour_cff(
-                solver, membrane_zones, shear_range, output_file, image_width, image_height
-            )
-            if output_file.is_file():
-                return True, "SUCCESS", var_name, ""
-            last_exc = "File not written after contour export"
-        except Exception as exc:
-            last_exc = f"{type(exc).__name__}: {exc}"
-            print(f"  CFF with {var_name!r} failed: {last_exc}")
-
-    return False, "FAILED", "", last_exc
+    try:
+        _export_contour_cff(
+            solver, cff_name, membrane_zones, shear_range, output_file,
+            image_width, image_height
+        )
+        if output_file.is_file():
+            return True, "SUCCESS", cff_name, ""
+        return False, "FAILED", cff_name, "File not written after native contour export"
+    except Exception as exc:
+        return False, "FAILED", cff_name, _format_exception(exc)
 
 
 def _export_contour_cff(
     solver: Any,
+    cff_name: str,
     membrane_zones: List[str],
     shear_range: Optional[Tuple[float, float]],
     output_file: Path,
     image_width: int,
     image_height: int,
 ) -> None:
-    """Create Fluent contour using CFF_NAME, display, and save. Raises on failure."""
+    """Create Fluent contour using a shear-rate CFF, display, and save."""
     if output_file.exists():
         output_file.unlink()
 
@@ -353,7 +499,7 @@ def _export_contour_cff(
         pass
 
     contour = graphics.contour.create(CONTOUR_NAME)
-    contour.field = CFF_NAME
+    contour.field = cff_name
     contour.surfaces_list = list(membrane_zones)
 
     if shear_range is not None:
@@ -613,9 +759,19 @@ def build_status_payload(
     message: str,
     selected_variable: Optional[str],
     derived_variable_mode: str,
-    cff_attempted: bool,
-    cff_status: str,
-    cff_error: str,
+    native_attempted: bool,
+    native_status: str,
+    native_error: str,
+    native_variable_used: Optional[str],
+    cff_name: str,
+    cff_file: Optional[Path],
+    cff_file_load_attempted: bool,
+    cff_file_load_status: str,
+    cff_file_load_error: str,
+    cff_direct_create_attempted: bool,
+    cff_direct_create_status: str,
+    cff_direct_create_errors: List[str],
+    cff_expression_attempts: List[Dict[str, str]],
     fallback_attempted: bool,
     fallback_status: str,
     fallback_error: str,
@@ -641,9 +797,29 @@ def build_status_payload(
         "output_file": [str(f) for f in output_files] if len(output_files) != 1
                        else str(output_files[0]),
         "message": message,
-        "cff_attempted": cff_attempted,
-        "cff_status": cff_status,
-        "cff_error": cff_error,
+        "native_attempted": native_attempted,
+        "native_status": native_status,
+        "native_error": native_error,
+        "native_variable_used": native_variable_used,
+        "cff_name": cff_name,
+        "cff_file": "" if cff_file is None else str(cff_file),
+        "cff_file_load_attempted": cff_file_load_attempted,
+        "cff_file_load_status": cff_file_load_status,
+        "cff_file_load_error": cff_file_load_error,
+        "cff_direct_create_attempted": cff_direct_create_attempted,
+        "cff_direct_create_status": cff_direct_create_status,
+        "cff_direct_create_errors": cff_direct_create_errors,
+        "cff_expression_attempts": cff_expression_attempts,
+        # Backward-compatible aliases for older status readers.
+        "cff_attempted": cff_file_load_attempted or cff_direct_create_attempted,
+        "cff_status": (
+            "SUCCESS"
+            if cff_file_load_status == "SUCCESS" or cff_direct_create_status == "SUCCESS"
+            else "FAILED"
+            if cff_file_load_status == "FAILED" or cff_direct_create_status == "FAILED"
+            else "SKIPPED"
+        ),
+        "cff_error": cff_file_load_error or "; ".join(cff_direct_create_errors),
         "fallback_attempted": fallback_attempted,
         "fallback_status": fallback_status,
         "fallback_error": fallback_error,
@@ -694,6 +870,22 @@ def parse_args() -> argparse.Namespace:
         help="Exit 0 without re-exporting if the output PNG already exists.",
     )
     parser.add_argument(
+        "--cff-file", type=str, default=None,
+        help=(
+            "Optional Fluent Custom Field Function file saved on the server. "
+            "The path is loaded after case/data are loaded; local WSL validation "
+            "does not require this file to exist."
+        ),
+    )
+    parser.add_argument(
+        "--cff-name", type=str, default=DEFAULT_CFF_NAME,
+        help=f"Fluent CFF name to use for native contouring (default: {DEFAULT_CFF_NAME}).",
+    )
+    parser.add_argument(
+        "--print-cff-manual-steps", action="store_true",
+        help="Print manual Fluent GUI CFF setup instructions and exit without launching Fluent.",
+    )
+    parser.add_argument(
         "--membrane-surface", type=str, default="top",
         choices=["top", "bottom", "both"],
         help="Membrane side to export (default: top).",
@@ -731,9 +923,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
+    if args.print_cff_manual_steps:
+        print(_manual_cff_steps(args.cff_name, DEFAULT_MU))
+        return 0
+
     # Resolve effective resolution
     eff_width  = args.width  if args.width  is not None else args.image_width
     eff_height = args.height if args.height is not None else args.image_height
+    cff_file: Optional[Path] = as_path(args.cff_file) if args.cff_file else None
 
     config_path = Path(args.config).resolve()
     try:
@@ -792,6 +989,9 @@ def main() -> int:
     print(f"Status JSON  : {status_file}")
     print(f"mu           : {mu:.6e} Pa·s")
     print(f"Formula      : wall-shear / {mu:.6e}")
+    print(f"CFF name     : {args.cff_name}")
+    if cff_file is not None:
+        print(f"CFF file     : {cff_file}")
     print(f"Membrane side: {args.membrane_surface}")
     print(f"Background   : {args.background}")
     print(f"View margin  : {args.view_margin}")
@@ -809,8 +1009,16 @@ def main() -> int:
             mu_used=mu, output_files=list(output_files_by_side.values()),
             message="dry-run only",
             selected_variable=None,
-            derived_variable_mode="pyfluent_wall_shear_over_mu",
-            cff_attempted=False, cff_status="SKIPPED", cff_error="",
+            derived_variable_mode="pyfluent_native_cff_wall_shear_over_mu",
+            native_attempted=False, native_status="SKIPPED", native_error="",
+            native_variable_used=None,
+            cff_name=args.cff_name, cff_file=cff_file,
+            cff_file_load_attempted=False,
+            cff_file_load_status="SKIPPED", cff_file_load_error="",
+            cff_direct_create_attempted=False,
+            cff_direct_create_status="SKIPPED",
+            cff_direct_create_errors=[],
+            cff_expression_attempts=[],
             fallback_attempted=False, fallback_status="SKIPPED", fallback_error="",
             shear_related_field_candidates=[], shear_related_cff_candidates=[],
             background=args.background, view_margin=args.view_margin,
@@ -830,8 +1038,16 @@ def main() -> int:
                 mu_used=mu, output_files=list(output_files_by_side.values()),
                 message="Skipped: all output files already exist.",
                 selected_variable=None,
-                derived_variable_mode="pyfluent_wall_shear_over_mu",
-                cff_attempted=False, cff_status="SKIPPED", cff_error="",
+                derived_variable_mode="pyfluent_native_cff_wall_shear_over_mu",
+                native_attempted=False, native_status="SKIPPED", native_error="",
+                native_variable_used=None,
+                cff_name=args.cff_name, cff_file=cff_file,
+                cff_file_load_attempted=False,
+                cff_file_load_status="SKIPPED", cff_file_load_error="",
+                cff_direct_create_attempted=False,
+                cff_direct_create_status="SKIPPED",
+                cff_direct_create_errors=[],
+                cff_expression_attempts=[],
                 fallback_attempted=False, fallback_status="SKIPPED", fallback_error="",
                 shear_related_field_candidates=[], shear_related_cff_candidates=[],
                 background=args.background, view_margin=args.view_margin,
@@ -862,13 +1078,24 @@ def main() -> int:
     all_selected_surfs: List[str] = []
     all_output_files:   List[Path] = []
     used_variable:      Optional[str] = None
-    derived_mode        = "pyfluent_wall_shear_over_mu"
-    cff_attempted       = False
-    cff_status_str      = "SKIPPED"
-    cff_error_str       = ""
+    successful_side_modes: List[str] = []
+    derived_mode        = "pyfluent_native_cff_wall_shear_over_mu"
+    native_attempted    = False
+    native_status_str   = "SKIPPED"
+    native_error_str    = ""
+    native_variable_used: Optional[str] = None
+    cff_file_load_attempted = False
+    cff_file_load_status    = "SKIPPED"
+    cff_file_load_error     = ""
+    cff_direct_create_attempted = False
+    cff_direct_create_status    = "SKIPPED"
+    cff_direct_create_errors: List[str] = []
+    cff_expression_attempts: List[Dict[str, str]] = []
     fb_attempted        = False
     fb_status_str       = "SKIPPED"
     fb_error_str        = ""
+    native_side_results: List[Tuple[bool, str, str]] = []
+    fallback_side_results: List[Tuple[bool, str, str]] = []
     scalar_candidates:      List[str] = []
     cff_candidates:         List[str] = []
     all_scalar_names_head:  List[str] = []
@@ -914,6 +1141,31 @@ def main() -> int:
         print("\nRunning field/CFF diagnostics ...")
         scalar_candidates, cff_candidates, all_scalar_names_head = detect_shear_candidates(solver)
 
+        # --- Prepare native Fluent CFF for wall shear rate ---
+        native_attempted = True
+        print("\nPreparing native Fluent CFF for wall shear rate ...")
+        cff_prep = prepare_native_cff(
+            solver=solver,
+            cff_name=args.cff_name,
+            cff_file=cff_file,
+            mu=mu,
+        )
+        native_variable_used = cff_prep["native_variable_used"] or None
+        cff_file_load_attempted = bool(cff_prep["cff_file_load_attempted"])
+        cff_file_load_status = str(cff_prep["cff_file_load_status"])
+        cff_file_load_error = str(cff_prep["cff_file_load_error"])
+        cff_direct_create_attempted = bool(cff_prep["cff_direct_create_attempted"])
+        cff_direct_create_status = str(cff_prep["cff_direct_create_status"])
+        cff_direct_create_errors = list(cff_prep["cff_direct_create_errors"])
+        cff_expression_attempts = list(cff_prep["cff_expression_attempts"])
+        native_ready = bool(cff_prep["ready"])
+        if native_ready:
+            print(f"  Native CFF ready: {args.cff_name}")
+        else:
+            native_status_str = "FAILED"
+            native_error_str = str(cff_prep["error"] or "CFF preparation failed")
+            print(f"  Native CFF not ready: {native_error_str}")
+
         # --- Process each side ---
         side_results: List[Tuple[bool, str, str]] = []  # (success, side, output_path)
 
@@ -927,50 +1179,57 @@ def main() -> int:
             # Filter zones for this side
             if side == "top":
                 flt = [z for z in all_membrane_zones if "top" in z.lower()]
-                membrane_zones = flt if flt else all_membrane_zones
-                if not flt:
-                    print(f"  WARN: no 'top' zones found; using all: {all_membrane_zones}")
+                membrane_zones = flt
             elif side == "bottom":
                 flt = [z for z in all_membrane_zones if "bot" in z.lower()]
-                membrane_zones = flt if flt else all_membrane_zones
-                if not flt:
-                    print(f"  WARN: no 'bottom' zones found; using all: {all_membrane_zones}")
+                membrane_zones = flt
             else:
                 membrane_zones = list(all_membrane_zones)
 
             print(f"  Selected surfaces: {membrane_zones}")
+            if not membrane_zones:
+                msg = (
+                    f"No {side} membrane wall zones found. "
+                    f"Available active membrane zones: {all_membrane_zones}"
+                )
+                print(f"  FAILED: {msg}")
+                if native_attempted:
+                    native_side_results.append((False, side, msg))
+                side_results.append((False, side, str(output_file)))
+                continue
             all_selected_surfs.extend(membrane_zones)
 
             side_ok      = False
             side_var     = None
-            side_mode    = "pyfluent_wall_shear_over_mu"
+            side_mode    = ""
 
-            # A. Try CFF direct path
-            print(f"\n  [A] Attempting CFF contour export ...")
-            cff_attempted = True
-            cff_ok, cff_st, cff_var, cff_err = try_cff_path(
-                solver=solver,
-                mu=mu,
-                scalar_candidates=scalar_candidates,
-                cff_candidates=cff_candidates,
-                membrane_zones=membrane_zones,
-                shear_range=shear_range,
-                output_file=output_file,
-                image_width=eff_width,
-                image_height=eff_height,
-            )
-            cff_status_str = cff_st
-            cff_error_str  = cff_err
+            # A. Try native Fluent CFF contour export first.
+            if native_ready:
+                print(f"\n  [A] Attempting native Fluent CFF contour export ...")
+                native_ok, nat_st, nat_var, nat_err = try_native_cff_export(
+                    solver=solver,
+                    cff_name=args.cff_name,
+                    membrane_zones=membrane_zones,
+                    shear_range=shear_range,
+                    output_file=output_file,
+                    image_width=eff_width,
+                    image_height=eff_height,
+                )
+                native_side_results.append((native_ok, side, nat_err))
 
-            if cff_ok:
-                side_ok   = True
-                side_var  = cff_var
-                side_mode = "pyfluent_wall_shear_over_mu"
-                print(f"  [A] CFF SUCCESS: {output_file.name}")
+                if native_ok:
+                    side_ok   = True
+                    side_var  = nat_var
+                    side_mode = "pyfluent_native_cff_wall_shear_over_mu"
+                    print(f"  [A] Native CFF SUCCESS: {output_file.name}")
+                else:
+                    print(f"  [A] Native CFF FAILED: {nat_err}")
             else:
-                print(f"  [A] CFF FAILED: {cff_err}")
+                native_side_results.append((False, side, native_error_str))
+                print(f"\n  [A] Native CFF skipped: {native_error_str}")
 
-                # B. Try field-data fallback
+            if not side_ok:
+                # B. Try field-data fallback.
                 print(f"\n  [B] Attempting field-data fallback (matplotlib) ...")
                 fb_attempted = True
                 fb_ok, fb_st, fb_var, fb_err = try_field_data_fallback(
@@ -984,8 +1243,7 @@ def main() -> int:
                     image_height=eff_height,
                     background=args.background,
                 )
-                fb_status_str = fb_st
-                fb_error_str  = fb_err
+                fallback_side_results.append((fb_ok, side, fb_err))
 
                 if fb_ok:
                     side_ok   = True
@@ -1000,7 +1258,43 @@ def main() -> int:
                 all_output_files.append(output_file)
                 if used_variable is None:
                     used_variable = side_var
-                derived_mode = side_mode
+                if side_mode:
+                    successful_side_modes.append(side_mode)
+
+        if native_attempted and native_side_results:
+            native_ok_count = sum(1 for ok, _, _ in native_side_results if ok)
+            if native_ok_count == len(native_side_results):
+                native_status_str = "SUCCESS"
+            elif native_ok_count > 0:
+                native_status_str = "WARN"
+            else:
+                native_status_str = "FAILED"
+            native_errors = [
+                f"{side}: {err}" for ok, side, err in native_side_results
+                if not ok and err
+            ]
+            native_error_str = "; ".join(native_errors)
+
+        if fb_attempted and fallback_side_results:
+            fb_ok_count = sum(1 for ok, _, _ in fallback_side_results if ok)
+            if fb_ok_count == len(fallback_side_results):
+                fb_status_str = "SUCCESS"
+            elif fb_ok_count > 0:
+                fb_status_str = "WARN"
+            else:
+                fb_status_str = "FAILED"
+            fb_errors = [
+                f"{side}: {err}" for ok, side, err in fallback_side_results
+                if not ok and err
+            ]
+            fb_error_str = "; ".join(fb_errors)
+
+        if successful_side_modes:
+            unique_modes = sorted(set(successful_side_modes))
+            if len(unique_modes) == 1:
+                derived_mode = unique_modes[0]
+            else:
+                derived_mode = "mixed_native_cff_and_field_data_wall_shear_over_mu"
 
         # --- Overall status ---
         any_ok  = any(ok for ok, _, _ in side_results)
@@ -1051,9 +1345,19 @@ def main() -> int:
         message=final_message,
         selected_variable=used_variable,
         derived_variable_mode=derived_mode,
-        cff_attempted=cff_attempted,
-        cff_status=cff_status_str,
-        cff_error=cff_error_str,
+        native_attempted=native_attempted,
+        native_status=native_status_str,
+        native_error=native_error_str,
+        native_variable_used=native_variable_used,
+        cff_name=args.cff_name,
+        cff_file=cff_file,
+        cff_file_load_attempted=cff_file_load_attempted,
+        cff_file_load_status=cff_file_load_status,
+        cff_file_load_error=cff_file_load_error,
+        cff_direct_create_attempted=cff_direct_create_attempted,
+        cff_direct_create_status=cff_direct_create_status,
+        cff_direct_create_errors=cff_direct_create_errors,
+        cff_expression_attempts=cff_expression_attempts,
         fallback_attempted=fb_attempted,
         fallback_status=fb_status_str,
         fallback_error=fb_error_str,
