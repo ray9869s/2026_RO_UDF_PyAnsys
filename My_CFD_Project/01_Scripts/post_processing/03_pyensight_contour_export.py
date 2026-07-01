@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import json
 import os
 import platform
 import re
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, FrozenSet, List, Optional, Tuple
 
@@ -259,6 +260,19 @@ class ExportRecord:
     zoom_out_status: str = ""
     zoom_out_error: str = ""
     view_orientation_preserved: bool = True
+    membrane_bounds_raw: Optional[List[float]] = None
+    membrane_bounds_padded: Optional[List[float]] = None
+    membrane_bounds_source: str = ""
+    fit_target_used: str = ""
+    bounds_fit_attempted: bool = False
+    bounds_fit_status: str = ""
+    bounds_fit_method: str = ""
+    bounds_fit_error: str = ""
+    export_crop_disabled: bool = True
+    export_viewport_method: str = ""
+    export_region_used: str = ""
+    bounds_debug_sweep_attempted: bool = False
+    bounds_debug_sweep_outputs: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +468,16 @@ def parse_args() -> argparse.Namespace:
             "Additional explicit camera/view zoom-out applied after --view-margin "
             "and after the view is fit and oriented (default: 1.15). "
             "1.0 = no extra zoom-out; 1.15 = zoom out ~15%%; 1.25 = zoom out ~25%%. "
-            "Stacks with --view-margin. Increase (e.g. 1.30) if membrane ends "
-            "are still clipped."
+            "Stacks with --view-margin. Secondary to the padded-bounds fit below; "
+            "kept for compatibility but no longer the primary anti-clipping lever."
+        ),
+    )
+    sg.add_argument(
+        "--bounds-debug-sweep", action="store_true", default=False,
+        help=(
+            "Also export extra diagnostic images per field at several fit "
+            "strategies/margins (current, 1.20, 1.40, 1.60) for server-side "
+            "visual comparison. Never replaces the main output. Default: off."
         ),
     )
 
@@ -1193,6 +1215,212 @@ def apply_zoom_out(session: Any, combined_factor: float) -> Tuple[str, str, str]
 
 
 # ---------------------------------------------------------------------------
+# Padded-bounds view fit — the PRIMARY anti-clipping mechanism. Must run
+# AFTER any --view-margin / --zoom-out zoom() call (apply_zoom_out above),
+# immediately before image export, so it is the last camera operation and
+# overrides rather than gets overridden. Server testing showed the existing
+# zoom() saturates before it can reveal the full padded region, and under
+# the current scale = 1.0/(view_margin*zoom_out) formula it actually zooms
+# IN (confirmed from server data: requested factor 3.00 -> scale 0.278 ->
+# zoomed in; 0.75 -> scale 1.11 -> zoomed out; 0.10 -> scale 8.33 -> zoomed
+# out but capped). That formula is left unchanged per instruction — this
+# padded-bounds fit does not depend on it at all.
+# ---------------------------------------------------------------------------
+
+def fit_view_to_padded_bounds(
+    session: Any,
+    target_parts: List[Any],
+    raw_bounds: Optional[Tuple[float, float, float, float, float, float]],
+    padded_bounds: Optional[Tuple[float, float, float, float, float, float]],
+    image_width: int,
+    image_height: int,
+) -> Tuple[str, str, str]:
+    """
+    Force the EnSight view to encompass padded_bounds without changing view
+    direction, up vector, or camera orientation. Tries, in order:
+      1. Re-select target_parts + fit(0) — re-anchors the fit baseline to
+         exactly what is displayed for this contour, and as a side effect
+         overrides any earlier zoom() call.
+      2. Set the orthographic camera's parallel/view scale directly from
+         padded_bounds, corrected for image aspect ratio (the clipped
+         dimension is the streamwise/horizontal one, so the constraint from
+         half_x must be divided by aspect, not compared against half_y raw —
+         otherwise a tall-narrow viewport can shortchange exactly the
+         dimension being fixed).
+    Returns (method_used, status, error_msg). status is "applied" (a scale
+    attribute was set without raising — not proof it visually changed
+    anything), "partial" (only the fit(0) re-anchor succeeded), "skipped"
+    (no bounds available), or "failed".
+    """
+    if raw_bounds is None or padded_bounds is None:
+        return "none", "skipped", "bounds unavailable"
+
+    errors: List[str] = []
+    fit_ok = False
+    try:
+        session.ensight.utils.parts.select_parts(target_parts)
+        session.ensight.view_transf.fit(0)
+        fit_ok = True
+    except Exception as exc:
+        errors.append(f"reselect+fit(0): {exc}")
+
+    xmin, xmax, ymin, ymax, _zmin, _zmax = padded_bounds
+    half_x = (xmax - xmin) / 2.0
+    half_y = (ymax - ymin) / 2.0
+    aspect = (image_width / image_height) if image_height else 1.0
+    # Ortho "parallel scale" is conventionally half the vertical extent; the
+    # horizontal (streamwise) half-extent must be converted via aspect so it
+    # is not silently under-covered.
+    required_half_height = max(half_y, (half_x / aspect) if aspect else half_x)
+
+    before_diag = _read_vport_zoom_diag(session)
+    try:
+        vport = session.ensight.objs.core.VPORTS[0]
+        cam = getattr(vport, "CAMERA", None) or getattr(vport, "CURRENTCAMERA", None)
+        if cam is not None:
+            # Only try attribute names whose EnSight/VTK convention is
+            # unambiguously "world-unit half-extent" (PARALLELSCALE/
+            # ORTHOSCALE). Deliberately excludes SCALE/ZOOM-style names:
+            # those are almost certainly multipliers (1.0 = fit), and setting
+            # a multiplier to required_half_height (a sub-mm world value for
+            # this membrane geometry) would silently zoom in to a tiny
+            # fraction of the view while still reporting status="applied".
+            for attr in ("PARALLELSCALE", "ORTHOSCALE"):
+                try:
+                    if hasattr(cam, attr):
+                        setattr(cam, attr, required_half_height)
+                        after_diag = _read_vport_zoom_diag(session)
+                        print(
+                            f"  bounds_fit_diag before='{before_diag}' after='{after_diag}' "
+                            f"attr={attr} value={required_half_height:.6g}"
+                        )
+                        return f"camera.{attr}=padded_half_extent", "applied", ""
+                except Exception as exc:
+                    errors.append(f"camera.{attr}: {exc}")
+        else:
+            errors.append("camera object not available")
+    except Exception as exc:
+        errors.append(f"camera scale set: {exc}")
+
+    if fit_ok:
+        return "reselect_fit_only", "partial", "; ".join(errors)
+    return "failed", "failed", "; ".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# Export-time crop/viewport inspection — requirement 5: verify (or disable)
+# any tight-crop/crop-to-content export behavior that could undo the fit
+# above. Best-effort signature introspection; never raises.
+# ---------------------------------------------------------------------------
+
+def _inspect_export_image_options(session: Any) -> Tuple[bool, str, str]:
+    """Return (export_crop_disabled, export_viewport_method, export_region_used)."""
+    method = "utils.export.image(width,height,passes=4)"
+    region = "full_viewport_as_rendered"
+    try:
+        sig = inspect.signature(session.ensight.utils.export.image)
+        crop_like = [
+            p for p in sig.parameters
+            if any(kw in p.lower() for kw in ("crop", "tight", "bbox", "trim"))
+        ]
+        if crop_like:
+            return False, method, f"crop-like_params_found_unset:{crop_like}"
+        return True, method, region
+    except Exception as exc:
+        return True, method, f"{region} (signature_inspect_failed:{exc})"
+
+
+# ---------------------------------------------------------------------------
+# Debug bounds sweep — requirement 7. Diagnostic-only extra exports; never
+# touches or replaces the main output.
+# ---------------------------------------------------------------------------
+
+# Fifth "zoomcmd" variant is a diagnostic-only probe: server testing
+# confirmed session.ensight.view_transf.zoom(v) with v > 1 zooms OUT (not
+# the 1.0/v formula apply_zoom_out uses for --zoom-out), so this calls it
+# directly with the confirmed-correct sign. This guarantees the sweep shows
+# a real zoom-out gradient even if fit_view_to_padded_bounds' camera-scale
+# strategy finds no usable world-unit attribute (falls back to plain
+# fit(0), which would otherwise make dbg_02/03/04 look identical). It does
+# NOT change --zoom-out's CLI semantics or apply_zoom_out — confined here.
+DEBUG_SWEEP_CONFIGS: List[Tuple[str, Optional[Any]]] = [
+    ("bounds_dbg_01_current", None),
+    ("bounds_dbg_02_margin_1p20", 1.20),
+    ("bounds_dbg_03_margin_1p40", 1.40),
+    ("bounds_dbg_04_margin_1p60", 1.60),
+    ("bounds_dbg_05_zoomcmd_direct_out", "zoomcmd"),
+]
+
+
+def run_bounds_debug_sweep(
+    session: Any,
+    target_parts: List[Any],
+    raw_bounds: Optional[Tuple[float, float, float, float, float, float]],
+    output_file: Path,
+    membrane_side: str,
+    image_width: int,
+    image_height: int,
+    view_margin: float,
+    zoom_out: float,
+) -> List[str]:
+    """
+    Export extra diagnostic images at several fit strategies/margins for
+    server-side visual comparison, using filenames like
+    <stem>_<side>_bounds_dbg_02_margin_1p20.png. Never raises; a failed
+    variant is skipped rather than aborting the sweep or touching the main
+    output (which has already been written by the time this runs).
+    """
+    written: List[str] = []
+    for label, margin_override in DEBUG_SWEEP_CONFIGS:
+        dbg_path = output_file.parent / (
+            f"{output_file.stem}_{membrane_side}_{label}{output_file.suffix}"
+        )
+        try:
+            session.ensight.utils.parts.select_parts(target_parts)
+            session.ensight.view_transf.fit(0)
+        except Exception:
+            pass
+
+        try:
+            if margin_override is None:
+                # "current": replicate the OLD (pre-padded-bounds-fit)
+                # behavior — plain fit + the existing view-margin/zoom-out
+                # zoom() call only — so the server can visually compare it
+                # against the new padded-bounds path below.
+                combined = max(view_margin, 1.0) * max(zoom_out, 1.0)
+                apply_zoom_out(session, combined)
+            elif margin_override == "zoomcmd":
+                session.ensight.view_transf.zoom(max(view_margin, 1.0))
+            elif raw_bounds is not None:
+                padded = compute_padded_bounds(raw_bounds, margin_override)
+                fit_view_to_padded_bounds(
+                    session, target_parts, raw_bounds, padded,
+                    image_width, image_height,
+                )
+        except Exception:
+            pass
+
+        try:
+            png_path = str(dbg_path).replace("\\", "/")
+            session.ensight.utils.export.image(
+                png_path, width=image_width, height=image_height, passes=4
+            )
+            if dbg_path.is_file():
+                written.append(str(dbg_path))
+        except Exception:
+            pass
+
+    # Leave the view in a known state for the visibility-restore step that
+    # follows the sweep; harmless if fit() itself fails.
+    try:
+        session.ensight.view_transf.fit(0)
+    except Exception:
+        pass
+
+    return written
+
+
+# ---------------------------------------------------------------------------
 # Open case in PyEnSight
 # ---------------------------------------------------------------------------
 
@@ -1316,8 +1544,12 @@ def find_fluid_volume_parts(session: Any) -> List[Any]:
         return []
 
 
-def get_part_bounding_box(parts: List[Any]) -> Optional[Tuple[float, float, float, float, float, float]]:
-    """Return (xmin, xmax, ymin, ymax, zmin, zmax) from part EXTENTS, or None."""
+def _accumulate_parts_extents(
+    parts: List[Any],
+) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """Shared EXTENTS accumulation for get_part_bounding_box and
+    get_membrane_view_bounds. Returns (xmin, xmax, ymin, ymax, zmin, zmax), or
+    None if no part exposed a usable bounding box."""
     xmin, xmax = float("inf"), float("-inf")
     ymin, ymax = float("inf"), float("-inf")
     zmin, zmax = float("inf"), float("-inf")
@@ -1344,9 +1576,41 @@ def get_part_bounding_box(parts: List[Any]) -> Optional[Tuple[float, float, floa
                     break
             except Exception:
                 pass
-    if found and zmin < zmax:
-        return (xmin, xmax, ymin, ymax, zmin, zmax)
+    return (xmin, xmax, ymin, ymax, zmin, zmax) if found else None
+
+
+def get_part_bounding_box(parts: List[Any]) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """Return (xmin, xmax, ymin, ymax, zmin, zmax) from part EXTENTS, or None.
+    Requires zmin < zmax — used for fluid-volume (3-D) center-plane z lookup,
+    where a degenerate z-extent means the bounding box is not usable."""
+    bounds = _accumulate_parts_extents(parts)
+    if bounds is not None and bounds[4] < bounds[5]:
+        return bounds
     return None
+
+
+def get_membrane_view_bounds(
+    parts: List[Any],
+) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """Return (xmin, xmax, ymin, ymax, zmin, zmax) from part EXTENTS for a
+    near-planar membrane surface. Unlike get_part_bounding_box, does not
+    require z-depth — a flat membrane can have zmin == zmax."""
+    return _accumulate_parts_extents(parts)
+
+
+def compute_padded_bounds(
+    bounds: Tuple[float, float, float, float, float, float],
+    view_margin: float,
+) -> Tuple[float, float, float, float, float, float]:
+    """Expand the x/y (in-plane, on-screen) extents of bounds around their
+    center by view_margin. z (membrane-normal direction) is left unchanged —
+    it is not the dimension that gets clipped."""
+    xmin, xmax, ymin, ymax, zmin, zmax = bounds
+    margin = max(view_margin, 1.0)
+    cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+    half_x = (xmax - xmin) / 2.0 * margin
+    half_y = (ymax - ymin) / 2.0 * margin
+    return (cx - half_x, cx + half_x, cy - half_y, cy + half_y, zmin, zmax)
 
 
 def _try_create_clip_at_z(
@@ -2001,6 +2265,7 @@ def export_contour(
     scene_setup_warnings: List[str],
     view_margin: float = 1.20,
     zoom_out: float = 1.15,
+    bounds_debug_sweep: bool = False,
 ) -> None:
     field_key       = plan_item["field_key"]
     field_name      = plan_item["field_name"]
@@ -2034,6 +2299,19 @@ def export_contour(
     zoom_out_method_str: str = ""
     zoom_out_status_str: str = ""
     zoom_out_error_str: str = ""
+    membrane_bounds_raw_list: Optional[List[float]] = None
+    membrane_bounds_padded_list: Optional[List[float]] = None
+    membrane_bounds_source_str: str = ""
+    fit_target_used_str: str = ""
+    bounds_fit_attempted_bool: bool = False
+    bounds_fit_status_str: str = ""
+    bounds_fit_method_str: str = ""
+    bounds_fit_error_str: str = ""
+    export_crop_disabled_bool: bool = True
+    export_viewport_method_str: str = ""
+    export_region_used_str: str = ""
+    bounds_debug_sweep_attempted_bool: bool = False
+    bounds_debug_sweep_outputs_list: List[str] = []
 
     def _record(status: str, surface_desc: str, message: str) -> None:
         records.append(ExportRecord(
@@ -2068,6 +2346,19 @@ def export_contour(
             zoom_out_status=zoom_out_status_str,
             zoom_out_error=zoom_out_error_str,
             view_orientation_preserved=True,
+            membrane_bounds_raw=membrane_bounds_raw_list,
+            membrane_bounds_padded=membrane_bounds_padded_list,
+            membrane_bounds_source=membrane_bounds_source_str,
+            fit_target_used=fit_target_used_str,
+            bounds_fit_attempted=bounds_fit_attempted_bool,
+            bounds_fit_status=bounds_fit_status_str,
+            bounds_fit_method=bounds_fit_method_str,
+            bounds_fit_error=bounds_fit_error_str,
+            export_crop_disabled=export_crop_disabled_bool,
+            export_viewport_method=export_viewport_method_str,
+            export_region_used=export_region_used_str,
+            bounds_debug_sweep_attempted=bounds_debug_sweep_attempted_bool,
+            bounds_debug_sweep_outputs=list(bounds_debug_sweep_outputs_list),
         ))
 
     # 1. Locate surfaces
@@ -2519,6 +2810,34 @@ def export_contour(
     if zoom_out_error_str:
         info_msgs.append(f"zoom_out attempts: {zoom_out_error_str}")
 
+    # 8c. Compute the actual bounds of the SAME parts displayed above, pad
+    #     them by --view-margin, and fit the camera to that padded region as
+    #     the FINAL camera operation before export — i.e. it runs AFTER (and
+    #     overrides) the view-margin/zoom-out zoom() call in step 8. This is
+    #     the primary anti-clipping mechanism; see fit_view_to_padded_bounds
+    #     docstring for why it does not rely on zoom() at all.
+    raw_bounds = get_membrane_view_bounds(target_parts)
+    membrane_bounds_raw_list = list(raw_bounds) if raw_bounds else None
+    membrane_bounds_source_str = "target_parts_EXTENTS" if raw_bounds else "unavailable"
+    padded_bounds = compute_padded_bounds(raw_bounds, view_margin) if raw_bounds else None
+    membrane_bounds_padded_list = list(padded_bounds) if padded_bounds else None
+
+    bounds_fit_attempted_bool = True
+    bounds_fit_method_str, bounds_fit_status_str, bounds_fit_error_str = fit_view_to_padded_bounds(
+        session, target_parts, raw_bounds, padded_bounds, image_width, image_height,
+    )
+    fit_target_used_str = bounds_fit_method_str
+    print(
+        f"Bounds fit: raw={membrane_bounds_raw_list} padded={membrane_bounds_padded_list} "
+        f"method={bounds_fit_method_str} status={bounds_fit_status_str}"
+    )
+    if bounds_fit_error_str:
+        info_msgs.append(f"bounds_fit attempts: {bounds_fit_error_str}")
+
+    export_crop_disabled_bool, export_viewport_method_str, export_region_used_str = (
+        _inspect_export_image_options(session)
+    )
+
     # 9. Render and save image
     try:
         png_path = str(output_file).replace("\\", "/")
@@ -2531,6 +2850,19 @@ def export_contour(
                 pass
         _record(STATUS_FAILED, surface_desc, f"Image export failed: {exc_export}")
         return
+
+    # 9b. Optional debug bounds sweep — extra diagnostic images only; runs
+    #     after the main output above and never replaces or blocks it.
+    if bounds_debug_sweep:
+        bounds_debug_sweep_attempted_bool = True
+        try:
+            bounds_debug_sweep_outputs_list = run_bounds_debug_sweep(
+                session, target_parts, raw_bounds, output_file, membrane_side,
+                image_width, image_height, view_margin, zoom_out,
+            )
+        except Exception as exc_sweep:
+            info_msgs.append(f"bounds_debug_sweep failed: {exc_sweep}")
+        print(f"Bounds debug sweep wrote {len(bounds_debug_sweep_outputs_list)} image(s).")
 
     # 10. Restore full part visibility for next contour
     for p in all_parts:
@@ -2566,6 +2898,7 @@ def save_status(
     case_name: str,
     view_margin: float = 1.20,
     zoom_out: float = 1.15,
+    bounds_debug_sweep: bool = False,
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
 
@@ -2591,6 +2924,8 @@ def save_status(
         "view_margin_applied": view_margin > 1.0,
         "requested_zoom_out": zoom_out,
         "zoom_out_applied_any": any(r.zoom_out_applied for r in records),
+        "bounds_debug_sweep_requested": bounds_debug_sweep,
+        "bounds_fit_applied_any": any(r.bounds_fit_status == "applied" for r in records),
         "view_orientation_preserved": True,
         "summary": {
             "total":   len(records),
@@ -2692,6 +3027,7 @@ def main() -> int:
     print(f"Background: {args.background}  |  Triad: {'show' if args.show_triad else 'hide'}")
     print(f"Membrane  : {args.membrane_surface}")
     print(f"View margin: {args.view_margin}  |  Zoom-out: {args.zoom_out}")
+    print(f"Bounds debug sweep: {'on' if args.bounds_debug_sweep else 'off'}")
 
     if args.fields:
         field_keys = [k.strip() for k in args.fields.split(",") if k.strip()]
@@ -2730,7 +3066,7 @@ def main() -> int:
                 color_range_min=item["color_range_min"],
                 color_range_max=item["color_range_max"],
             ))
-        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
+        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
         _print_summary(records, figures_dir)
         return 0
 
@@ -2758,7 +3094,7 @@ def main() -> int:
 
     if not plan:
         _safe_mkdir(figures_dir)
-        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
+        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
         _print_summary(records, figures_dir)
         return 0
 
@@ -2786,7 +3122,7 @@ def main() -> int:
                     status=STATUS_FAILED,
                     message=f"Case load failed: {open_error[:120]}",
                 ))
-            save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
+            save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
             _print_summary(records, figures_dir)
             return 2
 
@@ -2816,6 +3152,7 @@ def main() -> int:
                     scene_setup_warnings=scene_warnings,
                     view_margin=args.view_margin,
                     zoom_out=args.zoom_out,
+                    bounds_debug_sweep=args.bounds_debug_sweep,
                 )
             except Exception as exc_item:
                 records.append(ExportRecord(
@@ -2844,7 +3181,7 @@ def main() -> int:
             except Exception as exc_close:
                 print(f"Warning: session.close() raised: {exc_close}")
 
-    save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
+    save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
     _print_summary(records, figures_dir)
 
     n_failed = sum(1 for r in records if r.status == STATUS_FAILED)
