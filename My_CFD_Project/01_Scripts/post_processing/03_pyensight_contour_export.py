@@ -222,6 +222,34 @@ RANGE_MODE_CLI   = "cli"     # user-supplied CLI override
 RANGE_MODE_AUTO  = "auto"    # EnSight auto-range
 RANGE_MODE_NONE  = "none"    # palette not found; range not applied
 
+BOUNDS_API_ATTEMPTS: List[Tuple[str, str, Optional[str]]] = [
+    ("attr", "BOUNDS", None),
+    ("attr", "bounds", None),
+    ("attr", "BOUNDINGBOX", None),
+    ("attr", "BOUNDING_BOX", None),
+    ("attr", "EXTENTS", None),
+    ("attr", "extents", None),
+    ("attr", "MINMAX", None),
+    ("attr", "minmax", None),
+    ("method", "get_bounds", None),
+    ("method", "getbounds", None),
+    ("method", "get_extents", None),
+    ("method", "getextents", None),
+    ("method_arg", "get_values", "BOUNDS"),
+    ("method_arg", "get_values", "BOUNDINGBOX"),
+    ("method_arg", "getattr", "BOUNDS"),
+    ("method_arg", "getattr", "BOUNDINGBOX"),
+]
+
+BOUNDS_ATTR_KEYWORDS: Tuple[str, ...] = (
+    "bound", "extent", "min", "max", "box", "range", "coord", "xyz",
+)
+
+BOUNDS_DIAG_NAME_KEYWORDS: Tuple[str, ...] = (
+    "wall_top_mem", "wall_bottom_mem", "membrane", "top", "bottom",
+    "contour", "cp", "lmh", "flux",
+)
+
 # ---------------------------------------------------------------------------
 # Status record dataclass
 # ---------------------------------------------------------------------------
@@ -268,6 +296,12 @@ class ExportRecord:
     bounds_fit_status: str = ""
     bounds_fit_method: str = ""
     bounds_fit_error: str = ""
+    bounds_candidate_attempts: List[dict] = field(default_factory=list)
+    bounds_candidate_successes: List[dict] = field(default_factory=list)
+    chosen_bounds_candidate: str = ""
+    chosen_bounds_format: str = ""
+    manual_view_bounds_requested: Optional[List[float]] = None
+    manual_view_plane_requested: str = ""
     export_crop_disabled: bool = True
     export_viewport_method: str = ""
     export_region_used: str = ""
@@ -350,6 +384,19 @@ def _parse_range(s: str) -> Tuple[float, float]:
     if len(parts) != 2:
         raise ValueError(f"Expected 'min,max' but got '{s}'.")
     return float(parts[0]), float(parts[1])
+
+
+def _parse_manual_view_bounds(s: str) -> Tuple[float, float, float, float]:
+    """Parse 'xmin,xmax,ymin,ymax' string. Raises ValueError on bad input."""
+    parts = [p.strip() for p in s.strip().split(",")]
+    if len(parts) != 4:
+        raise ValueError(f"Expected 'XMIN,XMAX,YMIN,YMAX' but got '{s}'.")
+    xmin, xmax, ymin, ymax = (float(p) for p in parts)
+    if not (xmin < xmax and ymin < ymax):
+        raise ValueError(
+            f"Manual view bounds must satisfy XMIN<XMAX and YMIN<YMAX; got '{s}'."
+        )
+    return xmin, xmax, ymin, ymax
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +526,25 @@ def parse_args() -> argparse.Namespace:
             "strategies/margins (current, 1.20, 1.40, 1.60) for server-side "
             "visual comparison. Never replaces the main output. Default: off."
         ),
+    )
+    sg.add_argument(
+        "--bounds-diagnostics", action="store_true", default=False,
+        help=(
+            "Write detailed PyEnSight part/object bounds diagnostics to "
+            "post/figures/contours/pyensight_bounds_diagnostics.json and print "
+            "the inspected objects. Default: off."
+        ),
+    )
+    sg.add_argument(
+        "--manual-view-bounds", type=str, default=None, metavar="XMIN,XMAX,YMIN,YMAX",
+        help=(
+            "Manual 2D view-plane fit bounds. When provided, these bounds are "
+            "used as the fit target even if automatic PyEnSight part bounds fail."
+        ),
+    )
+    sg.add_argument(
+        "--manual-view-plane", type=str, default="xy", metavar="PLANE",
+        help="Manual view bounds plane. Only 'xy' is implemented for now. Default: xy.",
     )
 
     # --- LMH derivation ---
@@ -764,6 +830,625 @@ def filter_membrane_surface(
         )
 
     return surface_names, ""
+
+
+# ---------------------------------------------------------------------------
+# PyEnSight part/object bounds extraction and diagnostics
+# ---------------------------------------------------------------------------
+
+def _safe_attr(obj: Any, attr: str) -> Tuple[Any, Optional[str]]:
+    """Best-effort public attribute read. Returns (value, error_or_None)."""
+    try:
+        return getattr(obj, attr), None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _safe_preview(value: Any, max_items: int = 12, max_chars: int = 500) -> Any:
+    """Return a JSON-friendly, bounded preview of an arbitrary PyEnSight value."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return repr(value[:max_chars])
+    if isinstance(value, dict):
+        out = {}
+        for idx, (k, v) in enumerate(value.items()):
+            if idx >= max_items:
+                out["..."] = f"{len(value) - max_items} more item(s)"
+                break
+            out[str(k)] = _safe_preview(v, max_items=max_items, max_chars=max_chars)
+        return out
+    if hasattr(value, "tolist"):
+        try:
+            return _safe_preview(value.tolist(), max_items=max_items, max_chars=max_chars)
+        except Exception:
+            pass
+    if isinstance(value, (list, tuple)):
+        vals = list(value)
+        preview = [
+            _safe_preview(v, max_items=max_items, max_chars=max_chars)
+            for v in vals[:max_items]
+        ]
+        if len(vals) > max_items:
+            preview.append(f"... {len(vals) - max_items} more item(s)")
+        return preview
+    text = repr(value)
+    return text if len(text) <= max_chars else text[:max_chars] + "...<truncated>"
+
+
+def _flatten_numeric_values(value: Any, limit: int = 24) -> List[float]:
+    """Flatten nested list/tuple/array-like values into numeric floats."""
+    values: List[float] = []
+
+    def _walk(v: Any) -> None:
+        if len(values) >= limit:
+            return
+        if v is None or isinstance(v, (str, bytes, bool)):
+            return
+        if isinstance(v, (int, float)):
+            try:
+                values.append(float(v))
+            except Exception:
+                pass
+            return
+        if hasattr(v, "item"):
+            try:
+                _walk(v.item())
+                return
+            except Exception:
+                pass
+        if hasattr(v, "tolist"):
+            try:
+                _walk(v.tolist())
+                return
+            except Exception:
+                pass
+        if isinstance(v, dict):
+            for item in v.values():
+                _walk(item)
+                if len(values) >= limit:
+                    break
+            return
+        try:
+            iterator = iter(v)
+        except Exception:
+            return
+        for item in iterator:
+            _walk(item)
+            if len(values) >= limit:
+                break
+
+    _walk(value)
+    return values
+
+
+def _valid_bounds_tuple(bounds: Tuple[float, float, float, float, float, float]) -> bool:
+    xmin, xmax, ymin, ymax, zmin, zmax = bounds
+    return xmin < xmax and ymin < ymax and zmin <= zmax
+
+
+def _normalise_bounds_value(value: Any) -> dict:
+    """
+    Normalise a raw PyEnSight bounds-like value into xmin,xmax,ymin,ymax,zmin,zmax.
+    Accepts exactly one unambiguous layout:
+      A: [xmin, xmax, ymin, ymax, zmin, zmax]
+      B: [xmin, ymin, zmin, xmax, ymax, zmax]
+    """
+    nums = _flatten_numeric_values(value)
+    result: dict = {
+        "numeric_values": nums,
+        "status": "not_six_numeric",
+        "bounds": None,
+        "format": "",
+        "error": "",
+    }
+    if len(nums) != 6:
+        result["error"] = f"expected 6 numeric values, got {len(nums)}"
+        return result
+
+    a_bounds = (nums[0], nums[1], nums[2], nums[3], nums[4], nums[5])
+    b_bounds = (nums[0], nums[3], nums[1], nums[4], nums[2], nums[5])
+    candidates: List[Tuple[str, Tuple[float, float, float, float, float, float]]] = []
+    if _valid_bounds_tuple(a_bounds):
+        candidates.append(("xmin_xmax_ymin_ymax_zmin_zmax", a_bounds))
+    if _valid_bounds_tuple(b_bounds):
+        candidates.append(("xmin_ymin_zmin_xmax_ymax_zmax", b_bounds))
+
+    if len(candidates) == 1:
+        fmt, bounds = candidates[0]
+        result.update({
+            "status": "success",
+            "bounds": list(bounds),
+            "format": fmt,
+            "error": "",
+        })
+        return result
+
+    if len(candidates) > 1:
+        result.update({
+            "status": "ambiguous",
+            "candidate_formats": [
+                {"format": fmt, "bounds": list(bounds)}
+                for fmt, bounds in candidates
+            ],
+            "error": "both supported bounds layouts are plausible",
+        })
+        return result
+
+    result.update({
+        "status": "invalid_order",
+        "error": "six numeric values did not satisfy either supported min/max layout",
+    })
+    return result
+
+
+def attempt_object_bounds(obj: Any) -> Tuple[List[dict], List[dict]]:
+    """Try all supported PyEnSight bounds APIs on one object."""
+    attempts: List[dict] = []
+    successes: List[dict] = []
+
+    for attempt_kind, name, arg in BOUNDS_API_ATTEMPTS:
+        label = f"{name}({arg!r})" if arg is not None else name
+        entry: dict = {
+            "api": label,
+            "kind": attempt_kind,
+            "status": "",
+            "raw_preview": None,
+            "normalization": None,
+            "error": "",
+        }
+        try:
+            if attempt_kind == "attr":
+                raw = getattr(obj, name)
+            elif attempt_kind == "method":
+                method = getattr(obj, name)
+                if not callable(method):
+                    raise TypeError(f"{name} exists but is not callable")
+                raw = method()
+            elif attempt_kind == "method_arg":
+                method = getattr(obj, name)
+                if not callable(method):
+                    raise TypeError(f"{name} exists but is not callable")
+                raw = method(arg)
+            else:
+                raise RuntimeError(f"unknown attempt kind: {attempt_kind}")
+
+            entry["raw_preview"] = _safe_preview(raw)
+            norm = _normalise_bounds_value(raw)
+            entry["normalization"] = norm
+            entry["status"] = norm["status"]
+            if norm["status"] == "success":
+                successes.append({
+                    "api": label,
+                    "format": norm["format"],
+                    "bounds": norm["bounds"],
+                })
+        except Exception as exc:
+            entry["status"] = "error"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        attempts.append(entry)
+
+    return attempts, successes
+
+
+def _object_description(obj: Any) -> Optional[str]:
+    value, err = _safe_attr(obj, "DESCRIPTION")
+    if err is not None or value in (None, ""):
+        return None
+    return str(value)
+
+
+def _object_name(obj: Any) -> Optional[str]:
+    for attr in ("name", "NAME"):
+        value, err = _safe_attr(obj, attr)
+        if err is None and value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _object_visible(obj: Any) -> Optional[Any]:
+    value, err = _safe_attr(obj, "VISIBLE")
+    return None if err else _safe_preview(value)
+
+
+def _object_selected(obj: Any) -> Optional[Any]:
+    value, err = _safe_attr(obj, "SELECTED")
+    return None if err else _safe_preview(value)
+
+
+def _object_label(obj: Any) -> str:
+    desc = _object_description(obj)
+    name = _object_name(obj)
+    pnum, pnum_err = _safe_attr(obj, "PARTNUMBER")
+    pieces = []
+    if desc:
+        pieces.append(f"DESCRIPTION={desc}")
+    if name and name != desc:
+        pieces.append(f"name={name}")
+    if pnum_err is None:
+        pieces.append(f"PARTNUMBER={pnum}")
+    return ", ".join(pieces) if pieces else repr(obj)
+
+
+def _object_search_text(obj: Any) -> str:
+    vals = [_object_description(obj), _object_name(obj)]
+    return " ".join(v for v in vals if v).lower()
+
+
+def _object_matches_any_keyword(obj: Any, keywords: Tuple[str, ...]) -> bool:
+    text = _object_search_text(obj)
+    return any(kw.lower() in text for kw in keywords)
+
+
+def _is_visible(obj: Any) -> bool:
+    value, err = _safe_attr(obj, "VISIBLE")
+    if err is not None:
+        return False
+    return bool(value)
+
+
+def _is_selected(obj: Any) -> bool:
+    value, err = _safe_attr(obj, "SELECTED")
+    if err is not None:
+        return False
+    return bool(value)
+
+
+def _dedupe_objects(objects: List[Any]) -> List[Any]:
+    seen: set = set()
+    result: List[Any] = []
+    for obj in objects:
+        key = id(obj)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(obj)
+    return result
+
+
+def _accumulate_bounds(
+    bounds_list: List[List[float]],
+) -> Optional[Tuple[float, float, float, float, float, float]]:
+    if not bounds_list:
+        return None
+    xmin = min(min(b[0], b[1]) for b in bounds_list)
+    xmax = max(max(b[0], b[1]) for b in bounds_list)
+    ymin = min(min(b[2], b[3]) for b in bounds_list)
+    ymax = max(max(b[2], b[3]) for b in bounds_list)
+    zmin = min(min(b[4], b[5]) for b in bounds_list)
+    zmax = max(max(b[4], b[5]) for b in bounds_list)
+    return (xmin, xmax, ymin, ymax, zmin, zmax)
+
+
+def _first_success_for_object(obj: Any) -> Tuple[Optional[dict], List[dict]]:
+    attempts, successes = attempt_object_bounds(obj)
+    return (successes[0] if successes else None), attempts
+
+
+def _bounds_candidate_groups(session: Any, target_parts: List[Any]) -> List[Tuple[str, List[Any]]]:
+    try:
+        all_parts = list(session.ensight.objs.core.PARTS)
+    except Exception:
+        all_parts = list(target_parts)
+
+    selected_membrane = [
+        p for p in all_parts
+        if _is_selected(p)
+        and _object_matches_any_keyword(
+            p, ("wall_top_mem", "wall_bottom_mem", "membrane", "top", "bottom")
+        )
+    ]
+    visible_named_membrane = [
+        p for p in all_parts
+        if _is_visible(p)
+        and _object_matches_any_keyword(p, ("wall_top_mem", "wall_bottom_mem"))
+    ]
+    visible_parts = [p for p in all_parts if _is_visible(p)]
+
+    return [
+        ("displayed_contour_parts", _dedupe_objects(list(target_parts))),
+        ("selected_membrane_candidates", _dedupe_objects(selected_membrane)),
+        ("visible_named_membrane_parts", _dedupe_objects(visible_named_membrane)),
+        ("visible_parts", _dedupe_objects(visible_parts)),
+        ("all_parts", _dedupe_objects(all_parts)),
+    ]
+
+
+def select_membrane_view_bounds(session: Any, target_parts: List[Any]) -> dict:
+    """
+    Find usable display bounds by priority:
+      1. displayed/exported contour parts
+      2. selected membrane candidates
+      3. visible wall_top_mem/wall_bottom_mem candidates
+      4. visible parts
+      5. all parts
+    """
+    candidate_attempts: List[dict] = []
+    candidate_successes: List[dict] = []
+    chosen_bounds: Optional[Tuple[float, float, float, float, float, float]] = None
+    chosen_candidate = ""
+    chosen_format = ""
+
+    for group_name, objects in _bounds_candidate_groups(session, target_parts):
+        group_success_bounds: List[List[float]] = []
+        group_success_formats: List[str] = []
+        group_entry = {
+            "candidate_group": group_name,
+            "object_count": len(objects),
+            "objects": [],
+        }
+        for obj in objects:
+            attempts, successes = attempt_object_bounds(obj)
+            object_entry = {
+                "object_label": _object_label(obj),
+                "python_type": f"{type(obj).__module__}.{type(obj).__qualname__}",
+                "attempts": attempts,
+            }
+            group_entry["objects"].append(object_entry)
+            if successes:
+                first = successes[0]
+                group_success_bounds.append(list(first["bounds"]))
+                group_success_formats.append(str(first["format"]))
+                candidate_successes.append({
+                    "candidate_group": group_name,
+                    "object_label": _object_label(obj),
+                    "api": first["api"],
+                    "format": first["format"],
+                    "bounds": first["bounds"],
+                })
+
+        candidate_attempts.append(group_entry)
+
+        if group_success_bounds and chosen_bounds is None:
+            chosen_bounds = _accumulate_bounds(group_success_bounds)
+            chosen_candidate = group_name
+            unique_formats = sorted(set(group_success_formats))
+            chosen_format = (
+                unique_formats[0]
+                if len(unique_formats) == 1 and len(group_success_bounds) == 1
+                else "aggregate_" + "_and_".join(unique_formats)
+            )
+            candidate_successes.append({
+                "candidate_group": group_name,
+                "object_label": "__group_accumulated_bounds__",
+                "api": "aggregate_first_success_per_object",
+                "format": chosen_format,
+                "bounds": list(chosen_bounds) if chosen_bounds else None,
+            })
+            break
+
+    return {
+        "bounds": chosen_bounds,
+        "bounds_candidate_attempts": candidate_attempts,
+        "bounds_candidate_successes": candidate_successes,
+        "chosen_bounds_candidate": chosen_candidate,
+        "chosen_bounds_format": chosen_format,
+    }
+
+
+def inspect_pyensight_object_for_bounds(
+    obj: Any,
+    collection: str,
+    categories: List[str],
+) -> dict:
+    try:
+        public_attrs = [a for a in dir(obj) if not a.startswith("_")]
+    except Exception as exc:
+        public_attrs = []
+        dir_error = f"{type(exc).__name__}: {exc}"
+    else:
+        dir_error = ""
+
+    uppercase_attrs = [a for a in public_attrs if a.upper() == a]
+    keyword_attrs = [
+        a for a in public_attrs
+        if any(kw in a.lower() for kw in BOUNDS_ATTR_KEYWORDS)
+    ]
+    attr_previews: dict = {}
+    for attr in keyword_attrs:
+        lower_attr = attr.lower()
+        if not any(kw in lower_attr for kw in ("bound", "extent", "min", "max", "box", "range")):
+            continue
+        value, err = _safe_attr(obj, attr)
+        attr_previews[attr] = {"error": err} if err else _safe_preview(value)
+
+    attempts, successes = attempt_object_bounds(obj)
+
+    return {
+        "collection": collection,
+        "categories": sorted(set(categories)),
+        "python_type": f"{type(obj).__module__}.{type(obj).__qualname__}",
+        "repr": repr(obj),
+        "DESCRIPTION": _object_description(obj),
+        "name": _object_name(obj),
+        "VISIBLE": _object_visible(obj),
+        "SELECTED": _object_selected(obj),
+        "dir_error": dir_error,
+        "uppercase_public_attributes": uppercase_attrs,
+        "public_attributes_matching_bounds_keywords": keyword_attrs,
+        "matching_attribute_value_previews": attr_previews,
+        "attempted_bounds": attempts,
+        "bounds_successes": successes,
+    }
+
+
+def _iter_core_collection_objects(session: Any) -> List[Tuple[str, Any]]:
+    try:
+        core = session.ensight.objs.core
+    except Exception:
+        return []
+
+    objects: List[Tuple[str, Any]] = []
+    seen_collections: set = set()
+    collection_names: List[str] = ["PARTS", "VARIABLES", "PALETTES", "VPORTS"]
+    try:
+        collection_names.extend(
+            name for name in dir(core)
+            if not name.startswith("_") and name.upper() == name
+        )
+    except Exception:
+        pass
+
+    for collection_name in collection_names:
+        if collection_name in seen_collections:
+            continue
+        seen_collections.add(collection_name)
+        try:
+            collection = getattr(core, collection_name)
+        except Exception:
+            continue
+        if isinstance(collection, (str, bytes)):
+            continue
+        try:
+            items = list(collection)
+        except Exception:
+            continue
+        for item in items:
+            objects.append((collection_name, item))
+    return objects
+
+
+def collect_pyensight_bounds_diagnostics(
+    session: Any,
+    field_key: str,
+    display_var_desc: str,
+    surface_desc: str,
+    target_parts: List[Any],
+    bounds_selection: dict,
+    manual_view_bounds: Optional[Tuple[float, float, float, float]],
+    manual_view_plane: str,
+) -> dict:
+    try:
+        all_parts = list(session.ensight.objs.core.PARTS)
+    except Exception:
+        all_parts = []
+
+    visible_parts = [p for p in all_parts if _is_visible(p)]
+    selected_membrane_candidates = [
+        p for p in all_parts
+        if _is_selected(p)
+        and _object_matches_any_keyword(
+            p, ("wall_top_mem", "wall_bottom_mem", "membrane", "top", "bottom")
+        )
+    ]
+
+    registry: dict = {}
+
+    def _add(obj: Any, collection: str, category: str) -> None:
+        key = id(obj)
+        if key not in registry:
+            registry[key] = {"obj": obj, "collection": collection, "categories": []}
+        registry[key]["categories"].append(category)
+
+    for p in all_parts:
+        _add(p, "PARTS", "core.PARTS")
+    for p in visible_parts:
+        _add(p, "PARTS", "visible_parts")
+    for p in selected_membrane_candidates:
+        _add(p, "PARTS", "selected_membrane_candidates")
+    for p in target_parts:
+        _add(p, "PARTS", "field_displayed_contour_parts")
+
+    for collection_name, obj in _iter_core_collection_objects(session):
+        if _object_matches_any_keyword(obj, BOUNDS_DIAG_NAME_KEYWORDS):
+            _add(obj, collection_name, "keyword_name_or_description_match")
+
+    inspected_objects = [
+        inspect_pyensight_object_for_bounds(
+            item["obj"], item["collection"], item["categories"]
+        )
+        for item in registry.values()
+    ]
+
+    return {
+        "field_key": field_key,
+        "display_variable": display_var_desc,
+        "surface_desc": surface_desc,
+        "manual_view_bounds": list(manual_view_bounds) if manual_view_bounds else None,
+        "manual_view_plane": manual_view_plane,
+        "counts": {
+            "core_PARTS": len(all_parts),
+            "visible_parts": len(visible_parts),
+            "selected_membrane_candidates": len(selected_membrane_candidates),
+            "field_displayed_contour_parts": len(target_parts),
+            "inspected_objects": len(inspected_objects),
+        },
+        "bounds_selection": bounds_selection,
+        "inspected_objects": inspected_objects,
+    }
+
+
+def write_pyensight_bounds_diagnostics(
+    diagnostics_path: Path,
+    diagnostics_records: List[dict],
+    geo_name: str,
+    case_name: str,
+) -> None:
+    if not _safe_mkdir(diagnostics_path.parent):
+        print(
+            f"  NOTE: Diagnostics directory contains a Windows drive path ({diagnostics_path.parent}); "
+            "skipping diagnostics JSON write on Linux/WSL."
+        )
+        return
+    payload = {
+        "geo_name": geo_name,
+        "case_name": case_name,
+        "diagnostic_record_count": len(diagnostics_records),
+        "records": diagnostics_records,
+    }
+    with diagnostics_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, default=str)
+    print(f"Bounds diagnostics saved: {diagnostics_path}")
+
+
+def print_pyensight_bounds_diagnostics(entry: dict) -> None:
+    print()
+    print("=" * 72)
+    print(f"PYENSIGHT BOUNDS DIAGNOSTICS: {entry.get('field_key')}")
+    print("=" * 72)
+    counts = entry.get("counts", {})
+    print(
+        "  counts: "
+        f"PARTS={counts.get('core_PARTS')} "
+        f"visible={counts.get('visible_parts')} "
+        f"selected_membrane={counts.get('selected_membrane_candidates')} "
+        f"displayed={counts.get('field_displayed_contour_parts')} "
+        f"inspected={counts.get('inspected_objects')}"
+    )
+    selection = entry.get("bounds_selection", {})
+    print(
+        "  chosen: "
+        f"candidate={selection.get('chosen_bounds_candidate') or 'none'} "
+        f"format={selection.get('chosen_bounds_format') or 'none'} "
+        f"bounds={selection.get('bounds')}"
+    )
+    for obj_entry in entry.get("inspected_objects", []):
+        print("-" * 72)
+        print(
+            f"  [{obj_entry.get('collection')}] "
+            f"{', '.join(obj_entry.get('categories', []))}"
+        )
+        print(f"    type       : {obj_entry.get('python_type')}")
+        print(f"    repr       : {obj_entry.get('repr')}")
+        print(f"    DESCRIPTION: {obj_entry.get('DESCRIPTION')}")
+        print(f"    name       : {obj_entry.get('name')}")
+        print(f"    VISIBLE    : {obj_entry.get('VISIBLE')}  SELECTED: {obj_entry.get('SELECTED')}")
+        print(f"    uppercase attrs: {obj_entry.get('uppercase_public_attributes')}")
+        print(
+            "    bounds-like attrs: "
+            f"{obj_entry.get('public_attributes_matching_bounds_keywords')}"
+        )
+        attempt_summaries = []
+        for attempt in obj_entry.get("attempted_bounds", []):
+            summary = f"{attempt.get('api')}={attempt.get('status')}"
+            if attempt.get("error"):
+                summary += f"({attempt.get('error')})"
+            norm = attempt.get("normalization") or {}
+            if norm.get("bounds"):
+                summary += f" bounds={norm.get('bounds')} fmt={norm.get('format')}"
+            attempt_summaries.append(summary)
+        print(f"    bounds attempts: {'; '.join(attempt_summaries)}")
+    print("=" * 72)
 
 
 # ---------------------------------------------------------------------------
@@ -1405,6 +2090,7 @@ def run_bounds_debug_sweep(
             session.ensight.utils.export.image(
                 png_path, width=image_width, height=image_height, passes=4
             )
+            print(f"Bounds debug output: {dbg_path}")
             if dbg_path.is_file():
                 written.append(str(dbg_path))
         except Exception:
@@ -1547,36 +2233,15 @@ def find_fluid_volume_parts(session: Any) -> List[Any]:
 def _accumulate_parts_extents(
     parts: List[Any],
 ) -> Optional[Tuple[float, float, float, float, float, float]]:
-    """Shared EXTENTS accumulation for get_part_bounding_box and
+    """Shared bounds accumulation for get_part_bounding_box and
     get_membrane_view_bounds. Returns (xmin, xmax, ymin, ymax, zmin, zmax), or
-    None if no part exposed a usable bounding box."""
-    xmin, xmax = float("inf"), float("-inf")
-    ymin, ymax = float("inf"), float("-inf")
-    zmin, zmax = float("inf"), float("-inf")
-    found = False
+    None if no part exposed a usable unambiguous bounding box."""
+    usable_bounds: List[List[float]] = []
     for p in parts:
-        for attr in ("EXTENTS", "BOUNDING_BOX", "BOUNDINGBOX"):
-            try:
-                bbox = getattr(p, attr, None)
-                if bbox is None:
-                    continue
-                coords = list(bbox)
-                if len(coords) >= 6:
-                    # EnSight EXTENTS layout: [xmin, xmax, ymin, ymax, zmin, zmax]
-                    x0, x1 = float(coords[0]), float(coords[1])
-                    y0, y1 = float(coords[2]), float(coords[3])
-                    z0, z1 = float(coords[4]), float(coords[5])
-                    xmin = min(xmin, min(x0, x1))
-                    xmax = max(xmax, max(x0, x1))
-                    ymin = min(ymin, min(y0, y1))
-                    ymax = max(ymax, max(y0, y1))
-                    zmin = min(zmin, min(z0, z1))
-                    zmax = max(zmax, max(z0, z1))
-                    found = True
-                    break
-            except Exception:
-                pass
-    return (xmin, xmax, ymin, ymax, zmin, zmax) if found else None
+        first_success, _attempts = _first_success_for_object(p)
+        if first_success and first_success.get("bounds"):
+            usable_bounds.append(list(first_success["bounds"]))
+    return _accumulate_bounds(usable_bounds)
 
 
 def get_part_bounding_box(parts: List[Any]) -> Optional[Tuple[float, float, float, float, float, float]]:
@@ -2266,6 +2931,11 @@ def export_contour(
     view_margin: float = 1.20,
     zoom_out: float = 1.15,
     bounds_debug_sweep: bool = False,
+    bounds_diagnostics: bool = False,
+    bounds_diagnostics_path: Optional[Path] = None,
+    bounds_diagnostics_records: Optional[List[dict]] = None,
+    manual_view_bounds: Optional[Tuple[float, float, float, float]] = None,
+    manual_view_plane: str = "xy",
 ) -> None:
     field_key       = plan_item["field_key"]
     field_name      = plan_item["field_name"]
@@ -2307,6 +2977,14 @@ def export_contour(
     bounds_fit_status_str: str = ""
     bounds_fit_method_str: str = ""
     bounds_fit_error_str: str = ""
+    bounds_candidate_attempts_list: List[dict] = []
+    bounds_candidate_successes_list: List[dict] = []
+    chosen_bounds_candidate_str: str = ""
+    chosen_bounds_format_str: str = ""
+    manual_view_bounds_requested_list: Optional[List[float]] = (
+        list(manual_view_bounds) if manual_view_bounds else None
+    )
+    manual_view_plane_requested_str: str = manual_view_plane
     export_crop_disabled_bool: bool = True
     export_viewport_method_str: str = ""
     export_region_used_str: str = ""
@@ -2354,6 +3032,12 @@ def export_contour(
             bounds_fit_status=bounds_fit_status_str,
             bounds_fit_method=bounds_fit_method_str,
             bounds_fit_error=bounds_fit_error_str,
+            bounds_candidate_attempts=list(bounds_candidate_attempts_list),
+            bounds_candidate_successes=list(bounds_candidate_successes_list),
+            chosen_bounds_candidate=chosen_bounds_candidate_str,
+            chosen_bounds_format=chosen_bounds_format_str,
+            manual_view_bounds_requested=manual_view_bounds_requested_list,
+            manual_view_plane_requested=manual_view_plane_requested_str,
             export_crop_disabled=export_crop_disabled_bool,
             export_viewport_method=export_viewport_method_str,
             export_region_used=export_region_used_str,
@@ -2816,23 +3500,96 @@ def export_contour(
     #     overrides) the view-margin/zoom-out zoom() call in step 8. This is
     #     the primary anti-clipping mechanism; see fit_view_to_padded_bounds
     #     docstring for why it does not rely on zoom() at all.
-    raw_bounds = get_membrane_view_bounds(target_parts)
+    bounds_selection = select_membrane_view_bounds(session, target_parts)
+    bounds_candidate_attempts_list = list(bounds_selection["bounds_candidate_attempts"])
+    bounds_candidate_successes_list = list(bounds_selection["bounds_candidate_successes"])
+    chosen_bounds_candidate_str = str(bounds_selection["chosen_bounds_candidate"] or "")
+    chosen_bounds_format_str = str(bounds_selection["chosen_bounds_format"] or "")
+
+    raw_bounds = bounds_selection["bounds"]
     membrane_bounds_raw_list = list(raw_bounds) if raw_bounds else None
-    membrane_bounds_source_str = "target_parts_EXTENTS" if raw_bounds else "unavailable"
+    membrane_bounds_source_str = chosen_bounds_candidate_str if raw_bounds else "unavailable"
     padded_bounds = compute_padded_bounds(raw_bounds, view_margin) if raw_bounds else None
     membrane_bounds_padded_list = list(padded_bounds) if padded_bounds else None
+    fit_target_used_str = (
+        f"automatic:{chosen_bounds_candidate_str}" if raw_bounds else "unavailable"
+    )
+
+    prefit_errors: List[str] = []
+    manual_bounds_used = False
+    if manual_view_bounds is not None:
+        plane = (manual_view_plane or "xy").strip().lower()
+        if plane != "xy":
+            prefit_errors.append(
+                f"unsupported --manual-view-plane '{manual_view_plane}'; only 'xy' is implemented"
+            )
+            fit_target_used_str = (
+                f"automatic:{chosen_bounds_candidate_str}"
+                if raw_bounds else "manual_view_bounds_unsupported_plane"
+            )
+        else:
+            zmin, zmax = (raw_bounds[4], raw_bounds[5]) if raw_bounds else (0.0, 0.0)
+            raw_bounds = (
+                manual_view_bounds[0], manual_view_bounds[1],
+                manual_view_bounds[2], manual_view_bounds[3],
+                zmin, zmax,
+            )
+            padded_bounds = compute_padded_bounds(raw_bounds, view_margin)
+            membrane_bounds_source_str = "manual_view_bounds"
+            membrane_bounds_raw_list = list(manual_view_bounds)
+            membrane_bounds_padded_list = list(padded_bounds[:4])
+            fit_target_used_str = "manual_view_bounds"
+            chosen_bounds_candidate_str = "manual_view_bounds"
+            chosen_bounds_format_str = "manual_xy_2d"
+            manual_bounds_used = True
 
     bounds_fit_attempted_bool = True
-    bounds_fit_method_str, bounds_fit_status_str, bounds_fit_error_str = fit_view_to_padded_bounds(
+    bounds_fit_method_str, bounds_fit_status_str, fit_error = fit_view_to_padded_bounds(
         session, target_parts, raw_bounds, padded_bounds, image_width, image_height,
     )
-    fit_target_used_str = bounds_fit_method_str
+    if manual_bounds_used:
+        bounds_fit_status_str = "success" if bounds_fit_status_str == "applied" else "warn"
+    bounds_fit_error_str = "; ".join([m for m in prefit_errors + ([fit_error] if fit_error else []) if m])
     print(
         f"Bounds fit: raw={membrane_bounds_raw_list} padded={membrane_bounds_padded_list} "
         f"method={bounds_fit_method_str} status={bounds_fit_status_str}"
     )
     if bounds_fit_error_str:
         info_msgs.append(f"bounds_fit attempts: {bounds_fit_error_str}")
+
+    if bounds_diagnostics and bounds_diagnostics_path is not None:
+        try:
+            diagnostic_selection = dict(bounds_selection)
+            diagnostic_selection.update({
+                "final_fit_target_used": fit_target_used_str,
+                "final_membrane_bounds_source": membrane_bounds_source_str,
+                "final_membrane_bounds_raw": membrane_bounds_raw_list,
+                "final_membrane_bounds_padded": membrane_bounds_padded_list,
+                "final_bounds_fit_method": bounds_fit_method_str,
+                "final_bounds_fit_status": bounds_fit_status_str,
+                "final_bounds_fit_error": bounds_fit_error_str,
+            })
+            diag_entry = collect_pyensight_bounds_diagnostics(
+                session=session,
+                field_key=field_key,
+                display_var_desc=display_var_desc,
+                surface_desc=surface_desc,
+                target_parts=target_parts,
+                bounds_selection=diagnostic_selection,
+                manual_view_bounds=manual_view_bounds,
+                manual_view_plane=manual_view_plane,
+            )
+            print_pyensight_bounds_diagnostics(diag_entry)
+            if bounds_diagnostics_records is not None:
+                bounds_diagnostics_records.append(diag_entry)
+                write_pyensight_bounds_diagnostics(
+                    bounds_diagnostics_path,
+                    bounds_diagnostics_records,
+                    geo_name,
+                    case_name,
+                )
+        except Exception as exc_diag:
+            info_msgs.append(f"bounds_diagnostics failed: {exc_diag}")
 
     export_crop_disabled_bool, export_viewport_method_str, export_region_used_str = (
         _inspect_export_image_options(session)
@@ -2899,6 +3656,9 @@ def save_status(
     view_margin: float = 1.20,
     zoom_out: float = 1.15,
     bounds_debug_sweep: bool = False,
+    bounds_diagnostics: bool = False,
+    manual_view_bounds: Optional[Tuple[float, float, float, float]] = None,
+    manual_view_plane: str = "xy",
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
 
@@ -2925,7 +3685,12 @@ def save_status(
         "requested_zoom_out": zoom_out,
         "zoom_out_applied_any": any(r.zoom_out_applied for r in records),
         "bounds_debug_sweep_requested": bounds_debug_sweep,
-        "bounds_fit_applied_any": any(r.bounds_fit_status == "applied" for r in records),
+        "bounds_diagnostics_requested": bounds_diagnostics,
+        "manual_view_bounds_requested": list(manual_view_bounds) if manual_view_bounds else None,
+        "manual_view_plane_requested": manual_view_plane,
+        "bounds_fit_applied_any": any(
+            r.bounds_fit_status in ("applied", "success") for r in records
+        ),
         "view_orientation_preserved": True,
         "summary": {
             "total":   len(records),
@@ -2993,6 +3758,15 @@ def _print_summary(records: List[ExportRecord], figures_dir: Path) -> None:
 def main() -> int:
     args = parse_args()
 
+    manual_view_bounds: Optional[Tuple[float, float, float, float]] = None
+    if args.manual_view_bounds:
+        try:
+            manual_view_bounds = _parse_manual_view_bounds(args.manual_view_bounds)
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            return 3
+    manual_view_plane = (args.manual_view_plane or "xy").strip().lower()
+
     # Resolve color ranges (raises ValueError on bad CLI input)
     try:
         field_ranges = _resolve_field_ranges(args)
@@ -3028,6 +3802,9 @@ def main() -> int:
     print(f"Membrane  : {args.membrane_surface}")
     print(f"View margin: {args.view_margin}  |  Zoom-out: {args.zoom_out}")
     print(f"Bounds debug sweep: {'on' if args.bounds_debug_sweep else 'off'}")
+    print(f"Bounds diagnostics: {'on' if args.bounds_diagnostics else 'off'}")
+    if manual_view_bounds:
+        print(f"Manual view bounds ({manual_view_plane}): {list(manual_view_bounds)}")
 
     if args.fields:
         field_keys = [k.strip() for k in args.fields.split(",") if k.strip()]
@@ -3047,6 +3824,16 @@ def main() -> int:
         operating_pressure=args.operating_pressure,
     )
     records: List[ExportRecord] = []
+    bounds_diagnostics_records: List[dict] = []
+    bounds_diagnostics_path = figures_dir / "pyensight_bounds_diagnostics.json"
+    status_kwargs = {
+        "view_margin": args.view_margin,
+        "zoom_out": args.zoom_out,
+        "bounds_debug_sweep": args.bounds_debug_sweep,
+        "bounds_diagnostics": args.bounds_diagnostics,
+        "manual_view_bounds": manual_view_bounds,
+        "manual_view_plane": manual_view_plane,
+    }
 
     # ---- Dry-run ----
     if args.dry_run:
@@ -3066,7 +3853,7 @@ def main() -> int:
                 color_range_min=item["color_range_min"],
                 color_range_max=item["color_range_max"],
             ))
-        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
+        save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
         _print_summary(records, figures_dir)
         return 0
 
@@ -3094,7 +3881,7 @@ def main() -> int:
 
     if not plan:
         _safe_mkdir(figures_dir)
-        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
+        save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
         _print_summary(records, figures_dir)
         return 0
 
@@ -3122,7 +3909,7 @@ def main() -> int:
                     status=STATUS_FAILED,
                     message=f"Case load failed: {open_error[:120]}",
                 ))
-            save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
+            save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
             _print_summary(records, figures_dir)
             return 2
 
@@ -3153,6 +3940,11 @@ def main() -> int:
                     view_margin=args.view_margin,
                     zoom_out=args.zoom_out,
                     bounds_debug_sweep=args.bounds_debug_sweep,
+                    bounds_diagnostics=args.bounds_diagnostics,
+                    bounds_diagnostics_path=bounds_diagnostics_path,
+                    bounds_diagnostics_records=bounds_diagnostics_records,
+                    manual_view_bounds=manual_view_bounds,
+                    manual_view_plane=manual_view_plane,
                 )
             except Exception as exc_item:
                 records.append(ExportRecord(
@@ -3181,7 +3973,7 @@ def main() -> int:
             except Exception as exc_close:
                 print(f"Warning: session.close() raised: {exc_close}")
 
-    save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out, bounds_debug_sweep=args.bounds_debug_sweep)
+    save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
     _print_summary(records, figures_dir)
 
     n_failed = sum(1 for r in records if r.status == STATUS_FAILED)
