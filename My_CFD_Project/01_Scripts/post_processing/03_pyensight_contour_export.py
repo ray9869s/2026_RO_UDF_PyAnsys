@@ -252,6 +252,13 @@ class ExportRecord:
     center_plane_name: str = ""
     formula_summary: str = ""
     center_plane_diagnostics: Optional[dict] = None
+    view_margin_requested: Optional[float] = None
+    zoom_out_requested: Optional[float] = None
+    zoom_out_applied: bool = False
+    zoom_out_method: str = ""
+    zoom_out_status: str = ""
+    zoom_out_error: str = ""
+    view_orientation_preserved: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +446,16 @@ def parse_args() -> argparse.Namespace:
             "Zoom-out factor applied after fit (default: 1.20). "
             "1.0 = no margin; 1.2 = zoom out 20 %%. "
             "Use 1.35–1.40 on the server if membrane ends are clipped."
+        ),
+    )
+    sg.add_argument(
+        "--zoom-out", type=float, default=1.15, metavar="FACTOR",
+        help=(
+            "Additional explicit camera/view zoom-out applied after --view-margin "
+            "and after the view is fit and oriented (default: 1.15). "
+            "1.0 = no extra zoom-out; 1.15 = zoom out ~15%%; 1.25 = zoom out ~25%%. "
+            "Stacks with --view-margin. Increase (e.g. 1.30) if membrane ends "
+            "are still clipped."
         ),
     )
 
@@ -1082,6 +1099,97 @@ def setup_clean_scene(
         pass
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Explicit post-fit zoom-out — applied after fit(), before image export.
+# ---------------------------------------------------------------------------
+
+def _read_vport_zoom_diag(session: Any) -> str:
+    """Best-effort readback of any zoom/scale-like VPORT attribute exposed by
+    this EnSight version, purely for console diagnostics (never raises)."""
+    try:
+        vport = session.ensight.objs.core.VPORTS[0]
+    except Exception as exc:
+        return f"vport_unavailable:{exc}"
+    found = []
+    for attr in ("ZOOM", "SCALE", "PARALLELSCALE", "ORTHOSCALE", "VIEWSCALE"):
+        try:
+            val = getattr(vport, attr, None)
+            if val is not None:
+                found.append(f"{attr}={val}")
+        except Exception:
+            pass
+    return ",".join(found) if found else "no_known_zoom_attr_exposed"
+
+
+def apply_zoom_out(session: Any, combined_factor: float) -> Tuple[str, str, str]:
+    """
+    Zoom the already-fit-and-oriented EnSight view out by combined_factor
+    (the product of --view-margin and --zoom-out, applied as ONE call — see
+    caller). Tries multiple PyEnSight strategies in order and stops at the
+    first one that does not raise. None of the strategies below change view
+    direction, up vector, or camera orientation — only scale/distance — so
+    view orientation is always preserved.
+
+    A single combined call (rather than two sequential zoom() calls) avoids
+    ambiguity between cumulative and absolute zoom semantics across EnSight
+    versions: two sequential calls would compound under cumulative semantics
+    but one would silently override the other under absolute semantics.
+
+    Returns (method_used, status, error_msg):
+      status is "applied", "skipped" (factor <= 1.0), or "failed".
+      "applied" only means the call did not raise; it is not proof the
+      viewport actually changed scale (see console zoom-diag readback).
+    """
+    if combined_factor is None or combined_factor <= 1.0:
+        return "none", "skipped", ""
+
+    scale = 1.0 / combined_factor
+    errors: List[str] = []
+    before_diag = _read_vport_zoom_diag(session)
+
+    # Strategy 1: view_transf.zoom — the same API --view-margin already uses.
+    try:
+        session.ensight.view_transf.zoom(scale)
+        after_diag = _read_vport_zoom_diag(session)
+        print(f"  zoom_diag before='{before_diag}' after='{after_diag}'")
+        return "view_transf.zoom", "applied", ""
+    except Exception as exc:
+        errors.append(f"view_transf.zoom(scale={scale:.4g}): {exc}")
+
+    # Strategy 2: raw command-language string, in case the Python binding for
+    # view_transf.zoom differs from the underlying command-language function.
+    try:
+        session.ensight.command(f"view_transf: zoom {scale}")
+        after_diag = _read_vport_zoom_diag(session)
+        print(f"  zoom_diag before='{before_diag}' after='{after_diag}'")
+        return "command_language:view_transf.zoom", "applied", ""
+    except Exception as exc:
+        errors.append(f"command('view_transf: zoom {scale}'): {exc}")
+
+    # Strategy 3 (last resort; ineffective under orthographic projection, which
+    # this script uses, since moving the camera along the view axis does not
+    # change apparent size in true ortho — kept only in case perspective is
+    # ever re-enabled): move the camera farther from its focal point along the
+    # existing view direction (distance only; direction/up untouched).
+    try:
+        vport = session.ensight.objs.core.VPORTS[0]
+        cam = getattr(vport, "CAMERA", None) or getattr(vport, "CURRENTCAMERA", None)
+        if cam is not None and hasattr(cam, "LOOKFROM") and hasattr(cam, "LOOKAT"):
+            look_from = list(cam.LOOKFROM)
+            look_at = list(cam.LOOKAT)
+            new_from = [
+                look_at[i] + (look_from[i] - look_at[i]) * combined_factor
+                for i in range(3)
+            ]
+            cam.LOOKFROM = new_from
+            return "camera.LOOKFROM_distance", "applied", ""
+        errors.append("camera object or LOOKFROM/LOOKAT attributes not available")
+    except Exception as exc:
+        errors.append(f"camera distance fallback: {exc}")
+
+    return "failed", "failed", "; ".join(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -1892,6 +2000,7 @@ def export_contour(
     case_name: str,
     scene_setup_warnings: List[str],
     view_margin: float = 1.20,
+    zoom_out: float = 1.15,
 ) -> None:
     field_key       = plan_item["field_key"]
     field_name      = plan_item["field_name"]
@@ -1921,6 +2030,10 @@ def export_contour(
     center_plane_name_str: str = ""
     formula_summary_str: str = ""
     center_plane_diagnostics_dict: Optional[dict] = None
+    zoom_out_applied_bool: bool = False
+    zoom_out_method_str: str = ""
+    zoom_out_status_str: str = ""
+    zoom_out_error_str: str = ""
 
     def _record(status: str, surface_desc: str, message: str) -> None:
         records.append(ExportRecord(
@@ -1948,6 +2061,13 @@ def export_contour(
             center_plane_name=center_plane_name_str,
             formula_summary=formula_summary_str,
             center_plane_diagnostics=center_plane_diagnostics_dict,
+            view_margin_requested=view_margin,
+            zoom_out_requested=zoom_out,
+            zoom_out_applied=zoom_out_applied_bool,
+            zoom_out_method=zoom_out_method_str,
+            zoom_out_status=zoom_out_status_str,
+            zoom_out_error=zoom_out_error_str,
+            view_orientation_preserved=True,
         ))
 
     # 1. Locate surfaces
@@ -2379,16 +2499,25 @@ def export_contour(
     if label_warn:
         info_msgs.append(label_warn)
 
-    # 8. Fit view to visible geometry, then apply view margin
+    # 8. Fit view to visible geometry, then apply view margin and zoom-out as
+    #    ONE combined post-fit zoom call (see apply_zoom_out docstring for why
+    #    two sequential zoom() calls would be ambiguous).
     try:
         session.ensight.view_transf.fit(0)
     except Exception:
         pass
-    if view_margin > 1.0:
-        try:
-            session.ensight.view_transf.zoom(1.0 / view_margin)
-        except Exception:
-            pass
+    combined_zoom_out_factor = max(view_margin, 1.0) * max(zoom_out, 1.0)
+    print(
+        f"Applying PyEnSight zoom-out factor: {zoom_out} "
+        f"(combined with view-margin {view_margin} -> {combined_zoom_out_factor:.4g})"
+    )
+    zoom_out_method_str, zoom_out_status_str, zoom_out_error_str = apply_zoom_out(
+        session, combined_zoom_out_factor
+    )
+    zoom_out_applied_bool = zoom_out_status_str == "applied"
+    print(f"Zoom-out method: {zoom_out_method_str} ({zoom_out_status_str})")
+    if zoom_out_error_str:
+        info_msgs.append(f"zoom_out attempts: {zoom_out_error_str}")
 
     # 9. Render and save image
     try:
@@ -2436,6 +2565,7 @@ def save_status(
     geo_name: str,
     case_name: str,
     view_margin: float = 1.20,
+    zoom_out: float = 1.15,
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
 
@@ -2459,6 +2589,8 @@ def save_status(
         "requested_view_margin": view_margin,
         "effective_view_margin": view_margin,
         "view_margin_applied": view_margin > 1.0,
+        "requested_zoom_out": zoom_out,
+        "zoom_out_applied_any": any(r.zoom_out_applied for r in records),
         "view_orientation_preserved": True,
         "summary": {
             "total":   len(records),
@@ -2559,6 +2691,7 @@ def main() -> int:
     print(f"Output    : {figures_dir}")
     print(f"Background: {args.background}  |  Triad: {'show' if args.show_triad else 'hide'}")
     print(f"Membrane  : {args.membrane_surface}")
+    print(f"View margin: {args.view_margin}  |  Zoom-out: {args.zoom_out}")
 
     if args.fields:
         field_keys = [k.strip() for k in args.fields.split(",") if k.strip()]
@@ -2597,7 +2730,7 @@ def main() -> int:
                 color_range_min=item["color_range_min"],
                 color_range_max=item["color_range_max"],
             ))
-        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
+        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
         _print_summary(records, figures_dir)
         return 0
 
@@ -2625,7 +2758,7 @@ def main() -> int:
 
     if not plan:
         _safe_mkdir(figures_dir)
-        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
+        save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
         _print_summary(records, figures_dir)
         return 0
 
@@ -2653,7 +2786,7 @@ def main() -> int:
                     status=STATUS_FAILED,
                     message=f"Case load failed: {open_error[:120]}",
                 ))
-            save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
+            save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
             _print_summary(records, figures_dir)
             return 2
 
@@ -2682,6 +2815,7 @@ def main() -> int:
                     case_name=case_name,
                     scene_setup_warnings=scene_warnings,
                     view_margin=args.view_margin,
+                    zoom_out=args.zoom_out,
                 )
             except Exception as exc_item:
                 records.append(ExportRecord(
@@ -2710,7 +2844,7 @@ def main() -> int:
             except Exception as exc_close:
                 print(f"Warning: session.close() raised: {exc_close}")
 
-    save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin)
+    save_status(records, figures_dir, geo_name, case_name, view_margin=args.view_margin, zoom_out=args.zoom_out)
     _print_summary(records, figures_dir)
 
     n_failed = sum(1 for r in records if r.status == STATUS_FAILED)
