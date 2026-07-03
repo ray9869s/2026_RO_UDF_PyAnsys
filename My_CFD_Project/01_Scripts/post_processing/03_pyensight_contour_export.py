@@ -307,6 +307,22 @@ class ExportRecord:
     export_region_used: str = ""
     bounds_debug_sweep_attempted: bool = False
     bounds_debug_sweep_outputs: List[str] = field(default_factory=list)
+    legend_preset_requested: str = ""
+    legend_preset_applied: str = ""
+    legend_layout_status: str = ""
+    legend_layout_method: str = ""
+    legend_layout_error: str = ""
+    legend_x: Optional[float] = None
+    legend_y: Optional[float] = None
+    legend_width: Optional[float] = None
+    legend_height: Optional[float] = None
+    legend_text_size: Optional[float] = None
+    legend_title_size: Optional[float] = None
+    legend_label_count: Optional[int] = None
+    legend_reserve_right_requested: Optional[float] = None
+    legend_reserve_right_applied: bool = False
+    legend_reserve_right_method: str = ""
+    legend_reserve_right_error: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +561,58 @@ def parse_args() -> argparse.Namespace:
     sg.add_argument(
         "--manual-view-plane", type=str, default="xy", metavar="PLANE",
         help="Manual view bounds plane. Only 'xy' is implemented for now. Default: xy.",
+    )
+
+    # --- legend / colorbar layout ---
+    lgd = parser.add_argument_group("Legend / colorbar layout options")
+    lgd.add_argument(
+        "--legend-preset", type=str, default="presentation_right",
+        choices=["default", "presentation_right", "compact_right"],
+        help=(
+            "Legend/colorbar layout preset (default: presentation_right). "
+            "'default' preserves prior behavior (no layout changes). "
+            "'presentation_right' moves the legend to the right side outside "
+            "the membrane contour region with smaller readable text. "
+            "'compact_right' is similar but narrower with even smaller text."
+        ),
+    )
+    lgd.add_argument(
+        "--legend-x", type=float, default=None, metavar="FLOAT",
+        help="Manual override for legend LOCATIONX (normalized viewport coord, 0-1). Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-y", type=float, default=None, metavar="FLOAT",
+        help="Manual override for legend LOCATIONY (normalized viewport coord, 0-1). Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-width", type=float, default=None, metavar="FLOAT",
+        help="Manual override for legend WIDTH (normalized viewport coord). Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-height", type=float, default=None, metavar="FLOAT",
+        help="Manual override for legend HEIGHT (normalized viewport coord). Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-text-size", type=float, default=None, metavar="FLOAT",
+        help="Manual override for legend label TEXTSIZE. Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-title-size", type=float, default=None, metavar="FLOAT",
+        help="Manual override for legend title text size. Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-label-count", type=int, default=None, metavar="INT",
+        help="Manual override for legend LABELCOUNT. Overrides preset.",
+    )
+    lgd.add_argument(
+        "--legend-reserve-right", type=float, default=0.12, metavar="FRACTION",
+        help=(
+            "Reserve additional right-side view padding, as a fraction of the "
+            "membrane width, so the legend preset has whitespace to sit in "
+            "(default: 0.12). Only attempted when --manual-view-bounds is set "
+            "and the camera-fit API can accommodate it without a pan/lookat "
+            "adjustment; recorded either way in the status JSON."
+        ),
     )
 
     # --- LMH derivation ---
@@ -1727,6 +1795,280 @@ def apply_palette_label(
 
 
 # ---------------------------------------------------------------------------
+# Legend / colorbar layout — presets + best-effort attribute application.
+#
+# Source inspection of the installed ansys-pyensight-core 0.11.6 API stubs
+# (ansys/api/pyensight/ens_annot_lgnd.py) confirms LOCATIONX, LOCATIONY,
+# WIDTH, HEIGHT, SCALE, TEXTSIZE, SPECIFYLABELCOUNT, LABELCOUNT,
+# TITLELOCATION, ORIENTATION, VISIBLE, RANGE, FORMAT all live on
+# ENS_ANNOT_LGND ("legend" annotation objects, ANNOTTYPE ==
+# ensight.objs.enums.ANNOT_LEGEND == 3) — NOT on ENS_PALETTE (inspection of
+# ens_palette.py shows only color-mapping attributes: DESCRIPTION, MINMAX,
+# INTERP, VARIABLE, etc., no layout attributes). ENS_ANNOT_LGND has no
+# separate title-size attribute in this API version; VARCOMP
+# (List[Tuple[ENS_VAR, int]]) is the only link back to the variable it
+# represents, used below to find the right legend among possibly several.
+# ---------------------------------------------------------------------------
+
+LEGEND_TITLE_SIZE_ATTR_CANDIDATES: Tuple[str, ...] = (
+    "TITLESIZE", "TITLE_TEXT_SIZE", "TITLETEXTSIZE",
+)
+
+# Scale factors are relative to whatever TEXTSIZE the legend currently has —
+# units-agnostic, so "smaller than current" holds regardless of what that
+# baseline actually is.
+LEGEND_PRESETS: dict = {
+    "default": {
+        "x": None, "y": None, "width": None, "height": None,
+        "text_size_scale": None, "title_size_scale": None, "label_count": None,
+    },
+    "presentation_right": {
+        "x": 0.88, "y": 0.20, "width": 0.09, "height": 0.55,
+        "text_size_scale": 0.70, "title_size_scale": 0.70, "label_count": 9,
+    },
+    "compact_right": {
+        "x": 0.90, "y": 0.22, "width": 0.07, "height": 0.45,
+        "text_size_scale": 0.55, "title_size_scale": 0.55, "label_count": 7,
+    },
+}
+
+DEFAULT_LEGEND_OPTS: dict = {
+    "preset": "presentation_right",
+    "x": None, "y": None, "width": None, "height": None,
+    "text_size": None, "title_size": None, "label_count": None,
+    "reserve_right": 0.12,
+}
+
+
+def find_legend_annotation(
+    session: Any,
+    var_obj: Any,
+    display_var_desc: str,
+) -> Tuple[Optional[Any], str]:
+    """
+    Find the ENS_ANNOT_LGND (legend/colorbar annotation) for a variable.
+    Tries, in order: (1) VARCOMP match by variable DESCRIPTION, (2) VARCOMP
+    match by object identity, (3) legend DESCRIPTION match, (4) single
+    remaining legend. Returns (annotation_or_None, diagnostic_str).
+    """
+    tried: List[str] = []
+    try:
+        annots = list(session.ensight.objs.core.ANNOTS)
+    except Exception as exc:
+        return None, f"core.ANNOTS list failed: {type(exc).__name__}: {exc}"
+
+    legend_enum = None
+    for enum_name in ("ANNOT_LEGEND", "ANNO_LGND"):
+        try:
+            legend_enum = getattr(session.ensight.objs.enums, enum_name)
+            break
+        except Exception:
+            continue
+
+    def _is_legend(a: Any) -> bool:
+        if legend_enum is None:
+            return True
+        try:
+            return getattr(a, "ANNOTTYPE", None) == legend_enum
+        except Exception:
+            return False
+
+    legends = [a for a in annots if _is_legend(a)]
+    tried.append(f"annots_total={len(annots)},legend_candidates={len(legends)}")
+
+    var_desc_norm = _normalize(display_var_desc)
+
+    # Strategy 1/2: VARCOMP match, by variable DESCRIPTION or object identity.
+    for a in legends:
+        try:
+            varcomp = getattr(a, "VARCOMP", None)
+        except Exception:
+            continue
+        if not varcomp:
+            continue
+        entries = varcomp if isinstance(varcomp[0], (list, tuple)) else [varcomp]
+        for entry in entries:
+            try:
+                v = entry[0]
+            except Exception:
+                continue
+            if v is var_obj:
+                tried.append("matched_by_VARCOMP_identity")
+                return a, "; ".join(tried)
+            try:
+                v_desc = getattr(v, "DESCRIPTION", None)
+            except Exception:
+                v_desc = None
+            if v_desc is not None and _normalize(v_desc) == var_desc_norm:
+                tried.append(f"matched_by_VARCOMP_description='{v_desc}'")
+                return a, "; ".join(tried)
+
+    # Strategy 3: legend DESCRIPTION match.
+    for a in legends:
+        try:
+            desc = getattr(a, "DESCRIPTION", None)
+        except Exception:
+            desc = None
+        if desc is not None and _normalize(desc) == var_desc_norm:
+            tried.append(f"matched_by_legend_DESCRIPTION='{desc}'")
+            return a, "; ".join(tried)
+
+    # Strategy 4: exactly one legend annotation present.
+    if len(legends) == 1:
+        tried.append("single_legend_fallback")
+        return legends[0], "; ".join(tried)
+
+    tried.append(
+        f"no_match; legend_descs={[getattr(a, 'DESCRIPTION', None) for a in legends][:10]}"
+    )
+    return None, "; ".join(tried)
+
+
+def resolve_legend_layout_values(legend_opts: dict) -> dict:
+    """Merge the selected preset with manual CLI overrides (overrides win)."""
+    preset_name = legend_opts.get("preset", "presentation_right")
+    preset = LEGEND_PRESETS.get(preset_name, LEGEND_PRESETS["presentation_right"])
+    values: dict = {
+        "x": preset.get("x"),
+        "y": preset.get("y"),
+        "width": preset.get("width"),
+        "height": preset.get("height"),
+        "label_count": preset.get("label_count"),
+        "text_size_scale": preset.get("text_size_scale"),
+        "title_size_scale": preset.get("title_size_scale"),
+        "text_size_absolute": None,
+        "title_size_absolute": None,
+    }
+    for key in ("x", "y", "width", "height", "label_count"):
+        override = legend_opts.get(key)
+        if override is not None:
+            values[key] = override
+    # Manual --legend-text-size / --legend-title-size are absolute and take
+    # priority over the preset's relative scale.
+    if legend_opts.get("text_size") is not None:
+        values["text_size_absolute"] = legend_opts["text_size"]
+        values["text_size_scale"] = None
+    if legend_opts.get("title_size") is not None:
+        values["title_size_absolute"] = legend_opts["title_size"]
+        values["title_size_scale"] = None
+    return values
+
+
+def configure_legend_layout(
+    session: Any,
+    field_key: str,
+    var_obj: Any,
+    display_var_desc: str,
+    legend_opts: dict,
+) -> dict:
+    """
+    Best-effort legend/colorbar layout configuration for presentation output.
+    Never raises; always returns a status dict so callers can record the
+    outcome without risking the contour export itself. Keys: preset_requested,
+    preset_applied, status, method, error, x, y, width, height, text_size,
+    title_size, label_count.
+    """
+    preset_name = legend_opts.get("preset", "presentation_right")
+    result: dict = {
+        "preset_requested": preset_name,
+        "preset_applied": "",
+        "status": STATUS_SUCCESS,
+        "method": "",
+        "error": "",
+        "x": None, "y": None, "width": None, "height": None,
+        "text_size": None, "title_size": None, "label_count": None,
+    }
+
+    has_manual_override = any(
+        legend_opts.get(k) is not None
+        for k in ("x", "y", "width", "height", "text_size", "title_size", "label_count")
+    )
+
+    if preset_name == "default" and not has_manual_override:
+        result.update(preset_applied="default", method="unchanged", error="")
+        return result
+
+    legend_annot, find_diag = find_legend_annotation(session, var_obj, display_var_desc)
+    if legend_annot is None:
+        result.update(
+            preset_applied=preset_name, status=STATUS_WARN, method="none",
+            error=(
+                f"No ENS_ANNOT_LGND legend annotation found for '{display_var_desc}'; "
+                f"layout not applied. Diag: {find_diag}"
+            ),
+        )
+        return result
+
+    values = resolve_legend_layout_values(legend_opts)
+    applied: List[str] = []
+    failed: List[str] = []
+
+    def _try_set(attr_names: Any, value: Any, out_key: str) -> None:
+        if value is None:
+            return
+        names = attr_names if isinstance(attr_names, (list, tuple)) else [attr_names]
+        for attr in names:
+            try:
+                setattr(legend_annot, attr, value)
+                result[out_key] = value
+                applied.append(f"{attr}={value}")
+                return
+            except Exception as exc:
+                failed.append(f"{attr}: {type(exc).__name__}: {exc}")
+        failed.append(f"{out_key}: no supported attribute among {list(names)}")
+
+    def _try_scale(attr_names: Any, scale: Optional[float], absolute: Optional[float], out_key: str) -> None:
+        if absolute is not None:
+            _try_set(attr_names, absolute, out_key)
+            return
+        if scale is None:
+            return
+        names = attr_names if isinstance(attr_names, (list, tuple)) else [attr_names]
+        for attr in names:
+            try:
+                current = getattr(legend_annot, attr)
+            except Exception:
+                continue
+            try:
+                target_raw = float(current) * scale
+                target = int(round(target_raw)) if isinstance(current, int) else target_raw
+                setattr(legend_annot, attr, target)
+                result[out_key] = target
+                applied.append(f"{attr}={target}(scale={scale}xcurrent={current})")
+                return
+            except Exception as exc:
+                failed.append(f"{attr}: {type(exc).__name__}: {exc}")
+        failed.append(f"{out_key}: no readable/settable attribute among {list(names)}")
+
+    _try_set("LOCATIONX", values.get("x"), "x")
+    _try_set("LOCATIONY", values.get("y"), "y")
+    _try_set("WIDTH", values.get("width"), "width")
+    _try_set("HEIGHT", values.get("height"), "height")
+    _try_scale("TEXTSIZE", values.get("text_size_scale"), values.get("text_size_absolute"), "text_size")
+    _try_scale(
+        list(LEGEND_TITLE_SIZE_ATTR_CANDIDATES),
+        values.get("title_size_scale"), values.get("title_size_absolute"), "title_size",
+    )
+    if values.get("label_count") is not None:
+        try:
+            setattr(legend_annot, "SPECIFYLABELCOUNT", 1)
+            applied.append("SPECIFYLABELCOUNT=1")
+        except Exception as exc:
+            failed.append(f"SPECIFYLABELCOUNT: {type(exc).__name__}: {exc}")
+        _try_set("LABELCOUNT", values.get("label_count"), "label_count")
+
+    result["preset_applied"] = preset_name
+    if applied and not failed:
+        result.update(status=STATUS_SUCCESS, method="; ".join(applied), error="")
+    elif applied and failed:
+        result.update(status=STATUS_WARN, method="; ".join(applied), error="; ".join(failed))
+    else:
+        result.update(status=STATUS_FAILED, method="none", error="; ".join(failed) or "no attributes applied")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Clean scene setup — call once after loading the case
 # ---------------------------------------------------------------------------
 
@@ -2276,6 +2618,39 @@ def compute_padded_bounds(
     half_x = (xmax - xmin) / 2.0 * margin
     half_y = (ymax - ymin) / 2.0 * margin
     return (cx - half_x, cx + half_x, cy - half_y, cy + half_y, zmin, zmax)
+
+
+def apply_legend_reserve_right(
+    raw_bounds: Optional[Tuple[float, float, float, float, float, float]],
+    padded_bounds: Optional[Tuple[float, float, float, float, float, float]],
+    reserve_right_frac: Optional[float],
+) -> Tuple[Optional[Tuple[float, float, float, float, float, float]], bool, str, str]:
+    """
+    Best-effort: widen the x-extent used for the camera fit by reserve_right_frac
+    of the raw membrane width, so the presentation legend preset has visual
+    whitespace to occupy. NOTE: fit_view_to_padded_bounds only sets a single
+    symmetric camera scale (PARALLELSCALE/ORTHOSCALE) with no pan/lookat
+    adjustment, so this cannot shift whitespace to the right side only — it
+    adds extra zoom-out margin evenly around the already-centered geometry,
+    which still gives the fixed-position right-side legend more room to avoid
+    the membrane. Returns (new_padded_bounds, applied, method, error).
+    """
+    if not reserve_right_frac or reserve_right_frac <= 0.0:
+        return padded_bounds, False, "none", ""
+    if raw_bounds is None or padded_bounds is None:
+        return padded_bounds, False, "none", "bounds unavailable; reserve not applied"
+
+    try:
+        xmin, xmax, ymin, ymax, zmin, zmax = padded_bounds
+        raw_width = raw_bounds[1] - raw_bounds[0]
+        extra = raw_width * reserve_right_frac
+        new_bounds = (xmin, xmax + extra, ymin, ymax, zmin, zmax)
+        return (
+            new_bounds, True,
+            "padded_bounds_xmax_extend_symmetric_scale_only", "",
+        )
+    except Exception as exc:
+        return padded_bounds, False, "failed", f"{type(exc).__name__}: {exc}"
 
 
 def _try_create_clip_at_z(
@@ -2936,6 +3311,7 @@ def export_contour(
     bounds_diagnostics_records: Optional[List[dict]] = None,
     manual_view_bounds: Optional[Tuple[float, float, float, float]] = None,
     manual_view_plane: str = "xy",
+    legend_opts: Optional[dict] = None,
 ) -> None:
     field_key       = plan_item["field_key"]
     field_name      = plan_item["field_name"]
@@ -2990,6 +3366,23 @@ def export_contour(
     export_region_used_str: str = ""
     bounds_debug_sweep_attempted_bool: bool = False
     bounds_debug_sweep_outputs_list: List[str] = []
+    legend_opts_eff: dict = legend_opts if legend_opts is not None else DEFAULT_LEGEND_OPTS
+    legend_preset_requested_str: str = str(legend_opts_eff.get("preset") or "")
+    legend_preset_applied_str: str = ""
+    legend_layout_status_str: str = ""
+    legend_layout_method_str: str = ""
+    legend_layout_error_str: str = ""
+    legend_x_val: Optional[float] = None
+    legend_y_val: Optional[float] = None
+    legend_width_val: Optional[float] = None
+    legend_height_val: Optional[float] = None
+    legend_text_size_val: Optional[float] = None
+    legend_title_size_val: Optional[float] = None
+    legend_label_count_val: Optional[int] = None
+    legend_reserve_right_requested_float: Optional[float] = legend_opts_eff.get("reserve_right")
+    legend_reserve_right_applied_bool: bool = False
+    legend_reserve_right_method_str: str = ""
+    legend_reserve_right_error_str: str = ""
 
     def _record(status: str, surface_desc: str, message: str) -> None:
         records.append(ExportRecord(
@@ -3043,6 +3436,22 @@ def export_contour(
             export_region_used=export_region_used_str,
             bounds_debug_sweep_attempted=bounds_debug_sweep_attempted_bool,
             bounds_debug_sweep_outputs=list(bounds_debug_sweep_outputs_list),
+            legend_preset_requested=legend_preset_requested_str,
+            legend_preset_applied=legend_preset_applied_str,
+            legend_layout_status=legend_layout_status_str,
+            legend_layout_method=legend_layout_method_str,
+            legend_layout_error=legend_layout_error_str,
+            legend_x=legend_x_val,
+            legend_y=legend_y_val,
+            legend_width=legend_width_val,
+            legend_height=legend_height_val,
+            legend_text_size=legend_text_size_val,
+            legend_title_size=legend_title_size_val,
+            legend_label_count=legend_label_count_val,
+            legend_reserve_right_requested=legend_reserve_right_requested_float,
+            legend_reserve_right_applied=legend_reserve_right_applied_bool,
+            legend_reserve_right_method=legend_reserve_right_method_str,
+            legend_reserve_right_error=legend_reserve_right_error_str,
         ))
 
     # 1. Locate surfaces
@@ -3474,6 +3883,35 @@ def export_contour(
     if label_warn:
         info_msgs.append(label_warn)
 
+    # 7b. Legend/colorbar layout — presentation-friendly positioning + sizing.
+    #     Best-effort only: never allowed to fail the contour export itself.
+    print(f"Configuring legend layout: preset={legend_opts_eff.get('preset')}")
+    legend_layout_result = configure_legend_layout(
+        session, field_key, var_obj, display_var_desc, legend_opts_eff
+    )
+    legend_preset_requested_str = str(legend_layout_result.get("preset_requested") or "")
+    legend_preset_applied_str = str(legend_layout_result.get("preset_applied") or "")
+    legend_layout_status_str = str(legend_layout_result.get("status") or "")
+    legend_layout_method_str = str(legend_layout_result.get("method") or "")
+    legend_layout_error_str = str(legend_layout_result.get("error") or "")
+    legend_x_val = legend_layout_result.get("x")
+    legend_y_val = legend_layout_result.get("y")
+    legend_width_val = legend_layout_result.get("width")
+    legend_height_val = legend_layout_result.get("height")
+    legend_text_size_val = legend_layout_result.get("text_size")
+    legend_title_size_val = legend_layout_result.get("title_size")
+    legend_label_count_val = legend_layout_result.get("label_count")
+    print(f"Legend layout status: {legend_layout_status_str.lower() or 'unknown'}")
+    if legend_x_val is not None or legend_width_val is not None:
+        print(
+            f"  Legend location=({legend_x_val},{legend_y_val}) "
+            f"size=({legend_width_val},{legend_height_val}) "
+            f"text_size={legend_text_size_val} title_size={legend_title_size_val} "
+            f"label_count={legend_label_count_val}"
+        )
+    if legend_layout_error_str:
+        info_msgs.append(f"legend_layout: {legend_layout_error_str}")
+
     # 8. Fit view to visible geometry, then apply view margin and zoom-out as
     #    ONE combined post-fit zoom call (see apply_zoom_out docstring for why
     #    two sequential zoom() calls would be ambiguous).
@@ -3543,12 +3981,58 @@ def export_contour(
             chosen_bounds_format_str = "manual_xy_2d"
             manual_bounds_used = True
 
+    # 8c-i. Optional extra right-side reserve, so the presentation legend
+    #       preset has whitespace clear of the membrane. Only attempted with
+    #       manual view bounds (see apply_legend_reserve_right docstring for
+    #       why it cannot be made strictly one-sided). Whether it actually
+    #       affected the final view depends on which camera-fit method fires
+    #       below (reselect_fit_only ignores extent, camera.* uses it) — the
+    #       "applied" flag is finalized after that call, not here.
+    bounds_extended = False
+    reserve_extend_method = "not_applicable"
+    reserve_extend_error = ""
+    if manual_bounds_used:
+        padded_bounds, bounds_extended, reserve_extend_method, reserve_extend_error = (
+            apply_legend_reserve_right(
+                raw_bounds, padded_bounds, legend_reserve_right_requested_float
+            )
+        )
+        if bounds_extended:
+            membrane_bounds_padded_list = list(padded_bounds[:4])
+    elif legend_reserve_right_requested_float:
+        reserve_extend_error = "legend_reserve_right only applies when --manual-view-bounds is set"
+
     bounds_fit_attempted_bool = True
     bounds_fit_method_str, bounds_fit_status_str, fit_error = fit_view_to_padded_bounds(
         session, target_parts, raw_bounds, padded_bounds, image_width, image_height,
     )
     if manual_bounds_used:
         bounds_fit_status_str = "success" if bounds_fit_status_str == "applied" else "warn"
+
+    # Finalize legend_reserve_right_applied now that the fit method is known:
+    # a "camera.*" method means required_half_height was actually derived from
+    # the extended padded_bounds; "reselect_fit_only" means the extension had
+    # no visual effect even though the bounds tuple itself was widened.
+    legend_reserve_right_method_str = reserve_extend_method
+    if bounds_extended:
+        legend_reserve_right_applied_bool = bounds_fit_method_str.startswith("camera.")
+        if legend_reserve_right_applied_bool:
+            legend_reserve_right_error_str = reserve_extend_error
+        else:
+            legend_reserve_right_error_str = (
+                f"bounds extended by reserve fraction, but camera fit used "
+                f"method='{bounds_fit_method_str}' (status={bounds_fit_status_str}); "
+                "extension had no confirmed visual effect."
+            )
+    else:
+        legend_reserve_right_applied_bool = False
+        legend_reserve_right_error_str = reserve_extend_error
+    print(
+        f"Legend reserve-right: requested={legend_reserve_right_requested_float} "
+        f"applied={legend_reserve_right_applied_bool} method={legend_reserve_right_method_str}"
+    )
+    if legend_reserve_right_error_str:
+        info_msgs.append(f"legend_reserve_right: {legend_reserve_right_error_str}")
     bounds_fit_error_str = "; ".join([m for m in prefit_errors + ([fit_error] if fit_error else []) if m])
     print(
         f"Bounds fit: raw={membrane_bounds_raw_list} padded={membrane_bounds_padded_list} "
@@ -3659,6 +4143,8 @@ def save_status(
     bounds_diagnostics: bool = False,
     manual_view_bounds: Optional[Tuple[float, float, float, float]] = None,
     manual_view_plane: str = "xy",
+    legend_preset: str = "presentation_right",
+    legend_reserve_right: float = 0.12,
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
 
@@ -3692,6 +4178,11 @@ def save_status(
             r.bounds_fit_status in ("applied", "success") for r in records
         ),
         "view_orientation_preserved": True,
+        "requested_legend_preset": legend_preset,
+        "requested_legend_reserve_right": legend_reserve_right,
+        "legend_layout_applied_any": any(
+            r.legend_layout_status == STATUS_SUCCESS for r in records
+        ),
         "summary": {
             "total":   len(records),
             "success": n_success,
@@ -3805,6 +4296,21 @@ def main() -> int:
     print(f"Bounds diagnostics: {'on' if args.bounds_diagnostics else 'off'}")
     if manual_view_bounds:
         print(f"Manual view bounds ({manual_view_plane}): {list(manual_view_bounds)}")
+    legend_opts = {
+        "preset": args.legend_preset,
+        "x": args.legend_x,
+        "y": args.legend_y,
+        "width": args.legend_width,
+        "height": args.legend_height,
+        "text_size": args.legend_text_size,
+        "title_size": args.legend_title_size,
+        "label_count": args.legend_label_count,
+        "reserve_right": args.legend_reserve_right,
+    }
+    print(
+        f"Legend preset: {args.legend_preset}  |  "
+        f"Legend reserve-right: {args.legend_reserve_right}"
+    )
 
     if args.fields:
         field_keys = [k.strip() for k in args.fields.split(",") if k.strip()]
@@ -3833,6 +4339,8 @@ def main() -> int:
         "bounds_diagnostics": args.bounds_diagnostics,
         "manual_view_bounds": manual_view_bounds,
         "manual_view_plane": manual_view_plane,
+        "legend_preset": args.legend_preset,
+        "legend_reserve_right": args.legend_reserve_right,
     }
 
     # ---- Dry-run ----
@@ -3945,6 +4453,7 @@ def main() -> int:
                     bounds_diagnostics_records=bounds_diagnostics_records,
                     manual_view_bounds=manual_view_bounds,
                     manual_view_plane=manual_view_plane,
+                    legend_opts=legend_opts,
                 )
             except Exception as exc_item:
                 records.append(ExportRecord(
