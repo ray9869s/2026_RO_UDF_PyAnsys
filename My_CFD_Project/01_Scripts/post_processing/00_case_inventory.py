@@ -70,6 +70,124 @@ LOG_WALK_SKIP_DIRS = {
 LOG_SUFFIXES = {".log", ".out", ".txt"}
 LOG_NAME_KEYWORDS = ("transcript", "solver", "run", "fluent")
 
+ROLE_SOLVER_RUN = "solver_run"
+ROLE_POSTPROCESSING_GRAPHICS = "postprocessing_graphics"
+ROLE_REPORT_EXTRACTION = "report_extraction"
+ROLE_MESHING = "meshing"
+ROLE_UDF_COMPILE = "udf_compile"
+ROLE_UNKNOWN = "unknown"
+
+LOG_ROLES = (
+    ROLE_SOLVER_RUN,
+    ROLE_POSTPROCESSING_GRAPHICS,
+    ROLE_REPORT_EXTRACTION,
+    ROLE_MESHING,
+    ROLE_UDF_COMPILE,
+    ROLE_UNKNOWN,
+)
+
+ROLE_LIST_FIELDS = {
+    ROLE_SOLVER_RUN: "solver_log_files",
+    ROLE_POSTPROCESSING_GRAPHICS: "postprocessing_log_files",
+    ROLE_REPORT_EXTRACTION: "report_log_files",
+    ROLE_MESHING: "meshing_log_files",
+    ROLE_UDF_COMPILE: "udf_compile_log_files",
+    ROLE_UNKNOWN: "unknown_log_files",
+}
+
+ROLE_KEYWORDS = {
+    ROLE_POSTPROCESSING_GRAPHICS: (
+        "save_picture",
+        "graphics.colors.background",
+        "results/graphics",
+        "contour.display",
+        "cff_wall_shear_rate",
+        "shear contour",
+        "color_map.visible",
+        "pyensight",
+        "contour_export_status",
+        "shear_contour_status",
+    ),
+    ROLE_REPORT_EXTRACTION: (
+        "report definition",
+        "summary_metrics_wide",
+        "area-weighted average",
+        "expression error usedin",
+        "report file",
+        "report extraction",
+    ),
+    ROLE_MESHING: (
+        "watertight geometry",
+        "meshing workflow",
+        "proximity",
+        "task proximity",
+        "surface mesh",
+        "volume mesh",
+    ),
+    ROLE_UDF_COMPILE: (
+        "scons",
+        "libudf",
+        "udf_names.c",
+        ".obj error",
+        "compile udf",
+        "clang",
+        "user_nt.udf",
+    ),
+    ROLE_SOLVER_RUN: (
+        "iterate",
+        "iterations",
+        "residual",
+        "continuity",
+        "x-velocity",
+        "y-velocity",
+        "z-velocity",
+        "species",
+        "calculation complete",
+        "solution is converged",
+        "reached maximum number of iterations",
+        "writing final.cas",
+        "writing final.dat",
+        "_final.cas.h5",
+        "_final.dat.h5",
+    ),
+}
+
+FILENAME_ROLE_HINTS = {
+    ROLE_POSTPROCESSING_GRAPHICS: (
+        "contour",
+        "shear",
+        "pyensight",
+        "graphics",
+        "figure",
+        "postprocess",
+        "post_processing",
+    ),
+    ROLE_REPORT_EXTRACTION: (
+        "report",
+        "summary",
+        "metric",
+        "extract",
+    ),
+    ROLE_MESHING: (
+        "mesh",
+        "meshing",
+        "watertight",
+    ),
+    ROLE_UDF_COMPILE: (
+        "udf",
+        "libudf",
+        "scons",
+        "compile",
+    ),
+    ROLE_SOLVER_RUN: (
+        "solver",
+        "transcript",
+        "fluent",
+        "run",
+        "iterate",
+    ),
+}
+
 MAX_EVIDENCE_PER_KIND = 12
 TEXT_HEAD_BYTES = 256 * 1024
 TEXT_TAIL_BYTES = 2 * 1024 * 1024
@@ -126,15 +244,50 @@ MAX_ITER_PATTERNS = [
     re.compile(r"\bstopped\s+after\s+maximum\s+(?:number\s+of\s+)?iterations\b", re.IGNORECASE),
 ]
 
-FAILURE_PATTERNS = [
+HARD_SOLVER_FAILURE_PATTERNS = [
     re.compile(r"\bdivergence\s+detected\b", re.IGNORECASE),
+    re.compile(r"\bamg\s+divergence\b", re.IGNORECASE),
     re.compile(r"\bfloating\s+point\s+exception\b", re.IGNORECASE),
-    re.compile(r"\bsolver\s+(?:failed|aborted|terminated)\b", re.IGNORECASE),
+    re.compile(r"\bsolver\s+(?:fatal|failed|aborted|terminated)\b", re.IGNORECASE),
+    re.compile(r"\bsolver\s+fatal\s+error\b", re.IGNORECASE),
     re.compile(r"\bcalculation\s+(?:failed|aborted|terminated)\b", re.IGNORECASE),
     re.compile(r"\bsolution\s+diverged\b", re.IGNORECASE),
     re.compile(r"\bdiverged\b", re.IGNORECASE),
-    re.compile(r"\bdivergence\b", re.IGNORECASE),
-    re.compile(r"\bError\b"),
+    re.compile(r"\berror\s+encountered\s+in\s+critical\s+code\s+section\b", re.IGNORECASE),
+    re.compile(r"\bsegmentation\s+fault\b", re.IGNORECASE),
+    re.compile(r"\bprocess\s+aborted\b", re.IGNORECASE),
+    re.compile(r"\bfluent\s+abnormal\s+exit\b", re.IGNORECASE),
+    re.compile(r"\babnormal\s+exit\b", re.IGNORECASE),
+    re.compile(r"\breversed\s+flow\b.*\babort", re.IGNORECASE),
+    re.compile(r"\babort(?:ed|ing)?\b.*\breversed\s+flow\b", re.IGNORECASE),
+]
+
+REPORT_EXPRESSION_WARNING_PATTERNS = [
+    re.compile(r"\bExpression\s+Error\s+UsedIn\b", re.IGNORECASE),
+]
+
+GRAPHICS_ERROR_PATTERNS = [
+    re.compile(r"\bError\b.*(?:graphics|color|contour|display|save_picture|object\s+is\s+not\s+active)", re.IGNORECASE),
+    re.compile(r"(?:graphics|results/graphics|contour\.display|color_map\.visible|save_picture).*?\bError\b", re.IGNORECASE),
+    re.compile(r"\bapi-set-var\b", re.IGNORECASE),
+]
+
+MESHING_ERROR_PATTERNS = [
+    re.compile(r"\b(?:error|failed|failure|aborted|fatal)\b", re.IGNORECASE),
+]
+
+UDF_COMPILE_ERROR_PATTERNS = [
+    re.compile(r"\b(?:scons|libudf|udf|clang|user_nt\.udf|udf_names\.c)\b.*\b(?:error|failed|failure|fatal)\b", re.IGNORECASE),
+    re.compile(r"\b(?:error|failed|failure|fatal)\b.*\b(?:scons|libudf|udf|clang|user_nt\.udf|udf_names\.c)\b", re.IGNORECASE),
+    re.compile(r"\.obj\s+Error\b", re.IGNORECASE),
+    re.compile(r"\bscons:\s+\*\*\*", re.IGNORECASE),
+]
+
+LAUNCH_ERROR_PATTERNS = [
+    re.compile(r"\bfluent\s+abnormal\s+exit\b", re.IGNORECASE),
+    re.compile(r"\babnormal\s+exit\b", re.IGNORECASE),
+    re.compile(r"\bprocess\s+aborted\b", re.IGNORECASE),
+    re.compile(r"\bsegmentation\s+fault\b", re.IGNORECASE),
 ]
 
 WARNING_PATTERNS = [
@@ -166,6 +319,15 @@ LEADING_INT_PATTERN = re.compile(r"^\s*(\d{1,7})\s+")
 
 
 @dataclass
+class LogFileAnalysis:
+    path: Path
+    role: str = ROLE_UNKNOWN
+    text: str = ""
+    truncated: bool = False
+    error: str = ""
+
+
+@dataclass
 class LogParseResult:
     convergence_status: str = UNKNOWN_NO_LOG
     max_iteration_detected: Optional[int] = None
@@ -179,6 +341,17 @@ class LogParseResult:
     parse_errors: list[str] = field(default_factory=list)
     parsed_log_files: list[str] = field(default_factory=list)
     likely_complete_from_logs: bool = False
+    report_expression_warning_count: int = 0
+    report_expression_warning_files: list[str] = field(default_factory=list)
+    report_expression_warning_evidence: list[str] = field(default_factory=list)
+    postprocessing_graphics_error_files: list[str] = field(default_factory=list)
+    postprocessing_graphics_error_evidence: list[str] = field(default_factory=list)
+    meshing_error_files: list[str] = field(default_factory=list)
+    meshing_error_evidence: list[str] = field(default_factory=list)
+    udf_compile_error_files: list[str] = field(default_factory=list)
+    udf_compile_error_evidence: list[str] = field(default_factory=list)
+    launch_error_files: list[str] = field(default_factory=list)
+    launch_error_evidence: list[str] = field(default_factory=list)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -454,38 +627,152 @@ def is_plausible_iteration(value: Optional[int]) -> bool:
     return value is not None and 0 < value <= 10_000_000
 
 
-def parse_logs(log_files: list[Path], max_iter_target: int) -> LogParseResult:
+def role_keyword_score(haystack: str, role: str) -> int:
+    return sum(1 for keyword in ROLE_KEYWORDS.get(role, ()) if keyword in haystack)
+
+
+def role_filename_score(path: Path, role: str) -> int:
+    haystack = path.as_posix().lower()
+    return sum(1 for keyword in FILENAME_ROLE_HINTS.get(role, ()) if keyword in haystack)
+
+
+def classify_log_role(path: Path, text: str) -> str:
+    content = text.lower()
+    scores: dict[str, int] = {}
+    for role in LOG_ROLES:
+        if role == ROLE_UNKNOWN:
+            continue
+        scores[role] = role_keyword_score(content, role) * 2 + role_filename_score(path, role)
+
+    solver_score = scores.get(ROLE_SOLVER_RUN, 0)
+    specific_roles = [
+        ROLE_POSTPROCESSING_GRAPHICS,
+        ROLE_UDF_COMPILE,
+        ROLE_MESHING,
+        ROLE_REPORT_EXTRACTION,
+    ]
+    best_specific = max(specific_roles, key=lambda role: scores.get(role, 0))
+    best_specific_score = scores.get(best_specific, 0)
+
+    if best_specific_score > 0:
+        # Only let solver_run override a specific workflow role when the solver
+        # evidence is substantially stronger. This avoids Fluent graphics logs
+        # with incidental iteration/residual text becoming solver-run evidence.
+        if solver_score >= best_specific_score + 6:
+            return ROLE_SOLVER_RUN
+        return best_specific
+    if solver_score > 0:
+        return ROLE_SOLVER_RUN
+    return ROLE_UNKNOWN
+
+
+def analyze_log_files(log_files: list[Path]) -> list[LogFileAnalysis]:
+    analyses: list[LogFileAnalysis] = []
+    files_to_parse = sorted(log_files, key=lambda p: safe_mtime(p), reverse=True)
+    for idx, path in enumerate(files_to_parse):
+        if idx >= MAX_LOG_FILES_TO_PARSE:
+            analyses.append(
+                LogFileAnalysis(
+                    path=path,
+                    role=classify_log_role(path, ""),
+                    error=(
+                        f"content not parsed; newest {MAX_LOG_FILES_TO_PARSE} "
+                        "candidate log files were already analyzed"
+                    ),
+                )
+            )
+            continue
+        if is_probably_binary(path):
+            analyses.append(
+                LogFileAnalysis(path=path, role=classify_log_role(path, ""), error="binary file skipped")
+            )
+            continue
+
+        text, truncated, error = read_text_sample(path)
+        role = classify_log_role(path, text)
+        analyses.append(
+            LogFileAnalysis(
+                path=path,
+                role=role,
+                text=text,
+                truncated=truncated,
+                error=error or "",
+            )
+        )
+    return analyses
+
+
+def add_file_once(target: list[str], path: Path) -> None:
+    value = path_to_str(path)
+    if value and value not in target:
+        target.append(value)
+
+
+def scan_auxiliary_log_evidence(analyses: list[LogFileAnalysis], result: LogParseResult) -> None:
+    for analysis in analyses:
+        if analysis.error:
+            result.parse_errors.append(f"{path_to_str(analysis.path)}: {analysis.error}")
+        if analysis.truncated:
+            result.iteration_notes.append(
+                f"{path_to_str(analysis.path)}: parsed from a head/tail sample."
+            )
+        if not analysis.text:
+            continue
+
+        for line_no, line in enumerate(analysis.text.splitlines(), start=1):
+            has_expression_warning = any(
+                pattern.search(line) for pattern in REPORT_EXPRESSION_WARNING_PATTERNS
+            )
+            if has_expression_warning:
+                result.report_expression_warning_count += 1
+                add_file_once(result.report_expression_warning_files, analysis.path)
+                add_evidence(result.report_expression_warning_evidence, analysis.path, line_no, line)
+
+            if analysis.role == ROLE_POSTPROCESSING_GRAPHICS and any(
+                pattern.search(line) for pattern in GRAPHICS_ERROR_PATTERNS
+            ):
+                add_file_once(result.postprocessing_graphics_error_files, analysis.path)
+                add_evidence(result.postprocessing_graphics_error_evidence, analysis.path, line_no, line)
+
+            if analysis.role == ROLE_MESHING and any(
+                pattern.search(line) for pattern in MESHING_ERROR_PATTERNS
+            ):
+                add_file_once(result.meshing_error_files, analysis.path)
+                add_evidence(result.meshing_error_evidence, analysis.path, line_no, line)
+
+            if analysis.role == ROLE_UDF_COMPILE and any(
+                pattern.search(line) for pattern in UDF_COMPILE_ERROR_PATTERNS
+            ):
+                add_file_once(result.udf_compile_error_files, analysis.path)
+                add_evidence(result.udf_compile_error_evidence, analysis.path, line_no, line)
+
+            if analysis.role in {ROLE_SOLVER_RUN, ROLE_UDF_COMPILE, ROLE_UNKNOWN} and any(
+                pattern.search(line) for pattern in LAUNCH_ERROR_PATTERNS
+            ):
+                add_file_once(result.launch_error_files, analysis.path)
+                add_evidence(result.launch_error_evidence, analysis.path, line_no, line)
+
+
+def parse_logs(
+    analyses: list[LogFileAnalysis],
+    max_iter_target: int,
+    has_case_data_pair: bool,
+    has_summary_metrics_wide: bool,
+) -> LogParseResult:
     result = LogParseResult()
-    if not log_files:
+    if not analyses:
         result.convergence_status = UNKNOWN_NO_LOG
         return result
 
-    files_to_parse = sorted(log_files, key=lambda p: safe_mtime(p), reverse=True)
-    if len(files_to_parse) > MAX_LOG_FILES_TO_PARSE:
-        skipped = len(files_to_parse) - MAX_LOG_FILES_TO_PARSE
-        result.iteration_notes.append(
-            f"Parsed newest {MAX_LOG_FILES_TO_PARSE} of {len(files_to_parse)} candidate log files; skipped {skipped} older files."
-        )
-        files_to_parse = files_to_parse[:MAX_LOG_FILES_TO_PARSE]
-
+    scan_auxiliary_log_evidence(analyses, result)
+    solver_analyses = [a for a in analyses if a.role == ROLE_SOLVER_RUN and a.text]
     max_iteration: Optional[int] = None
     any_parsed = False
-    any_truncated = False
 
-    for path in files_to_parse:
-        if is_probably_binary(path):
-            result.parse_errors.append(f"{path_to_str(path)}: binary file skipped")
-            continue
-        text, truncated, error = read_text_sample(path)
-        if error:
-            result.parse_errors.append(f"{path_to_str(path)}: {error}")
-            continue
-        if not text:
-            result.parse_errors.append(f"{path_to_str(path)}: empty or unreadable text")
-            continue
-
+    for analysis in solver_analyses:
+        path = analysis.path
+        text = analysis.text
         any_parsed = True
-        any_truncated = any_truncated or truncated
         result.parsed_log_files.append(path_to_str(path))
 
         for line_no, line in enumerate(text.splitlines(), start=1):
@@ -502,7 +789,7 @@ def parse_logs(log_files: list[Path], max_iter_target: int) -> LogParseResult:
                 else:
                     add_evidence(result.max_iter_evidence, path, line_no, line)
 
-            if any(pattern.search(line) for pattern in FAILURE_PATTERNS):
+            if any(pattern.search(line) for pattern in HARD_SOLVER_FAILURE_PATTERNS):
                 add_evidence(result.failure_evidence, path, line_no, line)
 
             if any(pattern.search(line) for pattern in WARNING_PATTERNS):
@@ -515,18 +802,18 @@ def parse_logs(log_files: list[Path], max_iter_target: int) -> LogParseResult:
 
     result.max_iteration_detected = max_iteration
     result.hit_max_iter_target = bool(max_iteration is not None and max_iteration >= max_iter_target)
-    if any_truncated:
-        result.iteration_notes.append(
-            "One or more large logs were parsed from a head/tail sample; max_iteration_detected is best effort."
-        )
-    if log_files and not any_parsed:
-        result.convergence_status = UNKNOWN_UNPARSED
-        result.iteration_notes.append("No candidate log files could be parsed as text.")
-        return result
+    has_solver_role_logs = any(a.role == ROLE_SOLVER_RUN for a in analyses)
     if max_iteration is None:
-        result.iteration_notes.append("No plausible iteration number detected in parsed log text.")
+        if solver_analyses:
+            result.iteration_notes.append("No plausible iteration number detected in parsed solver log text.")
+        else:
+            result.iteration_notes.append("No solver_run log was found; convergence status uses file/report evidence only.")
 
-    has_failure = bool(result.failure_evidence)
+    has_failure = bool(
+        result.failure_evidence
+        or result.udf_compile_error_evidence
+        or result.launch_error_evidence
+    )
     has_max_iter = bool(result.max_iter_evidence) or (
         result.hit_max_iter_target and not result.convergence_evidence
     )
@@ -539,8 +826,14 @@ def parse_logs(log_files: list[Path], max_iter_target: int) -> LogParseResult:
         result.convergence_status = MAX_ITER_REACHED
     elif has_converged:
         result.convergence_status = CONVERGED
+    elif has_case_data_pair and has_summary_metrics_wide:
+        result.convergence_status = CONVERGED
     elif has_completion:
         result.convergence_status = POSSIBLY_INCOMPLETE
+    elif has_case_data_pair:
+        result.convergence_status = POSSIBLY_INCOMPLETE
+    elif not any_parsed:
+        result.convergence_status = UNKNOWN_UNPARSED if has_solver_role_logs else UNKNOWN_NO_LOG
     else:
         result.convergence_status = UNKNOWN_UNPARSED
 
@@ -555,7 +848,22 @@ def parse_logs(log_files: list[Path], max_iter_target: int) -> LogParseResult:
 def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: int) -> None:
     case_dir = case_record["_case_dir_path"]
     log_files, transcript_files, latest_log = find_log_files(case_dir)
-    parsed = parse_logs(log_files, max_iter_target)
+    analyses = analyze_log_files(log_files)
+    log_files_by_role = {
+        role: [path_to_str(a.path) for a in analyses if a.role == role]
+        for role in LOG_ROLES
+    }
+    parsed = parse_logs(
+        analyses,
+        max_iter_target,
+        has_case_data_pair=bool(case_record.get("has_case_data_pair")),
+        has_summary_metrics_wide=bool(case_record.get("has_summary_metrics_wide")),
+    )
+    hard_solver_failure = bool(
+        parsed.failure_evidence
+        or parsed.udf_compile_error_evidence
+        or parsed.launch_error_evidence
+    )
     case_record.update(
         {
             "log_files": [path_to_str(p) for p in log_files],
@@ -563,6 +871,14 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
             "latest_log_file": path_to_str(latest_log),
             "log_file_count": len(log_files),
             "transcript_file_count": len(transcript_files),
+            "log_files_by_role": log_files_by_role,
+            "log_role_by_file": {path_to_str(a.path): a.role for a in analyses},
+            "solver_log_files": log_files_by_role[ROLE_SOLVER_RUN],
+            "postprocessing_log_files": log_files_by_role[ROLE_POSTPROCESSING_GRAPHICS],
+            "report_log_files": log_files_by_role[ROLE_REPORT_EXTRACTION],
+            "meshing_log_files": log_files_by_role[ROLE_MESHING],
+            "udf_compile_log_files": log_files_by_role[ROLE_UDF_COMPILE],
+            "unknown_log_files": log_files_by_role[ROLE_UNKNOWN],
             "convergence_status": parsed.convergence_status,
             "max_iteration_detected": parsed.max_iteration_detected,
             "max_iter_target": max_iter_target,
@@ -576,6 +892,24 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
             "log_parse_errors": parsed.parse_errors,
             "parsed_log_files": parsed.parsed_log_files,
             "likely_complete_from_logs": parsed.likely_complete_from_logs,
+            "report_expression_warning_count": parsed.report_expression_warning_count,
+            "report_expression_warning_files": parsed.report_expression_warning_files,
+            "report_expression_warning_evidence": parsed.report_expression_warning_evidence,
+            "postprocessing_graphics_error_files": parsed.postprocessing_graphics_error_files,
+            "postprocessing_graphics_error_evidence": parsed.postprocessing_graphics_error_evidence,
+            "meshing_error_files": parsed.meshing_error_files,
+            "meshing_error_evidence": parsed.meshing_error_evidence,
+            "udf_compile_error_files": parsed.udf_compile_error_files,
+            "udf_compile_error_evidence": parsed.udf_compile_error_evidence,
+            "launch_error_files": parsed.launch_error_files,
+            "launch_error_evidence": parsed.launch_error_evidence,
+            "has_report_expression_warnings": bool(parsed.report_expression_warning_count),
+            "has_postprocessing_graphics_errors": bool(parsed.postprocessing_graphics_error_evidence),
+            "has_meshing_errors": bool(parsed.meshing_error_evidence),
+            "has_udf_compile_errors": bool(parsed.udf_compile_error_evidence),
+            "has_launch_errors": bool(parsed.launch_error_evidence),
+            "hard_solver_failure_detected": hard_solver_failure,
+            "max_iter_only": bool(parsed.convergence_status == MAX_ITER_REACHED and not hard_solver_failure),
         }
     )
 
@@ -791,6 +1125,37 @@ def parse_shear_status(path: Path) -> dict[str, Any]:
     return result
 
 
+def derive_postprocessing_status(record: dict[str, Any]) -> str:
+    if record.get("has_all_basic_contours"):
+        return "BASIC_COMPLETE"
+    if any(
+        record.get(key)
+        for key in (
+            "has_cp_contour",
+            "has_water_flux_contour",
+            "has_lmh_contour",
+            "has_salt_flux_contour",
+            "has_shear_contour",
+            "contour_status_file",
+            "shear_status_file",
+        )
+    ):
+        return "PARTIAL_CONTOURS"
+    if record.get("has_summary_metrics_wide"):
+        return "REPORTS_ONLY"
+    if int_from_any(record.get("report_csv_count")):
+        return "PARTIAL_REPORTS"
+    return "NOT_STARTED"
+
+
+def derive_report_status(record: dict[str, Any]) -> str:
+    if record.get("has_summary_metrics_wide"):
+        return "SUMMARY_PRESENT"
+    if int_from_any(record.get("report_csv_count")):
+        return "REPORT_CSV_PRESENT"
+    return "MISSING"
+
+
 def detect_contour_status(case_record: dict[str, Any]) -> None:
     contours_dir = case_record["_contours_dir_path"]
     cp_files = pngs_matching(contours_dir, ("cp_inlet", "membrane"))
@@ -835,11 +1200,19 @@ def detect_contour_status(case_record: dict[str, Any]) -> None:
     )
     case_record.update(parse_contour_status(contour_status_file))
     case_record.update(parse_shear_status(shear_status_file))
+    case_record["postprocessing_status"] = derive_postprocessing_status(case_record)
+    case_record["report_status"] = derive_report_status(case_record)
 
 
 def suggested_action(record: dict[str, Any]) -> str:
+    if record.get("case_status") == POSTPROCESSED_BASIC:
+        if record.get("has_report_expression_warnings") or record.get("has_postprocessing_graphics_errors"):
+            return "Basic post-processing is complete; review warning flags only if outputs look suspect."
+        return "Basic post-processing is complete."
+    if record.get("convergence_status") == MAX_ITER_REACHED:
+        return "Review max-iter residual/report trends; consider continuing from final data or relaxed solver settings."
     if record.get("needs_solver_rerun"):
-        return "Rerun solver with adjusted settings; review convergence/failure evidence first."
+        return "Review hard solver/UDF/launch failure evidence, then rerun or repair the failed stage."
     if not record.get("has_case_data_pair"):
         return "Generate or locate the final case/data pair before post-processing."
     if record.get("needs_report_extraction"):
@@ -855,27 +1228,93 @@ def suggested_action(record: dict[str, Any]) -> str:
     return "No immediate action detected."
 
 
+def combined_failure_evidence(record: dict[str, Any]) -> list[str]:
+    evidence: list[str] = []
+    for key in (
+        "failure_evidence",
+        "udf_compile_error_evidence",
+        "launch_error_evidence",
+        "meshing_error_evidence",
+    ):
+        value = record.get(key)
+        if isinstance(value, list):
+            evidence.extend(str(item) for item in value if str(item))
+    return evidence
+
+
+def shorten_evidence(values: list[str], limit: int = 250) -> str:
+    text = " | ".join(values)
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def derive_inventory_confidence(record: dict[str, Any], case_status: str) -> str:
+    convergence_status = str(record.get("convergence_status") or "")
+    has_solver_logs = bool(record.get("solver_log_files"))
+    has_warning_flags = bool(
+        record.get("has_report_expression_warnings")
+        or record.get("has_postprocessing_graphics_errors")
+        or record.get("has_meshing_errors")
+        or record.get("has_udf_compile_errors")
+        or record.get("has_launch_errors")
+        or record.get("log_parse_errors")
+    )
+
+    if record.get("hard_solver_failure_detected"):
+        confidence = "HIGH" if combined_failure_evidence(record) else "MEDIUM"
+    elif case_status == POSTPROCESSED_BASIC:
+        confidence = "HIGH"
+    elif convergence_status in {CONVERGED, MAX_ITER_REACHED} and has_solver_logs:
+        confidence = "HIGH"
+    elif convergence_status == CONVERGED and record.get("has_case_data_pair") and record.get("has_summary_metrics_wide"):
+        confidence = "MEDIUM"
+    elif convergence_status in {UNKNOWN_NO_LOG, UNKNOWN_UNPARSED}:
+        confidence = "LOW"
+    else:
+        confidence = "MEDIUM"
+
+    if has_warning_flags and confidence == "HIGH" and not record.get("hard_solver_failure_detected"):
+        return "MEDIUM"
+    return confidence
+
+
 def classify_case(record: dict[str, Any]) -> None:
     convergence_status = str(record.get("convergence_status") or "")
     has_pair = bool(record.get("has_case_data_pair"))
     has_summary = bool(record.get("has_summary_metrics_wide"))
     has_all_basic = bool(record.get("has_all_basic_contours"))
-    has_status_files = bool(record.get("contour_status_file") and record.get("shear_status_file"))
+    hard_failure = bool(record.get("hard_solver_failure_detected"))
+    contour_failed_count = int_from_any(record.get("contour_failed_count")) or 0
+    contour_status = str(record.get("contour_export_overall_status") or "").upper()
+    shear_status = str(record.get("shear_export_status") or "").upper()
+    if contour_failed_count > 0 or contour_status in {"FAILED", "FAIL"} or shear_status in {"FAILED", "FAIL"}:
+        record["has_postprocessing_graphics_errors"] = True
     likely_complete = bool(
         convergence_status == CONVERGED
         or record.get("likely_complete_from_logs")
+        or (has_pair and has_summary and not hard_failure)
     )
 
-    needs_solver = convergence_status in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
-    needs_reports = bool(has_pair and not has_summary and not needs_solver)
-    needs_basic_contours = bool(has_pair and likely_complete and not record.get("has_all_pyensight_contours"))
-    needs_shear_contour = bool(has_pair and likely_complete and not record.get("has_shear_contour"))
+    solver_status_needs_rerun = convergence_status in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
+    needs_reports = bool(has_pair and not has_summary and not hard_failure)
+    needs_basic_contours = bool(
+        has_pair
+        and has_summary
+        and convergence_status != FAILED_OR_DIVERGED
+        and not record.get("has_all_pyensight_contours")
+    )
+    needs_shear_contour = bool(
+        has_pair
+        and has_summary
+        and convergence_status != FAILED_OR_DIVERGED
+        and not record.get("has_shear_contour")
+    )
     ready_for_batch_contours = bool(
         has_pair
-        and likely_complete
         and has_summary
         and not has_all_basic
-        and not needs_solver
+        and convergence_status not in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
     )
     needs_manual_review = bool(
         convergence_status in {UNKNOWN_NO_LOG, UNKNOWN_UNPARSED, POSSIBLY_INCOMPLETE}
@@ -887,16 +1326,19 @@ def classify_case(record: dict[str, Any]) -> None:
 
     if not has_pair:
         case_status = MISSING_CASE_OR_DATA
-    elif needs_solver:
-        case_status = NEEDS_SOLVER_RERUN
-    elif has_all_basic and has_status_files:
+    elif has_all_basic:
         case_status = POSTPROCESSED_BASIC
+    elif solver_status_needs_rerun:
+        case_status = NEEDS_SOLVER_RERUN
     elif needs_reports:
         case_status = NEEDS_REPORT_EXTRACTION
-    elif likely_complete and not has_all_basic:
+    elif has_pair and has_summary and convergence_status != FAILED_OR_DIVERGED:
         case_status = READY_FOR_POSTPROCESSING
     else:
         case_status = UNKNOWN_REVIEW_REQUIRED
+
+    needs_solver = bool(solver_status_needs_rerun and case_status != POSTPROCESSED_BASIC)
+    failure_evidence_short = shorten_evidence(combined_failure_evidence(record))
 
     record.update(
         {
@@ -908,8 +1350,10 @@ def classify_case(record: dict[str, Any]) -> None:
             "needs_shear_contour": needs_shear_contour,
             "needs_manual_review": needs_manual_review,
             "ready_for_batch_contours": ready_for_batch_contours,
+            "failure_evidence_short": failure_evidence_short,
         }
     )
+    record["inventory_confidence"] = derive_inventory_confidence(record, case_status)
     record["suggested_next_action"] = suggested_action(record)
 
 
@@ -938,6 +1382,14 @@ CASE_INVENTORY_FIELDNAMES = [
     "latest_log_file",
     "log_file_count",
     "transcript_file_count",
+    "log_files_by_role",
+    "log_role_by_file",
+    "solver_log_files",
+    "postprocessing_log_files",
+    "report_log_files",
+    "meshing_log_files",
+    "udf_compile_log_files",
+    "unknown_log_files",
     "convergence_status",
     "max_iteration_detected",
     "max_iter_target",
@@ -951,6 +1403,17 @@ CASE_INVENTORY_FIELDNAMES = [
     "max_iter_evidence",
     "iteration_notes",
     "log_parse_errors",
+    "report_expression_warning_count",
+    "report_expression_warning_files",
+    "report_expression_warning_evidence",
+    "postprocessing_graphics_error_files",
+    "postprocessing_graphics_error_evidence",
+    "meshing_error_files",
+    "meshing_error_evidence",
+    "udf_compile_error_files",
+    "udf_compile_error_evidence",
+    "launch_error_files",
+    "launch_error_evidence",
     "has_summary_metrics_wide",
     "summary_metrics_wide_file",
     "report_csv_count",
@@ -982,7 +1445,18 @@ CASE_INVENTORY_FIELDNAMES = [
     "shear_derived_variable_mode",
     "shear_legend_mode",
     "shear_colorbar_metadata_written",
+    "postprocessing_status",
+    "report_status",
     "case_status",
+    "has_postprocessing_graphics_errors",
+    "has_report_expression_warnings",
+    "has_udf_compile_errors",
+    "has_meshing_errors",
+    "has_launch_errors",
+    "hard_solver_failure_detected",
+    "max_iter_only",
+    "inventory_confidence",
+    "failure_evidence_short",
     "needs_solver_rerun",
     "needs_report_extraction",
     "needs_basic_contours",
@@ -997,8 +1471,29 @@ RERUN_FIELDNAMES = [
     "case_name",
     "max_iteration_detected",
     "convergence_status",
-    "failure_evidence",
+    "hard_solver_failure_detected",
+    "max_iter_only",
+    "failure_evidence_short",
     "latest_log_file",
+    "suggested_next_action",
+]
+
+COMPACT_FIELDNAMES = [
+    "geo_name",
+    "case_name",
+    "convergence_status",
+    "case_status",
+    "max_iteration_detected",
+    "has_final_cas",
+    "has_final_dat",
+    "has_summary_metrics_wide",
+    "has_all_basic_contours",
+    "has_shear_contour",
+    "hard_solver_failure_detected",
+    "max_iter_only",
+    "has_report_expression_warnings",
+    "has_postprocessing_graphics_errors",
+    "inventory_confidence",
     "suggested_next_action",
 ]
 
@@ -1049,15 +1544,20 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     by_convergence = Counter(str(r.get("convergence_status")) for r in records)
     by_case_status = Counter(str(r.get("case_status")) for r in records)
 
-    rerun_records = [
+    hard_rerun_records = [
         r for r in records
-        if r.get("needs_solver_rerun")
-        or r.get("convergence_status") in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
+        if r.get("needs_solver_rerun") and r.get("hard_solver_failure_detected")
     ]
-    max_iter_records = [r for r in records if r.get("convergence_status") == MAX_ITER_REACHED]
+    max_iter_records = [r for r in records if r.get("max_iter_only")]
     ready_records = [r for r in records if r.get("case_status") == READY_FOR_POSTPROCESSING]
     postprocessed_records = [r for r in records if r.get("case_status") == POSTPROCESSED_BASIC]
     missing_records = [r for r in records if r.get("case_status") == MISSING_CASE_OR_DATA]
+    report_extraction_records = [r for r in records if r.get("case_status") == NEEDS_REPORT_EXTRACTION]
+
+    report_warning_count = sum(1 for r in records if r.get("has_report_expression_warnings"))
+    graphics_error_count = sum(1 for r in records if r.get("has_postprocessing_graphics_errors"))
+    hard_failure_count = sum(1 for r in records if r.get("hard_solver_failure_detected"))
+    max_iter_only_count = sum(1 for r in records if r.get("max_iter_only"))
 
     lines: list[str] = []
     lines.append("RO CFD Case Inventory Summary")
@@ -1096,10 +1596,18 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     ]:
         lines.append(f"  {status}: {by_case_status.get(status, 0)}")
 
-    append_case_list(lines, "NEEDS_SOLVER_RERUN cases:", rerun_records)
-    append_case_list(lines, "MAX_ITER_REACHED cases:", max_iter_records)
+    lines.append("")
+    lines.append("Warning / failure flags:")
+    lines.append(f"  report_expression_warnings: {report_warning_count}")
+    lines.append(f"  postprocessing_graphics_errors: {graphics_error_count}")
+    lines.append(f"  hard_solver_failure_detected: {hard_failure_count}")
+    lines.append(f"  max_iter_only: {max_iter_only_count}")
+
+    append_case_list(lines, "True hard solver rerun candidates:", hard_rerun_records)
+    append_case_list(lines, "Max-iter-only candidates:", max_iter_records)
     append_case_list(lines, "READY_FOR_POSTPROCESSING cases:", ready_records)
-    append_case_list(lines, "POSTPROCESSED_BASIC cases:", postprocessed_records)
+    append_case_list(lines, "Already postprocessed cases:", postprocessed_records)
+    append_case_list(lines, "Report extraction candidates:", report_extraction_records)
     append_case_list(lines, "MISSING_CASE_OR_DATA cases:", missing_records)
 
     return "\n".join(lines) + "\n"
@@ -1113,6 +1621,7 @@ def write_outputs(
 ) -> None:
     ensure_safe_output_dir(output_dir)
     write_csv_file(output_dir / "case_inventory.csv", records, CASE_INVENTORY_FIELDNAMES)
+    write_csv_file(output_dir / "case_inventory_compact.csv", records, COMPACT_FIELDNAMES)
     write_json_file(output_dir / "case_inventory.json", records)
     (output_dir / "case_inventory_summary.txt").write_text(
         build_summary_text(records),
@@ -1185,25 +1694,27 @@ def run_inventory(args: argparse.Namespace) -> int:
         if args.verbose:
             print(f"[{idx}/{len(discovered)}] {record['geo_name']}/{record['case_name']}")
         detect_case_data_files(record)
-        detect_logs_and_convergence(record, args.max_iter)
         detect_report_status(record)
         detect_contour_status(record)
+        detect_logs_and_convergence(record, args.max_iter)
         classify_case(record)
         records.append(strip_internal_paths(record))
 
     rerun_candidates = [
         r for r in records
         if r.get("needs_solver_rerun")
-        or r.get("convergence_status") in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
     ]
     postprocess_candidates = [
         r for r in records
-        if r.get("has_case_data_pair") and r.get("case_status") != POSTPROCESSED_BASIC
+        if r.get("has_case_data_pair")
+        and r.get("case_status") != POSTPROCESSED_BASIC
+        and not r.get("needs_solver_rerun")
     ]
 
     if args.dry_run:
         print(f"Dry run: scanned {len(records)} case(s).")
         print(f"Dry run: would write case_inventory.csv to {output_dir / 'case_inventory.csv'}")
+        print(f"Dry run: would write case_inventory_compact.csv to {output_dir / 'case_inventory_compact.csv'}")
         print(f"Dry run: would write case_inventory.json to {output_dir / 'case_inventory.json'}")
         print(f"Dry run: would write case_inventory_summary.txt to {output_dir / 'case_inventory_summary.txt'}")
         print(f"Dry run: would write rerun_candidates.csv to {output_dir / 'rerun_candidates.csv'}")
