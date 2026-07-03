@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
+import datetime
 import io
 import importlib.util
 import json
@@ -846,7 +848,9 @@ def prepare_native_cff(
     return result
 
 
-def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str, Any]:
+def _default_scene_cleanup_diag(
+    background: str, view_margin: float, legend_mode: str = "hide",
+) -> Dict[str, Any]:
     return {
         "scene_cleanup_attempted": False,
         "scene_cleanup_status": "SKIPPED",
@@ -888,6 +892,21 @@ def _default_scene_cleanup_diag(background: str, view_margin: float) -> Dict[str
         "matched_debug_candidate": "",
         "view_debug_sweep_attempted": False,
         "view_debug_sweep_outputs": [],
+        "legend_mode": legend_mode,
+        "legend_hide_attempted": False,
+        "legend_hide_status": "SKIPPED",
+        "legend_hide_method": "",
+        "legend_hide_attempts": [],
+        "legend_hide_error": "",
+        "legend_visible_after_hide": None,
+        "colorbar_range_min": None,
+        "colorbar_range_max": None,
+        "colorbar_range_source": "",
+        "colorbar_range_is_fixed": False,
+        "post_mask_colorbar_requested": False,
+        "post_mask_colorbar_applied": False,
+        "post_mask_colorbar_method": "",
+        "post_mask_colorbar_error": "",
     }
 
 
@@ -980,6 +999,62 @@ def _merge_scene_cleanup_diag(
 
     merged["background_used"] = new.get("background_used", current.get("background_used", ""))
     merged["view_margin_used"] = new.get("view_margin_used", current.get("view_margin_used", ""))
+
+    # --- Legend hide + colorbar-range + post-mask (added for --legend-mode) ---
+    merged["legend_mode"] = new.get("legend_mode") or current.get("legend_mode", "")
+    merged["legend_hide_attempted"] = bool(current.get("legend_hide_attempted")) or bool(
+        new.get("legend_hide_attempted")
+    )
+    current_lh_status = str(current.get("legend_hide_status", "SKIPPED"))
+    new_lh_status = str(new.get("legend_hide_status", "SKIPPED"))
+    merged["legend_hide_status"] = (
+        current_lh_status
+        if status_rank.get(current_lh_status, 0) >= status_rank.get(new_lh_status, 0)
+        else new_lh_status
+    )
+    lh_method_values = _unique_preserve_order([
+        str(current.get("legend_hide_method", "")),
+        str(new.get("legend_hide_method", "")),
+    ])
+    merged["legend_hide_method"] = ";".join(v for v in lh_method_values if v)
+    cur_lh_attempts = list(current.get("legend_hide_attempts", []))
+    new_lh_attempts = [x for x in new.get("legend_hide_attempts", []) if x not in set(cur_lh_attempts)]
+    merged["legend_hide_attempts"] = cur_lh_attempts + new_lh_attempts
+    lh_errors = [
+        str(current.get("legend_hide_error", "")),
+        str(new.get("legend_hide_error", "")),
+    ]
+    merged["legend_hide_error"] = " | ".join(e for e in lh_errors if e)
+    merged["legend_visible_after_hide"] = new.get(
+        "legend_visible_after_hide", current.get("legend_visible_after_hide")
+    )
+
+    merged["colorbar_range_min"] = new.get("colorbar_range_min", current.get("colorbar_range_min"))
+    merged["colorbar_range_max"] = new.get("colorbar_range_max", current.get("colorbar_range_max"))
+    merged["colorbar_range_source"] = new.get(
+        "colorbar_range_source", current.get("colorbar_range_source", "")
+    )
+    merged["colorbar_range_is_fixed"] = bool(current.get("colorbar_range_is_fixed")) or bool(
+        new.get("colorbar_range_is_fixed")
+    )
+
+    merged["post_mask_colorbar_requested"] = bool(current.get("post_mask_colorbar_requested")) or bool(
+        new.get("post_mask_colorbar_requested")
+    )
+    merged["post_mask_colorbar_applied"] = bool(current.get("post_mask_colorbar_applied")) or bool(
+        new.get("post_mask_colorbar_applied")
+    )
+    pm_method_values = _unique_preserve_order([
+        str(current.get("post_mask_colorbar_method", "")),
+        str(new.get("post_mask_colorbar_method", "")),
+    ])
+    merged["post_mask_colorbar_method"] = ";".join(v for v in pm_method_values if v)
+    pm_errors = [
+        str(current.get("post_mask_colorbar_error", "")),
+        str(new.get("post_mask_colorbar_error", "")),
+    ]
+    merged["post_mask_colorbar_error"] = " | ".join(e for e in pm_errors if e)
+
     return merged
 
 
@@ -1677,6 +1752,181 @@ def setup_fluent_clean_scene(
     return diag
 
 
+# ---------------------------------------------------------------------------
+# Fluent-native colorbar/legend hiding (--legend-mode) — mirrors the approach
+# taken in 03_pyensight_contour_export.py::hide_legend_annotation, adapted to
+# Fluent's settings API. Never allowed to fail the contour export itself.
+# ---------------------------------------------------------------------------
+
+def hide_fluent_legend(
+    solver: Any,
+    graphics: Any,
+    contour: Any,
+) -> Dict[str, Any]:
+    """
+    Best-effort hide of the Fluent-native contour colorbar/legend, called
+    after the contour object is created/configured/displayed and before
+    save_picture(). Tries, in order:
+      1. contour.color_map.visible = False — per-contour settings attribute
+         (ansys.fluent.core generated settings: contour_child.color_map is a
+         Group with a boolean 'visible' child); most targeted, does not
+         affect any other Fluent graphics object.
+      2. graphics.views.rendering_options.show_colormap = False — a
+         Fluent-wide rendering preference; used only if (1) is unavailable.
+      3. solver.tui.preferences.graphics.colormap_settings.show_colormap —
+         Fluent-wide TUI preference; last resort, no readback possible.
+    Never raises. legend_hide_status can be WARN or FAILED but the contour
+    image is always still exported — this function must never be allowed to
+    abort the export. Does not touch contour.field, .surfaces_list, or
+    .range_options. Returns dict: status, method, attempts, error,
+    visible_after.
+    """
+    result: Dict[str, Any] = {
+        "status": STATUS_FAIL, "method": "", "attempts": [], "error": "", "visible_after": None,
+    }
+    attempts: List[str] = []
+    errors: List[str] = []
+
+    # Strategy 1: per-contour color_map.visible.
+    attempts.append("contour.color_map.visible=False")
+    try:
+        color_map = contour.color_map
+        if _try_assign_child(color_map, "visible", False, "contour.color_map.visible", errors):
+            visible_after = None
+            try:
+                visible_after = bool(color_map.visible)
+            except Exception:
+                pass
+            result.update(
+                status=STATUS_OK, method="contour.color_map.visible=False",
+                attempts=list(attempts), error="", visible_after=visible_after,
+            )
+            return result
+    except Exception as exc:
+        errors.append(f"contour.color_map access: {_format_exception(exc)}")
+
+    # Strategy 2: Fluent-wide view rendering-options preference.
+    attempts.append("graphics.views.rendering_options.show_colormap=False")
+    try:
+        rendering_options = graphics.views.rendering_options
+        if _try_assign_child(
+            rendering_options, "show_colormap", False,
+            "graphics.views.rendering_options.show_colormap", errors,
+        ):
+            visible_after = None
+            try:
+                visible_after = bool(rendering_options.show_colormap)
+            except Exception:
+                pass
+            result.update(
+                status=STATUS_WARN,
+                method="graphics.views.rendering_options.show_colormap=False",
+                attempts=list(attempts),
+                error=(
+                    "Applied via a Fluent-wide rendering preference, not a "
+                    "per-contour attribute; may affect other graphics objects "
+                    "and its visual effect could not be independently confirmed."
+                ),
+                visible_after=visible_after,
+            )
+            return result
+    except Exception as exc:
+        errors.append(f"graphics.views.rendering_options access: {_format_exception(exc)}")
+
+    # Strategy 3: TUI preference fallback.
+    attempts.append("tui.preferences.graphics.colormap_settings.show_colormap")
+    for label, func in (
+        ("tui.preferences.graphics.colormap_settings.show_colormap(False)",
+         lambda: solver.tui.preferences.graphics.colormap_settings.show_colormap(False)),
+        ("tui.preferences.graphics.colormap_settings.show_colormap('no')",
+         lambda: solver.tui.preferences.graphics.colormap_settings.show_colormap("no")),
+    ):
+        ok, err = _try_call(label, func)
+        if ok:
+            result.update(
+                status=STATUS_WARN, method=label, attempts=list(attempts),
+                error=(
+                    "Applied via Fluent TUI global preference; visibility "
+                    "could not be read back to confirm."
+                ),
+                visible_after=None,
+            )
+            return result
+        errors.append(err)
+
+    result.update(
+        status=STATUS_FAIL, method="none", attempts=list(attempts),
+        error="; ".join(errors) or "no supported legend-hide API found",
+        visible_after=None,
+    )
+    return result
+
+
+def _read_shear_range_after_display(
+    contour: Any,
+    shear_range: Optional[Tuple[float, float]],
+) -> Tuple[Optional[float], Optional[float], str]:
+    """
+    Best-effort, READ-ONLY capture of the contour's actual colorbar range for
+    the separate shear_colorbar_range.* metadata export. Called AFTER
+    save_picture() so it can never influence the already-exported image or
+    the fixed/auto range handling set up earlier in _export_contour_cff. For
+    a fixed range this simply echoes the requested values (authoritative);
+    for auto-range it best-effort refreshes and reads back
+    range_options.minimum/maximum.
+    """
+    if shear_range is not None:
+        return float(shear_range[0]), float(shear_range[1]), "fixed_user_cli"
+
+    try:
+        contour.range_options.compute()
+    except Exception:
+        try:
+            contour.update_min_max()
+        except Exception:
+            pass
+
+    try:
+        rmin = float(contour.range_options.minimum)
+        rmax = float(contour.range_options.maximum)
+        return rmin, rmax, "auto_range_options_readback"
+    except Exception:
+        return None, None, "auto_unavailable"
+
+
+def _apply_post_mask_colorbar(
+    output_file: Path,
+    background: str,
+    fraction: float = 0.12,
+) -> Tuple[bool, str, str]:
+    """
+    OPTIONAL, disabled-by-default fallback (--post-mask-colorbar): paints
+    over the rightmost strip of the ALREADY-SAVED PNG with the background
+    color, as a crude mask for a colorbar that hide_fluent_legend() could not
+    hide natively. Clearly separated from the primary legend_hide_* mechanism
+    — the caller only invokes this when the user explicitly requested it AND
+    the native hide did not report SUCCESS. Never raises. Returns
+    (applied, method, error).
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except Exception as exc:
+        return False, "", f"PIL/Pillow not available: {_format_exception(exc)}"
+
+    try:
+        fill = (255, 255, 255) if background != "black" else (0, 0, 0)
+        with Image.open(output_file) as img:
+            img = img.convert("RGB")
+            width, height = img.size
+            mask_x0 = int(round(width * (1.0 - max(0.0, min(fraction, 0.5)))))
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([mask_x0, 0, width, height], fill=fill)
+            img.save(output_file)
+        return True, f"right_strip_mask(fraction={fraction})", ""
+    except Exception as exc:
+        return False, "", f"post-mask failed: {_format_exception(exc)}"
+
+
 def try_native_cff_export(
     solver: Any,
     cff_name: str,
@@ -1693,13 +1943,15 @@ def try_native_cff_export(
     view_direction: Optional[List[float]] = None,
     view_up: Optional[List[float]] = None,
     view_debug_sweep: bool = False,
+    legend_mode: str = "hide",
+    post_mask_colorbar: bool = False,
 ) -> Tuple[bool, str, str, str, Dict[str, Any]]:
     """Attempt native Fluent contour export using a prepared CFF variable.
 
     Returns (success, native_status, used_var, error_msg, scene_cleanup_diag).
     success=True means the output_file was written.
     """
-    scene_diag = _default_scene_cleanup_diag(background, view_margin)
+    scene_diag = _default_scene_cleanup_diag(background, view_margin, legend_mode=legend_mode)
     try:
         scene_diag = _export_contour_cff(
             solver, cff_name, membrane_zones, shear_range, output_file,
@@ -1708,6 +1960,7 @@ def try_native_cff_export(
             fluent_view_name=fluent_view_name,
             view_direction=view_direction, view_up=view_up,
             view_debug_sweep=view_debug_sweep,
+            legend_mode=legend_mode, post_mask_colorbar=post_mask_colorbar,
         )
         if output_file.is_file():
             scene_error = str(scene_diag.get("scene_cleanup_error", ""))
@@ -1737,6 +1990,8 @@ def _export_contour_cff(
     view_direction: Optional[List[float]] = None,
     view_up: Optional[List[float]] = None,
     view_debug_sweep: bool = False,
+    legend_mode: str = "hide",
+    post_mask_colorbar: bool = False,
 ) -> Dict[str, Any]:
     """Create Fluent contour using a shear-rate CFF, display, and save."""
     if output_file.exists():
@@ -1783,6 +2038,25 @@ def _export_contour_cff(
         print(f"  WARN: scene cleanup partially applied: "
               f"{scene_diag.get('scene_cleanup_error', '')}")
 
+    # --- Legend/colorbar visibility (--legend-mode), before save_picture() ---
+    scene_diag["legend_mode"] = legend_mode
+    print(f"  Legend mode: {legend_mode}")
+    if legend_mode != "hide":
+        scene_diag["legend_hide_attempted"] = False
+        scene_diag["legend_hide_status"] = "SKIPPED"
+    else:
+        print("  Hiding Fluent shear colorbar/legend...")
+        scene_diag["legend_hide_attempted"] = True
+        legend_hide_result = hide_fluent_legend(solver, graphics, contour)
+        scene_diag["legend_hide_status"] = legend_hide_result["status"]
+        scene_diag["legend_hide_method"] = legend_hide_result["method"]
+        scene_diag["legend_hide_attempts"] = legend_hide_result["attempts"]
+        scene_diag["legend_hide_error"] = legend_hide_result["error"]
+        scene_diag["legend_visible_after_hide"] = legend_hide_result["visible_after"]
+        print(f"  Legend hide status: {legend_hide_result['status'].lower()}")
+        if legend_hide_result["error"]:
+            print(f"    {legend_hide_result['error']}")
+
     pic = solver.settings.results.graphics.picture
     pic.x_resolution = image_width
     pic.y_resolution = image_height
@@ -1806,6 +2080,34 @@ def _export_contour_cff(
             f"save_picture appeared to succeed but file is missing: {output_file}"
         )
     print(f"  CFF contour image saved: {output_file}")
+
+    # --- Colorbar/range metadata capture (read-only; runs after the image is
+    #     already saved, so it cannot affect shear range handling or pixels) ---
+    range_min_val, range_max_val, range_source_str = _read_shear_range_after_display(
+        contour, shear_range
+    )
+    scene_diag["colorbar_range_min"] = range_min_val
+    scene_diag["colorbar_range_max"] = range_max_val
+    scene_diag["colorbar_range_source"] = range_source_str
+    scene_diag["colorbar_range_is_fixed"] = range_source_str == "fixed_user_cli"
+
+    # --- Optional, disabled-by-default post-processing fallback: only runs
+    #     when explicitly requested AND the native legend hide above did not
+    #     report SUCCESS. Never the primary mechanism. ---
+    scene_diag["post_mask_colorbar_requested"] = bool(post_mask_colorbar)
+    if post_mask_colorbar and scene_diag.get("legend_hide_status") != STATUS_OK:
+        mask_applied, mask_method, mask_error = _apply_post_mask_colorbar(output_file, background)
+        scene_diag["post_mask_colorbar_applied"] = mask_applied
+        scene_diag["post_mask_colorbar_method"] = mask_method
+        scene_diag["post_mask_colorbar_error"] = mask_error
+        print(
+            f"  Post-mask colorbar: {'applied' if mask_applied else 'not applied'}"
+            f" ({mask_method or mask_error})"
+        )
+    else:
+        scene_diag["post_mask_colorbar_applied"] = False
+        scene_diag["post_mask_colorbar_method"] = ""
+        scene_diag["post_mask_colorbar_error"] = ""
 
     # --- Optional view-debug sweep ---
     # IMPORTANT: candidates are stateful (camera state persists between saves).
@@ -2168,6 +2470,126 @@ def write_status_json(status_file: Path, payload: Dict[str, Any]) -> None:
     print(f"Status written: {status_file}")
 
 
+# ---------------------------------------------------------------------------
+# Shear-rate colorbar / range metadata export (JSON + txt + CSV) — written
+# separately so the colorbar can be recreated outside Fluent when
+# --legend-mode hide removes the on-image legend/colorbar annotation.
+# ---------------------------------------------------------------------------
+
+def _build_shear_colorbar_entry(
+    geo_name: str,
+    case_name: str,
+    cff_name: str,
+    derived_variable_mode: str,
+    mu_used: float,
+    output_files: List[Path],
+    membrane_surface: str,
+    selected_surfaces: List[str],
+    view_preset: str,
+    matched_debug_candidate: str,
+    cff_file: Optional[Path],
+    range_min: Optional[float],
+    range_max: Optional[float],
+    range_source: str,
+    range_is_fixed: bool,
+    timestamp: str,
+    extra_notes: str = "",
+) -> Dict[str, Any]:
+    notes = "UDM_10 (cell_strain_rate) is not used for wall shear-rate contouring."
+    if extra_notes:
+        notes = f"{notes} {extra_notes}"
+    return {
+        "geo_name": geo_name,
+        "case_name": case_name,
+        "field_key": "shear_rate",
+        "selected_variable": cff_name,
+        "derived_variable_mode": derived_variable_mode,
+        "formula_summary": "wall-shear / mu",
+        "mu_used": mu_used,
+        "units": "1/s",
+        "range_min": range_min,
+        "range_max": range_max,
+        "range_source": range_source,
+        "range_is_fixed": range_is_fixed,
+        "output_file": (
+            ([str(f) for f in output_files] if len(output_files) != 1 else str(output_files[0]))
+            if output_files else ""
+        ),
+        "membrane_surface": membrane_surface,
+        "selected_surfaces": list(selected_surfaces),
+        "view_preset": view_preset,
+        "matched_debug_candidate": matched_debug_candidate,
+        "cff_file": "" if cff_file is None else str(cff_file),
+        "cff_name": cff_name,
+        "timestamp": timestamp,
+        "notes": notes,
+    }
+
+
+def save_shear_colorbar_metadata(entry: Dict[str, Any], figures_dir: Path) -> List[Path]:
+    """Write shear_colorbar_range.{json,txt,csv}. Best-effort: never raises."""
+    if not _safe_mkdir(figures_dir):
+        return []
+
+    written: List[Path] = []
+
+    json_path = figures_dir / "shear_colorbar_range.json"
+    try:
+        with json_path.open("w", encoding="utf-8") as fh:
+            json.dump(entry, fh, indent=2, default=str)
+        written.append(json_path)
+    except Exception as exc:
+        print(f"WARNING: could not write {json_path}: {exc}")
+
+    txt_path = figures_dir / "shear_colorbar_range.txt"
+    try:
+        lines = [
+            f"Shear-rate colorbar / range metadata - {entry.get('geo_name')} / "
+            f"{entry.get('case_name')}  (generated {entry.get('timestamp')})",
+            "=" * 72,
+            f"field_key              : {entry.get('field_key')}",
+            f"selected_variable      : {entry.get('selected_variable')}",
+            f"derived_variable_mode  : {entry.get('derived_variable_mode')}",
+            f"formula_summary        : {entry.get('formula_summary')}",
+            f"mu_used                : {entry.get('mu_used')}",
+            f"units                  : {entry.get('units')}",
+            f"range                  : {entry.get('range_min')} - {entry.get('range_max')}",
+            f"range_source           : {entry.get('range_source')}",
+            f"range_is_fixed         : {entry.get('range_is_fixed')}",
+            f"membrane_surface       : {entry.get('membrane_surface')}",
+            f"selected_surfaces      : {entry.get('selected_surfaces')}",
+            f"view_preset            : {entry.get('view_preset')}",
+            f"matched_debug_candidate: {entry.get('matched_debug_candidate')}",
+            f"cff_file               : {entry.get('cff_file')}",
+            f"cff_name               : {entry.get('cff_name')}",
+            f"output_file            : {entry.get('output_file')}",
+            f"notes                  : {entry.get('notes')}",
+        ]
+        txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        written.append(txt_path)
+    except Exception as exc:
+        print(f"WARNING: could not write {txt_path}: {exc}")
+
+    csv_path = figures_dir / "shear_colorbar_range.csv"
+    try:
+        fieldnames = [
+            "geo_name", "case_name", "field_key", "selected_variable",
+            "derived_variable_mode", "formula_summary", "mu_used", "units",
+            "range_min", "range_max", "range_source", "range_is_fixed",
+            "output_file", "membrane_surface", "selected_surfaces", "view_preset",
+            "matched_debug_candidate", "cff_file", "cff_name", "timestamp", "notes",
+        ]
+        with csv_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow({k: entry.get(k, "") for k in fieldnames})
+        written.append(csv_path)
+    except Exception as exc:
+        print(f"WARNING: could not write {csv_path}: {exc}")
+
+    return written
+
+
 def build_status_payload(
     geo_name: str,
     case_name: str,
@@ -2250,6 +2672,25 @@ def build_status_payload(
     matched_debug_candidate: str = "",
     view_debug_sweep_attempted: bool = False,
     view_debug_sweep_outputs: Optional[List[Dict[str, Any]]] = None,
+    legend_mode: str = "hide",
+    legend_hide_attempted: bool = False,
+    legend_hide_status: str = "SKIPPED",
+    legend_hide_method: str = "",
+    legend_hide_attempts: Optional[List[str]] = None,
+    legend_hide_error: str = "",
+    legend_visible_after_hide: Optional[bool] = None,
+    colorbar_metadata_written: bool = False,
+    colorbar_metadata_files: Optional[List[str]] = None,
+    colorbar_range_min: Optional[float] = None,
+    colorbar_range_max: Optional[float] = None,
+    colorbar_range_source: str = "",
+    colorbar_range_is_fixed: bool = False,
+    colorbar_units: str = "1/s",
+    colorbar_title: str = "",
+    post_mask_colorbar_requested: bool = False,
+    post_mask_colorbar_applied: bool = False,
+    post_mask_colorbar_method: str = "",
+    post_mask_colorbar_error: str = "",
 ) -> Dict[str, Any]:
     cff_attempted = (
         cff_file_load_attempted
@@ -2367,6 +2808,25 @@ def build_status_payload(
         "view_up_vector_requested": view_up_vector_requested,
         "view_debug_sweep_attempted": view_debug_sweep_attempted,
         "view_debug_sweep_outputs": view_debug_sweep_outputs or [],
+        "legend_mode": legend_mode,
+        "legend_hide_attempted": legend_hide_attempted,
+        "legend_hide_status": legend_hide_status,
+        "legend_hide_method": legend_hide_method,
+        "legend_hide_attempts": legend_hide_attempts or [],
+        "legend_hide_error": legend_hide_error,
+        "legend_visible_after_hide": legend_visible_after_hide,
+        "colorbar_metadata_written": colorbar_metadata_written,
+        "colorbar_metadata_files": colorbar_metadata_files or [],
+        "colorbar_range_min": colorbar_range_min,
+        "colorbar_range_max": colorbar_range_max,
+        "colorbar_range_source": colorbar_range_source,
+        "colorbar_range_is_fixed": colorbar_range_is_fixed,
+        "colorbar_units": colorbar_units,
+        "colorbar_title": colorbar_title,
+        "post_mask_colorbar_requested": post_mask_colorbar_requested,
+        "post_mask_colorbar_applied": post_mask_colorbar_applied,
+        "post_mask_colorbar_method": post_mask_colorbar_method,
+        "post_mask_colorbar_error": post_mask_colorbar_error,
     }
 
 
@@ -2497,6 +2957,27 @@ def parse_args() -> argparse.Namespace:
             "Only used when --view-direction is also provided."
         ),
     )
+    parser.add_argument(
+        "--legend-mode", type=str, default="hide",
+        choices=["show", "hide"],
+        help=(
+            "Fluent colorbar/legend visibility in the exported shear-rate PNG "
+            "(default: hide). 'hide' attempts to hide the native Fluent "
+            "colorbar/legend before save_picture() and writes range/unit "
+            "metadata to shear_colorbar_range.json/.txt/.csv instead. 'show' "
+            "preserves the previous behavior with the Fluent colorbar visible."
+        ),
+    )
+    parser.add_argument(
+        "--post-mask-colorbar", action="store_true", default=False,
+        help=(
+            "OPTIONAL, disabled by default. If set AND the native Fluent "
+            "legend-hide API did not report success, paint over the "
+            "right-hand strip of the already-saved PNG with the background "
+            "color as a crude fallback mask. Recorded separately in "
+            "shear_contour_status.json; never the primary mechanism."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2591,11 +3072,32 @@ def main() -> int:
         print("View debug sweep: ENABLED — candidate files will be written")
     if shear_range:
         print(f"Shear range  : {shear_range[0]} – {shear_range[1]} [1/s]")
+    print(f"Legend mode  : {args.legend_mode}")
+    if args.post_mask_colorbar:
+        print("Post-mask colorbar: ENABLED (fallback only; used if native legend hide fails)")
 
     # --- Dry run ---
     if args.dry_run:
         print("\nDRY RUN — no Fluent launch, no image written.")
         _safe_mkdir(figures_dir)
+        dry_timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+        dry_entry = _build_shear_colorbar_entry(
+            geo_name=geo_name, case_name=case_name, cff_name=args.cff_name,
+            derived_variable_mode="pyfluent_native_cff_wall_shear_over_mu",
+            mu_used=mu, output_files=list(output_files_by_side.values()),
+            membrane_surface=args.membrane_surface, selected_surfaces=active_mem_bases,
+            view_preset=args.view_preset, matched_debug_candidate="",
+            cff_file=cff_file,
+            range_min=shear_range[0] if shear_range else None,
+            range_max=shear_range[1] if shear_range else None,
+            range_source="fixed_user_cli" if shear_range else "not_exported_dry_run",
+            range_is_fixed=bool(shear_range),
+            timestamp=dry_timestamp,
+            extra_notes="dry-run: no export performed.",
+        )
+        dry_written = save_shear_colorbar_metadata(dry_entry, figures_dir)
+        if dry_written:
+            print(f"Shear colorbar metadata written: {', '.join(p.name for p in dry_written)}")
         payload = build_status_payload(
             geo_name=geo_name, case_name=case_name,
             status=STATUS_DRY, selected_surfaces=active_mem_bases,
@@ -2622,6 +3124,15 @@ def main() -> int:
             background=args.background, view_margin=args.view_margin,
             image_width=eff_width, image_height=eff_height,
             cff_expression=_default_cff_expression(mu),
+            legend_mode=args.legend_mode,
+            colorbar_metadata_written=bool(dry_written),
+            colorbar_metadata_files=[p.name for p in dry_written],
+            colorbar_range_min=dry_entry["range_min"],
+            colorbar_range_max=dry_entry["range_max"],
+            colorbar_range_source=dry_entry["range_source"],
+            colorbar_range_is_fixed=dry_entry["range_is_fixed"],
+            colorbar_title="Wall shear rate [1/s]",
+            post_mask_colorbar_requested=bool(args.post_mask_colorbar),
         )
         write_status_json(status_file, payload)
         return 0
@@ -2631,6 +3142,24 @@ def main() -> int:
         all_exist = all(f.is_file() for f in output_files_by_side.values())
         if all_exist:
             print(f"SKIP: all output files already exist.")
+            skip_timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+            skip_entry = _build_shear_colorbar_entry(
+                geo_name=geo_name, case_name=case_name, cff_name=args.cff_name,
+                derived_variable_mode="pyfluent_native_cff_wall_shear_over_mu",
+                mu_used=mu, output_files=list(output_files_by_side.values()),
+                membrane_surface=args.membrane_surface, selected_surfaces=active_mem_bases,
+                view_preset=args.view_preset, matched_debug_candidate="",
+                cff_file=cff_file,
+                range_min=shear_range[0] if shear_range else None,
+                range_max=shear_range[1] if shear_range else None,
+                range_source="fixed_user_cli" if shear_range else "not_reexported_skip_existing",
+                range_is_fixed=bool(shear_range),
+                timestamp=skip_timestamp,
+                extra_notes="skip-existing: outputs already present, not re-exported.",
+            )
+            skip_written = save_shear_colorbar_metadata(skip_entry, figures_dir)
+            if skip_written:
+                print(f"Shear colorbar metadata written: {', '.join(p.name for p in skip_written)}")
             payload = build_status_payload(
                 geo_name=geo_name, case_name=case_name,
                 status=STATUS_SKIP, selected_surfaces=[],
@@ -2657,6 +3186,15 @@ def main() -> int:
                 background=args.background, view_margin=args.view_margin,
                 image_width=eff_width, image_height=eff_height,
                 cff_expression=_default_cff_expression(mu),
+                legend_mode=args.legend_mode,
+                colorbar_metadata_written=bool(skip_written),
+                colorbar_metadata_files=[p.name for p in skip_written],
+                colorbar_range_min=skip_entry["range_min"],
+                colorbar_range_max=skip_entry["range_max"],
+                colorbar_range_source=skip_entry["range_source"],
+                colorbar_range_is_fixed=skip_entry["range_is_fixed"],
+                colorbar_title="Wall shear rate [1/s]",
+                post_mask_colorbar_requested=bool(args.post_mask_colorbar),
             )
             write_status_json(status_file, payload)
             return 0
@@ -2722,7 +3260,9 @@ def main() -> int:
     inferred_cff_candidates: List[str] = []
     cff_candidate_source = "none"
     all_scalar_names_head:  List[str] = []
-    scene_cleanup_diag = _default_scene_cleanup_diag(args.background, args.view_margin)
+    scene_cleanup_diag = _default_scene_cleanup_diag(
+        args.background, args.view_margin, legend_mode=args.legend_mode
+    )
 
     try:
         # --- Launch ---
@@ -2868,6 +3408,8 @@ def main() -> int:
                     view_up=_parse_vector_arg(args.view_up)
                         if args.view_up else None,
                     view_debug_sweep=args.view_debug_sweep,
+                    legend_mode=args.legend_mode,
+                    post_mask_colorbar=args.post_mask_colorbar,
                 )
                 scene_cleanup_diag = _merge_scene_cleanup_diag(
                     scene_cleanup_diag,
@@ -3005,6 +3547,40 @@ def main() -> int:
             except Exception as ec:
                 print(f"WARN: solver.exit() raised: {ec}")
 
+    final_output_files = all_output_files if all_output_files else list(output_files_by_side.values())
+    final_selected_surfaces = sorted(set(all_selected_surfs)) if all_selected_surfs else active_mem_bases
+    final_timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    if shear_range is not None:
+        # Fixed range is authoritative regardless of any auto-range readback.
+        final_range_min, final_range_max = float(shear_range[0]), float(shear_range[1])
+        final_range_source, final_range_is_fixed = "fixed_user_cli", True
+    else:
+        final_range_min = scene_cleanup_diag.get("colorbar_range_min")
+        final_range_max = scene_cleanup_diag.get("colorbar_range_max")
+        final_range_source = str(scene_cleanup_diag.get("colorbar_range_source") or "unavailable")
+        final_range_is_fixed = bool(scene_cleanup_diag.get("colorbar_range_is_fixed"))
+    final_shear_entry = _build_shear_colorbar_entry(
+        geo_name=geo_name, case_name=case_name, cff_name=args.cff_name,
+        derived_variable_mode=derived_mode, mu_used=mu,
+        output_files=final_output_files,
+        membrane_surface=args.membrane_surface,
+        selected_surfaces=final_selected_surfaces,
+        view_preset=args.view_preset,
+        matched_debug_candidate=str(scene_cleanup_diag.get("matched_debug_candidate", "")),
+        cff_file=cff_file,
+        range_min=final_range_min, range_max=final_range_max,
+        range_source=final_range_source, range_is_fixed=final_range_is_fixed,
+        timestamp=final_timestamp,
+    )
+    final_shear_written = save_shear_colorbar_metadata(final_shear_entry, figures_dir)
+    if final_shear_written:
+        print(
+            f"Shear colorbar metadata written: "
+            f"{', '.join(p.name for p in final_shear_written)}"
+        )
+    else:
+        print("Shear colorbar metadata: nothing written (see WARNING messages above, if any).")
+
     payload = build_status_payload(
         geo_name=geo_name,
         case_name=case_name,
@@ -3095,6 +3671,25 @@ def main() -> int:
             scene_cleanup_diag.get("view_debug_sweep_attempted", False)
         ),
         view_debug_sweep_outputs=list(scene_cleanup_diag.get("view_debug_sweep_outputs", [])),
+        legend_mode=str(scene_cleanup_diag.get("legend_mode") or args.legend_mode),
+        legend_hide_attempted=bool(scene_cleanup_diag.get("legend_hide_attempted", False)),
+        legend_hide_status=str(scene_cleanup_diag.get("legend_hide_status", "SKIPPED")),
+        legend_hide_method=str(scene_cleanup_diag.get("legend_hide_method", "")),
+        legend_hide_attempts=list(scene_cleanup_diag.get("legend_hide_attempts", [])),
+        legend_hide_error=str(scene_cleanup_diag.get("legend_hide_error", "")),
+        legend_visible_after_hide=scene_cleanup_diag.get("legend_visible_after_hide"),
+        colorbar_metadata_written=bool(final_shear_written),
+        colorbar_metadata_files=[p.name for p in final_shear_written],
+        colorbar_range_min=final_shear_entry["range_min"],
+        colorbar_range_max=final_shear_entry["range_max"],
+        colorbar_range_source=final_shear_entry["range_source"],
+        colorbar_range_is_fixed=final_shear_entry["range_is_fixed"],
+        colorbar_units="1/s",
+        colorbar_title="Wall shear rate [1/s]",
+        post_mask_colorbar_requested=bool(args.post_mask_colorbar),
+        post_mask_colorbar_applied=bool(scene_cleanup_diag.get("post_mask_colorbar_applied", False)),
+        post_mask_colorbar_method=str(scene_cleanup_diag.get("post_mask_colorbar_method", "")),
+        post_mask_colorbar_error=str(scene_cleanup_diag.get("post_mask_colorbar_error", "")),
     )
     payload["cli_view_preset_arg"] = str(args.view_preset)
     write_status_json(status_file, payload)
