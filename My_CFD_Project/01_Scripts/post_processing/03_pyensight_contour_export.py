@@ -24,6 +24,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime
 import importlib.util
 import inspect
 import json
@@ -323,6 +325,20 @@ class ExportRecord:
     legend_reserve_right_applied: bool = False
     legend_reserve_right_method: str = ""
     legend_reserve_right_error: str = ""
+    legend_mode: str = ""
+    legend_hide_attempted: bool = False
+    legend_hide_status: str = ""
+    legend_hide_method: str = ""
+    legend_hide_error: str = ""
+    legend_visible_after_hide: Optional[bool] = None
+    colorbar_metadata_written: bool = False
+    colorbar_metadata_files: List[str] = field(default_factory=list)
+    colorbar_range_min: Optional[float] = None
+    colorbar_range_max: Optional[float] = None
+    colorbar_range_source: str = ""
+    colorbar_units: str = ""
+    colorbar_title: str = ""
+    colorbar_palette_name: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +581,18 @@ def parse_args() -> argparse.Namespace:
 
     # --- legend / colorbar layout ---
     lgd = parser.add_argument_group("Legend / colorbar layout options")
+    lgd.add_argument(
+        "--legend-mode", type=str, default="hide",
+        choices=["show", "hide"],
+        help=(
+            "Legend/colorbar visibility in exported PNGs (default: hide). "
+            "'hide' removes all legend/colorbar annotation from the exported "
+            "image and instead writes colorbar range/unit metadata to "
+            "contour_colorbar_ranges.json/.txt/.csv in the output directory. "
+            "'show' preserves the previous legend layout behavior, in which "
+            "case --legend-preset and the other --legend-* options below apply."
+        ),
+    )
     lgd.add_argument(
         "--legend-preset", type=str, default="presentation_right",
         choices=["default", "presentation_right", "compact_right"],
@@ -1833,6 +1861,7 @@ LEGEND_PRESETS: dict = {
 }
 
 DEFAULT_LEGEND_OPTS: dict = {
+    "mode": "hide",
     "preset": "presentation_right",
     "x": None, "y": None, "width": None, "height": None,
     "text_size": None, "title_size": None, "label_count": None,
@@ -1922,6 +1951,105 @@ def find_legend_annotation(
         f"no_match; legend_descs={[getattr(a, 'DESCRIPTION', None) for a in legends][:10]}"
     )
     return None, "; ".join(tried)
+
+
+def hide_legend_annotation(
+    session: Any,
+    var_obj: Any,
+    display_var_desc: str,
+) -> dict:
+    """
+    Best-effort hide of the ENS_ANNOT_LGND legend/colorbar for a variable.
+    Reuses find_legend_annotation()'s VARCOMP-based lookup; if no field-
+    specific legend is found, falls back to hiding every currently-visible
+    legend annotation. Never raises and never signals a failure that should
+    fail the overall contour export — worst case status is WARN. Does not
+    touch part/geometry visibility. Returns dict with keys: status, method,
+    error, visible_after.
+    """
+    result: dict = {"status": STATUS_SUCCESS, "method": "", "error": "", "visible_after": None}
+
+    legend_annot, find_diag = find_legend_annotation(session, var_obj, display_var_desc)
+
+    used_fallback = False
+    targets: List[Any] = []
+    if legend_annot is not None:
+        targets = [legend_annot]
+    else:
+        used_fallback = True
+        try:
+            annots = list(session.ensight.objs.core.ANNOTS)
+        except Exception as exc:
+            result.update(
+                status=STATUS_WARN, method="none",
+                error=f"core.ANNOTS list failed: {type(exc).__name__}: {exc}. Diag: {find_diag}",
+            )
+            return result
+        legend_enum = None
+        for enum_name in ("ANNOT_LEGEND", "ANNO_LGND"):
+            try:
+                legend_enum = getattr(session.ensight.objs.enums, enum_name)
+                break
+            except Exception:
+                continue
+        for a in annots:
+            try:
+                is_legend = legend_enum is None or getattr(a, "ANNOTTYPE", None) == legend_enum
+            except Exception:
+                is_legend = False
+            if is_legend and _is_visible(a):
+                targets.append(a)
+        if not targets:
+            result.update(
+                status=STATUS_WARN, method="none",
+                error=(
+                    f"No legend annotation found for '{display_var_desc}' and no "
+                    f"visible legends to fall back on. Diag: {find_diag}"
+                ),
+            )
+            return result
+
+    applied: List[str] = []
+    failed: List[str] = []
+    visible_after: Optional[bool] = None
+    for annot in targets:
+        hidden = False
+        for attr, value in (("VISIBLE", False), ("VISIBLE", 0), ("visible", False), ("visible", 0)):
+            try:
+                setattr(annot, attr, value)
+                hidden = True
+                applied.append(f"{attr}={value}")
+                break
+            except Exception as exc:
+                failed.append(f"{attr}={value}: {type(exc).__name__}: {exc}")
+        if hidden:
+            try:
+                visible_after = bool(getattr(annot, "VISIBLE"))
+            except Exception:
+                pass
+        else:
+            failed.append(f"could not hide annotation '{getattr(annot, 'DESCRIPTION', '?')}'")
+
+    if applied and not failed:
+        result.update(status=STATUS_SUCCESS, method="; ".join(applied), error="", visible_after=visible_after)
+    elif applied:
+        result.update(status=STATUS_WARN, method="; ".join(applied), error="; ".join(failed), visible_after=visible_after)
+    else:
+        result.update(
+            status=STATUS_WARN, method="none",
+            error="; ".join(failed) or "no attributes applied", visible_after=visible_after,
+        )
+
+    if used_fallback:
+        fallback_note = (
+            f"used fallback: hid {len(targets)} visible legend(s); "
+            f"field-specific match failed. Diag: {find_diag}"
+        )
+        result["error"] = "; ".join(m for m in (result["error"], fallback_note) if m)
+        if result["status"] == STATUS_SUCCESS:
+            result["status"] = STATUS_WARN
+
+    return result
 
 
 def resolve_legend_layout_values(legend_opts: dict) -> dict:
@@ -3367,6 +3495,7 @@ def export_contour(
     bounds_debug_sweep_attempted_bool: bool = False
     bounds_debug_sweep_outputs_list: List[str] = []
     legend_opts_eff: dict = legend_opts if legend_opts is not None else DEFAULT_LEGEND_OPTS
+    legend_mode_str: str = str(legend_opts_eff.get("mode") or "hide").strip().lower()
     legend_preset_requested_str: str = str(legend_opts_eff.get("preset") or "")
     legend_preset_applied_str: str = ""
     legend_layout_status_str: str = ""
@@ -3383,6 +3512,17 @@ def export_contour(
     legend_reserve_right_applied_bool: bool = False
     legend_reserve_right_method_str: str = ""
     legend_reserve_right_error_str: str = ""
+    legend_hide_attempted_bool: bool = False
+    legend_hide_status_str: str = ""
+    legend_hide_method_str: str = ""
+    legend_hide_error_str: str = ""
+    legend_visible_after_hide_val: Optional[bool] = None
+    colorbar_range_min_val: Optional[float] = None
+    colorbar_range_max_val: Optional[float] = None
+    colorbar_range_source_str: str = ""
+    colorbar_units_str: str = ""
+    colorbar_title_str: str = ""
+    colorbar_palette_name_str: str = ""
 
     def _record(status: str, surface_desc: str, message: str) -> None:
         records.append(ExportRecord(
@@ -3452,6 +3592,18 @@ def export_contour(
             legend_reserve_right_applied=legend_reserve_right_applied_bool,
             legend_reserve_right_method=legend_reserve_right_method_str,
             legend_reserve_right_error=legend_reserve_right_error_str,
+            legend_mode=legend_mode_str,
+            legend_hide_attempted=legend_hide_attempted_bool,
+            legend_hide_status=legend_hide_status_str,
+            legend_hide_method=legend_hide_method_str,
+            legend_hide_error=legend_hide_error_str,
+            legend_visible_after_hide=legend_visible_after_hide_val,
+            colorbar_range_min=colorbar_range_min_val,
+            colorbar_range_max=colorbar_range_max_val,
+            colorbar_range_source=colorbar_range_source_str,
+            colorbar_units=colorbar_units_str,
+            colorbar_title=colorbar_title_str,
+            colorbar_palette_name=colorbar_palette_name_str,
         ))
 
     # 1. Locate surfaces
@@ -3883,34 +4035,79 @@ def export_contour(
     if label_warn:
         info_msgs.append(label_warn)
 
-    # 7b. Legend/colorbar layout — presentation-friendly positioning + sizing.
+    # 7a. Capture colorbar range/unit metadata for the separate metadata
+    #     export (contour_colorbar_ranges.*), independent of whether the
+    #     legend itself ends up shown or hidden below. For auto-range fields,
+    #     read back the palette's actual MINMAX after set_range_to_part_minmax()
+    #     so the exported metadata reflects the real applied range rather than
+    #     just "auto".
+    colorbar_units_str = _field_units_from_label(field_name)
+    colorbar_title_str = field_name
+    colorbar_palette_name_str = str(getattr(found_palette, "DESCRIPTION", "") or "") if found_palette is not None else ""
+    if applied_mode in (RANGE_MODE_FIXED, RANGE_MODE_CLI):
+        colorbar_range_source_str = "fixed_user_or_config"
+        colorbar_range_min_val = applied_min
+        colorbar_range_max_val = applied_max
+    elif applied_mode == RANGE_MODE_AUTO:
+        colorbar_range_source_str = "auto"
+        if found_palette is not None:
+            try:
+                actual_minmax = list(found_palette.MINMAX)
+                colorbar_range_min_val = float(actual_minmax[0])
+                colorbar_range_max_val = float(actual_minmax[1])
+                colorbar_range_source_str = "palette_minmax"
+            except Exception as exc_mm:
+                info_msgs.append(
+                    f"colorbar_metadata: could not read back auto-range MINMAX: {exc_mm}"
+                )
+    else:
+        colorbar_range_source_str = "unavailable"
+
+    # 7b. Legend/colorbar layout OR hide, depending on --legend-mode.
     #     Best-effort only: never allowed to fail the contour export itself.
-    print(f"Configuring legend layout: preset={legend_opts_eff.get('preset')}")
-    legend_layout_result = configure_legend_layout(
-        session, field_key, var_obj, display_var_desc, legend_opts_eff
-    )
-    legend_preset_requested_str = str(legend_layout_result.get("preset_requested") or "")
-    legend_preset_applied_str = str(legend_layout_result.get("preset_applied") or "")
-    legend_layout_status_str = str(legend_layout_result.get("status") or "")
-    legend_layout_method_str = str(legend_layout_result.get("method") or "")
-    legend_layout_error_str = str(legend_layout_result.get("error") or "")
-    legend_x_val = legend_layout_result.get("x")
-    legend_y_val = legend_layout_result.get("y")
-    legend_width_val = legend_layout_result.get("width")
-    legend_height_val = legend_layout_result.get("height")
-    legend_text_size_val = legend_layout_result.get("text_size")
-    legend_title_size_val = legend_layout_result.get("title_size")
-    legend_label_count_val = legend_layout_result.get("label_count")
-    print(f"Legend layout status: {legend_layout_status_str.lower() or 'unknown'}")
-    if legend_x_val is not None or legend_width_val is not None:
-        print(
-            f"  Legend location=({legend_x_val},{legend_y_val}) "
-            f"size=({legend_width_val},{legend_height_val}) "
-            f"text_size={legend_text_size_val} title_size={legend_title_size_val} "
-            f"label_count={legend_label_count_val}"
+    print(f"Legend mode: {legend_mode_str}")
+    if legend_mode_str == "show":
+        print(f"Configuring legend layout: preset={legend_opts_eff.get('preset')}")
+        legend_layout_result = configure_legend_layout(
+            session, field_key, var_obj, display_var_desc, legend_opts_eff
         )
-    if legend_layout_error_str:
-        info_msgs.append(f"legend_layout: {legend_layout_error_str}")
+        legend_preset_requested_str = str(legend_layout_result.get("preset_requested") or "")
+        legend_preset_applied_str = str(legend_layout_result.get("preset_applied") or "")
+        legend_layout_status_str = str(legend_layout_result.get("status") or "")
+        legend_layout_method_str = str(legend_layout_result.get("method") or "")
+        legend_layout_error_str = str(legend_layout_result.get("error") or "")
+        legend_x_val = legend_layout_result.get("x")
+        legend_y_val = legend_layout_result.get("y")
+        legend_width_val = legend_layout_result.get("width")
+        legend_height_val = legend_layout_result.get("height")
+        legend_text_size_val = legend_layout_result.get("text_size")
+        legend_title_size_val = legend_layout_result.get("title_size")
+        legend_label_count_val = legend_layout_result.get("label_count")
+        print(f"Legend layout status: {legend_layout_status_str.lower() or 'unknown'}")
+        if legend_x_val is not None or legend_width_val is not None:
+            print(
+                f"  Legend location=({legend_x_val},{legend_y_val}) "
+                f"size=({legend_width_val},{legend_height_val}) "
+                f"text_size={legend_text_size_val} title_size={legend_title_size_val} "
+                f"label_count={legend_label_count_val}"
+            )
+        if legend_layout_error_str:
+            info_msgs.append(f"legend_layout: {legend_layout_error_str}")
+    else:
+        legend_preset_requested_str = str(legend_opts_eff.get("preset") or "")
+        print("Legend positioning skipped (--legend-mode hide).")
+        legend_hide_attempted_bool = True
+        print(f"Hiding PyEnSight legend for field: {field_key}")
+        legend_hide_result = hide_legend_annotation(session, var_obj, display_var_desc)
+        legend_hide_status_str = str(legend_hide_result.get("status") or "")
+        legend_hide_method_str = str(legend_hide_result.get("method") or "")
+        legend_hide_error_str = str(legend_hide_result.get("error") or "")
+        legend_visible_after_hide_val = legend_hide_result.get("visible_after")
+        print(f"Legend hide status: {legend_hide_status_str.lower() or 'unknown'}")
+        if legend_hide_error_str and legend_hide_status_str != STATUS_SUCCESS:
+            warnings.append(f"legend_hide: {legend_hide_error_str}")
+        elif legend_hide_error_str:
+            info_msgs.append(f"legend_hide: {legend_hide_error_str}")
 
     # 8. Fit view to visible geometry, then apply view margin and zoom-out as
     #    ONE combined post-fit zoom call (see apply_zoom_out docstring for why
@@ -3982,16 +4179,20 @@ def export_contour(
             manual_bounds_used = True
 
     # 8c-i. Optional extra right-side reserve, so the presentation legend
-    #       preset has whitespace clear of the membrane. Only attempted with
-    #       manual view bounds (see apply_legend_reserve_right docstring for
-    #       why it cannot be made strictly one-sided). Whether it actually
-    #       affected the final view depends on which camera-fit method fires
-    #       below (reselect_fit_only ignores extent, camera.* uses it) — the
+    #       preset has whitespace clear of the membrane. Only meaningful when
+    #       a legend is actually shown (--legend-mode show) and with manual
+    #       view bounds (see apply_legend_reserve_right docstring for why it
+    #       cannot be made strictly one-sided). Whether it actually affected
+    #       the final view depends on which camera-fit method fires below
+    #       (reselect_fit_only ignores extent, camera.* uses it) — the
     #       "applied" flag is finalized after that call, not here.
     bounds_extended = False
     reserve_extend_method = "not_applicable"
     reserve_extend_error = ""
-    if manual_bounds_used:
+    if legend_mode_str != "show":
+        reserve_extend_method = "skipped_legend_mode_hide"
+        reserve_extend_error = "legend_reserve_right skipped because --legend-mode hide"
+    elif manual_bounds_used:
         padded_bounds, bounds_extended, reserve_extend_method, reserve_extend_error = (
             apply_legend_reserve_right(
                 raw_bounds, padded_bounds, legend_reserve_right_requested_float
@@ -4129,6 +4330,135 @@ def export_contour(
 
 
 # ---------------------------------------------------------------------------
+# Colorbar / range metadata export (JSON + txt + CSV) — written separately
+# from the PNGs so the colorbar can be recreated outside PyEnSight when
+# --legend-mode hide removes the on-image legend/colorbar annotation.
+# ---------------------------------------------------------------------------
+
+def _field_units_from_label(field_name: str) -> str:
+    """Extract the trailing '[units]' from a display label, e.g. 'LMH [LMH]' -> 'LMH'."""
+    m = re.search(r"\[([^\]]*)\]\s*$", field_name or "")
+    return m.group(1) if m else ""
+
+
+def _colorbar_entry_from_record(r: ExportRecord, timestamp: str) -> dict:
+    notes_parts: List[str] = []
+    if r.field_key == "cp_inlet" and r.bulk_reference_mode:
+        bulk_val = f"={r.bulk_reference_value:.6g}" if r.bulk_reference_value is not None else ""
+        notes_parts.append(
+            f"CP bulk reference: mode={r.bulk_reference_mode}{bulk_val} "
+            f"({r.bulk_reference_units_or_type or 'n/a'})"
+        )
+    if r.status not in (STATUS_SUCCESS, STATUS_WARN):
+        notes_parts.append(f"Field not exported (status={r.status}); range metadata may be unavailable.")
+
+    range_min = r.colorbar_range_min
+    range_max = r.colorbar_range_max
+    range_source = r.colorbar_range_source or "unavailable"
+    if (range_min is None or range_max is None) and range_source != "unavailable":
+        notes_parts.append(f"range not available (source={range_source})")
+
+    units = r.colorbar_units or _field_units_from_label(r.field_name)
+
+    return {
+        "geo_name": r.geo_name,
+        "case_name": r.case_name,
+        "field_key": r.field_key,
+        "selected_variable": r.selected_variable,
+        "derived_variable_mode": r.derived_variable_mode,
+        "output_file": r.output_file,
+        "units": units,
+        "range_min": range_min,
+        "range_max": range_max,
+        "range_source": range_source,
+        "range_is_fixed": range_source == "fixed_user_or_config",
+        "palette_name": r.colorbar_palette_name,
+        "legend_title": r.colorbar_title or r.field_name,
+        "timestamp": timestamp,
+        "notes": "; ".join(notes_parts),
+    }
+
+
+def save_colorbar_metadata(
+    records: List[ExportRecord],
+    figures_dir: Path,
+    geo_name: str,
+    case_name: str,
+) -> List[Path]:
+    """
+    Write colorbar/range metadata (JSON + human-readable txt + CSV) for every
+    planned field, independent of --legend-mode. Best-effort: never raises.
+    Returns the list of file paths actually written.
+    """
+    if not _safe_mkdir(figures_dir):
+        return []
+
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    entries = [_colorbar_entry_from_record(r, timestamp) for r in records]
+
+    written: List[Path] = []
+
+    json_path = figures_dir / "contour_colorbar_ranges.json"
+    try:
+        with json_path.open("w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "geo_name": geo_name,
+                    "case_name": case_name,
+                    "generated_at": timestamp,
+                    "fields": entries,
+                },
+                fh, indent=2, default=str,
+            )
+        written.append(json_path)
+    except Exception as exc:
+        print(f"WARNING: could not write {json_path}: {exc}")
+
+    txt_path = figures_dir / "contour_colorbar_ranges.txt"
+    try:
+        lines = [
+            f"Colorbar / range metadata - {geo_name} / {case_name}  (generated {timestamp})",
+            "=" * 72,
+        ]
+        for e in entries:
+            lines.append(f"\n{e['field_key']}:")
+            lines.append(f"  selected_variable    : {e['selected_variable']}")
+            lines.append(f"  derived_variable_mode: {e['derived_variable_mode']}")
+            lines.append(f"  units                : {e['units']}")
+            lines.append(f"  range                : {e['range_min']} - {e['range_max']}")
+            lines.append(f"  range_source         : {e['range_source']}")
+            lines.append(f"  range_is_fixed       : {e['range_is_fixed']}")
+            lines.append(f"  palette_name         : {e['palette_name']}")
+            lines.append(f"  legend_title         : {e['legend_title']}")
+            lines.append(f"  output_file          : {e['output_file']}")
+            if e["notes"]:
+                lines.append(f"  notes                : {e['notes']}")
+        txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        written.append(txt_path)
+    except Exception as exc:
+        print(f"WARNING: could not write {txt_path}: {exc}")
+
+    csv_path = figures_dir / "contour_colorbar_ranges.csv"
+    try:
+        fieldnames = [
+            "geo_name", "case_name", "field_key", "selected_variable",
+            "derived_variable_mode", "output_file", "units", "range_min",
+            "range_max", "range_source", "range_is_fixed", "palette_name",
+            "legend_title", "timestamp", "notes",
+        ]
+        with csv_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for e in entries:
+                writer.writerow({k: e.get(k, "") for k in fieldnames})
+        written.append(csv_path)
+    except Exception as exc:
+        print(f"WARNING: could not write {csv_path}: {exc}")
+
+    return written
+
+
+# ---------------------------------------------------------------------------
 # Save status JSON
 # ---------------------------------------------------------------------------
 
@@ -4145,6 +4475,7 @@ def save_status(
     manual_view_plane: str = "xy",
     legend_preset: str = "presentation_right",
     legend_reserve_right: float = 0.12,
+    legend_mode: str = "hide",
 ) -> None:
     status_file = figures_dir / "contour_export_status.json"
 
@@ -4178,10 +4509,18 @@ def save_status(
             r.bounds_fit_status in ("applied", "success") for r in records
         ),
         "view_orientation_preserved": True,
+        "requested_legend_mode": legend_mode,
         "requested_legend_preset": legend_preset,
         "requested_legend_reserve_right": legend_reserve_right,
         "legend_layout_applied_any": any(
             r.legend_layout_status == STATUS_SUCCESS for r in records
+        ),
+        "legend_hide_applied_any": any(
+            r.legend_hide_status == STATUS_SUCCESS for r in records
+        ),
+        "colorbar_metadata_written_any": any(r.colorbar_metadata_written for r in records),
+        "colorbar_metadata_files": sorted(
+            {f for r in records for f in r.colorbar_metadata_files}
         ),
         "summary": {
             "total":   len(records),
@@ -4242,6 +4581,21 @@ def _print_summary(records: List[ExportRecord], figures_dir: Path) -> None:
     print("=" * 72)
 
 
+def _write_colorbar_metadata_and_update_records(
+    records: List[ExportRecord], figures_dir: Path, geo_name: str, case_name: str,
+) -> None:
+    """Write contour_colorbar_ranges.* and record the outcome on every ExportRecord."""
+    written = save_colorbar_metadata(records, figures_dir, geo_name, case_name)
+    written_names = [p.name for p in written]
+    for r in records:
+        r.colorbar_metadata_written = bool(written)
+        r.colorbar_metadata_files = list(written_names)
+    if written_names:
+        print(f"Colorbar metadata written: {', '.join(written_names)}")
+    else:
+        print("Colorbar metadata: nothing written (see WARNING messages above, if any).")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -4297,6 +4651,7 @@ def main() -> int:
     if manual_view_bounds:
         print(f"Manual view bounds ({manual_view_plane}): {list(manual_view_bounds)}")
     legend_opts = {
+        "mode": args.legend_mode,
         "preset": args.legend_preset,
         "x": args.legend_x,
         "y": args.legend_y,
@@ -4307,6 +4662,7 @@ def main() -> int:
         "label_count": args.legend_label_count,
         "reserve_right": args.legend_reserve_right,
     }
+    print(f"Legend mode: {args.legend_mode}")
     print(
         f"Legend preset: {args.legend_preset}  |  "
         f"Legend reserve-right: {args.legend_reserve_right}"
@@ -4341,6 +4697,7 @@ def main() -> int:
         "manual_view_plane": manual_view_plane,
         "legend_preset": args.legend_preset,
         "legend_reserve_right": args.legend_reserve_right,
+        "legend_mode": args.legend_mode,
     }
 
     # ---- Dry-run ----
@@ -4361,6 +4718,7 @@ def main() -> int:
                 color_range_min=item["color_range_min"],
                 color_range_max=item["color_range_max"],
             ))
+        _write_colorbar_metadata_and_update_records(records, figures_dir, geo_name, case_name)
         save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
         _print_summary(records, figures_dir)
         return 0
@@ -4389,6 +4747,7 @@ def main() -> int:
 
     if not plan:
         _safe_mkdir(figures_dir)
+        _write_colorbar_metadata_and_update_records(records, figures_dir, geo_name, case_name)
         save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
         _print_summary(records, figures_dir)
         return 0
@@ -4417,6 +4776,7 @@ def main() -> int:
                     status=STATUS_FAILED,
                     message=f"Case load failed: {open_error[:120]}",
                 ))
+            _write_colorbar_metadata_and_update_records(records, figures_dir, geo_name, case_name)
             save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
             _print_summary(records, figures_dir)
             return 2
@@ -4482,6 +4842,7 @@ def main() -> int:
             except Exception as exc_close:
                 print(f"Warning: session.close() raised: {exc_close}")
 
+    _write_colorbar_metadata_and_update_records(records, figures_dir, geo_name, case_name)
     save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
     _print_summary(records, figures_dir)
 
