@@ -899,6 +899,11 @@ def _default_scene_cleanup_diag(
         "legend_hide_attempts": [],
         "legend_hide_error": "",
         "legend_visible_after_hide": None,
+        "legend_hide_assignment_succeeded": False,
+        "legend_hide_verified_by_readback": False,
+        "legend_hide_render_refresh_attempted": False,
+        "legend_hide_render_refresh_status": "SKIPPED",
+        "legend_hide_render_refresh_error": "",
         "colorbar_range_min": None,
         "colorbar_range_max": None,
         "colorbar_range_source": "",
@@ -907,6 +912,10 @@ def _default_scene_cleanup_diag(
         "post_mask_colorbar_applied": False,
         "post_mask_colorbar_method": "",
         "post_mask_colorbar_error": "",
+        "post_mask_colorbar_attempted": False,
+        "post_mask_colorbar_status": "SKIPPED",
+        "post_mask_colorbar_side": "",
+        "post_mask_colorbar_width_frac": None,
     }
 
 
@@ -1028,6 +1037,27 @@ def _merge_scene_cleanup_diag(
     merged["legend_visible_after_hide"] = new.get(
         "legend_visible_after_hide", current.get("legend_visible_after_hide")
     )
+    merged["legend_hide_assignment_succeeded"] = bool(
+        current.get("legend_hide_assignment_succeeded")
+    ) or bool(new.get("legend_hide_assignment_succeeded"))
+    merged["legend_hide_verified_by_readback"] = bool(
+        current.get("legend_hide_verified_by_readback")
+    ) or bool(new.get("legend_hide_verified_by_readback"))
+    merged["legend_hide_render_refresh_attempted"] = bool(
+        current.get("legend_hide_render_refresh_attempted")
+    ) or bool(new.get("legend_hide_render_refresh_attempted"))
+    current_rr_status = str(current.get("legend_hide_render_refresh_status", "SKIPPED"))
+    new_rr_status = str(new.get("legend_hide_render_refresh_status", "SKIPPED"))
+    merged["legend_hide_render_refresh_status"] = (
+        current_rr_status
+        if status_rank.get(current_rr_status, 0) >= status_rank.get(new_rr_status, 0)
+        else new_rr_status
+    )
+    rr_errors = [
+        str(current.get("legend_hide_render_refresh_error", "")),
+        str(new.get("legend_hide_render_refresh_error", "")),
+    ]
+    merged["legend_hide_render_refresh_error"] = " | ".join(e for e in rr_errors if e)
 
     merged["colorbar_range_min"] = new.get("colorbar_range_min", current.get("colorbar_range_min"))
     merged["colorbar_range_max"] = new.get("colorbar_range_max", current.get("colorbar_range_max"))
@@ -1054,6 +1084,23 @@ def _merge_scene_cleanup_diag(
         str(new.get("post_mask_colorbar_error", "")),
     ]
     merged["post_mask_colorbar_error"] = " | ".join(e for e in pm_errors if e)
+    merged["post_mask_colorbar_attempted"] = bool(
+        current.get("post_mask_colorbar_attempted")
+    ) or bool(new.get("post_mask_colorbar_attempted"))
+    pm_status_rank = {"SKIPPED": 0, "POST_MASK_SUCCESS": 1, "FAILED": 2}
+    current_pm_status = str(current.get("post_mask_colorbar_status", "SKIPPED"))
+    new_pm_status = str(new.get("post_mask_colorbar_status", "SKIPPED"))
+    merged["post_mask_colorbar_status"] = (
+        current_pm_status
+        if pm_status_rank.get(current_pm_status, 0) >= pm_status_rank.get(new_pm_status, 0)
+        else new_pm_status
+    )
+    merged["post_mask_colorbar_side"] = new.get(
+        "post_mask_colorbar_side", current.get("post_mask_colorbar_side", "")
+    ) or current.get("post_mask_colorbar_side", "")
+    merged["post_mask_colorbar_width_frac"] = new.get(
+        "post_mask_colorbar_width_frac", current.get("post_mask_colorbar_width_frac")
+    )
 
     return merged
 
@@ -1770,7 +1817,9 @@ def hide_fluent_legend(
       1. contour.color_map.visible = False — per-contour settings attribute
          (ansys.fluent.core generated settings: contour_child.color_map is a
          Group with a boolean 'visible' child); most targeted, does not
-         affect any other Fluent graphics object.
+         affect any other Fluent graphics object. The only strategy whose
+         effect can be independently confirmed (read the same attribute
+         back and compare against False).
       2. graphics.views.rendering_options.show_colormap = False — a
          Fluent-wide rendering preference; used only if (1) is unavailable.
       3. solver.tui.preferences.graphics.colormap_settings.show_colormap —
@@ -1778,11 +1827,24 @@ def hide_fluent_legend(
     Never raises. legend_hide_status can be WARN or FAILED but the contour
     image is always still exported — this function must never be allowed to
     abort the export. Does not touch contour.field, .surfaces_list, or
-    .range_options. Returns dict: status, method, attempts, error,
-    visible_after.
+    .range_options.
+
+    Status semantics (strict, readback-gated — do NOT relax):
+      - SUCCESS: the assignment did not raise AND a readback of the same
+        attribute explicitly returned False. A `setattr()` that merely
+        didn't raise is NOT sufficient for SUCCESS on its own.
+      - WARN: the assignment did not raise, but the effect could not be
+        confirmed (readback unavailable, readback != False, or the
+        strategy is a Fluent-wide preference whose effect on this specific
+        contour's rendered colorbar cannot be independently verified).
+      - FAILED: no strategy's assignment succeeded.
+
+    Returns dict with keys: status, method, attempts, error, visible_after,
+    assignment_succeeded, verified_by_readback.
     """
     result: Dict[str, Any] = {
         "status": STATUS_FAIL, "method": "", "attempts": [], "error": "", "visible_after": None,
+        "assignment_succeeded": False, "verified_by_readback": False,
     }
     attempts: List[str] = []
     errors: List[str] = []
@@ -1793,13 +1855,31 @@ def hide_fluent_legend(
         color_map = contour.color_map
         if _try_assign_child(color_map, "visible", False, "contour.color_map.visible", errors):
             visible_after = None
+            readback_ok = False
             try:
                 visible_after = bool(color_map.visible)
-            except Exception:
-                pass
+                readback_ok = True
+            except Exception as exc:
+                errors.append(f"contour.color_map.visible readback: {_format_exception(exc)}")
+
+            if readback_ok and visible_after is False:
+                result.update(
+                    status=STATUS_OK, method="contour.color_map.visible=False",
+                    attempts=list(attempts), error="", visible_after=visible_after,
+                    assignment_succeeded=True, verified_by_readback=True,
+                )
+                return result
+
             result.update(
-                status=STATUS_OK, method="contour.color_map.visible=False",
-                attempts=list(attempts), error="", visible_after=visible_after,
+                status=STATUS_WARN, method="contour.color_map.visible=False",
+                attempts=list(attempts),
+                error=(
+                    "Assignment did not raise, but readback did not confirm "
+                    f"visible=False (visible_after={visible_after!r}); "
+                    "rendered colorbar visibility unverified."
+                ),
+                visible_after=visible_after,
+                assignment_succeeded=True, verified_by_readback=False,
             )
             return result
     except Exception as exc:
@@ -1825,9 +1905,11 @@ def hide_fluent_legend(
                 error=(
                     "Applied via a Fluent-wide rendering preference, not a "
                     "per-contour attribute; may affect other graphics objects "
-                    "and its visual effect could not be independently confirmed."
+                    "and its visual effect on this contour's colorbar could "
+                    "not be independently confirmed."
                 ),
                 visible_after=visible_after,
+                assignment_succeeded=True, verified_by_readback=False,
             )
             return result
     except Exception as exc:
@@ -1850,6 +1932,7 @@ def hide_fluent_legend(
                     "could not be read back to confirm."
                 ),
                 visible_after=None,
+                assignment_succeeded=True, verified_by_readback=False,
             )
             return result
         errors.append(err)
@@ -1858,6 +1941,7 @@ def hide_fluent_legend(
         status=STATUS_FAIL, method="none", attempts=list(attempts),
         error="; ".join(errors) or "no supported legend-hide API found",
         visible_after=None,
+        assignment_succeeded=False, verified_by_readback=False,
     )
     return result
 
@@ -1897,32 +1981,47 @@ def _read_shear_range_after_display(
 def _apply_post_mask_colorbar(
     output_file: Path,
     background: str,
+    side: str = "left",
     fraction: float = 0.12,
 ) -> Tuple[bool, str, str]:
     """
     OPTIONAL, disabled-by-default fallback (--post-mask-colorbar): paints
-    over the rightmost strip of the ALREADY-SAVED PNG with the background
-    color, as a crude mask for a colorbar that hide_fluent_legend() could not
-    hide natively. Clearly separated from the primary legend_hide_* mechanism
-    — the caller only invokes this when the user explicitly requested it AND
-    the native hide did not report SUCCESS. Never raises. Returns
-    (applied, method, error).
+    over a strip of the ALREADY-SAVED PNG with the background color, as a
+    crude mask for a colorbar that hide_fluent_legend() could not hide
+    natively. Clearly separated from the primary legend_hide_* mechanism —
+    the caller only invokes this when the user explicitly requested it AND
+    the native hide did not report a verified SUCCESS. Never raises.
+
+    side: "left" masks [0, 0, width*fraction, height] (the Fluent shear
+    contour colorbar renders on the left side of the image by default);
+    "right" masks [width*(1-fraction), 0, width, height].
+
+    Returns (applied, method, error).
     """
     try:
         from PIL import Image, ImageDraw
     except Exception as exc:
         return False, "", f"PIL/Pillow not available: {_format_exception(exc)}"
 
+    side_norm = str(side).strip().lower()
+    if side_norm not in ("left", "right"):
+        side_norm = "left"
+
     try:
         fill = (255, 255, 255) if background != "black" else (0, 0, 0)
+        frac = max(0.0, min(fraction, 0.5))
         with Image.open(output_file) as img:
             img = img.convert("RGB")
             width, height = img.size
-            mask_x0 = int(round(width * (1.0 - max(0.0, min(fraction, 0.5)))))
+            if side_norm == "left":
+                mask_box = [0, 0, int(round(width * frac)), height]
+            else:
+                mask_x0 = int(round(width * (1.0 - frac)))
+                mask_box = [mask_x0, 0, width, height]
             draw = ImageDraw.Draw(img)
-            draw.rectangle([mask_x0, 0, width, height], fill=fill)
+            draw.rectangle(mask_box, fill=fill)
             img.save(output_file)
-        return True, f"right_strip_mask(fraction={fraction})", ""
+        return True, f"{side_norm}_strip_mask(fraction={frac})", ""
     except Exception as exc:
         return False, "", f"post-mask failed: {_format_exception(exc)}"
 
@@ -1945,6 +2044,8 @@ def try_native_cff_export(
     view_debug_sweep: bool = False,
     legend_mode: str = "hide",
     post_mask_colorbar: bool = False,
+    post_mask_colorbar_side: str = "left",
+    post_mask_colorbar_width_frac: float = 0.12,
 ) -> Tuple[bool, str, str, str, Dict[str, Any]]:
     """Attempt native Fluent contour export using a prepared CFF variable.
 
@@ -1961,6 +2062,8 @@ def try_native_cff_export(
             view_direction=view_direction, view_up=view_up,
             view_debug_sweep=view_debug_sweep,
             legend_mode=legend_mode, post_mask_colorbar=post_mask_colorbar,
+            post_mask_colorbar_side=post_mask_colorbar_side,
+            post_mask_colorbar_width_frac=post_mask_colorbar_width_frac,
         )
         if output_file.is_file():
             scene_error = str(scene_diag.get("scene_cleanup_error", ""))
@@ -1992,6 +2095,8 @@ def _export_contour_cff(
     view_debug_sweep: bool = False,
     legend_mode: str = "hide",
     post_mask_colorbar: bool = False,
+    post_mask_colorbar_side: str = "left",
+    post_mask_colorbar_width_frac: float = 0.12,
 ) -> Dict[str, Any]:
     """Create Fluent contour using a shear-rate CFF, display, and save."""
     if output_file.exists():
@@ -2045,7 +2150,7 @@ def _export_contour_cff(
         scene_diag["legend_hide_attempted"] = False
         scene_diag["legend_hide_status"] = "SKIPPED"
     else:
-        print("  Hiding Fluent shear colorbar/legend...")
+        print("  Attempting native Fluent colorbar hide...")
         scene_diag["legend_hide_attempted"] = True
         legend_hide_result = hide_fluent_legend(solver, graphics, contour)
         scene_diag["legend_hide_status"] = legend_hide_result["status"]
@@ -2053,9 +2158,66 @@ def _export_contour_cff(
         scene_diag["legend_hide_attempts"] = legend_hide_result["attempts"]
         scene_diag["legend_hide_error"] = legend_hide_result["error"]
         scene_diag["legend_visible_after_hide"] = legend_hide_result["visible_after"]
-        print(f"  Legend hide status: {legend_hide_result['status'].lower()}")
+        scene_diag["legend_hide_assignment_succeeded"] = bool(
+            legend_hide_result.get("assignment_succeeded")
+        )
+        scene_diag["legend_hide_verified_by_readback"] = bool(
+            legend_hide_result.get("verified_by_readback")
+        )
+        print(
+            f"  Native hide assignment/readback result: "
+            f"status={legend_hide_result['status']}, "
+            f"assignment_succeeded={scene_diag['legend_hide_assignment_succeeded']}, "
+            f"verified_by_readback={scene_diag['legend_hide_verified_by_readback']}, "
+            f"visible_after={legend_hide_result['visible_after']!r}"
+        )
         if legend_hide_result["error"]:
             print(f"    {legend_hide_result['error']}")
+
+        # --- Render refresh: the first contour.display() above rendered the
+        #     contour (with its colorbar) into the graphics window; changing
+        #     contour.color_map.visible afterwards is a settings-object write
+        #     and is not guaranteed to repaint that already-rendered frame
+        #     before save_picture() captures it. Re-display the SAME contour
+        #     object (never recreated) so the just-applied visibility change
+        #     is reflected in the frame that gets saved. Best-effort; must
+        #     never abort the export. ---
+        if scene_diag["legend_hide_assignment_succeeded"]:
+            print("  Re-displaying contour to refresh rendered image after legend hide...")
+            scene_diag["legend_hide_render_refresh_attempted"] = True
+            try:
+                contour.display()
+                scene_diag["legend_hide_render_refresh_status"] = STATUS_OK
+                print("  Render refresh status: success")
+            except Exception as exc:
+                scene_diag["legend_hide_render_refresh_status"] = STATUS_FAIL
+                scene_diag["legend_hide_render_refresh_error"] = _format_exception(exc)
+                print(f"  WARN: render refresh (contour.display()) failed: {exc}")
+
+            # contour.display() can reset camera/view state on some Fluent
+            # versions; defensively reapply the existing scene/view cleanup
+            # (same mechanism as above) so match_pyensight / the matched
+            # debug candidate view is preserved after the refresh.
+            try:
+                refresh_scene_diag = setup_fluent_clean_scene(
+                    solver=solver,
+                    background=background,
+                    view_margin=view_margin,
+                    view_preset=view_preset,
+                    membrane_side=membrane_side,
+                    fluent_view_name=fluent_view_name,
+                    view_direction=view_direction,
+                    view_up=view_up,
+                )
+                scene_diag = _merge_scene_cleanup_diag(scene_diag, refresh_scene_diag)
+            except Exception as exc:
+                existing_rr_error = scene_diag.get("legend_hide_render_refresh_error", "")
+                scene_diag["legend_hide_render_refresh_error"] = " | ".join(
+                    p for p in (
+                        existing_rr_error,
+                        f"post-refresh scene cleanup: {_format_exception(exc)}",
+                    ) if p
+                )
 
     pic = solver.settings.results.graphics.picture
     pic.x_resolution = image_width
@@ -2093,21 +2255,34 @@ def _export_contour_cff(
 
     # --- Optional, disabled-by-default post-processing fallback: only runs
     #     when explicitly requested AND the native legend hide above did not
-    #     report SUCCESS. Never the primary mechanism. ---
+    #     report a verified SUCCESS. Never the primary mechanism. ---
     scene_diag["post_mask_colorbar_requested"] = bool(post_mask_colorbar)
+    scene_diag["post_mask_colorbar_side"] = post_mask_colorbar_side
+    scene_diag["post_mask_colorbar_width_frac"] = post_mask_colorbar_width_frac
     if post_mask_colorbar and scene_diag.get("legend_hide_status") != STATUS_OK:
-        mask_applied, mask_method, mask_error = _apply_post_mask_colorbar(output_file, background)
+        print(
+            f"  Applying post-mask colorbar fallback: "
+            f"side={post_mask_colorbar_side}, width_frac={post_mask_colorbar_width_frac}"
+        )
+        scene_diag["post_mask_colorbar_attempted"] = True
+        mask_applied, mask_method, mask_error = _apply_post_mask_colorbar(
+            output_file, background,
+            side=post_mask_colorbar_side, fraction=post_mask_colorbar_width_frac,
+        )
         scene_diag["post_mask_colorbar_applied"] = mask_applied
         scene_diag["post_mask_colorbar_method"] = mask_method
         scene_diag["post_mask_colorbar_error"] = mask_error
+        scene_diag["post_mask_colorbar_status"] = STATUS_POST_MASK if mask_applied else STATUS_FAIL
         print(
             f"  Post-mask colorbar: {'applied' if mask_applied else 'not applied'}"
             f" ({mask_method or mask_error})"
         )
     else:
+        scene_diag["post_mask_colorbar_attempted"] = False
         scene_diag["post_mask_colorbar_applied"] = False
         scene_diag["post_mask_colorbar_method"] = ""
         scene_diag["post_mask_colorbar_error"] = ""
+        scene_diag["post_mask_colorbar_status"] = "SKIPPED"
 
     # --- Optional view-debug sweep ---
     # IMPORTANT: candidates are stateful (camera state persists between saves).
@@ -2461,6 +2636,7 @@ STATUS_FAIL = "FAILED"
 STATUS_DRY  = "DRY_RUN"
 STATUS_SKIP = "SKIPPED_EXISTING"
 STATUS_WARN = "WARN"
+STATUS_POST_MASK = "POST_MASK_SUCCESS"
 
 
 def write_status_json(status_file: Path, payload: Dict[str, Any]) -> None:
@@ -2679,6 +2855,11 @@ def build_status_payload(
     legend_hide_attempts: Optional[List[str]] = None,
     legend_hide_error: str = "",
     legend_visible_after_hide: Optional[bool] = None,
+    legend_hide_assignment_succeeded: bool = False,
+    legend_hide_verified_by_readback: bool = False,
+    legend_hide_render_refresh_attempted: bool = False,
+    legend_hide_render_refresh_status: str = "SKIPPED",
+    legend_hide_render_refresh_error: str = "",
     colorbar_metadata_written: bool = False,
     colorbar_metadata_files: Optional[List[str]] = None,
     colorbar_range_min: Optional[float] = None,
@@ -2691,6 +2872,10 @@ def build_status_payload(
     post_mask_colorbar_applied: bool = False,
     post_mask_colorbar_method: str = "",
     post_mask_colorbar_error: str = "",
+    post_mask_colorbar_attempted: bool = False,
+    post_mask_colorbar_status: str = "SKIPPED",
+    post_mask_colorbar_side: str = "",
+    post_mask_colorbar_width_frac: Optional[float] = None,
 ) -> Dict[str, Any]:
     cff_attempted = (
         cff_file_load_attempted
@@ -2815,6 +3000,11 @@ def build_status_payload(
         "legend_hide_attempts": legend_hide_attempts or [],
         "legend_hide_error": legend_hide_error,
         "legend_visible_after_hide": legend_visible_after_hide,
+        "legend_hide_assignment_succeeded": legend_hide_assignment_succeeded,
+        "legend_hide_verified_by_readback": legend_hide_verified_by_readback,
+        "legend_hide_render_refresh_attempted": legend_hide_render_refresh_attempted,
+        "legend_hide_render_refresh_status": legend_hide_render_refresh_status,
+        "legend_hide_render_refresh_error": legend_hide_render_refresh_error,
         "colorbar_metadata_written": colorbar_metadata_written,
         "colorbar_metadata_files": colorbar_metadata_files or [],
         "colorbar_range_min": colorbar_range_min,
@@ -2827,6 +3017,10 @@ def build_status_payload(
         "post_mask_colorbar_applied": post_mask_colorbar_applied,
         "post_mask_colorbar_method": post_mask_colorbar_method,
         "post_mask_colorbar_error": post_mask_colorbar_error,
+        "post_mask_colorbar_attempted": post_mask_colorbar_attempted,
+        "post_mask_colorbar_status": post_mask_colorbar_status,
+        "post_mask_colorbar_side": post_mask_colorbar_side,
+        "post_mask_colorbar_width_frac": post_mask_colorbar_width_frac,
     }
 
 
@@ -2972,10 +3166,28 @@ def parse_args() -> argparse.Namespace:
         "--post-mask-colorbar", action="store_true", default=False,
         help=(
             "OPTIONAL, disabled by default. If set AND the native Fluent "
-            "legend-hide API did not report success, paint over the "
-            "right-hand strip of the already-saved PNG with the background "
-            "color as a crude fallback mask. Recorded separately in "
-            "shear_contour_status.json; never the primary mechanism."
+            "legend-hide API did not report a verified success, paint over a "
+            "strip of the already-saved PNG (side/width controlled by "
+            "--post-mask-colorbar-side/--post-mask-colorbar-width-frac) with "
+            "the background color as a crude fallback mask. Recorded "
+            "separately in shear_contour_status.json; never the primary "
+            "mechanism."
+        ),
+    )
+    parser.add_argument(
+        "--post-mask-colorbar-side", type=str, default="left",
+        choices=["left", "right"],
+        help=(
+            "Which side of the PNG to mask when --post-mask-colorbar is used "
+            "(default: left — the Fluent shear contour colorbar renders on "
+            "the left side of the image)."
+        ),
+    )
+    parser.add_argument(
+        "--post-mask-colorbar-width-frac", type=float, default=0.12,
+        help=(
+            "Fraction of the image width to mask when --post-mask-colorbar "
+            "is used (default: 0.12)."
         ),
     )
     return parser.parse_args()
@@ -3074,7 +3286,11 @@ def main() -> int:
         print(f"Shear range  : {shear_range[0]} – {shear_range[1]} [1/s]")
     print(f"Legend mode  : {args.legend_mode}")
     if args.post_mask_colorbar:
-        print("Post-mask colorbar: ENABLED (fallback only; used if native legend hide fails)")
+        print(
+            "Post-mask colorbar: ENABLED (fallback only; used if native legend "
+            f"hide is not verified) — side={args.post_mask_colorbar_side}, "
+            f"width_frac={args.post_mask_colorbar_width_frac}"
+        )
 
     # --- Dry run ---
     if args.dry_run:
@@ -3133,6 +3349,8 @@ def main() -> int:
             colorbar_range_is_fixed=dry_entry["range_is_fixed"],
             colorbar_title="Wall shear rate [1/s]",
             post_mask_colorbar_requested=bool(args.post_mask_colorbar),
+            post_mask_colorbar_side=args.post_mask_colorbar_side,
+            post_mask_colorbar_width_frac=args.post_mask_colorbar_width_frac,
         )
         write_status_json(status_file, payload)
         return 0
@@ -3195,6 +3413,8 @@ def main() -> int:
                 colorbar_range_is_fixed=skip_entry["range_is_fixed"],
                 colorbar_title="Wall shear rate [1/s]",
                 post_mask_colorbar_requested=bool(args.post_mask_colorbar),
+                post_mask_colorbar_side=args.post_mask_colorbar_side,
+                post_mask_colorbar_width_frac=args.post_mask_colorbar_width_frac,
             )
             write_status_json(status_file, payload)
             return 0
@@ -3410,6 +3630,8 @@ def main() -> int:
                     view_debug_sweep=args.view_debug_sweep,
                     legend_mode=args.legend_mode,
                     post_mask_colorbar=args.post_mask_colorbar,
+                    post_mask_colorbar_side=args.post_mask_colorbar_side,
+                    post_mask_colorbar_width_frac=args.post_mask_colorbar_width_frac,
                 )
                 scene_cleanup_diag = _merge_scene_cleanup_diag(
                     scene_cleanup_diag,
@@ -3678,6 +3900,21 @@ def main() -> int:
         legend_hide_attempts=list(scene_cleanup_diag.get("legend_hide_attempts", [])),
         legend_hide_error=str(scene_cleanup_diag.get("legend_hide_error", "")),
         legend_visible_after_hide=scene_cleanup_diag.get("legend_visible_after_hide"),
+        legend_hide_assignment_succeeded=bool(
+            scene_cleanup_diag.get("legend_hide_assignment_succeeded", False)
+        ),
+        legend_hide_verified_by_readback=bool(
+            scene_cleanup_diag.get("legend_hide_verified_by_readback", False)
+        ),
+        legend_hide_render_refresh_attempted=bool(
+            scene_cleanup_diag.get("legend_hide_render_refresh_attempted", False)
+        ),
+        legend_hide_render_refresh_status=str(
+            scene_cleanup_diag.get("legend_hide_render_refresh_status", "SKIPPED")
+        ),
+        legend_hide_render_refresh_error=str(
+            scene_cleanup_diag.get("legend_hide_render_refresh_error", "")
+        ),
         colorbar_metadata_written=bool(final_shear_written),
         colorbar_metadata_files=[p.name for p in final_shear_written],
         colorbar_range_min=final_shear_entry["range_min"],
@@ -3690,6 +3927,18 @@ def main() -> int:
         post_mask_colorbar_applied=bool(scene_cleanup_diag.get("post_mask_colorbar_applied", False)),
         post_mask_colorbar_method=str(scene_cleanup_diag.get("post_mask_colorbar_method", "")),
         post_mask_colorbar_error=str(scene_cleanup_diag.get("post_mask_colorbar_error", "")),
+        post_mask_colorbar_attempted=bool(
+            scene_cleanup_diag.get("post_mask_colorbar_attempted", False)
+        ),
+        post_mask_colorbar_status=str(
+            scene_cleanup_diag.get("post_mask_colorbar_status", "SKIPPED")
+        ),
+        post_mask_colorbar_side=str(
+            scene_cleanup_diag.get("post_mask_colorbar_side") or args.post_mask_colorbar_side
+        ),
+        post_mask_colorbar_width_frac=scene_cleanup_diag.get(
+            "post_mask_colorbar_width_frac", args.post_mask_colorbar_width_frac
+        ),
     )
     payload["cli_view_preset_arg"] = str(args.view_preset)
     write_status_json(status_file, payload)
