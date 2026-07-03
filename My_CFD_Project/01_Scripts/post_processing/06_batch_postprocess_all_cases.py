@@ -29,6 +29,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT_DEFAULT = Path("My_CFD_Project")
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT_DEFAULT / "03_Results"
 DEFAULT_INVENTORY_CSV = DEFAULT_RESULTS_ROOT / "_inventory" / "case_inventory_compact.csv"
+DEFAULT_CFF_TEMPLATE = PROJECT_ROOT_DEFAULT / "01_Templates" / "cff_wall_shear_rate.scm"
+
+CFF_SOURCE_TEMPLATE = "template"
+CFF_SOURCE_CASE_SPECIFIC = "case_specific"
+CFF_SOURCE_MISSING = "missing"
 
 REPORT_SCRIPT = SCRIPT_DIR / "01_pyfluent_report_extract.py"
 PYENSIGHT_CONTOUR_SCRIPT = SCRIPT_DIR / "03_pyensight_contour_export.py"
@@ -79,6 +84,8 @@ RESULT_FIELDNAMES = [
     "contour_returncode",
     "shear_returncode",
     "missing_cff_file",
+    "cff_file_used",
+    "cff_source",
     "output_files_detected",
     "error_summary",
     "runtime_seconds_total",
@@ -155,7 +162,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--shear-width", type=int, default=1600)
     parser.add_argument("--shear-height", type=int, default=1200)
     parser.add_argument("--cff-name", type=str, default="cff_wall_shear_rate")
-    parser.add_argument("--cff-file-template", type=Path, default=None)
+    parser.add_argument(
+        "--cff-file-template",
+        type=Path,
+        default=None,
+        help=(
+            "Shared CFF template file for shear runs. "
+            f"Default: {DEFAULT_CFF_TEMPLATE} if it exists, otherwise falls back "
+            "to the case-specific <case_dir>/post/figures/contours/cff_wall_shear_rate.scm. "
+            "If explicitly passed, it must exist or the shear stage is skipped."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -359,6 +376,15 @@ def write_text_log(
         lines.append(f"note: {note}")
     lines.extend(["", "STDOUT:", stdout or "", "", "STDERR:", stderr or ""])
     log_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def build_subprocess_env(extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+    env = os.environ.copy()
+    if extra:
+        env.update(extra)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def run_stage_command(
@@ -578,10 +604,21 @@ def build_shear_command(
     return command
 
 
-def resolve_cff_file(args: argparse.Namespace, paths: dict[str, Path]) -> Path:
+def resolve_cff_file(args: argparse.Namespace, paths: dict[str, Path]) -> tuple[Path, str]:
+    case_specific_file = paths["contours_dir"] / f"{args.cff_name}.scm"
+
     if args.cff_file_template is not None:
-        return args.cff_file_template
-    return paths["contours_dir"] / f"{args.cff_name}.scm"
+        if args.cff_file_template.is_file():
+            return args.cff_file_template, CFF_SOURCE_TEMPLATE
+        return args.cff_file_template, CFF_SOURCE_MISSING
+
+    if DEFAULT_CFF_TEMPLATE.is_file():
+        return DEFAULT_CFF_TEMPLATE, CFF_SOURCE_TEMPLATE
+
+    if case_specific_file.is_file():
+        return case_specific_file, CFF_SOURCE_CASE_SPECIFIC
+
+    return case_specific_file, CFF_SOURCE_MISSING
 
 
 def stage_log_path(log_dir: Path, geo_name: str, case_name: str, stage: str) -> Path:
@@ -608,7 +645,7 @@ def execute_case(
 
     report_command = build_report_command(args)
     contour_command = build_pyensight_command(args, geo_name, case_name)
-    cff_file = resolve_cff_file(args, paths)
+    cff_file, cff_source = resolve_cff_file(args, paths)
     shear_command = build_shear_command(args, geo_name, case_name, cff_file)
 
     report_status_planned = STATUS_PLANNED
@@ -628,7 +665,7 @@ def execute_case(
     if args.run_shear:
         if has_shear_outputs(paths) and args.skip_existing and not args.force:
             shear_status_planned = STATUS_SKIPPED_EXISTING
-        elif not cff_file.is_file():
+        elif cff_source == CFF_SOURCE_MISSING:
             shear_status_planned = STATUS_SKIPPED_MISSING_CFF
             missing_cff_file = cff_file.as_posix()
 
@@ -663,8 +700,7 @@ def execute_case(
 
     if report_status_planned == STATUS_PLANNED:
         report_config = config_dir / f"{safe_name(geo_name)}__{safe_name(case_name)}__post_config.py"
-        env = os.environ.copy()
-        env["PYFLUENT_POST_CONFIG"] = str(report_config)
+        env = build_subprocess_env({"PYFLUENT_POST_CONFIG": str(report_config)})
         if not args.dry_run:
             write_report_config(report_config, args.results_root, geo_name, case_name, paths)
         report_result = run_stage_command("report", report_command, report_log, args.dry_run, env=env)
@@ -677,12 +713,15 @@ def execute_case(
             contour_command,
             contour_log,
             args.dry_run,
+            env=build_subprocess_env(),
         )
     else:
         contour_result = skipped_stage("pyensight_contours", contour_status_planned, contour_log)
 
     if shear_status_planned == STATUS_PLANNED:
-        shear_result = run_stage_command("shear", shear_command, shear_log, args.dry_run)
+        shear_result = run_stage_command(
+            "shear", shear_command, shear_log, args.dry_run, env=build_subprocess_env()
+        )
     else:
         note = f"Missing CFF file: {missing_cff_file}" if missing_cff_file else ""
         shear_result = skipped_stage("shear", shear_status_planned, shear_log, note=note)
@@ -710,6 +749,8 @@ def execute_case(
         "contour_returncode": contour_result.returncode,
         "shear_returncode": shear_result.returncode,
         "missing_cff_file": missing_cff_file,
+        "cff_file_used": cff_file.as_posix(),
+        "cff_source": cff_source,
         "output_files_detected": detected_output_files(paths, fields),
         "error_summary": " | ".join(error_parts),
         "runtime_seconds_total": round(total_runtime, 3),

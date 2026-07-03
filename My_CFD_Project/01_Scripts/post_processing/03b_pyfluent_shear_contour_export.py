@@ -265,7 +265,7 @@ def detect_shear_candidates(
         print(f"  [Diag] Wall/shear scalar fields ({len(scalar_candidates)}): {scalar_candidates}")
         if not scalar_candidates:
             all_scalar_names_head = list(all_fields.keys())[:100]
-            print(f"  [Diag] (No wall/shear match — full scalar field list head): "
+            print(f"  [Diag] (No wall/shear match - full scalar field list head): "
                   f"{all_scalar_names_head!r}")
     except Exception as exc:
         print(f"  [Diag] scalar field enumeration failed: {exc}")
@@ -3039,7 +3039,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Export membrane wall shear-rate contour via PyFluent.\n"
-            "Formula: wall_shear_rate [1/s] = wall-shear [Pa] / mu [Pa·s]\n\n"
+            "Formula: wall_shear_rate [1/s] = wall-shear [Pa] / mu [Pa*s]\n\n"
             "Width/height priority: --width beats --image-width; "
             "--height beats --image-height."
         ),
@@ -3112,8 +3112,8 @@ def parse_args() -> argparse.Namespace:
             "match_pyensight: z-normal camera direction confirmed by debug sweep "
             "(dbg_04_z_pos_up_y for top, dbg_05_z_neg_up_y for bottom); "
             "recommended production view. "
-            "auto: legacy — resolves to top/bottom based on --membrane-surface. "
-            "top/bottom: EXPERIMENTAL — previously produced blank images on server; "
+            "auto: legacy - resolves to top/bottom based on --membrane-surface. "
+            "top/bottom: EXPERIMENTAL - previously produced blank images on server; "
             "kept for debug only. "
             "front: Fluent default front view (oblique; useful as debug baseline). "
             "iso: isometric view (debug)."
@@ -3123,7 +3123,7 @@ def parse_args() -> argparse.Namespace:
         "--view-debug-sweep", action="store_true", default=False,
         help=(
             "After the main export, save additional candidate PNG files with "
-            "different camera orientations (auto_fit, top, bottom, z+/z- × up-x/up-y, "
+            "different camera orientations (auto_fit, top, bottom, z+/z- x up-x/up-y, "
             "front) for visual comparison on the server. "
             "Output files are named <stem>_dbg_NN_<candidate>.png in the same directory."
         ),
@@ -3179,7 +3179,7 @@ def parse_args() -> argparse.Namespace:
         choices=["left", "right"],
         help=(
             "Which side of the PNG to mask when --post-mask-colorbar is used "
-            "(default: left — the Fluent shear contour colorbar renders on "
+            "(default: left - the Fluent shear contour colorbar renders on "
             "the left side of the image)."
         ),
     )
@@ -3197,7 +3197,22 @@ def parse_args() -> argparse.Namespace:
 # Main
 # ---------------------------------------------------------------------------
 
+def configure_text_output_encoding() -> None:
+    import sys
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    configure_text_output_encoding()
     args = parse_args()
 
     if args.print_cff_manual_steps:
@@ -3264,7 +3279,7 @@ def main() -> int:
     for side, of in output_files_by_side.items():
         print(f"Output ({side:6s}): {of}")
     print(f"Status JSON  : {status_file}")
-    print(f"mu           : {mu:.6e} Pa·s")
+    print(f"mu           : {mu:.6e} Pa*s")
     print(f"Formula      : wall-shear / {mu:.6e}")
     print(f"CFF name     : {args.cff_name}")
     if cff_file is not None:
@@ -3281,20 +3296,20 @@ def main() -> int:
     if args.view_up:
         print(f"View up       : {args.view_up}")
     if args.view_debug_sweep:
-        print("View debug sweep: ENABLED — candidate files will be written")
+        print("View debug sweep: ENABLED - candidate files will be written")
     if shear_range:
-        print(f"Shear range  : {shear_range[0]} – {shear_range[1]} [1/s]")
+        print(f"Shear range  : {shear_range[0]} - {shear_range[1]} [1/s]")
     print(f"Legend mode  : {args.legend_mode}")
     if args.post_mask_colorbar:
         print(
             "Post-mask colorbar: ENABLED (fallback only; used if native legend "
-            f"hide is not verified) — side={args.post_mask_colorbar_side}, "
+            f"hide is not verified) - side={args.post_mask_colorbar_side}, "
             f"width_frac={args.post_mask_colorbar_width_frac}"
         )
 
     # --- Dry run ---
     if args.dry_run:
-        print("\nDRY RUN — no Fluent launch, no image written.")
+        print("\nDRY RUN - no Fluent launch, no image written.")
         _safe_mkdir(figures_dir)
         dry_timestamp = datetime.datetime.now().isoformat(timespec="seconds")
         dry_entry = _build_shear_colorbar_entry(
@@ -3486,7 +3501,7 @@ def main() -> int:
 
     try:
         # --- Launch ---
-        print("\nLaunching Fluent (meshing mode → solver)...")
+        print("\nLaunching Fluent (meshing mode -> solver)...")
         meshing = pyfluent.launch_fluent(
             product_version=product_version,
             mode="meshing",
@@ -3738,7 +3753,7 @@ def main() -> int:
             final_status  = STATUS_OK
             final_message = (
                 f"wall-shear / mu={mu:.6e}: "
-                + ", ".join(f"{s}→{Path(p).name}" for _, s, p in side_results)
+                + ", ".join(f"{s}->{Path(p).name}" for _, s, p in side_results)
             )
         elif any_ok:
             final_status  = STATUS_WARN
@@ -3748,7 +3763,7 @@ def main() -> int:
             final_status  = STATUS_FAIL
             final_message = "Both CFF and fallback failed for all sides."
 
-        print(f"\nOverall: {final_status} — {final_message}")
+        print(f"\nOverall: {final_status} - {final_message}")
 
     except Exception as exc:
         final_status  = STATUS_FAIL

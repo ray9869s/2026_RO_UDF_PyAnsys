@@ -442,13 +442,13 @@ def parse_args() -> argparse.Namespace:
         epilog=(
             "Fields: " + ", ".join(FIELD_SPECS) + "\n\n"
             "Default color ranges (edit FIELD_COLOR_RANGES in script to change):\n"
-            "  cp_inlet:          1.00 – 1.15\n"
+            "  cp_inlet:          1.00 - 1.15\n"
             "  water_flux:        auto\n"
-            "  lmh:               20.0 – 30.0\n"
+            "  lmh:               20.0 - 30.0\n"
             "  salt_flux:         auto\n"
             "  shear_rate:        auto\n"
             "  wall_shear_rate:   auto\n"
-            "  velocity_midplane: 0.0  – 0.7\n\n"
+            "  velocity_midplane: 0.0  - 0.7\n\n"
             "Examples:\n"
             "  python 03_pyensight_contour_export.py "
             "--geo-name Diamond_Spacer --case-name u0p2_p6M\n"
@@ -538,7 +538,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Zoom-out factor applied after fit (default: 1.20). "
             "1.0 = no margin; 1.2 = zoom out 20 %%. "
-            "Use 1.35–1.40 on the server if membrane ends are clipped."
+            "Use 1.35-1.40 on the server if membrane ends are clipped."
         ),
     )
     sg.add_argument(
@@ -3007,7 +3007,7 @@ def compute_bulk_center_average(
 
         if is_conc:
             plausible = 50.0 <= avg_val <= 3000.0
-            range_str = "[50,3000] mol/m³"
+            range_str = "[50,3000] mol/m3"
         else:
             plausible = 1e-4 <= avg_val <= 0.20
             range_str = "[1e-4,0.20] mass-frac"
@@ -3946,7 +3946,7 @@ def export_contour(
             if derived_var is not None:
                 var_obj = derived_var
                 display_var_desc = derived_desc
-                warnings.append(f"Derived {derived_name} = '{matched_var_desc}' / mu={mu} Pa·s.")
+                warnings.append(f"Derived {derived_name} = '{matched_var_desc}' / mu={mu} Pa*s.")
             else:
                 warnings.append(
                     f"Derived variable not found after evaluate(); "
@@ -4600,7 +4600,22 @@ def _write_colorbar_metadata_and_update_records(
 # Main
 # ---------------------------------------------------------------------------
 
+def configure_text_output_encoding() -> None:
+    import sys
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    configure_text_output_encoding()
     args = parse_args()
 
     manual_view_bounds: Optional[Tuple[float, float, float, float]] = None
@@ -4677,7 +4692,7 @@ def main() -> int:
     # Show planned ranges
     for k in field_keys:
         rng = field_ranges.get(k)
-        rng_str = f"{rng[0]} – {rng[1]}" if rng else "auto"
+        rng_str = f"{rng[0]} - {rng[1]}" if rng else "auto"
         print(f"  {k}: range = {rng_str}")
 
     plan = build_export_plan(
@@ -4702,7 +4717,7 @@ def main() -> int:
 
     # ---- Dry-run ----
     if args.dry_run:
-        print("\nDRY RUN — PyEnSight will not be launched; no images will be written.\n")
+        print("\nDRY RUN - PyEnSight will not be launched; no images will be written.\n")
         _safe_mkdir(figures_dir)
         for item in plan:
             records.append(ExportRecord(
