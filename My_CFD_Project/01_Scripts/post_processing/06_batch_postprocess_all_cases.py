@@ -48,6 +48,10 @@ STATUS_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
 STATUS_DRY_RUN = "DRY_RUN"
 
+SHEAR_EXPORT_MODE_AUTO = "auto"
+SHEAR_EXPORT_MODE_NATIVE = "native"
+SHEAR_EXPORT_MODE_FALLBACK = "fallback"
+
 DEFAULT_CASE_STATUS = "READY_FOR_POSTPROCESSING"
 POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
 NEEDS_SOLVER_RERUN = "NEEDS_SOLVER_RERUN"
@@ -86,6 +90,12 @@ RESULT_FIELDNAMES = [
     "missing_cff_file",
     "cff_file_used",
     "cff_source",
+    "shear_export_mode",
+    "shear_retry_attempted",
+    "shear_retry_mode",
+    "shear_retry_status",
+    "shear_retry_returncode",
+    "shear_retry_log_file",
     "output_files_detected",
     "error_summary",
     "runtime_seconds_total",
@@ -162,6 +172,23 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--shear-width", type=int, default=1600)
     parser.add_argument("--shear-height", type=int, default=1200)
     parser.add_argument("--cff-name", type=str, default="cff_wall_shear_rate")
+    parser.add_argument(
+        "--shear-export-mode", type=str, default=SHEAR_EXPORT_MODE_AUTO,
+        choices=[SHEAR_EXPORT_MODE_AUTO, SHEAR_EXPORT_MODE_NATIVE, SHEAR_EXPORT_MODE_FALLBACK],
+        help=(
+            "Passed through to 03b_pyfluent_shear_contour_export.py --shear-export-mode "
+            "(default: auto). 'fallback' skips native Fluent graphics entirely."
+        ),
+    )
+    parser.add_argument(
+        "--retry-shear-fallback-on-failure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "If the shear stage fails under auto/native mode, rerun it once with "
+            "--shear-export-mode fallback (default: enabled)."
+        ),
+    )
     parser.add_argument(
         "--cff-file-template",
         type=Path,
@@ -570,7 +597,9 @@ def build_shear_command(
     geo_name: str,
     case_name: str,
     cff_file: Path,
+    shear_export_mode: Optional[str] = None,
 ) -> list[str]:
+    mode = shear_export_mode if shear_export_mode is not None else args.shear_export_mode
     command = [
         str(args.python_exe),
         str(SHEAR_CONTOUR_SCRIPT),
@@ -598,6 +627,8 @@ def build_shear_command(
         args.cff_name,
         "--legend-mode",
         args.legend_mode,
+        "--shear-export-mode",
+        mode,
     ]
     if args.skip_existing and not args.force:
         command.append("--skip-existing")
@@ -646,7 +677,6 @@ def execute_case(
     report_command = build_report_command(args)
     contour_command = build_pyensight_command(args, geo_name, case_name)
     cff_file, cff_source = resolve_cff_file(args, paths)
-    shear_command = build_shear_command(args, geo_name, case_name, cff_file)
 
     report_status_planned = STATUS_PLANNED
     contour_status_planned = STATUS_PLANNED if args.run_pyensight_contours else STATUS_SKIPPED_DISABLED
@@ -662,12 +692,23 @@ def execute_case(
         contour_status_planned = STATUS_SKIPPED_EXISTING
 
     missing_cff_file = ""
+    effective_shear_export_mode = args.shear_export_mode
     if args.run_shear:
         if has_shear_outputs(paths) and args.skip_existing and not args.force:
             shear_status_planned = STATUS_SKIPPED_EXISTING
         elif cff_source == CFF_SOURCE_MISSING:
-            shear_status_planned = STATUS_SKIPPED_MISSING_CFF
-            missing_cff_file = cff_file.as_posix()
+            if args.shear_export_mode != SHEAR_EXPORT_MODE_NATIVE:
+                # The field-data fallback does not require a CFF file, so run
+                # directly in fallback mode instead of skipping the case.
+                effective_shear_export_mode = SHEAR_EXPORT_MODE_FALLBACK
+                missing_cff_file = cff_file.as_posix()
+            else:
+                shear_status_planned = STATUS_SKIPPED_MISSING_CFF
+                missing_cff_file = cff_file.as_posix()
+
+    shear_command = build_shear_command(
+        args, geo_name, case_name, cff_file, shear_export_mode=effective_shear_export_mode
+    )
 
     plan = {
         "selected_index": selected_index,
@@ -726,13 +767,39 @@ def execute_case(
         note = f"Missing CFF file: {missing_cff_file}" if missing_cff_file else ""
         shear_result = skipped_stage("shear", shear_status_planned, shear_log, note=note)
 
+    shear_retry_attempted = False
+    shear_retry_mode = ""
+    shear_retry_result: Optional[StageResult] = None
+    if (
+        shear_status_planned == STATUS_PLANNED
+        and shear_result.status == STATUS_FAILED
+        and args.retry_shear_fallback_on_failure
+        and effective_shear_export_mode != SHEAR_EXPORT_MODE_FALLBACK
+    ):
+        shear_retry_attempted = True
+        shear_retry_mode = SHEAR_EXPORT_MODE_FALLBACK
+        retry_command = build_shear_command(
+            args, geo_name, case_name, cff_file, shear_export_mode=SHEAR_EXPORT_MODE_FALLBACK
+        )
+        retry_log = stage_log_path(log_dir, geo_name, case_name, "shear_retry_fallback")
+        print(f"  shear: FAILED, retrying with --shear-export-mode fallback :: {command_to_string(retry_command)}")
+        shear_retry_result = run_stage_command(
+            "shear_retry_fallback", retry_command, retry_log, args.dry_run, env=build_subprocess_env()
+        )
+
+    final_shear_status = shear_result.status
+    final_shear_returncode = shear_result.returncode
+    if shear_retry_result is not None and shear_retry_result.status == STATUS_SUCCESS:
+        final_shear_status = STATUS_SUCCESS
+        final_shear_returncode = shear_retry_result.returncode
+
     total_runtime = time.monotonic() - start_total
     error_parts = [
         part
         for part in (
             report_result.error_summary,
             contour_result.error_summary,
-            shear_result.error_summary,
+            shear_result.error_summary if final_shear_status != STATUS_SUCCESS else "",
         )
         if part
     ]
@@ -744,21 +811,33 @@ def execute_case(
         "selected_index": selected_index,
         "report_stage_status": report_result.status,
         "pyensight_contour_stage_status": contour_result.status,
-        "shear_stage_status": shear_result.status,
+        "shear_stage_status": final_shear_status,
         "report_returncode": report_result.returncode,
         "contour_returncode": contour_result.returncode,
-        "shear_returncode": shear_result.returncode,
+        "shear_returncode": final_shear_returncode,
         "missing_cff_file": missing_cff_file,
         "cff_file_used": cff_file.as_posix(),
         "cff_source": cff_source,
+        "shear_export_mode": effective_shear_export_mode,
+        "shear_retry_attempted": shear_retry_attempted,
+        "shear_retry_mode": shear_retry_mode,
+        "shear_retry_status": shear_retry_result.status if shear_retry_result is not None else "",
+        "shear_retry_returncode": shear_retry_result.returncode if shear_retry_result is not None else None,
+        "shear_retry_log_file": shear_retry_result.log_file if shear_retry_result is not None else "",
         "output_files_detected": detected_output_files(paths, fields),
         "error_summary": " | ".join(error_parts),
         "runtime_seconds_total": round(total_runtime, 3),
-        "suggested_next_action": suggest_next_action(report_result, contour_result, shear_result),
+        "suggested_next_action": suggest_next_action(
+            report_result, contour_result,
+            shear_retry_result if (shear_retry_result is not None and shear_retry_result.status == STATUS_SUCCESS) else shear_result,
+        ),
         "stage_details": {
             "report": stage_result_to_dict(report_result),
             "pyensight_contours": stage_result_to_dict(contour_result),
             "shear": stage_result_to_dict(shear_result),
+            "shear_retry_fallback": (
+                stage_result_to_dict(shear_retry_result) if shear_retry_result is not None else None
+            ),
         },
     }
     return plan, result
@@ -869,6 +948,8 @@ def build_summary_text(
         f"  dry_run: {shear_counts.get(STATUS_DRY_RUN, 0)}",
         f"  skipped: {skipped_count(shear_counts)}",
         f"  missing_cff: {shear_counts.get(STATUS_SKIPPED_MISSING_CFF, 0)}",
+        f"  fallback_retried: {sum(1 for r in results if r.get('shear_retry_attempted'))}",
+        f"  fallback_retry_success: {sum(1 for r in results if r.get('shear_retry_status') == STATUS_SUCCESS)}",
         "",
         "Selected cases:",
     ]
@@ -924,13 +1005,17 @@ def print_console_summary(results: list[dict[str, Any]], summary_path: Path) -> 
     print("")
     print(f"Report: success={report_counts.get(STATUS_SUCCESS, 0)} failed={report_counts.get(STATUS_FAILED, 0)} skipped={skipped_count(report_counts)} dry_run={report_counts.get(STATUS_DRY_RUN, 0)}")
     print(f"Contours: success={contour_counts.get(STATUS_SUCCESS, 0)} failed={contour_counts.get(STATUS_FAILED, 0)} skipped={skipped_count(contour_counts)} dry_run={contour_counts.get(STATUS_DRY_RUN, 0)}")
+    fallback_retried = sum(1 for r in results if r.get("shear_retry_attempted"))
+    fallback_retry_success = sum(1 for r in results if r.get("shear_retry_status") == STATUS_SUCCESS)
     print(
         "Shear: "
         f"success={shear_counts.get(STATUS_SUCCESS, 0)} "
         f"failed={shear_counts.get(STATUS_FAILED, 0)} "
         f"skipped={skipped_count(shear_counts)} "
         f"missing_cff={shear_counts.get(STATUS_SKIPPED_MISSING_CFF, 0)} "
-        f"dry_run={shear_counts.get(STATUS_DRY_RUN, 0)}"
+        f"dry_run={shear_counts.get(STATUS_DRY_RUN, 0)} "
+        f"fallback_retried={fallback_retried} "
+        f"fallback_retry_success={fallback_retry_success}"
     )
     print(f"Batch summary: {summary_path}")
 

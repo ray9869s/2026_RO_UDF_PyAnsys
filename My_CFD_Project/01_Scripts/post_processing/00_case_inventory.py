@@ -33,10 +33,16 @@ UNKNOWN_UNPARSED = "UNKNOWN_UNPARSED"
 
 READY_FOR_POSTPROCESSING = "READY_FOR_POSTPROCESSING"
 POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
+NEEDS_SHEAR_POSTPROCESSING = "NEEDS_SHEAR_POSTPROCESSING"
 NEEDS_SOLVER_RERUN = "NEEDS_SOLVER_RERUN"
 NEEDS_REPORT_EXTRACTION = "NEEDS_REPORT_EXTRACTION"
 MISSING_CASE_OR_DATA = "MISSING_CASE_OR_DATA"
 UNKNOWN_REVIEW_REQUIRED = "UNKNOWN_REVIEW_REQUIRED"
+
+# Fluent writes fluent-<node>-error.log when a session crashes. When this
+# happens during post-processing graphics (after the case was already
+# solved), it must not be mistaken for solver-run evidence.
+FLUENT_NODE_ERROR_LOG_PATTERN = re.compile(r"fluent-\d+-error\.log$", re.IGNORECASE)
 
 SKIP_DIR_NAMES = {
     "_inventory",
@@ -527,6 +533,16 @@ def is_log_candidate(path: Path) -> bool:
     return path.suffix.lower() in LOG_SUFFIXES or any(k in lowered for k in LOG_NAME_KEYWORDS)
 
 
+def is_fluent_node_error_log(path: Path) -> bool:
+    """True for Fluent's auto-generated fluent-<node>-error.log crash files.
+
+    These are written whenever a Fluent session dies for any reason,
+    including a post-processing graphics crash long after the case was
+    solved successfully; they are not on their own evidence of a bad solve.
+    """
+    return bool(FLUENT_NODE_ERROR_LOG_PATTERN.search(path.name))
+
+
 def find_log_files(case_dir: Path) -> tuple[list[Path], list[Path], Optional[Path]]:
     candidates: list[Path] = []
     for root, dirs, files in os.walk(case_dir):
@@ -845,6 +861,87 @@ def parse_logs(
     return result
 
 
+def _evidence_entry_path(entry: str) -> str:
+    # Evidence lines are formatted as "<path>:<line_no>: <text>" (see add_evidence).
+    return entry.split(":", 1)[0] if ":" in entry else entry
+
+
+def _exclude_evidence_from_paths(entries: list[str], exclude_paths: set[str]) -> list[str]:
+    return [e for e in entries if _evidence_entry_path(e) not in exclude_paths]
+
+
+def _exclude_files(paths_list: list[str], exclude_paths: set[str]) -> list[str]:
+    return [p for p in paths_list if p not in exclude_paths]
+
+
+def reclassify_postprocessing_crash_logs(
+    case_record: dict[str, Any],
+    log_files: list[Path],
+    parsed: LogParseResult,
+) -> tuple[bool, list[str], str]:
+    """Detect fluent-<node>-error.log crashes that happened during
+    post-processing graphics (after the case was already solved), and strip
+    their contribution to hard-solver-failure evidence so they do not force
+    NEEDS_SOLVER_RERUN on an otherwise-good case.
+
+    Only reclassifies when the case already has a final cas/dat pair,
+    summary_metrics_wide.csv, and all basic PyEnSight contour outputs — i.e.
+    the solve is demonstrably already complete. Mutates `parsed` in place
+    (filtering out evidence attributable only to the crash log) when the
+    reclassification applies. Returns
+    (has_postprocessing_runtime_crash, crash_evidence_files, failed_stage).
+    """
+    crash_files = [p for p in log_files if is_fluent_node_error_log(p)]
+    if not crash_files:
+        return False, [], ""
+
+    has_pair = bool(case_record.get("has_case_data_pair"))
+    has_summary = bool(case_record.get("has_summary_metrics_wide"))
+    has_all_pyensight = bool(case_record.get("has_all_pyensight_contours"))
+    if not (has_pair and has_summary and has_all_pyensight):
+        return False, [], ""
+
+    final_cas_str = str(case_record.get("final_cas_file") or "")
+    final_dat_str = str(case_record.get("final_dat_file") or "")
+    solved_mtime = max(
+        safe_mtime(Path(final_cas_str)) if final_cas_str else 0.0,
+        safe_mtime(Path(final_dat_str)) if final_dat_str else 0.0,
+    )
+    contour_output_mtimes = [
+        safe_mtime(Path(p))
+        for key in (
+            "cp_contour_files",
+            "water_flux_contour_files",
+            "lmh_contour_files",
+            "salt_flux_contour_files",
+        )
+        for p in case_record.get(key, [])
+    ]
+    outputs_mtime = max([solved_mtime] + contour_output_mtimes) if contour_output_mtimes else solved_mtime
+    newest_crash_mtime = max(safe_mtime(p) for p in crash_files)
+
+    if newest_crash_mtime < outputs_mtime:
+        # The crash predates the already-present solve/contour outputs; leave
+        # any hard-failure evidence it contributed as-is.
+        return False, [], ""
+
+    crash_paths = {path_to_str(p) for p in crash_files}
+    parsed.failure_evidence = _exclude_evidence_from_paths(parsed.failure_evidence, crash_paths)
+    parsed.launch_error_evidence = _exclude_evidence_from_paths(parsed.launch_error_evidence, crash_paths)
+    parsed.launch_error_files = _exclude_files(parsed.launch_error_files, crash_paths)
+
+    if not (parsed.failure_evidence or parsed.udf_compile_error_evidence or parsed.launch_error_evidence):
+        if has_pair and has_summary:
+            parsed.convergence_status = CONVERGED
+
+    shear_status_upper = str(case_record.get("shear_export_status") or "").upper()
+    failed_stage = ""
+    if not case_record.get("has_shear_contour") or shear_status_upper in ("FAILED", "FAIL"):
+        failed_stage = "shear"
+
+    return True, sorted(crash_paths), failed_stage
+
+
 def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: int) -> None:
     case_dir = case_record["_case_dir_path"]
     log_files, transcript_files, latest_log = find_log_files(case_dir)
@@ -859,6 +956,13 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
         has_case_data_pair=bool(case_record.get("has_case_data_pair")),
         has_summary_metrics_wide=bool(case_record.get("has_summary_metrics_wide")),
     )
+
+    (
+        has_postprocessing_runtime_crash,
+        postprocessing_runtime_crash_evidence,
+        failed_postprocessing_stage,
+    ) = reclassify_postprocessing_crash_logs(case_record, log_files, parsed)
+
     hard_solver_failure = bool(
         parsed.failure_evidence
         or parsed.udf_compile_error_evidence
@@ -866,6 +970,9 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
     )
     case_record.update(
         {
+            "has_postprocessing_runtime_crash": has_postprocessing_runtime_crash,
+            "postprocessing_runtime_crash_evidence": postprocessing_runtime_crash_evidence,
+            "failed_postprocessing_stage": failed_postprocessing_stage,
             "log_files": [path_to_str(p) for p in log_files],
             "transcript_files": [path_to_str(p) for p in transcript_files],
             "latest_log_file": path_to_str(latest_log),
@@ -1200,6 +1307,16 @@ def detect_contour_status(case_record: dict[str, Any]) -> None:
     )
     case_record.update(parse_contour_status(contour_status_file))
     case_record.update(parse_shear_status(shear_status_file))
+
+    # A stale shear PNG can survive a since-failed rerun; if the status JSON
+    # says the shear stage did not succeed, do not trust the PNG.
+    shear_status_upper = str(case_record.get("shear_export_status") or "").upper()
+    if shear_status_file.is_file() and shear_status_upper not in ("", "SUCCESS"):
+        case_record["has_shear_contour"] = False
+        case_record["has_all_basic_contours"] = bool(
+            case_record.get("has_all_pyensight_contours") and case_record["has_shear_contour"]
+        )
+
     case_record["postprocessing_status"] = derive_postprocessing_status(case_record)
     case_record["report_status"] = derive_report_status(case_record)
 
@@ -1209,6 +1326,19 @@ def suggested_action(record: dict[str, Any]) -> str:
         if record.get("has_report_expression_warnings") or record.get("has_postprocessing_graphics_errors"):
             return "Basic post-processing is complete; review warning flags only if outputs look suspect."
         return "Basic post-processing is complete."
+    if record.get("case_status") == NEEDS_SHEAR_POSTPROCESSING:
+        if record.get("has_postprocessing_runtime_crash"):
+            return (
+                "Basic PyEnSight contours are complete; the shear stage crashed during "
+                "post-processing graphics (not a solver failure). Rerun "
+                "03b_pyfluent_shear_contour_export.py with --shear-export-mode fallback "
+                "(or 06_batch_postprocess_all_cases.py --retry-shear-fallback-on-failure)."
+            )
+        return (
+            "Basic PyEnSight contours are complete; shear contour export is missing or "
+            "failed. Rerun 03b_pyfluent_shear_contour_export.py "
+            "(--shear-export-mode fallback avoids native Fluent graphics)."
+        )
     if record.get("convergence_status") == MAX_ITER_REACHED:
         return "Review max-iter residual/report trends; consider continuing from final data or relaxed solver settings."
     if record.get("needs_solver_rerun"):
@@ -1310,6 +1440,12 @@ def classify_case(record: dict[str, Any]) -> None:
         and convergence_status != FAILED_OR_DIVERGED
         and not record.get("has_shear_contour")
     )
+    needs_shear_postprocessing = bool(
+        has_pair
+        and has_summary
+        and record.get("has_all_pyensight_contours")
+        and not record.get("has_shear_contour")
+    )
     ready_for_batch_contours = bool(
         has_pair
         and has_summary
@@ -1328,6 +1464,8 @@ def classify_case(record: dict[str, Any]) -> None:
         case_status = MISSING_CASE_OR_DATA
     elif has_all_basic:
         case_status = POSTPROCESSED_BASIC
+    elif needs_shear_postprocessing:
+        case_status = NEEDS_SHEAR_POSTPROCESSING
     elif solver_status_needs_rerun:
         case_status = NEEDS_SOLVER_RERUN
     elif needs_reports:
@@ -1337,7 +1475,10 @@ def classify_case(record: dict[str, Any]) -> None:
     else:
         case_status = UNKNOWN_REVIEW_REQUIRED
 
-    needs_solver = bool(solver_status_needs_rerun and case_status != POSTPROCESSED_BASIC)
+    needs_solver = bool(
+        solver_status_needs_rerun
+        and case_status not in (POSTPROCESSED_BASIC, NEEDS_SHEAR_POSTPROCESSING)
+    )
     failure_evidence_short = shorten_evidence(combined_failure_evidence(record))
 
     record.update(
@@ -1348,6 +1489,7 @@ def classify_case(record: dict[str, Any]) -> None:
             "needs_report_extraction": needs_reports,
             "needs_basic_contours": needs_basic_contours,
             "needs_shear_contour": needs_shear_contour,
+            "needs_shear_postprocessing": needs_shear_postprocessing,
             "needs_manual_review": needs_manual_review,
             "ready_for_batch_contours": ready_for_batch_contours,
             "failure_evidence_short": failure_evidence_short,
@@ -1455,12 +1597,16 @@ CASE_INVENTORY_FIELDNAMES = [
     "has_launch_errors",
     "hard_solver_failure_detected",
     "max_iter_only",
+    "has_postprocessing_runtime_crash",
+    "postprocessing_runtime_crash_evidence",
+    "failed_postprocessing_stage",
     "inventory_confidence",
     "failure_evidence_short",
     "needs_solver_rerun",
     "needs_report_extraction",
     "needs_basic_contours",
     "needs_shear_contour",
+    "needs_shear_postprocessing",
     "needs_manual_review",
     "ready_for_batch_contours",
     "suggested_next_action",
@@ -1491,6 +1637,8 @@ COMPACT_FIELDNAMES = [
     "has_shear_contour",
     "hard_solver_failure_detected",
     "max_iter_only",
+    "has_postprocessing_runtime_crash",
+    "failed_postprocessing_stage",
     "has_report_expression_warnings",
     "has_postprocessing_graphics_errors",
     "inventory_confidence",
@@ -1503,6 +1651,8 @@ POSTPROCESS_FIELDNAMES = [
     "has_summary_metrics_wide",
     "has_all_basic_contours",
     "has_shear_contour",
+    "has_postprocessing_runtime_crash",
+    "failed_postprocessing_stage",
     "convergence_status",
     "case_status",
     "ready_for_batch_contours",
@@ -1551,6 +1701,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     max_iter_records = [r for r in records if r.get("max_iter_only")]
     ready_records = [r for r in records if r.get("case_status") == READY_FOR_POSTPROCESSING]
     postprocessed_records = [r for r in records if r.get("case_status") == POSTPROCESSED_BASIC]
+    needs_shear_records = [r for r in records if r.get("case_status") == NEEDS_SHEAR_POSTPROCESSING]
     missing_records = [r for r in records if r.get("case_status") == MISSING_CASE_OR_DATA]
     report_extraction_records = [r for r in records if r.get("case_status") == NEEDS_REPORT_EXTRACTION]
 
@@ -1558,6 +1709,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     graphics_error_count = sum(1 for r in records if r.get("has_postprocessing_graphics_errors"))
     hard_failure_count = sum(1 for r in records if r.get("hard_solver_failure_detected"))
     max_iter_only_count = sum(1 for r in records if r.get("max_iter_only"))
+    postprocessing_runtime_crash_count = sum(1 for r in records if r.get("has_postprocessing_runtime_crash"))
 
     lines: list[str] = []
     lines.append("RO CFD Case Inventory Summary")
@@ -1589,6 +1741,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     for status in [
         READY_FOR_POSTPROCESSING,
         POSTPROCESSED_BASIC,
+        NEEDS_SHEAR_POSTPROCESSING,
         NEEDS_SOLVER_RERUN,
         NEEDS_REPORT_EXTRACTION,
         MISSING_CASE_OR_DATA,
@@ -1602,11 +1755,13 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     lines.append(f"  postprocessing_graphics_errors: {graphics_error_count}")
     lines.append(f"  hard_solver_failure_detected: {hard_failure_count}")
     lines.append(f"  max_iter_only: {max_iter_only_count}")
+    lines.append(f"  postprocessing_runtime_crash (e.g. fluent-<node>-error.log): {postprocessing_runtime_crash_count}")
 
     append_case_list(lines, "True hard solver rerun candidates:", hard_rerun_records)
     append_case_list(lines, "Max-iter-only candidates:", max_iter_records)
     append_case_list(lines, "READY_FOR_POSTPROCESSING cases:", ready_records)
     append_case_list(lines, "Already postprocessed cases:", postprocessed_records)
+    append_case_list(lines, "NEEDS_SHEAR_POSTPROCESSING cases:", needs_shear_records)
     append_case_list(lines, "Report extraction candidates:", report_extraction_records)
     append_case_list(lines, "MISSING_CASE_OR_DATA cases:", missing_records)
 
@@ -1648,6 +1803,7 @@ def print_console_summary(
     print(f"Max-iter reached: {by_convergence.get(MAX_ITER_REACHED, 0)}")
     print(f"Failed/diverged: {by_convergence.get(FAILED_OR_DIVERGED, 0)}")
     print(f"Postprocessed basic: {by_case_status.get(POSTPROCESSED_BASIC, 0)}")
+    print(f"Needs shear postprocessing: {by_case_status.get(NEEDS_SHEAR_POSTPROCESSING, 0)}")
     print(f"Needs solver rerun: {needs_rerun}")
     print(f"Ready for postprocessing: {by_case_status.get(READY_FOR_POSTPROCESSING, 0)}")
     if dry_run:

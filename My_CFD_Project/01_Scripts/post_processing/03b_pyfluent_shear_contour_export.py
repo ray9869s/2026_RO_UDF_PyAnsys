@@ -81,6 +81,9 @@ CLEAN_DISPLAY_STATE_NAME = "pp_shear_clean_scene"
 # Fluent's Scheme evaluator may parse hyphens as subtraction operators.
 SHEAR_FIELD_CANDIDATES = [
     "wall-shear",
+    "x-wall-shear",
+    "y-wall-shear",
+    "z-wall-shear",
     "wall_shear",
     "wall-shear-stress",
     "wall-shear-stress-magnitude",
@@ -88,6 +91,17 @@ SHEAR_FIELD_CANDIDATES = [
     "Wall Shear Stress",
     "wall shear",
 ]
+
+# Per-component wall-shear fields. If only these are available (no magnitude
+# field succeeds), the fallback computes the vector magnitude from all three
+# rather than treating a single component as the total wall shear stress.
+WALL_SHEAR_COMPONENT_FIELDS = ("x-wall-shear", "y-wall-shear", "z-wall-shear")
+
+# Shear-export-mode values (--shear-export-mode)
+SHEAR_EXPORT_MODE_AUTO = "auto"
+SHEAR_EXPORT_MODE_NATIVE = "native"
+SHEAR_EXPORT_MODE_FALLBACK = "fallback"
+STATUS_SKIPPED_BY_MODE = "SKIPPED_BY_MODE"
 
 
 # ---------------------------------------------------------------------------
@@ -2500,6 +2514,20 @@ def try_field_data_fallback(
         print(f"  FALLBACK: {msg}")
         return False, "FAILED", "", msg
 
+    # If only a per-component field (x/y/z-wall-shear) is available, compute
+    # the vector magnitude from all three components rather than treating a
+    # single component as the total wall shear stress.
+    use_vector_components = found_field in WALL_SHEAR_COMPONENT_FIELDS
+    found_field_label = (
+        "+".join(WALL_SHEAR_COMPONENT_FIELDS) + "_vector_magnitude"
+        if use_vector_components else found_field
+    )
+    if use_vector_components:
+        print(
+            f"  Only a wall-shear component field ({found_field!r}) is available; "
+            f"computing vector magnitude from {WALL_SHEAR_COMPONENT_FIELDS}"
+        )
+
     # Gather scalar data from all selected zones
     all_values_list: List[np.ndarray] = []
     all_coords_list: List[np.ndarray] = []
@@ -2507,12 +2535,29 @@ def try_field_data_fallback(
     for zone in membrane_zones:
         print(f"  Fetching scalar data for zone: {zone}")
         try:
-            scalar_data = solver.fields.field_data.get_scalar_field_data(
-                field_name=found_field,
-                surfaces=[zone],
-                node_value=False,
-                boundary_value=True,
-            )
+            if use_vector_components:
+                component_arrays: List[np.ndarray] = []
+                for comp_name in WALL_SHEAR_COMPONENT_FIELDS:
+                    comp_data = solver.fields.field_data.get_scalar_field_data(
+                        field_name=comp_name,
+                        surfaces=[zone],
+                        node_value=False,
+                        boundary_value=True,
+                    )
+                    component_arrays.append(
+                        np.concatenate([np.asarray(v).ravel() for v in comp_data.values()])
+                    )
+                min_len = min(len(v) for v in component_arrays)
+                component_arrays = [v[:min_len] for v in component_arrays]
+                vals = np.sqrt(sum(v ** 2 for v in component_arrays))
+            else:
+                scalar_data = solver.fields.field_data.get_scalar_field_data(
+                    field_name=found_field,
+                    surfaces=[zone],
+                    node_value=False,
+                    boundary_value=True,
+                )
+                vals = np.concatenate([np.asarray(v).ravel() for v in scalar_data.values()])
         except Exception as exc:
             print(f"  WARN: get_scalar_field_data on {zone}: {exc}")
             continue
@@ -2527,11 +2572,7 @@ def try_field_data_fallback(
             print(f"  WARN: get_surface_data on {zone}: {exc}")
             continue
 
-        # Concatenate data from all surface_id entries
-        for sid, arr in scalar_data.items():
-            vals = np.asarray(arr).ravel()
-            all_values_list.append(vals)
-
+        all_values_list.append(vals)
         for sid, type_dict in surf_data.items():
             centroids = np.asarray(type_dict[SurfaceDataType.FacesCentroid])
             if centroids.ndim == 1:
@@ -2540,7 +2581,7 @@ def try_field_data_fallback(
 
     if not all_values_list or not all_coords_list:
         msg = "No data retrieved from field_data for any membrane zone"
-        return False, "FAILED", found_field, msg
+        return False, "FAILED", found_field_label, msg
 
     all_values = np.concatenate(all_values_list)
     all_coords = np.concatenate(all_coords_list, axis=0)
@@ -2621,10 +2662,10 @@ def try_field_data_fallback(
     plt.close(fig)
 
     if not output_file.is_file():
-        return False, "FAILED", found_field, "matplotlib savefig produced no file"
+        return False, "FAILED", found_field_label, "matplotlib savefig produced no file"
 
     print(f"  Fallback PNG saved: {output_file}")
-    return True, "SUCCESS", found_field, ""
+    return True, "SUCCESS", found_field_label, ""
 
 
 # ---------------------------------------------------------------------------
@@ -2876,6 +2917,9 @@ def build_status_payload(
     post_mask_colorbar_status: str = "SKIPPED",
     post_mask_colorbar_side: str = "",
     post_mask_colorbar_width_frac: Optional[float] = None,
+    shear_export_mode_requested: str = SHEAR_EXPORT_MODE_AUTO,
+    shear_export_mode_used: str = "",
+    native_skipped_by_mode: bool = False,
 ) -> Dict[str, Any]:
     cff_attempted = (
         cff_file_load_attempted
@@ -3021,6 +3065,9 @@ def build_status_payload(
         "post_mask_colorbar_status": post_mask_colorbar_status,
         "post_mask_colorbar_side": post_mask_colorbar_side,
         "post_mask_colorbar_width_frac": post_mask_colorbar_width_frac,
+        "shear_export_mode_requested": shear_export_mode_requested,
+        "shear_export_mode_used": shear_export_mode_used,
+        "native_skipped_by_mode": native_skipped_by_mode,
     }
 
 
@@ -3190,6 +3237,20 @@ def parse_args() -> argparse.Namespace:
             "is used (default: 0.12)."
         ),
     )
+    parser.add_argument(
+        "--shear-export-mode", type=str, default=SHEAR_EXPORT_MODE_AUTO,
+        choices=[SHEAR_EXPORT_MODE_AUTO, SHEAR_EXPORT_MODE_NATIVE, SHEAR_EXPORT_MODE_FALLBACK],
+        help=(
+            "Controls whether native Fluent graphics contour export is attempted "
+            "(default: auto). 'auto': try native CFF first, then fall back to the "
+            "field-data/matplotlib fallback on failure (previous behavior). "
+            "'native': only try native CFF; do not fall back if it fails. "
+            "'fallback': skip native Fluent graphics entirely and use the "
+            "field-data/matplotlib fallback directly — no CFF load/create, "
+            "no contour.display(), no legend hide, no scene cleanup. Use this "
+            "to avoid a native Fluent graphics crash entirely."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -3223,6 +3284,7 @@ def main() -> int:
     eff_width  = args.width  if args.width  is not None else args.image_width
     eff_height = args.height if args.height is not None else args.image_height
     cff_file: Optional[Path] = as_path(args.cff_file) if args.cff_file else None
+    shear_export_mode: str = args.shear_export_mode
 
     config_path = Path(args.config).resolve()
     try:
@@ -3300,6 +3362,7 @@ def main() -> int:
     if shear_range:
         print(f"Shear range  : {shear_range[0]} - {shear_range[1]} [1/s]")
     print(f"Legend mode  : {args.legend_mode}")
+    print(f"Shear export mode: {shear_export_mode}")
     if args.post_mask_colorbar:
         print(
             "Post-mask colorbar: ENABLED (fallback only; used if native legend "
@@ -3366,6 +3429,9 @@ def main() -> int:
             post_mask_colorbar_requested=bool(args.post_mask_colorbar),
             post_mask_colorbar_side=args.post_mask_colorbar_side,
             post_mask_colorbar_width_frac=args.post_mask_colorbar_width_frac,
+            shear_export_mode_requested=shear_export_mode,
+            shear_export_mode_used="",
+            native_skipped_by_mode=(shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK),
         )
         write_status_json(status_file, payload)
         return 0
@@ -3430,6 +3496,9 @@ def main() -> int:
                 post_mask_colorbar_requested=bool(args.post_mask_colorbar),
                 post_mask_colorbar_side=args.post_mask_colorbar_side,
                 post_mask_colorbar_width_frac=args.post_mask_colorbar_width_frac,
+                shear_export_mode_requested=shear_export_mode,
+                shear_export_mode_used="",
+                native_skipped_by_mode=(shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK),
             )
             write_status_json(status_file, payload)
             return 0
@@ -3462,7 +3531,9 @@ def main() -> int:
     successful_side_modes: List[str] = []
     derived_mode        = "pyfluent_native_cff_wall_shear_over_mu"
     native_attempted    = False
-    native_status_str   = "SKIPPED"
+    native_status_str   = (
+        STATUS_SKIPPED_BY_MODE if shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK else "SKIPPED"
+    )
     native_error_str    = ""
     native_variable_used: Optional[str] = None
     cff_file_load_attempted = False
@@ -3486,7 +3557,9 @@ def main() -> int:
     cff_direct_create_errors: List[str] = []
     cff_expression_attempts: List[Dict[str, str]] = []
     fb_attempted        = False
-    fb_status_str       = "SKIPPED"
+    fb_status_str       = (
+        STATUS_SKIPPED_BY_MODE if shear_export_mode == SHEAR_EXPORT_MODE_NATIVE else "SKIPPED"
+    )
     fb_error_str        = ""
     native_side_results: List[Tuple[bool, str, str]] = []
     fallback_side_results: List[Tuple[bool, str, str]] = []
@@ -3495,6 +3568,7 @@ def main() -> int:
     inferred_cff_candidates: List[str] = []
     cff_candidate_source = "none"
     all_scalar_names_head:  List[str] = []
+    shear_export_mode_used: str = ""
     scene_cleanup_diag = _default_scene_cleanup_diag(
         args.background, args.view_margin, legend_mode=args.legend_mode
     )
@@ -3547,43 +3621,52 @@ def main() -> int:
         ) = detect_shear_candidates(solver)
 
         # --- Prepare native Fluent CFF for wall shear rate ---
-        native_attempted = True
-        print("\nPreparing native Fluent CFF for wall shear rate ...")
-        cff_prep = prepare_native_cff(
-            solver=solver,
-            cff_name=args.cff_name,
-            cff_file=cff_file,
-            mu=mu,
-        )
-        native_variable_used = cff_prep["native_variable_used"] or None
-        selected_cff_cell_function = str(cff_prep["selected_cff_cell_function"])
-        cff_file_load_attempted = bool(cff_prep["cff_file_load_attempted"])
-        cff_file_load_status = str(cff_prep["cff_file_load_status"])
-        cff_file_load_error = str(cff_prep["cff_file_load_error"])
-        settings_cff_attempted = bool(cff_prep["settings_cff_attempted"])
-        settings_cff_status = str(cff_prep["settings_cff_status"])
-        settings_cff_error = str(cff_prep["settings_cff_error"])
-        settings_cff_available_attrs = list(cff_prep["settings_cff_available_attrs"])
-        settings_cff_state_head = str(cff_prep["settings_cff_state_head"])
-        tui_direct_attempted = bool(cff_prep["tui_direct_attempted"])
-        tui_direct_status = str(cff_prep["tui_direct_status"])
-        tui_direct_errors = list(cff_prep["tui_direct_errors"])
-        tui_journal_style_attempted = bool(cff_prep["tui_journal_style_attempted"])
-        tui_journal_style_status = str(cff_prep["tui_journal_style_status"])
-        tui_journal_style_error = str(cff_prep["tui_journal_style_error"])
-        cff_creation_method_used = str(cff_prep["cff_creation_method_used"])
-        cff_expression = str(cff_prep["cff_expression"])
-        cff_direct_create_attempted = bool(cff_prep["cff_direct_create_attempted"])
-        cff_direct_create_status = str(cff_prep["cff_direct_create_status"])
-        cff_direct_create_errors = list(cff_prep["cff_direct_create_errors"])
-        cff_expression_attempts = list(cff_prep["cff_expression_attempts"])
-        native_ready = bool(cff_prep["ready"])
-        if native_ready:
-            print(f"  Native CFF ready: {args.cff_name}")
+        # Skipped entirely in fallback mode: no CFF load/create, no native
+        # graphics APIs touched at all.
+        native_ready = False
+        if shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK:
+            print(
+                "\nShear export mode = fallback: skipping native Fluent CFF "
+                "preparation and native graphics entirely."
+            )
         else:
-            native_status_str = "FAILED"
-            native_error_str = str(cff_prep["error"] or "CFF preparation failed")
-            print(f"  Native CFF not ready: {native_error_str}")
+            native_attempted = True
+            print("\nPreparing native Fluent CFF for wall shear rate ...")
+            cff_prep = prepare_native_cff(
+                solver=solver,
+                cff_name=args.cff_name,
+                cff_file=cff_file,
+                mu=mu,
+            )
+            native_variable_used = cff_prep["native_variable_used"] or None
+            selected_cff_cell_function = str(cff_prep["selected_cff_cell_function"])
+            cff_file_load_attempted = bool(cff_prep["cff_file_load_attempted"])
+            cff_file_load_status = str(cff_prep["cff_file_load_status"])
+            cff_file_load_error = str(cff_prep["cff_file_load_error"])
+            settings_cff_attempted = bool(cff_prep["settings_cff_attempted"])
+            settings_cff_status = str(cff_prep["settings_cff_status"])
+            settings_cff_error = str(cff_prep["settings_cff_error"])
+            settings_cff_available_attrs = list(cff_prep["settings_cff_available_attrs"])
+            settings_cff_state_head = str(cff_prep["settings_cff_state_head"])
+            tui_direct_attempted = bool(cff_prep["tui_direct_attempted"])
+            tui_direct_status = str(cff_prep["tui_direct_status"])
+            tui_direct_errors = list(cff_prep["tui_direct_errors"])
+            tui_journal_style_attempted = bool(cff_prep["tui_journal_style_attempted"])
+            tui_journal_style_status = str(cff_prep["tui_journal_style_status"])
+            tui_journal_style_error = str(cff_prep["tui_journal_style_error"])
+            cff_creation_method_used = str(cff_prep["cff_creation_method_used"])
+            cff_expression = str(cff_prep["cff_expression"])
+            cff_direct_create_attempted = bool(cff_prep["cff_direct_create_attempted"])
+            cff_direct_create_status = str(cff_prep["cff_direct_create_status"])
+            cff_direct_create_errors = list(cff_prep["cff_direct_create_errors"])
+            cff_expression_attempts = list(cff_prep["cff_expression_attempts"])
+            native_ready = bool(cff_prep["ready"])
+            if native_ready:
+                print(f"  Native CFF ready: {args.cff_name}")
+            else:
+                native_status_str = "FAILED"
+                native_error_str = str(cff_prep["error"] or "CFF preparation failed")
+                print(f"  Native CFF not ready: {native_error_str}")
 
         # --- Process each side ---
         side_results: List[Tuple[bool, str, str]] = []  # (success, side, output_path)
@@ -3661,11 +3744,19 @@ def main() -> int:
                     print(f"  [A] Native CFF SUCCESS: {output_file.name}")
                 else:
                     print(f"  [A] Native CFF FAILED: {nat_err}")
+            elif shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK:
+                native_side_results.append((False, side, STATUS_SKIPPED_BY_MODE))
+                print(f"\n  [A] Native CFF skipped (--shear-export-mode fallback)")
             else:
                 native_side_results.append((False, side, native_error_str))
                 print(f"\n  [A] Native CFF skipped: {native_error_str}")
 
-            if not side_ok:
+            if not side_ok and shear_export_mode == SHEAR_EXPORT_MODE_NATIVE:
+                print(
+                    f"\n  [B] Fallback skipped (--shear-export-mode native; "
+                    "not falling back after native failure)"
+                )
+            elif not side_ok:
                 # B. Try field-data fallback.
                 print(f"\n  [B] Attempting field-data fallback (matplotlib) ...")
                 fb_attempted = True
@@ -3745,6 +3836,21 @@ def main() -> int:
                 f"fallback:{selected_variable_for_field_data or ''}"
             )
 
+        # --- Resolve which mode actually produced the result (auto can end up
+        #     using native, fallback, or a mix depending on what succeeded) ---
+        if shear_export_mode == SHEAR_EXPORT_MODE_NATIVE:
+            shear_export_mode_used = SHEAR_EXPORT_MODE_NATIVE
+        elif shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK:
+            shear_export_mode_used = SHEAR_EXPORT_MODE_FALLBACK
+        elif derived_mode == "pyfluent_native_cff_wall_shear_over_mu":
+            shear_export_mode_used = SHEAR_EXPORT_MODE_NATIVE
+        elif derived_mode == "pyfluent_field_data_wall_shear_over_mu":
+            shear_export_mode_used = SHEAR_EXPORT_MODE_FALLBACK
+        elif derived_mode == "mixed_native_cff_and_field_data_wall_shear_over_mu":
+            shear_export_mode_used = "mixed"
+        else:
+            shear_export_mode_used = shear_export_mode
+
         # --- Overall status ---
         any_ok  = any(ok for ok, _, _ in side_results)
         all_ok  = all(ok for ok, _, _ in side_results)
@@ -3759,6 +3865,9 @@ def main() -> int:
             final_status  = STATUS_WARN
             failed_sides  = [s for ok, s, _ in side_results if not ok]
             final_message = f"Partial success; failed sides: {failed_sides}"
+        elif shear_export_mode == SHEAR_EXPORT_MODE_NATIVE:
+            final_status  = STATUS_FAIL
+            final_message = "Native CFF failed for all sides (fallback not attempted; --shear-export-mode native)."
         else:
             final_status  = STATUS_FAIL
             final_message = "Both CFF and fallback failed for all sides."
@@ -3954,6 +4063,9 @@ def main() -> int:
         post_mask_colorbar_width_frac=scene_cleanup_diag.get(
             "post_mask_colorbar_width_frac", args.post_mask_colorbar_width_frac
         ),
+        shear_export_mode_requested=shear_export_mode,
+        shear_export_mode_used=shear_export_mode_used,
+        native_skipped_by_mode=(shear_export_mode == SHEAR_EXPORT_MODE_FALLBACK),
     )
     payload["cli_view_preset_arg"] = str(args.view_preset)
     write_status_json(status_file, payload)
