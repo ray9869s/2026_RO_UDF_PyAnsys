@@ -141,6 +141,22 @@ def positive_float(value: str) -> float:
     return parsed
 
 
+def residual_target_type(value: str) -> str | float:
+    """Parse --residual-target as the literal 'preserve' or a positive float.
+
+    Defaulting to 'preserve' (rather than a numeric fallback) is the fix for a
+    prior bug where the runner silently relaxed strict 1e-7 residual criteria
+    to 1e-5, which caused Fluent to report false convergence.
+    """
+    text = value.strip()
+    if text.lower() == "preserve":
+        return "preserve"
+    parsed = float(text)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("value must be positive or 'preserve'")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -293,9 +309,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--residual-target",
+        type=residual_target_type,
+        default="preserve",
+        help=(
+            "Residual convergence criterion. 'preserve' (default) never touches "
+            "Fluent's existing residual criteria and uses whatever is already set "
+            "(e.g. 1e-7) as the strict-convergence reference. Pass a numeric value "
+            "such as 1e-7 to explicitly set the criterion for all requested "
+            "equations. This is never silently downgraded."
+        ),
+    )
+    parser.add_argument(
+        "--engineering-residual-threshold",
         type=positive_float,
         default=1e-5,
-        help="Residual convergence criterion to apply before continuing.",
+        help=(
+            "Residual value used only to label an outcome ENGINEERING_STABLE_ONLY "
+            "when monitors are stable but the strict --residual-target is not met. "
+            "This never changes Fluent's actual residual convergence criteria."
+        ),
     )
     parser.add_argument(
         "--use-pseudo-transient",
@@ -317,9 +349,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--relaxation-profile",
-        choices=["conservative", "baseline"],
+        choices=["baseline", "conservative", "strong"],
         default="conservative",
-        help="Best-effort under-relaxation profile. baseline leaves controls unchanged.",
+        help=(
+            "Under-relaxation profile applied via the settings API with before/after "
+            "readback verification. baseline leaves controls unchanged."
+        ),
     )
     parser.add_argument(
         "--write-transcript",
@@ -874,17 +909,28 @@ def require_windows_for_live_run() -> None:
     )
 
 
-def set_residual_targets(
+def apply_residual_targets(
     solution: Any,
-    residual_target: float,
+    residual_target: str | float,
     species_name: str,
-) -> None:
+) -> dict[str, float]:
+    """Apply or preserve residual convergence criteria.
+
+    When residual_target == "preserve" (the default), existing Fluent residual
+    criteria are never modified -- they are only read back and returned so
+    they can be used as the strict-convergence reference for later
+    assessment. When residual_target is numeric, it is applied explicitly and
+    used as the reference. This function never substitutes a looser value
+    (e.g. 1e-5) for a stricter one on its own.
+    """
     print("\nApplying residual convergence settings.")
+    print(f"residual_target={residual_target!r}")
+    resulting_targets: dict[str, float] = {}
     try:
         residual_equations_state = solution.monitor.residual.equations.get_state()
     except Exception as exc:
         print(f"Could not read residual equation state: {exc}")
-        return
+        return resulting_targets
 
     available = list(residual_equations_state.keys())
     targets = ["continuity", "x-velocity", "y-velocity", "z-velocity", species_name]
@@ -900,6 +946,21 @@ def set_residual_targets(
             equation = solution.monitor.residual.equations[equation_name]
             before = equation.get_state()
             print(f"Residual before {equation_name}: {before}")
+
+            if residual_target == "preserve":
+                existing = None
+                if isinstance(before, dict):
+                    existing = before.get("absolute_criteria", before.get("relative_criteria"))
+                if existing is not None:
+                    resulting_targets[equation_name] = float(existing)
+                    print(f"Preserving existing criterion for {equation_name}: {existing}")
+                else:
+                    print(
+                        f"No existing residual criteria field found for {equation_name}; "
+                        f"state={before}"
+                    )
+                continue
+
             equation.monitor = True
             equation.check_convergence = True
             current_state = equation.get_state()
@@ -913,59 +974,246 @@ def set_residual_targets(
                     f"state={current_state}"
                 )
                 continue
-            print(f"Residual after {equation_name}: {equation.get_state()}")
+            after = equation.get_state()
+            print(f"Residual after {equation_name}: {after}")
+            applied = after.get("absolute_criteria", after.get("relative_criteria")) if isinstance(after, dict) else None
+            if applied is not None:
+                resulting_targets[equation_name] = float(applied)
         except Exception as exc:
             print(f"Could not update residual {equation_name}: {exc}")
 
+    return resulting_targets
 
-def apply_relaxation_profile(solution: Any, profile: str) -> None:
-    if profile == "baseline":
-        print("\nRelaxation profile baseline: leaving relaxation controls unchanged.")
-        return
 
-    print("\nApplying conservative relaxation profile where supported.")
-    conservative_values = {
-        "pressure": 0.2,
-        "momentum": 0.3,
-        "density": 0.8,
-        "body-force": 0.8,
-        "nacl": 0.5,
-        "species": 0.5,
-    }
+RELAXATION_PROFILES: dict[str, dict[str, float]] = {
+    "conservative": {
+        "explicit_pressure_under_relaxation": 0.2,
+        "explicit_momentum_under_relaxation": 0.3,
+        "species_pseudo_relaxation": 0.5,
+    },
+    "strong": {
+        "explicit_pressure_under_relaxation": 0.1,
+        "explicit_momentum_under_relaxation": 0.2,
+        "species_pseudo_relaxation": 0.3,
+    },
+}
+
+
+def set_and_verify_leaf(parent: Any, attr_name: str, value: float, label: str) -> dict[str, Any]:
+    """Set a scalar settings-API leaf and confirm it via readback.
+
+    Never reports success on a bare "no exception" -- the value is re-read
+    after assignment and compared to what was requested.
+    """
+    outcome: dict[str, Any] = {"label": label, "requested": value, "status": "WARN_APPLY_URF_FAILED"}
+    try:
+        before_state = parent.get_state()
+    except Exception as exc:
+        outcome["error"] = f"could not read parent state: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    before = before_state.get(attr_name) if isinstance(before_state, dict) else None
+    outcome["before"] = before
+    print(f"URF before {label}: {before}")
+
+    if isinstance(before_state, dict) and attr_name not in before_state:
+        outcome["error"] = f"{attr_name} not present in state keys {list(before_state.keys())}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
 
     try:
-        equations = solution.controls.equations
-        state = equations.get_state()
+        setattr(parent, attr_name, value)
     except Exception as exc:
-        print(f"Could not inspect relaxation controls; leaving unchanged: {exc}")
-        return
+        outcome["error"] = f"set failed: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
 
-    if not isinstance(state, dict):
-        print(f"Unexpected relaxation controls state type: {type(state).__name__}")
-        return
+    try:
+        after_state = parent.get_state()
+        after = after_state.get(attr_name) if isinstance(after_state, dict) else None
+    except Exception as exc:
+        outcome["error"] = f"readback failed: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
 
-    print(f"Available relaxation controls: {list(state.keys())}")
-    for control_name, value in conservative_values.items():
-        if control_name not in state:
-            continue
+    outcome["after"] = after
+    print(f"URF after {label}: {after}")
 
+    confirmed = (
+        isinstance(after, (int, float))
+        and not isinstance(after, bool)
+        and abs(float(after) - float(value)) < 1e-9
+    )
+    outcome["status"] = "APPLIED_CONFIRMED" if confirmed else "WARN_APPLY_URF_FAILED"
+    if not confirmed:
+        print(f"WARN_APPLY_URF_FAILED ({label}): readback {after} does not confirm requested {value}")
+    return outcome
+
+
+def set_and_verify_dict_entry(container: Any, key: str, value: float, label: str) -> dict[str, Any]:
+    """Set one entry of a dict-like settings-API container and confirm via readback."""
+    full_label = f"{label}[{key}]"
+    outcome: dict[str, Any] = {"label": full_label, "requested": value, "status": "WARN_APPLY_URF_FAILED"}
+    try:
+        before_state = container.get_state()
+    except Exception as exc:
+        outcome["error"] = f"could not read container state: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): {outcome['error']}")
+        return outcome
+
+    before = before_state.get(key) if isinstance(before_state, dict) else None
+    outcome["before"] = before
+    print(f"URF before {full_label}: {before}")
+
+    set_ok = False
+    set_error = ""
+    try:
+        container[key] = value
+        set_ok = True
+    except Exception as exc_item:
+        set_error = f"container[key]=value failed: {type(exc_item).__name__}: {exc_item}"
         try:
-            control = equations[control_name]
-            control_state = control.get_state()
-            print(f"Relaxation before {control_name}: {control_state}")
-            if "under_relaxation_factor" in control_state:
-                control.under_relaxation_factor = value
-            elif "relaxation_factor" in control_state:
-                control.relaxation_factor = value
-            else:
-                print(
-                    f"No supported relaxation factor field for {control_name}; "
-                    f"state={control_state}"
-                )
-                continue
-            print(f"Relaxation after {control_name}: {control.get_state()}")
-        except Exception as exc:
-            print(f"Could not update relaxation control {control_name}: {exc}")
+            container.set_state({key: value})
+            set_ok = True
+        except Exception as exc_state:
+            set_error += f"; set_state failed: {type(exc_state).__name__}: {exc_state}"
+
+    if not set_ok:
+        outcome["error"] = set_error
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): {set_error}")
+        return outcome
+
+    try:
+        after_state = container.get_state()
+        after = after_state.get(key) if isinstance(after_state, dict) else None
+    except Exception as exc:
+        outcome["error"] = f"readback failed: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): {outcome['error']}")
+        return outcome
+
+    outcome["after"] = after
+    print(f"URF after {full_label}: {after}")
+    confirmed = (
+        isinstance(after, (int, float))
+        and not isinstance(after, bool)
+        and abs(float(after) - float(value)) < 1e-9
+    )
+    outcome["status"] = "APPLIED_CONFIRMED" if confirmed else "WARN_APPLY_URF_FAILED"
+    if not confirmed:
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): readback {after} does not confirm requested {value}")
+    return outcome
+
+
+def apply_pseudo_time_species_relaxation(solution: Any, species_name: str, value: float) -> dict[str, Any]:
+    """Best-effort species pseudo-time explicit relaxation update.
+
+    The diagnostic logs that motivated this expose the setting at
+    solution.controls.pseudo_time_explicit_relaxation_factor.global_dt_pseudo_relax,
+    keyed either by the case's species name or the literal 'species-0'. Both
+    are tried; if neither key exists this warns and continues rather than
+    raising, per the requirement to never crash on an unavailable species
+    path.
+    """
+    label = "pseudo_time_species_relaxation"
+    outcome: dict[str, Any] = {"label": label, "requested": value, "status": "SKIPPED_SPECIES_UNAVAILABLE"}
+    try:
+        container = solution.controls.pseudo_time_explicit_relaxation_factor.global_dt_pseudo_relax
+    except Exception as exc:
+        outcome["error"] = f"container not found: {type(exc).__name__}: {exc}"
+        outcome["status"] = "WARN_APPLY_URF_FAILED"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    candidate_keys = [key for key in (species_name, "species-0") if key]
+    seen: set[str] = set()
+    candidate_keys = [key for key in candidate_keys if not (key in seen or seen.add(key))]
+
+    available_keys: list[str] = []
+    try:
+        state = container.get_state()
+        if isinstance(state, dict):
+            available_keys = list(state.keys())
+    except Exception:
+        available_keys = list_object_names(container)
+
+    print(f"Pseudo-time species relaxation available keys: {available_keys}")
+
+    matched_key = next((key for key in candidate_keys if key in available_keys), None)
+    if matched_key is None:
+        outcome["error"] = f"none of {candidate_keys} present in {available_keys}"
+        print(f"SKIPPED_SPECIES_UNAVAILABLE ({label}): {outcome['error']}")
+        return outcome
+
+    return set_and_verify_dict_entry(container, matched_key, value, label)
+
+
+def apply_real_under_relaxation(solver: Any, profile: str, species_name: str) -> dict[str, Any]:
+    """Apply the Coupled-solver under-relaxation profile via the settings API.
+
+    Replaces the previous TUI-based '/solve/set/under-relaxation ...' path,
+    which is not a valid command for this solver (Fluent reports "invalid
+    command") and was being treated as a successful application. Every value
+    set here is read back and only marked APPLIED_CONFIRMED if the readback
+    matches; otherwise WARN_APPLY_URF_FAILED is logged and no success is
+    claimed.
+    """
+    result: dict[str, Any] = {"profile": profile, "applied": []}
+    if profile == "baseline":
+        print("\nRelaxation profile baseline: leaving under-relaxation controls unchanged.")
+        return result
+
+    values = RELAXATION_PROFILES.get(profile)
+    if values is None:
+        print(f"Unknown relaxation profile {profile!r}; leaving controls unchanged.")
+        return result
+
+    print(f"\nApplying real under-relaxation profile: {profile}")
+    solution = solver.settings.solution
+
+    try:
+        p_v_controls = solution.controls.p_v_controls
+    except Exception as exc:
+        print(f"WARN_APPLY_URF_FAILED (p_v_controls): could not access p_v_controls: {exc}")
+        p_v_controls = None
+
+    if p_v_controls is not None:
+        result["applied"].append(
+            set_and_verify_leaf(
+                p_v_controls,
+                "explicit_pressure_under_relaxation",
+                values["explicit_pressure_under_relaxation"],
+                "explicit_pressure_under_relaxation",
+            )
+        )
+        result["applied"].append(
+            set_and_verify_leaf(
+                p_v_controls,
+                "explicit_momentum_under_relaxation",
+                values["explicit_momentum_under_relaxation"],
+                "explicit_momentum_under_relaxation",
+            )
+        )
+    else:
+        result["applied"].append(
+            {"label": "explicit_pressure_under_relaxation", "status": "WARN_APPLY_URF_FAILED", "error": "p_v_controls unavailable"}
+        )
+        result["applied"].append(
+            {"label": "explicit_momentum_under_relaxation", "status": "WARN_APPLY_URF_FAILED", "error": "p_v_controls unavailable"}
+        )
+
+    result["applied"].append(
+        apply_pseudo_time_species_relaxation(solution, species_name, values["species_pseudo_relaxation"])
+    )
+
+    for entry in result["applied"]:
+        if entry.get("status") not in {"APPLIED_CONFIRMED", "SKIPPED_SPECIES_UNAVAILABLE"}:
+            print(
+                f"WARN_APPLY_URF_FAILED summary: {entry.get('label')}: "
+                f"{entry.get('error', 'readback mismatch')}"
+            )
+
+    return result
 
 
 def apply_pressure_velocity_coupling(solver: Any, coupling: str) -> None:
@@ -1026,9 +1274,9 @@ def apply_pseudo_transient(solver: Any, use_pseudo_transient: bool | None) -> No
     print("No supported pseudo-transient setting path was found.")
 
 
-def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> None:
+def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> dict[str, float]:
     solution = solver.settings.solution
-    set_residual_targets(
+    residual_targets = apply_residual_targets(
         solution=solution,
         residual_target=args.residual_target,
         species_name=args.species_residual_name,
@@ -1041,10 +1289,12 @@ def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> None:
         solver=solver,
         use_pseudo_transient=args.use_pseudo_transient,
     )
-    apply_relaxation_profile(
-        solution=solution,
+    apply_real_under_relaxation(
+        solver=solver,
         profile=args.relaxation_profile,
+        species_name=args.species_residual_name,
     )
+    return residual_targets
 
 
 def list_object_names(named_object: Any) -> list[str]:
@@ -1218,22 +1468,33 @@ def execute_tui_best_effort(solver: Any, label: str, commands: list[str]) -> lis
     return errors
 
 
-def apply_conservative_under_relaxation(solver: Any) -> dict[str, Any]:
-    print("\nApplying damped steady strategy settings.")
-    result: dict[str, Any] = {"status": "ATTEMPTED", "errors": []}
-    try:
-        apply_relaxation_profile(solver.settings.solution, "conservative")
-    except Exception as exc:
-        result["errors"].append(f"settings relaxation: {type(exc).__name__}: {exc}")
+def apply_pseudo_time_scale_reduction(solver: Any) -> dict[str, Any]:
+    """Best-effort pseudo-time Courant/scale-factor reduction.
 
-    tui_commands = [
-        "/solve/set/under-relaxation pressure 0.2",
-        "/solve/set/under-relaxation momentum 0.3",
-        "/solve/set/under-relaxation species 0.5",
+    The exact settings-API path for this varies by Fluent version; each
+    candidate path is tried with before/after readback, and a WARN is logged
+    (never a claimed success) if none apply.
+    """
+    print("\nAttempting pseudo-time Courant/scale factor reduction (best effort).")
+    result: dict[str, Any] = {"attempts": []}
+    solution = solver.settings.solution
+    candidates = [
+        ("solution.methods.pseudo_time_method.time_step_method.courant_number", ("methods", "pseudo_time_method", "time_step_method", "courant_number"), 20.0),
+        ("solution.controls.pseudo_time_courant_number", ("controls", "pseudo_time_courant_number"), 20.0),
     ]
-    result["errors"].extend(
-        execute_tui_best_effort(solver, "under-relaxation", tui_commands)
-    )
+    for label, chain, value in candidates:
+        try:
+            target = solution
+            for attr in chain[:-1]:
+                target = getattr(target, attr)
+            outcome = set_and_verify_leaf(target, chain[-1], value, label)
+            result["attempts"].append(outcome)
+            if outcome.get("status") == "APPLIED_CONFIRMED":
+                return result
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            print(f"WARN_APPLY_URF_FAILED ({label}): {message}")
+            result["attempts"].append({"label": label, "status": "WARN_APPLY_URF_FAILED", "error": message})
     return result
 
 
@@ -1253,7 +1514,7 @@ def apply_pseudo_transient_ramp(solver: Any, args: argparse.Namespace) -> dict[s
     result["errors"].extend(
         execute_tui_best_effort(solver, "pseudo-transient", tui_commands)
     )
-    apply_conservative_under_relaxation(solver)
+    result["pseudo_time_scale"] = apply_pseudo_time_scale_reduction(solver)
     return result
 
 
@@ -1282,7 +1543,6 @@ def apply_first_order_ramp(solver: Any) -> dict[str, Any]:
     result["errors"].extend(
         execute_tui_best_effort(solver, "first-order discretization", tui_commands)
     )
-    apply_conservative_under_relaxation(solver)
     return result
 
 
@@ -1300,14 +1560,72 @@ def restore_first_order_ramp(solver: Any, strategy_state: dict[str, Any]) -> boo
         return False
 
 
+def parse_transcript_residual_columns(header_line: str) -> list[str] | None:
+    tokens = header_line.split()
+    if not tokens:
+        return None
+    lowered = [token.lower() for token in tokens]
+    if "continuity" not in lowered:
+        return None
+    return lowered
+
+
+def parse_residuals_from_transcript_text(text: str, target_names: set[str]) -> dict[str, float]:
+    """Best-effort extraction of the latest per-equation residual values.
+
+    Fluent's console/transcript prints a residual table with a header row
+    (containing 'continuity') followed by numeric iteration rows. This is a
+    fallback for when the settings API residual-equation objects expose only
+    convergence criteria, not the live current value (the reported cause of
+    residual_keys=[] in monitor snapshots). Parsing is intentionally
+    tolerant: unparsable lines are skipped rather than raising, and the
+    caller must treat an empty result as "unknown", not "converged".
+    """
+    latest: dict[str, float] = {}
+    columns: list[str] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "continuity" in line.lower() and not line[0].isdigit():
+            candidate_columns = parse_transcript_residual_columns(line)
+            if candidate_columns:
+                columns = candidate_columns
+            continue
+        if columns is None:
+            continue
+        tokens = line.split()
+        if not tokens:
+            continue
+        try:
+            int(tokens[0])
+        except ValueError:
+            continue
+        row_values: dict[str, float] = {}
+        for name, token in zip(columns[1:], tokens[1:]):
+            if name not in target_names:
+                continue
+            try:
+                row_values[name] = float(token)
+            except ValueError:
+                row_values = {}
+                break
+        if row_values:
+            latest.update(row_values)
+    return latest
+
+
 def run_iteration_chunks(
     solver: Any,
     total_iterations: int,
     chunk_size: int,
+    transcript_path: Path | None,
+    species_name: str,
 ) -> list[dict[str, Any]]:
     history: list[dict[str, Any]] = []
     remaining = total_iterations
     chunk_index = 0
+    target_names = {"continuity", "x-velocity", "y-velocity", "z-velocity", species_name.lower()}
     while remaining > 0:
         chunk_index += 1
         iter_count = min(chunk_size, remaining)
@@ -1324,12 +1642,28 @@ def run_iteration_chunks(
         snapshot = collect_monitor_snapshot(solver)
         snapshot["chunk_index"] = chunk_index
         snapshot["iterations_completed_in_chunk"] = iter_count
+
+        transcript_residuals: dict[str, float] = {}
+        if transcript_path is not None:
+            try:
+                if transcript_path.is_file():
+                    text = transcript_path.read_text(encoding="utf-8", errors="ignore")
+                    transcript_residuals = parse_residuals_from_transcript_text(text, target_names)
+            except Exception as exc:
+                print(f"Could not parse transcript residuals for chunk {chunk_index}: {exc}")
+        snapshot["residual_transcript"] = transcript_residuals
+        if transcript_residuals:
+            merged = dict(snapshot.get("residual_numeric", {}))
+            merged.update(transcript_residuals)
+            snapshot["residual_numeric"] = merged
+
         history.append(snapshot)
         remaining -= iter_count
         print(
             f"Chunk {chunk_index} monitor snapshot: residual_keys="
-            f"{list(snapshot.get('residual_numeric', {}).keys())}, report_keys="
-            f"{list(snapshot.get('report_values', {}).keys())}"
+            f"{list(snapshot.get('residual_numeric', {}).keys())}, "
+            f"transcript_residual_keys={list(transcript_residuals.keys())}, "
+            f"report_keys={list(snapshot.get('report_values', {}).keys())}"
         )
     return history
 
@@ -1402,16 +1736,127 @@ def assess_history(
     return assessment
 
 
+def assess_residual_convergence(
+    latest_residuals: dict[str, float],
+    strict_targets: dict[str, float],
+    engineering_threshold: float,
+) -> dict[str, Any]:
+    """Compare the latest known residual values against the strict target.
+
+    strict_met/engineering_met are False (never None) whenever a target
+    equation's current value could not be determined -- per the requirement
+    that missing/failed residual extraction must never be treated as
+    STRICT_CONVERGED.
+    """
+    per_equation: dict[str, Any] = {}
+    if not strict_targets:
+        return {
+            "strict_met": False,
+            "engineering_met": False,
+            "data_available": False,
+            "reason": "No residual convergence targets were available (criteria could not be read).",
+            "per_equation": per_equation,
+        }
+
+    strict_met = True
+    engineering_met = True
+    data_available = False
+    missing: list[str] = []
+    for name, target in strict_targets.items():
+        value = latest_residuals.get(name)
+        per_equation[name] = {"latest": value, "target": target}
+        if value is None:
+            missing.append(name)
+            strict_met = False
+            engineering_met = False
+            continue
+        data_available = True
+        if value > target:
+            strict_met = False
+        if value > engineering_threshold:
+            engineering_met = False
+
+    reason = f"Residual current value unavailable for: {missing}." if missing else ""
+    return {
+        "strict_met": strict_met,
+        "engineering_met": engineering_met,
+        "data_available": data_available,
+        "reason": reason,
+        "per_equation": per_equation,
+    }
+
+
+def classify_convergence(
+    strategy: str,
+    monitor_assessment: dict[str, Any],
+    residual_assessment: dict[str, Any],
+) -> dict[str, Any]:
+    """Combine monitor stability and strict/engineering residual checks into
+    one of the explicit convergence-goal labels required for reruns:
+    STRICT_CONVERGED, ENGINEERING_STABLE_ONLY, NOT_CONVERGED_STABLE_MONITORS,
+    NEEDS_TRANSIENT_REVIEW, or (mapped by the caller to FAILED_*) DIVERGED.
+    """
+    if monitor_assessment.get("diverged"):
+        return {"status": "DIVERGED", "details": monitor_assessment.get("details", "")}
+
+    strict_met = bool(residual_assessment.get("strict_met"))
+    engineering_met = bool(residual_assessment.get("engineering_met"))
+
+    if monitor_assessment.get("stable"):
+        if strict_met:
+            return {
+                "status": "STRICT_CONVERGED",
+                "details": "Residual strict target met and report monitors are stable.",
+            }
+        if engineering_met:
+            return {
+                "status": "ENGINEERING_STABLE_ONLY",
+                "details": (
+                    "Monitors stable and residuals within the engineering threshold, "
+                    "but the strict residual target was not met."
+                ),
+            }
+        return {
+            "status": "NOT_CONVERGED_STABLE_MONITORS",
+            "details": (
+                "Monitors stable but residuals did not meet the strict target or the "
+                "engineering threshold."
+            ),
+        }
+
+    if monitor_assessment.get("bounded_not_converged"):
+        if strategy in {"pseudo_transient_ramp", "first_order_ramp"}:
+            return {
+                "status": "NEEDS_TRANSIENT_REVIEW",
+                "details": (
+                    "Bounded oscillation persisted even after the damping/ramp "
+                    "strategy; recommend manual transient review."
+                ),
+            }
+        return {
+            "status": "NOT_CONVERGED_STABLE_MONITORS",
+            "details": "Monitors bounded but not stable, and residual target not met.",
+        }
+
+    return {
+        "status": "COMPLETED_NEEDS_REVIEW",
+        "details": "Monitor stability could not be determined from available data.",
+    }
+
+
 def execute_solver_strategy(
     solver: Any,
     args: argparse.Namespace,
+    transcript_path: Path | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "strategy_stage_status": "NOT_STARTED",
         "convergence_assessment": "",
         "diagnostics": {},
         "history": [],
-        "assessment": {},
+        "monitor_assessment": {},
+        "residual_assessment": {},
+        "residual_targets": {},
     }
     diagnostics = collect_solver_diagnostics(solver)
     result["diagnostics"] = diagnostics
@@ -1422,9 +1867,10 @@ def execute_solver_strategy(
         return result
 
     try:
-        apply_continuation_settings(solver=solver, args=args)
+        residual_targets = apply_continuation_settings(solver=solver, args=args)
+        result["residual_targets"] = residual_targets
         if args.solver_strategy == "damped_steady":
-            result["strategy_settings"] = apply_conservative_under_relaxation(solver)
+            result["strategy_settings"] = {"status": "DAMPED_STEADY_SETTINGS_APPLIED"}
         elif args.solver_strategy == "pseudo_transient_ramp":
             result["strategy_settings"] = apply_pseudo_transient_ramp(solver, args)
         elif args.solver_strategy == "first_order_ramp":
@@ -1443,6 +1889,8 @@ def execute_solver_strategy(
         solver=solver,
         total_iterations=args.additional_iterations,
         chunk_size=args.iteration_chunk_size,
+        transcript_path=transcript_path,
+        species_name=args.species_residual_name,
     )
     result["history"] = history
 
@@ -1456,23 +1904,36 @@ def execute_solver_strategy(
             )
             return result
 
-    assessment = assess_history(history, args)
-    result["assessment"] = assessment
-    result["convergence_assessment"] = json.dumps(assessment, sort_keys=True)
+    monitor_assessment = assess_history(history, args)
+    result["monitor_assessment"] = monitor_assessment
 
-    if assessment.get("diverged"):
+    latest_residuals: dict[str, float] = dict(history[-1].get("residual_numeric", {})) if history else {}
+    residual_assessment = assess_residual_convergence(
+        latest_residuals=latest_residuals,
+        strict_targets=result["residual_targets"],
+        engineering_threshold=args.engineering_residual_threshold,
+    )
+    result["residual_assessment"] = residual_assessment
+
+    classification = classify_convergence(args.solver_strategy, monitor_assessment, residual_assessment)
+    result["convergence_assessment"] = json.dumps(
+        {
+            "monitor": monitor_assessment,
+            "residual": residual_assessment,
+            "classification": classification,
+        },
+        sort_keys=True,
+        default=str,
+    )
+
+    if classification["status"] == "DIVERGED":
         raise FluentStageError(
             status="FAILED_DIVERGED_DURING_RERUN",
             failure_stage="iterate",
-            message=str(assessment.get("details", "Residual/report monitors diverged.")),
+            message=str(classification.get("details", "Residual/report monitors diverged.")),
         )
 
-    if assessment.get("stable"):
-        result["strategy_stage_status"] = "STABLE"
-    elif assessment.get("bounded_not_converged"):
-        result["strategy_stage_status"] = "NEEDS_TRANSIENT_REVIEW"
-    else:
-        result["strategy_stage_status"] = "COMPLETED_NEEDS_REVIEW"
+    result["strategy_stage_status"] = classification["status"]
     return result
 
 
@@ -1715,27 +2176,35 @@ def run_live_solver_rerun(
             ) from exc
         print("Final case/data loaded. Solution will not be reinitialized.")
 
-        strategy_result = execute_solver_strategy(solver=solver, args=args)
+        strategy_result = execute_solver_strategy(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path if args.write_transcript else None,
+        )
         result.update(strategy_result)
 
         if args.solver_strategy == "diagnose_only":
             result["rerun_status"] = "COMPLETED_NEEDS_REVIEW"
             return result
 
-        if strategy_result.get("strategy_stage_status") == "NEEDS_TRANSIENT_REVIEW":
-            result["rerun_status"] = "NEEDS_TRANSIENT_REVIEW"
-        elif strategy_result.get("strategy_stage_status") == "COMPLETED_NEEDS_REVIEW":
-            result["rerun_status"] = "COMPLETED_NEEDS_REVIEW"
-        elif strategy_result.get("strategy_stage_status") == "NEEDS_MANUAL_REVIEW":
-            result["rerun_status"] = "NEEDS_MANUAL_REVIEW"
-        elif strategy_result.get("strategy_stage_status") == "STABLE":
+        stage_status = strategy_result.get("strategy_stage_status")
+        if stage_status == "STRICT_CONVERGED":
+            # Only strict-target convergence with stable monitors is treated as
+            # success; never mark success on a merely stable-but-relaxed result.
             result["rerun_status"] = (
                 "SUCCESS_ATTEMPT_ONLY"
                 if not args.promote_on_success
                 else "SUCCESS_READY_TO_PROMOTE"
             )
+        elif stage_status in {
+            "ENGINEERING_STABLE_ONLY",
+            "NOT_CONVERGED_STABLE_MONITORS",
+            "NEEDS_TRANSIENT_REVIEW",
+            "NEEDS_MANUAL_REVIEW",
+        }:
+            result["rerun_status"] = stage_status
         else:
-            result["rerun_status"] = "COMPLETED_NEEDS_REVIEW"
+            result["rerun_status"] = "ATTEMPT_WRITTEN_NEEDS_REVIEW"
 
         attempt_case_file.parent.mkdir(parents=True, exist_ok=True)
         print(f"Writing staged attempt case/data: {attempt_case_file}")
@@ -2187,6 +2656,7 @@ def write_summary(
         f"  solver_strategy: {args.solver_strategy}",
         f"  iteration_chunk_size: {args.iteration_chunk_size}",
         f"  residual_target: {args.residual_target}",
+        f"  engineering_residual_threshold: {args.engineering_residual_threshold}",
         f"  monitor_window: {args.monitor_window}",
         f"  monitor_rel_tol: {args.monitor_rel_tol}",
         f"  residual_growth_limit: {args.residual_growth_limit}",
