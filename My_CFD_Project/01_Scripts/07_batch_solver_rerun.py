@@ -95,6 +95,13 @@ RESULT_FIELDS = [
     "launch_kwargs",
     "failure_stage",
     "strategy_stage_status",
+    "first_order_apply_status",
+    "discretization_before",
+    "discretization_after_first_order",
+    "discretization_first_order_readback",
+    "discretization_restore_status",
+    "discretization_after_restore",
+    "first_order_error_summary",
     "convergence_assessment",
     "monitor_window",
     "monitor_rel_tol",
@@ -111,6 +118,43 @@ RESULT_FIELDS = [
     "plateau_reason",
     "strict_convergence_status",
 ]
+
+FIRST_ORDER_DISCRETIZATION_CANDIDATES = {
+    "mom": [
+        "first-order-upwind",
+        "first-order",
+        "First Order Upwind",
+        "first_order_upwind",
+    ],
+    "species-0": [
+        "first-order-upwind",
+        "first-order",
+        "First Order Upwind",
+        "first_order_upwind",
+    ],
+    "pressure": [
+        "standard",
+        "Standard",
+        "linear",
+        "second-order",
+    ],
+}
+FIRST_ORDER_REQUIRED_KEYS = {"mom", "species-0"}
+FIRST_ORDER_CONFIRMED_STATUSES = {
+    "FIRST_ORDER_APPLIED_CONFIRMED",
+    "FIRST_ORDER_PARTIAL_CONFIRMED",
+}
+FIRST_ORDER_STOP_STATUSES = {
+    "FAILED_APPLY_FIRST_ORDER",
+    "FIRST_ORDER_SWITCH_NOT_CONFIRMED",
+}
+DISCRETIZATION_TUI_ERROR_PATTERNS = (
+    "unbound variable",
+    "invalid integer",
+    "requested scheme is unavailable",
+    "scheme is unavailable",
+    "error object",
+)
 
 
 class Tee:
@@ -282,6 +326,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ],
         default="damped_steady",
         help="Continuation strategy applied after loading the final case/data.",
+    )
+    parser.add_argument(
+        "--allow-iterate-after-ramp-failure",
+        action="store_true",
+        help=(
+            "For first_order_ramp only, continue iterating even if the first-order "
+            "discretization switch is not confirmed by readback."
+        ),
     )
     parser.add_argument(
         "--iteration-chunk-size",
@@ -883,6 +935,13 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "launch_kwargs": "",
         "failure_stage": "",
         "strategy_stage_status": "",
+        "first_order_apply_status": "",
+        "discretization_before": "",
+        "discretization_after_first_order": "",
+        "discretization_first_order_readback": "",
+        "discretization_restore_status": "",
+        "discretization_after_restore": "",
+        "first_order_error_summary": "",
         "convergence_assessment": "",
         "monitor_window": str(args.monitor_window),
         "monitor_rel_tol": str(args.monitor_rel_tol),
@@ -1505,6 +1564,482 @@ def execute_tui_best_effort(solver: Any, label: str, commands: list[str]) -> lis
     return errors
 
 
+def json_field(value: Any) -> str:
+    return json.dumps(value if value is not None else {}, sort_keys=True, default=str)
+
+
+def discretization_scheme_container(solver: Any) -> Any:
+    return solver.settings.solution.methods.spatial_discretization.discretization_scheme
+
+
+def normalize_discretization_value(value: Any) -> str:
+    return re.sub(r"[\s_]+", "-", str(value).strip().lower())
+
+
+def read_discretization_settings(solver: Any) -> dict[str, Any]:
+    """Read solution.methods.spatial_discretization.discretization_scheme."""
+    try:
+        container = discretization_scheme_container(solver)
+    except Exception as exc:
+        raise RuntimeError(
+            "solution.methods.spatial_discretization.discretization_scheme "
+            f"is unavailable: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    try:
+        state = container.get_state() if hasattr(container, "get_state") else container
+    except Exception as exc:
+        raise RuntimeError(
+            "could not read solution.methods.spatial_discretization."
+            f"discretization_scheme: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    if isinstance(state, dict) and isinstance(state.get("discretization_scheme"), dict):
+        state = state["discretization_scheme"]
+
+    if not isinstance(state, dict):
+        raise RuntimeError(
+            "solution.methods.spatial_discretization.discretization_scheme "
+            f"returned non-dict state: {state!r}"
+        )
+
+    return {str(key): value for key, value in state.items()}
+
+
+def _coerce_allowed_values(raw: Any, key: str) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        if key in raw:
+            return _coerce_allowed_values(raw[key], key)
+        for field in ("allowed_values", "allowed-values", "values", "choices", "options"):
+            if field in raw:
+                return _coerce_allowed_values(raw[field], key)
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, (list, tuple, set)):
+        return [str(item) for item in raw]
+    return []
+
+
+def _read_allowed_values_from_object(obj: Any, key: str) -> list[str]:
+    allowed: list[str] = []
+    for attr_name in ("allowed_values", "allowed-values"):
+        try:
+            attr = getattr(obj, attr_name)
+        except Exception:
+            continue
+        try:
+            raw = attr() if callable(attr) else attr
+            allowed = _coerce_allowed_values(raw, key)
+            if allowed:
+                return allowed
+        except Exception:
+            continue
+
+    for attr_name in ("allowed-values", "allowed_values", "allowedValues"):
+        try:
+            raw = obj.get_attr(attr_name)
+            allowed = _coerce_allowed_values(raw, key)
+            if allowed:
+                return allowed
+        except Exception:
+            continue
+
+    return allowed
+
+
+def allowed_discretization_values(solver: Any, key: str) -> list[str]:
+    """Best-effort allowed-value introspection for one discretization key."""
+    try:
+        container = discretization_scheme_container(solver)
+    except Exception:
+        return []
+
+    objects: list[Any] = []
+    try:
+        objects.append(container[key])
+    except Exception:
+        pass
+    objects.append(container)
+
+    for obj in objects:
+        allowed = _read_allowed_values_from_object(obj, key)
+        if allowed:
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for value in allowed:
+                if value not in seen:
+                    seen.add(value)
+                    deduped.append(value)
+            return deduped
+
+    return []
+
+
+def _candidate_values_from_allowed(candidates: list[str], allowed_values: list[str]) -> list[str]:
+    if not allowed_values:
+        return candidates
+
+    allowed_by_normalized: dict[str, str] = {}
+    for allowed_value in allowed_values:
+        allowed_by_normalized.setdefault(
+            normalize_discretization_value(allowed_value),
+            allowed_value,
+        )
+
+    selected: list[str] = []
+    for candidate in candidates:
+        match = allowed_by_normalized.get(normalize_discretization_value(candidate))
+        if match and match not in selected:
+            selected.append(match)
+    return selected
+
+
+def set_discretization_value(solver: Any, key: str, value: str) -> dict[str, Any]:
+    """Set a discretization-scheme value through the Settings API."""
+    outcome: dict[str, Any] = {
+        "key": key,
+        "requested": value,
+        "method": "settings_api",
+        "status": "SET_FAILED",
+        "errors": [],
+    }
+
+    try:
+        before = read_discretization_settings(solver)
+        outcome["before"] = before.get(key)
+    except Exception as exc:
+        outcome["errors"].append(f"read before: {type(exc).__name__}: {exc}")
+        return outcome
+
+    if key not in before:
+        outcome["errors"].append(f"{key!r} not present in discretization state")
+        return outcome
+
+    try:
+        container = discretization_scheme_container(solver)
+    except Exception as exc:
+        outcome["errors"].append(f"container access: {type(exc).__name__}: {exc}")
+        return outcome
+
+    attempts: list[tuple[str, Any]] = []
+    attempts.append(("container[key]", lambda: container.__setitem__(key, value)))
+    try:
+        child = container[key]
+        if hasattr(child, "set_state"):
+            attempts.append(("container[key].set_state", lambda: child.set_state(value)))
+    except Exception:
+        pass
+    if key.isidentifier():
+        attempts.append(("setattr(container, key)", lambda: setattr(container, key, value)))
+    if hasattr(container, "set_state"):
+        attempts.append(
+            (
+                "container.set_state(merged_state)",
+                lambda: container.set_state({**before, key: value}),
+            )
+        )
+
+    for attempt_label, setter in attempts:
+        try:
+            setter()
+            outcome["status"] = "SET_ATTEMPTED"
+            outcome["set_attempt"] = attempt_label
+            return outcome
+        except Exception as exc:
+            outcome["errors"].append(f"{attempt_label}: {type(exc).__name__}: {exc}")
+
+    return outcome
+
+
+def confirm_discretization_value(
+    solver: Any,
+    key: str,
+    expected_values: list[str],
+) -> dict[str, Any]:
+    """Confirm a discretization value by readback only."""
+    outcome: dict[str, Any] = {
+        "key": key,
+        "expected_values": expected_values,
+        "confirmed": False,
+    }
+    try:
+        state = read_discretization_settings(solver)
+    except Exception as exc:
+        outcome["error"] = f"readback: {type(exc).__name__}: {exc}"
+        return outcome
+
+    actual = state.get(key)
+    outcome["actual"] = actual
+    expected_normalized = {
+        normalize_discretization_value(value) for value in expected_values
+    }
+    outcome["confirmed"] = (
+        key in state
+        and normalize_discretization_value(actual) in expected_normalized
+    )
+    return outcome
+
+
+def _tui_discretization_error(text: Any) -> bool:
+    lowered = str(text).lower()
+    return any(pattern in lowered for pattern in DISCRETIZATION_TUI_ERROR_PATTERNS)
+
+
+def _execute_tui_discretization_value(
+    solver: Any,
+    key: str,
+    value: str,
+    expected_values: list[str],
+) -> dict[str, Any]:
+    command = f"/solve/set/discretization-scheme {key} {value}"
+    outcome: dict[str, Any] = {
+        "key": key,
+        "requested": value,
+        "method": "tui",
+        "command": command,
+        "status": "TUI_NOT_CONFIRMED",
+    }
+    print(f"Trying TUI fallback for first-order discretization: {command}")
+    try:
+        tui_result = solver.execute_tui(command)
+        outcome["tui_result"] = "" if tui_result is None else str(tui_result)
+        if _tui_discretization_error(outcome["tui_result"]):
+            outcome["status"] = "TUI_FAILED"
+            outcome["error"] = (
+                "TUI returned a discretization error: "
+                f"{outcome['tui_result']}"
+            )
+            print(f"TUI fallback failed for first-order discretization: {outcome['error']}")
+            return outcome
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        outcome["error"] = message
+        outcome["status"] = "TUI_FAILED"
+        print(f"TUI fallback failed for first-order discretization: {command}: {message}")
+        return outcome
+
+    readback = confirm_discretization_value(solver, key, expected_values)
+    outcome["readback"] = readback
+    if readback.get("confirmed"):
+        outcome["status"] = "CONFIRMED"
+        print(
+            "TUI fallback readback confirmed for first-order discretization: "
+            f"{key}={readback.get('actual')}"
+        )
+    else:
+        print(
+            "TUI fallback returned without a matching error, but readback did "
+            f"not confirm {key}={value}: {readback}"
+        )
+    return outcome
+
+
+def _pressure_candidate_is_lower_order(value: Any) -> bool:
+    return normalize_discretization_value(value) in {"standard", "linear"}
+
+
+def apply_discretization_candidates(
+    solver: Any,
+    key: str,
+    candidates: list[str],
+    required: bool,
+) -> dict[str, Any]:
+    outcome: dict[str, Any] = {
+        "key": key,
+        "required": required,
+        "requested_candidates": candidates,
+        "allowed_values": [],
+        "attempts": [],
+        "status": "NOT_CONFIRMED",
+        "errors": [],
+    }
+
+    try:
+        before_state = read_discretization_settings(solver)
+    except Exception as exc:
+        outcome["status"] = "READ_FAILED"
+        outcome["errors"].append(f"read before: {type(exc).__name__}: {exc}")
+        return outcome
+
+    before_value = before_state.get(key)
+    outcome["before"] = before_value
+    if key not in before_state:
+        outcome["status"] = "KEY_UNAVAILABLE"
+        outcome["errors"].append(f"{key!r} not present in discretization state")
+        print(f"Discretization key unavailable: {key}; available={list(before_state.keys())}")
+        return outcome
+
+    allowed_values = allowed_discretization_values(solver, key)
+    outcome["allowed_values"] = allowed_values
+    if allowed_values:
+        print(f"Allowed discretization values for {key}: {allowed_values}")
+    else:
+        print(f"Allowed discretization values for {key}: unavailable")
+
+    candidate_values = _candidate_values_from_allowed(candidates, allowed_values)
+    if allowed_values and not candidate_values:
+        outcome["status"] = "NO_ALLOWED_CANDIDATE" if required else "WARN_UNCHANGED"
+        outcome["after"] = before_value
+        outcome["errors"].append(
+            f"none of {candidates} matched allowed values {allowed_values}"
+        )
+        return outcome
+
+    for candidate in candidate_values:
+        expected_values = candidates if key in FIRST_ORDER_REQUIRED_KEYS else [candidate]
+        if (
+            key == "pressure"
+            and normalize_discretization_value(candidate) == "second-order"
+            and normalize_discretization_value(candidate)
+            != normalize_discretization_value(before_value)
+        ):
+            message = (
+                f"skipping pressure candidate {candidate!r}; it is not a "
+                "lower-order pressure scheme for this ramp"
+            )
+            outcome["attempts"].append(
+                {
+                    "key": key,
+                    "requested": candidate,
+                    "method": "settings_api",
+                    "status": "SKIPPED_NON_LOWER_ORDER_PRESSURE",
+                    "message": message,
+                }
+            )
+            print(f"WARN first-order pressure discretization: {message}")
+            continue
+        if (
+            key == "pressure"
+            and normalize_discretization_value(candidate)
+            == normalize_discretization_value(before_value)
+            and not _pressure_candidate_is_lower_order(candidate)
+        ):
+            message = (
+                f"pressure already uses {before_value}; leaving unchanged because "
+                "no lower-order pressure candidate has been confirmed yet"
+            )
+            outcome["attempts"].append(
+                {
+                    "key": key,
+                    "requested": candidate,
+                    "method": "settings_api",
+                    "status": "SKIPPED_UNCHANGED_PRESSURE",
+                    "message": message,
+                }
+            )
+            print(f"WARN first-order pressure discretization: {message}")
+            continue
+
+        if normalize_discretization_value(candidate) == normalize_discretization_value(before_value):
+            readback = confirm_discretization_value(solver, key, [candidate])
+            outcome["attempts"].append(
+                {
+                    "key": key,
+                    "requested": candidate,
+                    "method": "settings_api",
+                    "status": "ALREADY_CONFIRMED",
+                    "readback": readback,
+                }
+            )
+            if readback.get("confirmed"):
+                outcome["status"] = "CONFIRMED"
+                outcome["after"] = readback.get("actual")
+                outcome["confirmed_value"] = readback.get("actual")
+                return outcome
+
+        print(f"Trying Settings API discretization: {key} -> {candidate}")
+        set_outcome = set_discretization_value(solver, key, candidate)
+        outcome["attempts"].append(set_outcome)
+        if set_outcome.get("status") != "SET_ATTEMPTED":
+            outcome["errors"].extend(str(error) for error in set_outcome.get("errors", []))
+            continue
+
+        readback = confirm_discretization_value(solver, key, expected_values)
+        set_outcome["readback"] = readback
+        if readback.get("confirmed"):
+            outcome["status"] = "CONFIRMED"
+            outcome["after"] = readback.get("actual")
+            outcome["confirmed_value"] = readback.get("actual")
+            print(f"Settings API readback confirmed: {key}={readback.get('actual')}")
+            return outcome
+
+        message = (
+            f"readback {readback.get('actual')!r} did not confirm any of "
+            f"{expected_values}"
+        )
+        outcome["errors"].append(message)
+        print(f"Settings API discretization not confirmed for {key}: {message}")
+
+    for candidate in candidate_values:
+        expected_values = candidates if key in FIRST_ORDER_REQUIRED_KEYS else [candidate]
+        if (
+            key == "pressure"
+            and normalize_discretization_value(candidate) == "second-order"
+            and normalize_discretization_value(candidate)
+            != normalize_discretization_value(before_value)
+        ):
+            continue
+        if (
+            key == "pressure"
+            and normalize_discretization_value(candidate)
+            == normalize_discretization_value(before_value)
+            and not _pressure_candidate_is_lower_order(candidate)
+        ):
+            continue
+        tui_outcome = _execute_tui_discretization_value(
+            solver=solver,
+            key=key,
+            value=candidate,
+            expected_values=expected_values,
+        )
+        outcome["attempts"].append(tui_outcome)
+        if tui_outcome.get("status") == "CONFIRMED":
+            readback = tui_outcome.get("readback", {})
+            outcome["status"] = "CONFIRMED"
+            outcome["after"] = readback.get("actual")
+            outcome["confirmed_value"] = readback.get("actual")
+            return outcome
+        if "error" in tui_outcome:
+            outcome["errors"].append(str(tui_outcome["error"]))
+
+    try:
+        after_state = read_discretization_settings(solver)
+        outcome["after"] = after_state.get(key)
+    except Exception as exc:
+        outcome["errors"].append(f"read after failed: {type(exc).__name__}: {exc}")
+
+    if not required and outcome["status"] != "CONFIRMED":
+        outcome["status"] = "WARN_UNCHANGED"
+    return outcome
+
+
+def _first_order_readback_summary(key_results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, outcome in key_results.items():
+        summary[key] = {
+            "status": outcome.get("status"),
+            "before": outcome.get("before"),
+            "after": outcome.get("after"),
+            "confirmed_value": outcome.get("confirmed_value"),
+            "allowed_values": outcome.get("allowed_values", []),
+            "errors": outcome.get("errors", []),
+        }
+    return summary
+
+
+def _first_order_error_summary(key_results: dict[str, dict[str, Any]]) -> str:
+    messages: list[str] = []
+    for key, outcome in key_results.items():
+        for error in outcome.get("errors", []):
+            messages.append(f"{key}: {error}")
+        if outcome.get("status") != "CONFIRMED":
+            messages.append(f"{key}: status={outcome.get('status')}")
+    return "; ".join(messages[:12])
+
+
 def apply_pseudo_time_scale_reduction(solver: Any) -> dict[str, Any]:
     """Best-effort pseudo-time Courant/scale-factor reduction.
 
@@ -1560,41 +2095,149 @@ def apply_first_order_ramp(solver: Any) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "ATTEMPTED",
         "restore_reliable": False,
-        "original_state": {},
+        "discretization_before": {},
+        "discretization_after_first_order": {},
+        "discretization_first_order_readback": {},
+        "key_results": {},
         "errors": [],
     }
-    solution = solver.settings.solution
-    try:
-        methods = solution.methods
-        if hasattr(methods, "get_state"):
-            result["original_state"] = methods.get_state()
-            print(f"Original solution methods: {result['original_state']}")
-    except Exception as exc:
-        result["errors"].append(f"capture methods: {type(exc).__name__}: {exc}")
 
-    tui_commands = [
-        "/solve/set/discretization-scheme mom first-order-upwind",
-        "/solve/set/discretization-scheme species-0 first-order-upwind",
-        "/solve/set/discretization-scheme pressure standard",
-    ]
-    result["errors"].extend(
-        execute_tui_best_effort(solver, "first-order discretization", tui_commands)
+    try:
+        before = read_discretization_settings(solver)
+        result["discretization_before"] = before
+        result["restore_reliable"] = True
+        print(
+            "Original discretization settings from "
+            "solution.methods.spatial_discretization.discretization_scheme: "
+            f"{before}"
+        )
+    except Exception as exc:
+        message = f"capture discretization: {type(exc).__name__}: {exc}"
+        result["errors"].append(message)
+        result["status"] = "FAILED_APPLY_FIRST_ORDER"
+        result["first_order_error_summary"] = message
+        print(f"FAILED_APPLY_FIRST_ORDER: {message}")
+        return result
+
+    key_results: dict[str, dict[str, Any]] = {}
+    for key, candidates in FIRST_ORDER_DISCRETIZATION_CANDIDATES.items():
+        key_results[key] = apply_discretization_candidates(
+            solver=solver,
+            key=key,
+            candidates=candidates,
+            required=key in FIRST_ORDER_REQUIRED_KEYS,
+        )
+
+    result["key_results"] = key_results
+    try:
+        after = read_discretization_settings(solver)
+        result["discretization_after_first_order"] = after
+        print(f"Discretization after first-order attempt: {after}")
+    except Exception as exc:
+        message = f"read after first-order: {type(exc).__name__}: {exc}"
+        result["errors"].append(message)
+        print(f"Could not read discretization after first-order attempt: {message}")
+
+    result["discretization_first_order_readback"] = _first_order_readback_summary(key_results)
+
+    required_confirmed = all(
+        key_results.get(key, {}).get("status") == "CONFIRMED"
+        for key in FIRST_ORDER_REQUIRED_KEYS
     )
+    all_confirmed = all(
+        outcome.get("status") == "CONFIRMED"
+        for outcome in key_results.values()
+    )
+    if required_confirmed and all_confirmed:
+        result["status"] = "FIRST_ORDER_APPLIED_CONFIRMED"
+    elif required_confirmed:
+        result["status"] = "FIRST_ORDER_PARTIAL_CONFIRMED"
+    else:
+        result["status"] = "FIRST_ORDER_SWITCH_NOT_CONFIRMED"
+
+    error_summary = _first_order_error_summary(key_results)
+    if result["errors"]:
+        error_summary = "; ".join(result["errors"] + ([error_summary] if error_summary else []))
+    result["first_order_error_summary"] = error_summary
+    print(f"First-order ramp apply status: {result['status']}")
+    if error_summary:
+        print(f"First-order ramp warnings/errors: {error_summary}")
     return result
 
 
-def restore_first_order_ramp(solver: Any, strategy_state: dict[str, Any]) -> bool:
-    original_state = strategy_state.get("original_state")
+def restore_first_order_ramp(solver: Any, strategy_state: dict[str, Any]) -> dict[str, Any]:
+    original_state = strategy_state.get("discretization_before") or {}
+    result: dict[str, Any] = {
+        "status": "RESTORE_NOT_CONFIRMED",
+        "discretization_after_restore": {},
+        "attempts": [],
+        "errors": [],
+    }
     if not original_state:
-        print("Original discretization state was not captured; restore is not reliable.")
-        return False
+        message = "Original discretization state was not captured; restore is not reliable."
+        result["errors"].append(message)
+        print(message)
+        return result
+
+    print("Restoring original discretization settings.")
+    for key, original_value in original_state.items():
+        print(f"Trying Settings API restore: {key} -> {original_value}")
+        set_outcome = set_discretization_value(solver, key, str(original_value))
+        result["attempts"].append(set_outcome)
+        if set_outcome.get("status") == "SET_ATTEMPTED":
+            readback = confirm_discretization_value(solver, key, [str(original_value)])
+            set_outcome["readback"] = readback
+            if readback.get("confirmed"):
+                print(f"Restore readback confirmed: {key}={readback.get('actual')}")
+                continue
+            result["errors"].append(
+                f"{key}: restore readback {readback.get('actual')!r} "
+                f"did not confirm {original_value!r}"
+            )
+        else:
+            result["errors"].extend(
+                f"{key}: {error}" for error in set_outcome.get("errors", [])
+            )
+
+        tui_outcome = _execute_tui_discretization_value(
+            solver=solver,
+            key=key,
+            value=str(original_value),
+            expected_values=[str(original_value)],
+        )
+        result["attempts"].append(tui_outcome)
+        if tui_outcome.get("status") != "CONFIRMED" and "error" in tui_outcome:
+            result["errors"].append(f"{key}: {tui_outcome['error']}")
+
     try:
-        solver.settings.solution.methods.set_state(original_state)
-        print("Original solution methods restored from captured state.")
-        return True
+        after = read_discretization_settings(solver)
+        result["discretization_after_restore"] = after
+        print(f"Discretization after restore attempt: {after}")
     except Exception as exc:
-        print(f"Could not restore original solution methods: {type(exc).__name__}: {exc}")
-        return False
+        message = f"read after restore: {type(exc).__name__}: {exc}"
+        result["errors"].append(message)
+        print(f"Could not read discretization after restore: {message}")
+        return result
+
+    confirmed = True
+    for key, original_value in original_state.items():
+        if key not in result["discretization_after_restore"]:
+            confirmed = False
+            result["errors"].append(f"{key}: missing after restore")
+            continue
+        if (
+            normalize_discretization_value(result["discretization_after_restore"][key])
+            != normalize_discretization_value(original_value)
+        ):
+            confirmed = False
+            result["errors"].append(
+                f"{key}: restore has {result['discretization_after_restore'][key]!r}, "
+                f"expected {original_value!r}"
+            )
+
+    result["status"] = "RESTORE_CONFIRMED" if confirmed else "RESTORE_NOT_CONFIRMED"
+    print(f"First-order ramp restore status: {result['status']}")
+    return result
 
 
 def parse_transcript_residual_columns(header_line: str) -> list[str] | None:
@@ -1978,6 +2621,13 @@ def execute_solver_strategy(
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "strategy_stage_status": "NOT_STARTED",
+        "first_order_apply_status": "",
+        "discretization_before": "",
+        "discretization_after_first_order": "",
+        "discretization_first_order_readback": "",
+        "discretization_restore_status": "",
+        "discretization_after_restore": "",
+        "first_order_error_summary": "",
         "convergence_assessment": "",
         "diagnostics": {},
         "history": [],
@@ -2008,6 +2658,57 @@ def execute_solver_strategy(
             result["strategy_settings"] = apply_pseudo_transient_ramp(solver, args)
         elif args.solver_strategy == "first_order_ramp":
             result["strategy_settings"] = apply_first_order_ramp(solver)
+            first_order_state = result["strategy_settings"]
+            result["first_order_apply_status"] = str(first_order_state.get("status", ""))
+            result["discretization_before"] = json_field(
+                first_order_state.get("discretization_before", {})
+            )
+            result["discretization_after_first_order"] = json_field(
+                first_order_state.get("discretization_after_first_order", {})
+            )
+            result["discretization_first_order_readback"] = json_field(
+                first_order_state.get("discretization_first_order_readback", {})
+            )
+            result["first_order_error_summary"] = str(
+                first_order_state.get("first_order_error_summary", "")
+            )
+            if (
+                result["first_order_apply_status"] not in FIRST_ORDER_CONFIRMED_STATUSES
+                and not args.allow_iterate_after_ramp_failure
+            ):
+                restore_result = restore_first_order_ramp(solver, first_order_state)
+                result["discretization_restore_status"] = str(
+                    restore_result.get("status", "")
+                )
+                result["discretization_after_restore"] = json_field(
+                    restore_result.get("discretization_after_restore", {})
+                )
+                restore_errors = "; ".join(str(error) for error in restore_result.get("errors", []))
+                if restore_errors:
+                    result["first_order_error_summary"] = "; ".join(
+                        part
+                        for part in [
+                            result["first_order_error_summary"],
+                            f"restore: {restore_errors}",
+                        ]
+                        if part
+                    )
+                result["strategy_stage_status"] = (
+                    result["first_order_apply_status"]
+                    if result["first_order_apply_status"] in FIRST_ORDER_STOP_STATUSES
+                    else "FIRST_ORDER_SWITCH_NOT_CONFIRMED"
+                )
+                result["convergence_assessment"] = json_field(
+                    {
+                        "classification": result["strategy_stage_status"],
+                        "first_order_apply_status": result["first_order_apply_status"],
+                        "details": (
+                            "First-order ramp was not confirmed by discretization "
+                            "readback; iteration was not started."
+                        ),
+                    }
+                )
+                return result
         else:
             result["strategy_settings"] = {"status": "CONTINUE_ONLY"}
     except Exception as exc:
@@ -2033,8 +2734,22 @@ def execute_solver_strategy(
     result["plateau_assessment"] = plateau_assessment
 
     if args.solver_strategy == "first_order_ramp":
-        restored = restore_first_order_ramp(solver, result.get("strategy_settings", {}))
-        if not restored:
+        restore_result = restore_first_order_ramp(solver, result.get("strategy_settings", {}))
+        result["discretization_restore_status"] = str(restore_result.get("status", ""))
+        result["discretization_after_restore"] = json_field(
+            restore_result.get("discretization_after_restore", {})
+        )
+        restore_errors = "; ".join(str(error) for error in restore_result.get("errors", []))
+        if restore_errors:
+            result["first_order_error_summary"] = "; ".join(
+                part
+                for part in [
+                    result.get("first_order_error_summary", ""),
+                    f"restore: {restore_errors}",
+                ]
+                if part
+            )
+        if restore_result.get("status") != "RESTORE_CONFIRMED":
             result["strategy_stage_status"] = "NEEDS_MANUAL_REVIEW"
             result["convergence_assessment"] = (
                 "First-order ramp completed, but original discretization restore "
@@ -2071,6 +2786,34 @@ def execute_solver_strategy(
             failure_stage="iterate",
             message=str(classification.get("details", "Residual/report monitors diverged.")),
         )
+
+    if (
+        args.solver_strategy == "first_order_ramp"
+        and classification["status"] == "STRICT_CONVERGED_ATTEMPT"
+        and (
+            result.get("first_order_apply_status") not in FIRST_ORDER_CONFIRMED_STATUSES
+            or result.get("discretization_restore_status") != "RESTORE_CONFIRMED"
+        )
+    ):
+        result["strategy_stage_status"] = "NEEDS_MANUAL_REVIEW"
+        result["convergence_assessment"] = json_field(
+            {
+                "monitor": monitor_assessment,
+                "residual": residual_assessment,
+                "plateau": plateau_assessment,
+                "classification": classification,
+                "first_order_apply_status": result.get("first_order_apply_status", ""),
+                "discretization_restore_status": result.get(
+                    "discretization_restore_status",
+                    "",
+                ),
+                "details": (
+                    "Strict residual target was met, but first-order ramp apply "
+                    "and restore confirmation are required before promotion."
+                ),
+            }
+        )
+        return result
 
     result["strategy_stage_status"] = classification["status"]
     return result
@@ -2327,6 +3070,19 @@ def run_live_solver_rerun(
             return result
 
         stage_status = strategy_result.get("strategy_stage_status")
+        if stage_status in FIRST_ORDER_STOP_STATUSES:
+            result["rerun_status"] = str(stage_status)
+            result["failure_stage"] = "apply_first_order"
+            result["returncode_or_exception"] = (
+                result.get("first_order_error_summary")
+                or "first-order discretization switch was not confirmed"
+            )
+            print(
+                "Stopping before iteration/save because first_order_ramp was "
+                f"not confirmed: {stage_status}"
+            )
+            return result
+
         if stage_status == "STRICT_CONVERGED_ATTEMPT":
             # Only strict-target convergence with stable monitors is treated as
             # success; never mark success on a merely stable-but-relaxed result.
@@ -2445,6 +3201,11 @@ def maybe_run_report_after_success(
 
 def short_exception(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
+
+
+def is_failure_status(status: Any) -> bool:
+    status_text = str(status)
+    return status_text.startswith("FAILED") or status_text in FIRST_ORDER_STOP_STATUSES
 
 
 def process_case(
@@ -2615,6 +3376,19 @@ def process_case(
                 record["strategy_stage_status"] = str(
                     live_result.get("strategy_stage_status", "")
                 )
+                for key in [
+                    "first_order_apply_status",
+                    "discretization_before",
+                    "discretization_after_first_order",
+                    "discretization_first_order_readback",
+                    "discretization_restore_status",
+                    "discretization_after_restore",
+                    "first_order_error_summary",
+                    "failure_stage",
+                    "returncode_or_exception",
+                ]:
+                    if key in live_result and live_result.get(key) not in (None, ""):
+                        record[key] = str(live_result[key])
                 record["convergence_assessment"] = str(
                     live_result.get("convergence_assessment", "")
                 )
@@ -2761,8 +3535,20 @@ def process_case(
                     "Strategy completed but restoration/assessment was not reliable; "
                     "do not promote without manual review."
                 )
+            elif record["rerun_status"] in FIRST_ORDER_STOP_STATUSES:
+                record["error_summary"] = (
+                    record["first_order_error_summary"]
+                    or record["returncode_or_exception"]
+                    or "First-order ramp was not confirmed by discretization readback."
+                )
+                record["suggested_next_action"] = (
+                    "Inspect first_order_error_summary and the per-case log; "
+                    "iteration was not started because first_order_ramp was not "
+                    "confirmed."
+                )
 
-            record["returncode_or_exception"] = "0"
+            if not record["returncode_or_exception"]:
+                record["returncode_or_exception"] = "0"
             if record["rerun_status"].startswith("SUCCESS"):
                 report_status, next_action = maybe_run_report_after_success(record, args)
                 record["report_extraction_status"] = report_status
@@ -2827,6 +3613,7 @@ def write_summary(
         "Solver settings:",
         f"  additional_iterations: {args.additional_iterations}",
         f"  solver_strategy: {args.solver_strategy}",
+        f"  allow_iterate_after_ramp_failure: {args.allow_iterate_after_ramp_failure}",
         f"  iteration_chunk_size: {args.iteration_chunk_size}",
         f"  residual_target: {args.residual_target}",
         f"  monitor_window: {args.monitor_window}",
@@ -2919,7 +3706,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         results.append(record)
 
-        failed = record["rerun_status"].startswith("FAILED")
+        failed = is_failure_status(record["rerun_status"])
         if failed and not args.continue_on_error:
             stop_after_failure = True
 
@@ -2947,7 +3734,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Results JSON written: {results_json}")
     print(f"Summary written: {summary_txt}")
 
-    failures = [record for record in results if str(record["rerun_status"]).startswith("FAILED")]
+    failures = [record for record in results if is_failure_status(record["rerun_status"])]
     if failures and not args.dry_run:
         return 1
     return 0
