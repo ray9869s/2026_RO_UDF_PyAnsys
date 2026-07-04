@@ -112,6 +112,24 @@ RESULT_FIELDS = [
     "first_order_stage_report_values",
     "final_assessment_window",
     "final_assessment_reason",
+    "staged_restore_enabled",
+    "high_order_term_relaxation_before",
+    "high_order_term_relaxation_after",
+    "high_order_term_relaxation_apply_status",
+    "second_order_blending_before",
+    "second_order_blending_after",
+    "second_order_blending_apply_status",
+    "restore_pressure_status",
+    "restore_pressure_residual_latest",
+    "restore_pressure_report_values",
+    "restore_momentum_status",
+    "restore_momentum_residual_latest",
+    "restore_momentum_report_values",
+    "restore_species_status",
+    "restore_species_residual_latest",
+    "restore_species_report_values",
+    "limiting_restore_stage",
+    "staged_restore_strict_converged",
     "convergence_assessment",
     "monitor_window",
     "monitor_rel_tol",
@@ -157,6 +175,16 @@ FIRST_ORDER_CONFIRMED_STATUSES = {
 FIRST_ORDER_STOP_STATUSES = {
     "FAILED_APPLY_FIRST_ORDER",
     "FIRST_ORDER_SWITCH_NOT_CONFIRMED",
+}
+STAGED_SECOND_ORDER_TARGETS = {
+    "pressure": ["second-order", "Second Order", "second_order"],
+    "mom": ["second-order-upwind", "second-order", "Second Order Upwind", "second_order_upwind"],
+    "species-0": ["second-order-upwind", "second-order", "Second Order Upwind", "second_order_upwind"],
+}
+STAGED_RESTORE_STAGE_TO_KEY = {
+    "pressure": "pressure",
+    "momentum": "mom",
+    "species": "species-0",
 }
 DISCRETIZATION_TUI_ERROR_PATTERNS = (
     "unbound variable",
@@ -332,6 +360,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "damped_steady",
             "pseudo_transient_ramp",
             "first_order_ramp",
+            "staged_second_order_restore",
             "diagnose_only",
         ],
         default="damped_steady",
@@ -341,8 +370,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-iterate-after-ramp-failure",
         action="store_true",
         help=(
-            "For first_order_ramp only, continue iterating even if the first-order "
-            "discretization switch is not confirmed by readback."
+            "For first_order_ramp/staged_second_order_restore, continue iterating "
+            "even if the first-order discretization switch is not confirmed by "
+            "readback."
         ),
     )
     parser.add_argument(
@@ -354,6 +384,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "confirmed. Derived default: 300 for first_order_ramp, 0 for other "
             "strategies unless explicitly requested."
         ),
+    )
+    parser.add_argument(
+        "--restore-pressure-iterations",
+        type=non_negative_int,
+        default=300,
+        help="Iteration budget after staged pressure restore.",
+    )
+    parser.add_argument(
+        "--restore-momentum-iterations",
+        type=non_negative_int,
+        default=500,
+        help="Iteration budget after staged momentum restore.",
+    )
+    parser.add_argument(
+        "--restore-species-iterations",
+        type=non_negative_int,
+        default=1000,
+        help="Iteration budget after staged species restore.",
+    )
+    parser.add_argument(
+        "--use-high-order-term-relaxation",
+        dest="use_high_order_term_relaxation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Best-effort enable solution.methods.high_order_term_relaxation.enable "
+            "with readback confirmation. Derived default: enabled for "
+            "staged_second_order_restore."
+        ),
+    )
+    parser.add_argument(
+        "--second-order-blending-start",
+        type=positive_float,
+        default=0.2,
+        help="Starting expert first-to-second-order blending value when editable.",
+    )
+    parser.add_argument(
+        "--second-order-blending-end",
+        type=positive_float,
+        default=1.0,
+        help="Ending expert first-to-second-order blending value when editable.",
+    )
+    parser.add_argument(
+        "--second-order-blending-steps",
+        type=positive_int,
+        default=5,
+        help="Number of blending values used during the staged species restore.",
     )
     parser.add_argument(
         "--iteration-chunk-size",
@@ -549,6 +626,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.post_restore_polish_iterations is None:
         args.post_restore_polish_iterations = (
             300 if args.solver_strategy == "first_order_ramp" else 0
+        )
+    if args.use_high_order_term_relaxation is None:
+        args.use_high_order_term_relaxation = (
+            args.solver_strategy == "staged_second_order_restore"
         )
 
     args.results_root = args.results_root or DEFAULT_RESULTS_ROOT
@@ -977,6 +1058,26 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "first_order_stage_report_values": "{}",
         "final_assessment_window": "",
         "final_assessment_reason": "",
+        "staged_restore_enabled": str(
+            args.solver_strategy == "staged_second_order_restore"
+        ).lower(),
+        "high_order_term_relaxation_before": "",
+        "high_order_term_relaxation_after": "",
+        "high_order_term_relaxation_apply_status": "",
+        "second_order_blending_before": "",
+        "second_order_blending_after": "",
+        "second_order_blending_apply_status": "",
+        "restore_pressure_status": "",
+        "restore_pressure_residual_latest": "{}",
+        "restore_pressure_report_values": "{}",
+        "restore_momentum_status": "",
+        "restore_momentum_residual_latest": "{}",
+        "restore_momentum_report_values": "{}",
+        "restore_species_status": "",
+        "restore_species_residual_latest": "{}",
+        "restore_species_report_values": "{}",
+        "limiting_restore_stage": "",
+        "staged_restore_strict_converged": "false",
         "convergence_assessment": "",
         "monitor_window": str(args.monitor_window),
         "monitor_rel_tol": str(args.monitor_rel_tol),
@@ -2275,6 +2376,344 @@ def restore_first_order_ramp(solver: Any, strategy_state: dict[str, Any]) -> dic
     return result
 
 
+def _value_matches_requested(actual: Any, requested: Any) -> bool:
+    if isinstance(requested, bool):
+        return isinstance(actual, bool) and actual is requested
+    if isinstance(requested, (int, float)) and not isinstance(requested, bool):
+        return (
+            isinstance(actual, (int, float))
+            and not isinstance(actual, bool)
+            and abs(float(actual) - float(requested)) < 1e-9
+        )
+    return str(actual) == str(requested)
+
+
+def _read_settings_leaf(parent: Any, attr_name: str) -> Any:
+    state = parent.get_state() if hasattr(parent, "get_state") else None
+    if isinstance(state, dict) and attr_name in state:
+        return state[attr_name]
+    child = getattr(parent, attr_name)
+    if hasattr(child, "get_state"):
+        return child.get_state()
+    return child
+
+
+def set_and_verify_settings_leaf(
+    parent: Any,
+    attr_name: str,
+    value: Any,
+    label: str,
+) -> dict[str, Any]:
+    outcome: dict[str, Any] = {
+        "label": label,
+        "requested": value,
+        "status": "WARN_APPLY_FAILED",
+        "errors": [],
+    }
+    try:
+        before = _read_settings_leaf(parent, attr_name)
+        outcome["before"] = before
+        print(f"{label} before: {before}")
+    except Exception as exc:
+        outcome["errors"].append(f"read before: {type(exc).__name__}: {exc}")
+        print(f"WARN_APPLY_FAILED ({label}): {outcome['errors'][-1]}")
+        return outcome
+
+    set_attempts: list[tuple[str, Any]] = [
+        ("setattr", lambda: setattr(parent, attr_name, value)),
+    ]
+    try:
+        state = parent.get_state() if hasattr(parent, "get_state") else None
+        if isinstance(state, dict):
+            set_attempts.append(
+                (
+                    "set_state(merged_state)",
+                    lambda: parent.set_state({**state, attr_name: value}),
+                )
+            )
+    except Exception:
+        pass
+
+    for attempt_label, setter in set_attempts:
+        try:
+            setter()
+            outcome["set_attempt"] = attempt_label
+            break
+        except Exception as exc:
+            outcome["errors"].append(f"{attempt_label}: {type(exc).__name__}: {exc}")
+    else:
+        print(f"WARN_APPLY_FAILED ({label}): set attempts failed: {outcome['errors']}")
+        return outcome
+
+    try:
+        after = _read_settings_leaf(parent, attr_name)
+        outcome["after"] = after
+        print(f"{label} after: {after}")
+    except Exception as exc:
+        outcome["errors"].append(f"read after: {type(exc).__name__}: {exc}")
+        print(f"WARN_APPLY_FAILED ({label}): {outcome['errors'][-1]}")
+        return outcome
+
+    if _value_matches_requested(outcome["after"], value):
+        outcome["status"] = "APPLIED_CONFIRMED"
+    else:
+        outcome["errors"].append(
+            f"readback {outcome['after']!r} did not confirm requested {value!r}"
+        )
+        print(f"WARN_APPLY_FAILED ({label}): {outcome['errors'][-1]}")
+    return outcome
+
+
+def apply_high_order_term_relaxation(solver: Any, enable: bool) -> dict[str, Any]:
+    label = "solution.methods.high_order_term_relaxation.enable"
+    result: dict[str, Any] = {
+        "status": "NOT_REQUESTED",
+        "before": "",
+        "after": "",
+        "errors": [],
+    }
+    print(f"\nHigh Order Term Relaxation requested: {enable}")
+    try:
+        hotr = solver.settings.solution.methods.high_order_term_relaxation
+    except Exception as exc:
+        result["status"] = "WARN_APPLY_FAILED"
+        result["errors"].append(f"access: {type(exc).__name__}: {exc}")
+        print(f"WARN_APPLY_FAILED ({label}): {result['errors'][-1]}")
+        return result
+
+    try:
+        result["before"] = _read_settings_leaf(hotr, "enable")
+        print(f"{label} before: {result['before']}")
+    except Exception as exc:
+        result["status"] = "WARN_APPLY_FAILED"
+        result["errors"].append(f"read before: {type(exc).__name__}: {exc}")
+        print(f"WARN_APPLY_FAILED ({label}): {result['errors'][-1]}")
+        return result
+
+    if not enable:
+        result["status"] = "DISABLED_BY_OPTION"
+        result["after"] = result["before"]
+        return result
+
+    outcome = set_and_verify_settings_leaf(hotr, "enable", True, label)
+    result["before"] = outcome.get("before", result["before"])
+    result["after"] = outcome.get("after", "")
+    result["status"] = outcome.get("status", "WARN_APPLY_FAILED")
+    result["errors"] = outcome.get("errors", [])
+    return result
+
+
+def _second_order_blending_parent(solver: Any) -> Any:
+    return solver.settings.solution.methods.expert.numerics_pbns
+
+
+def read_second_order_blending(solver: Any) -> dict[str, Any]:
+    label = "solution.methods.expert.numerics_pbns.first_to_second_order_blending"
+    result: dict[str, Any] = {"status": "READ_FAILED", "value": "", "errors": []}
+    try:
+        parent = _second_order_blending_parent(solver)
+        result["value"] = _read_settings_leaf(parent, "first_to_second_order_blending")
+        result["status"] = "READ_CONFIRMED"
+        print(f"{label}: {result['value']}")
+    except Exception as exc:
+        result["errors"].append(f"{type(exc).__name__}: {exc}")
+        print(f"Could not read {label}: {result['errors'][-1]}")
+    return result
+
+
+def set_second_order_blending(solver: Any, value: float) -> dict[str, Any]:
+    label = "solution.methods.expert.numerics_pbns.first_to_second_order_blending"
+    try:
+        parent = _second_order_blending_parent(solver)
+    except Exception as exc:
+        return {
+            "label": label,
+            "requested": value,
+            "status": "WARN_APPLY_FAILED",
+            "errors": [f"access: {type(exc).__name__}: {exc}"],
+        }
+    return set_and_verify_settings_leaf(
+        parent,
+        "first_to_second_order_blending",
+        float(value),
+        label,
+    )
+
+
+def blending_ramp_values(start: float, end: float, steps: int) -> list[float]:
+    if steps <= 1:
+        return [float(end)]
+    delta = (float(end) - float(start)) / float(steps - 1)
+    return [float(start) + delta * index for index in range(steps)]
+
+
+def prepare_second_order_blending(solver: Any, args: argparse.Namespace) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "NOT_ATTEMPTED",
+        "before": "",
+        "after": "",
+        "editable": False,
+        "steps": [],
+        "errors": [],
+    }
+    before = read_second_order_blending(solver)
+    result["before"] = before.get("value", "")
+    if before.get("status") != "READ_CONFIRMED":
+        result["status"] = "UNAVAILABLE_CONTINUING_WITH_HOTR_ONLY"
+        result["errors"] = before.get("errors", [])
+        return result
+
+    start_outcome = set_second_order_blending(
+        solver,
+        args.second_order_blending_start,
+    )
+    result["after"] = start_outcome.get("after", "")
+    if start_outcome.get("status") == "APPLIED_CONFIRMED":
+        result["status"] = "START_CONFIRMED"
+        result["editable"] = True
+    else:
+        result["status"] = "READ_ONLY_OR_UNCONFIRMED_CONTINUING_WITH_HOTR_ONLY"
+        result["errors"] = start_outcome.get("errors", [])
+        print(
+            "Second-order blending appears read-only or unconfirmed; continuing "
+            "with High Order Term Relaxation only."
+        )
+    return result
+
+
+def apply_discretization_target(
+    solver: Any,
+    key: str,
+    candidates: list[str],
+) -> dict[str, Any]:
+    outcome: dict[str, Any] = {
+        "key": key,
+        "requested_candidates": candidates,
+        "allowed_values": [],
+        "attempts": [],
+        "status": "NOT_CONFIRMED",
+        "errors": [],
+    }
+    try:
+        before_state = read_discretization_settings(solver)
+        outcome["before"] = before_state.get(key)
+    except Exception as exc:
+        outcome["status"] = "READ_FAILED"
+        outcome["errors"].append(f"read before: {type(exc).__name__}: {exc}")
+        return outcome
+
+    if key not in before_state:
+        outcome["status"] = "KEY_UNAVAILABLE"
+        outcome["errors"].append(f"{key!r} not present in discretization state")
+        return outcome
+
+    allowed_values = allowed_discretization_values(solver, key)
+    outcome["allowed_values"] = allowed_values
+    candidate_values = _candidate_values_from_allowed(candidates, allowed_values)
+    if allowed_values and not candidate_values:
+        outcome["status"] = "NO_ALLOWED_CANDIDATE"
+        outcome["errors"].append(
+            f"none of {candidates} matched allowed values {allowed_values}"
+        )
+        return outcome
+    if not candidate_values:
+        candidate_values = candidates
+
+    for candidate in candidate_values:
+        if normalize_discretization_value(candidate) == normalize_discretization_value(
+            outcome["before"]
+        ):
+            readback = confirm_discretization_value(solver, key, candidates)
+            outcome["attempts"].append(
+                {
+                    "key": key,
+                    "requested": candidate,
+                    "method": "settings_api",
+                    "status": "ALREADY_CONFIRMED",
+                    "readback": readback,
+                }
+            )
+            if readback.get("confirmed"):
+                outcome["status"] = "CONFIRMED"
+                outcome["after"] = readback.get("actual")
+                outcome["confirmed_value"] = readback.get("actual")
+                return outcome
+
+        print(f"Trying staged restore discretization: {key} -> {candidate}")
+        set_outcome = set_discretization_value(solver, key, candidate)
+        outcome["attempts"].append(set_outcome)
+        if set_outcome.get("status") == "SET_ATTEMPTED":
+            readback = confirm_discretization_value(solver, key, candidates)
+            set_outcome["readback"] = readback
+            if readback.get("confirmed"):
+                outcome["status"] = "CONFIRMED"
+                outcome["after"] = readback.get("actual")
+                outcome["confirmed_value"] = readback.get("actual")
+                return outcome
+            outcome["errors"].append(
+                f"readback {readback.get('actual')!r} did not confirm {candidates}"
+            )
+        else:
+            outcome["errors"].extend(str(error) for error in set_outcome.get("errors", []))
+
+    for candidate in candidate_values:
+        tui_outcome = _execute_tui_discretization_value(
+            solver=solver,
+            key=key,
+            value=candidate,
+            expected_values=candidates,
+        )
+        outcome["attempts"].append(tui_outcome)
+        if tui_outcome.get("status") == "CONFIRMED":
+            readback = tui_outcome.get("readback", {})
+            outcome["status"] = "CONFIRMED"
+            outcome["after"] = readback.get("actual")
+            outcome["confirmed_value"] = readback.get("actual")
+            return outcome
+        if "error" in tui_outcome:
+            outcome["errors"].append(str(tui_outcome["error"]))
+
+    try:
+        after_state = read_discretization_settings(solver)
+        outcome["after"] = after_state.get(key)
+    except Exception as exc:
+        outcome["errors"].append(f"read after: {type(exc).__name__}: {exc}")
+    return outcome
+
+
+def full_second_order_discretization_confirmed(state: dict[str, Any]) -> bool:
+    for key, candidates in STAGED_SECOND_ORDER_TARGETS.items():
+        if key not in state:
+            return False
+        expected = {normalize_discretization_value(value) for value in candidates}
+        if normalize_discretization_value(state[key]) not in expected:
+            return False
+    return True
+
+
+def residual_equation_above_target(
+    residual_assessment: dict[str, Any],
+    equation_name: str,
+) -> bool:
+    target_name = equation_name.lower()
+    per_equation = residual_assessment.get("per_equation", {})
+    if not isinstance(per_equation, dict):
+        return False
+    for name, details in per_equation.items():
+        if str(name).lower() != target_name or not isinstance(details, dict):
+            continue
+        latest = details.get("latest")
+        target = details.get("target")
+        return (
+            isinstance(latest, (int, float))
+            and isinstance(target, (int, float))
+            and not isinstance(latest, bool)
+            and not isinstance(target, bool)
+            and float(latest) > float(target)
+        )
+    return False
+
+
 def parse_transcript_residual_columns(header_line: str) -> list[str] | None:
     tokens = header_line.split()
     if not tokens:
@@ -2399,6 +2838,7 @@ def run_iteration_chunks(
     plateau_rel_change_tol: float,
     plateau_min_above_target_factor: float,
     stage_name: str = "solver_stage",
+    early_stop_on_strict_residual: bool = False,
     early_stop_on_strict_stable: bool = False,
     assessment_args: argparse.Namespace | None = None,
     monitor_value_groups: tuple[str, ...] = ("residual_numeric", "report_values"),
@@ -2461,6 +2901,20 @@ def run_iteration_chunks(
             print(f"Residual plateau detected after chunk {chunk_index}: {plateau_result['reason']}")
             print("Stopping iteration early instead of continuing to the full iteration budget.")
             break
+
+        if early_stop_on_strict_residual:
+            latest_residuals = dict(snapshot.get("residual_numeric", {}))
+            residual_assessment = assess_residual_convergence(
+                latest_residuals=latest_residuals,
+                strict_targets=strict_targets,
+            )
+            if residual_assessment.get("strict_met"):
+                plateau_result["reason"] = (
+                    "Stopped early after strict residual target "
+                    f"in {stage_name}."
+                )
+                print(plateau_result["reason"])
+                break
 
         if early_stop_on_strict_stable and assessment_args is not None:
             latest_residuals = dict(snapshot.get("residual_numeric", {}))
@@ -2744,6 +3198,508 @@ def summarize_relaxation_result(relaxation_result: dict[str, Any]) -> dict[str, 
     }
 
 
+def stage_iteration_assessment(
+    history: list[dict[str, Any]],
+    args: argparse.Namespace,
+    residual_targets: dict[str, float],
+) -> dict[str, Any]:
+    latest_residuals = latest_snapshot_group(history, "residual_numeric")
+    latest_reports = latest_snapshot_group(history, "report_values")
+    residual_assessment = assess_residual_convergence(
+        latest_residuals=latest_residuals,
+        strict_targets=residual_targets,
+    )
+    report_assessment = assess_history(
+        history,
+        args,
+        value_groups=("report_values",),
+        require_two_samples=True,
+    )
+    all_numeric_assessment = assess_history(history, args)
+    strict_converged = bool(
+        residual_assessment.get("strict_met")
+        and report_assessment.get("stable")
+        and not report_assessment.get("diverged")
+        and not all_numeric_assessment.get("diverged")
+    )
+    return {
+        "latest_residuals": latest_residuals,
+        "latest_reports": latest_reports,
+        "residual": residual_assessment,
+        "monitor": report_assessment,
+        "monitor_all_numeric": all_numeric_assessment,
+        "strict_converged": strict_converged,
+    }
+
+
+def second_order_target_candidates(original_state: dict[str, Any], key: str) -> list[str]:
+    candidates: list[str] = []
+    original_value = original_state.get(key)
+    expected = {
+        normalize_discretization_value(value)
+        for value in STAGED_SECOND_ORDER_TARGETS.get(key, [])
+    }
+    if (
+        original_value is not None
+        and normalize_discretization_value(original_value) in expected
+    ):
+        candidates.append(str(original_value))
+    candidates.extend(STAGED_SECOND_ORDER_TARGETS.get(key, []))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        normalized = normalize_discretization_value(value)
+        if normalized not in seen:
+            seen.add(normalized)
+            deduped.append(value)
+    return deduped
+
+
+def run_plain_restore_iterations(
+    solver: Any,
+    args: argparse.Namespace,
+    transcript_path: Path | None,
+    stage_name: str,
+    iterations: int,
+    residual_targets: dict[str, float],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return run_iteration_chunks(
+        solver=solver,
+        total_iterations=iterations,
+        chunk_size=args.iteration_chunk_size,
+        transcript_path=transcript_path,
+        species_name=args.species_residual_name,
+        strict_targets=residual_targets,
+        plateau_window_chunks=args.plateau_window_chunks,
+        plateau_rel_change_tol=args.plateau_rel_change_tol,
+        plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
+        stage_name=stage_name,
+        early_stop_on_strict_stable=True,
+        assessment_args=args,
+        monitor_value_groups=("report_values",),
+        monitor_require_two_samples=True,
+    )
+
+
+def run_blending_ramp_iterations(
+    solver: Any,
+    args: argparse.Namespace,
+    transcript_path: Path | None,
+    stage_name: str,
+    total_iterations: int,
+    residual_targets: dict[str, float],
+    blending_result: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    plateau_result: dict[str, Any] = {
+        "detected": False,
+        "reason": "Blending ramp completed without a plateau check triggering.",
+    }
+    values = blending_ramp_values(
+        args.second_order_blending_start,
+        args.second_order_blending_end,
+        args.second_order_blending_steps,
+    )
+    if total_iterations <= 0:
+        blending_result["status"] = "RAMP_CONFIRMED_NO_ITERATIONS"
+        return history, plateau_result, blending_result
+
+    base_iterations = total_iterations // len(values)
+    remainder = total_iterations % len(values)
+    for index, value in enumerate(values):
+        iter_count = base_iterations + (1 if index < remainder else 0)
+        step: dict[str, Any] = {"value": value, "iterations": iter_count}
+        set_outcome = set_second_order_blending(solver, value)
+        step["set_outcome"] = set_outcome
+        blending_result.setdefault("steps", []).append(step)
+        if set_outcome.get("status") != "APPLIED_CONFIRMED":
+            blending_result["status"] = "RAMP_NOT_CONFIRMED_CONTINUING_WITH_HOTR_ONLY"
+            blending_result["after"] = set_outcome.get("after", "")
+            print(
+                "Second-order blending ramp could not confirm a value; continuing "
+                "without further blending edits."
+            )
+            if iter_count > 0:
+                chunk_history, plateau_result = run_plain_restore_iterations(
+                    solver=solver,
+                    args=args,
+                    transcript_path=transcript_path,
+                    stage_name=stage_name,
+                    iterations=iter_count,
+                    residual_targets=residual_targets,
+                )
+                history.extend(chunk_history)
+            return history, plateau_result, blending_result
+
+        if iter_count <= 0:
+            continue
+        chunk_history, plateau_result = run_iteration_chunks(
+            solver=solver,
+            total_iterations=iter_count,
+            chunk_size=iter_count,
+            transcript_path=transcript_path,
+            species_name=args.species_residual_name,
+            strict_targets=residual_targets,
+            plateau_window_chunks=args.plateau_window_chunks,
+            plateau_rel_change_tol=args.plateau_rel_change_tol,
+            plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
+            stage_name=f"{stage_name}_blending_{index + 1}",
+        )
+        history.extend(chunk_history)
+        step["assessment"] = stage_iteration_assessment(
+            chunk_history,
+            args,
+            residual_targets,
+        )
+
+    after = read_second_order_blending(solver)
+    blending_result["after"] = after.get("value", "")
+    if after.get("status") == "READ_CONFIRMED":
+        blending_result["status"] = "RAMP_CONFIRMED"
+    else:
+        blending_result["status"] = "RAMP_COMPLETED_READBACK_FAILED"
+        blending_result.setdefault("errors", []).extend(after.get("errors", []))
+    return history, plateau_result, blending_result
+
+
+def run_staged_restore_component(
+    solver: Any,
+    args: argparse.Namespace,
+    transcript_path: Path | None,
+    stage_label: str,
+    original_state: dict[str, Any],
+    iterations: int,
+    residual_targets: dict[str, float],
+    blending_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    key = STAGED_RESTORE_STAGE_TO_KEY[stage_label]
+    stage_prefix = stage_label.upper()
+    result: dict[str, Any] = {
+        "stage": stage_label,
+        "key": key,
+        "status": f"{stage_prefix}_RESTORE_NOT_CONVERGED",
+        "iterations_requested": iterations,
+        "restore_outcome": {},
+        "history": [],
+        "plateau": {},
+        "assessment": {},
+    }
+    candidates = second_order_target_candidates(original_state, key)
+    restore_outcome = apply_discretization_target(solver, key, candidates)
+    result["restore_outcome"] = restore_outcome
+    if restore_outcome.get("status") != "CONFIRMED":
+        result["status"] = f"{stage_prefix}_RESTORE_READBACK_FAILED"
+        result["assessment"] = {
+            "details": "Discretization readback did not confirm the staged restore.",
+        }
+        return result
+
+    if stage_label == "species" and blending_result and blending_result.get("editable"):
+        history, plateau_result, blending_result = run_blending_ramp_iterations(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            stage_name=f"restore_{stage_label}_stage",
+            total_iterations=iterations,
+            residual_targets=residual_targets,
+            blending_result=blending_result,
+        )
+        result["blending_result"] = blending_result
+    else:
+        history, plateau_result = run_plain_restore_iterations(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            stage_name=f"restore_{stage_label}_stage",
+            iterations=iterations,
+            residual_targets=residual_targets,
+        )
+
+    result["history"] = history
+    result["plateau"] = plateau_result
+    assessment = stage_iteration_assessment(history, args, residual_targets)
+    result["assessment"] = assessment
+    if assessment.get("strict_converged"):
+        result["status"] = f"{stage_prefix}_RESTORE_CONVERGED"
+    return result
+
+
+def build_staged_restore_convergence_json(
+    first_order: dict[str, Any],
+    pressure: dict[str, Any] | None,
+    momentum: dict[str, Any] | None,
+    species: dict[str, Any] | None,
+    classification: dict[str, Any],
+    hotr_result: dict[str, Any],
+    blending_result: dict[str, Any],
+    final_discretization: dict[str, Any],
+) -> str:
+    def compact(stage: dict[str, Any] | None) -> dict[str, Any] | None:
+        if stage is None:
+            return None
+        return {key: value for key, value in stage.items() if key != "history"}
+
+    payload = {
+        "first_order_stage": first_order,
+        "restore_pressure_stage": compact(pressure),
+        "restore_momentum_stage": compact(momentum),
+        "restore_species_stage": compact(species),
+        "high_order_term_relaxation": hotr_result,
+        "second_order_blending": blending_result,
+        "final_discretization": final_discretization,
+        "classification": classification,
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def execute_staged_second_order_restore(
+    solver: Any,
+    args: argparse.Namespace,
+    transcript_path: Path | None,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    result["staged_restore_enabled"] = True
+    result["final_assessment_window"] = "staged_second_order_restore"
+    first_order_state = result["strategy_settings"]
+    original_state = first_order_state.get("discretization_before", {})
+
+    history: list[dict[str, Any]] = []
+    first_order_history, first_order_plateau = run_iteration_chunks(
+        solver=solver,
+        total_iterations=args.additional_iterations,
+        chunk_size=args.iteration_chunk_size,
+        transcript_path=transcript_path,
+        species_name=args.species_residual_name,
+        strict_targets=result["residual_targets"],
+        plateau_window_chunks=args.plateau_window_chunks,
+        plateau_rel_change_tol=args.plateau_rel_change_tol,
+        plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
+        stage_name="staged_first_order_stage",
+        early_stop_on_strict_residual=True,
+    )
+    history.extend(first_order_history)
+    result["history"] = history
+    result["plateau_assessment"] = first_order_plateau
+    first_order_assessment = stage_iteration_assessment(
+        first_order_history,
+        args,
+        result["residual_targets"],
+    )
+    result["first_order_stage_residual_latest"] = first_order_assessment[
+        "latest_residuals"
+    ]
+    result["first_order_stage_report_values"] = first_order_assessment[
+        "latest_reports"
+    ]
+    result["residual_latest"] = first_order_assessment["latest_residuals"]
+    result["residual_assessment"] = first_order_assessment["residual"]
+
+    if not first_order_assessment["residual"].get("strict_met"):
+        classification = classify_convergence(
+            first_order_assessment["monitor"],
+            first_order_assessment["residual"],
+            first_order_plateau,
+        )
+        result["strategy_stage_status"] = classification["status"]
+        result["limiting_restore_stage"] = "first_order"
+        result["final_assessment_reason"] = (
+            "First-order stage did not meet the strict residual target; staged "
+            "second-order restore was not attempted."
+        )
+        result["convergence_assessment"] = build_staged_restore_convergence_json(
+            first_order=first_order_assessment,
+            pressure=None,
+            momentum=None,
+            species=None,
+            classification=classification,
+            hotr_result={},
+            blending_result={},
+            final_discretization={},
+        )
+        return result
+
+    hotr_result = apply_high_order_term_relaxation(
+        solver,
+        bool(args.use_high_order_term_relaxation),
+    )
+    result["high_order_term_relaxation_before"] = hotr_result.get("before", "")
+    result["high_order_term_relaxation_after"] = hotr_result.get("after", "")
+    result["high_order_term_relaxation_apply_status"] = hotr_result.get("status", "")
+
+    blending_result = prepare_second_order_blending(solver, args)
+    result["second_order_blending_before"] = blending_result.get("before", "")
+    result["second_order_blending_after"] = blending_result.get("after", "")
+    result["second_order_blending_apply_status"] = blending_result.get("status", "")
+
+    stage_results: dict[str, dict[str, Any]] = {}
+    stage_iterations = {
+        "pressure": args.restore_pressure_iterations,
+        "momentum": args.restore_momentum_iterations,
+        "species": args.restore_species_iterations,
+    }
+    final_status_by_stage = {
+        "pressure": "PRESSURE_RESTORE_NOT_CONVERGED",
+        "momentum": "MOMENTUM_RESTORE_NOT_CONVERGED",
+        "species": "SPECIES_RESTORE_NOT_CONVERGED",
+    }
+
+    for stage_label in ("pressure", "momentum", "species"):
+        stage_result = run_staged_restore_component(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            stage_label=stage_label,
+            original_state=original_state,
+            iterations=stage_iterations[stage_label],
+            residual_targets=result["residual_targets"],
+            blending_result=blending_result if stage_label == "species" else None,
+        )
+        stage_results[stage_label] = stage_result
+        history.extend(stage_result.get("history", []))
+        result["history"] = history
+        result["plateau_assessment"] = stage_result.get("plateau", {})
+        result[f"restore_{stage_label}_status"] = stage_result.get("status", "")
+        assessment = stage_result.get("assessment", {})
+        result[f"restore_{stage_label}_residual_latest"] = assessment.get(
+            "latest_residuals",
+            {},
+        )
+        result[f"restore_{stage_label}_report_values"] = assessment.get(
+            "latest_reports",
+            {},
+        )
+        result["residual_latest"] = assessment.get("latest_residuals", {})
+        result["residual_assessment"] = assessment.get("residual", {})
+        result["monitor_assessment"] = assessment.get("monitor", {})
+        if stage_label == "species" and "blending_result" in stage_result:
+            blending_result = stage_result["blending_result"]
+            result["second_order_blending_after"] = blending_result.get("after", "")
+            result["second_order_blending_apply_status"] = blending_result.get(
+                "status",
+                "",
+            )
+
+        if stage_result.get("status") != f"{stage_label.upper()}_RESTORE_CONVERGED":
+            final_status = final_status_by_stage[stage_label]
+            final_discretization_for_failure: dict[str, Any] = {}
+            final_second_order_for_failure = False
+            if stage_label == "species":
+                try:
+                    final_discretization_for_failure = read_discretization_settings(solver)
+                except Exception as exc:
+                    final_discretization_for_failure = {
+                        "error": f"{type(exc).__name__}: {exc}"
+                    }
+                result["discretization_after_restore"] = json_field(
+                    final_discretization_for_failure
+                )
+                final_second_order_for_failure = (
+                    isinstance(final_discretization_for_failure, dict)
+                    and full_second_order_discretization_confirmed(
+                        final_discretization_for_failure
+                    )
+                )
+                result["discretization_restore_status"] = (
+                    "RESTORE_CONFIRMED"
+                    if final_second_order_for_failure
+                    else "RESTORE_NOT_CONFIRMED"
+                )
+            if (
+                stage_label == "species"
+                and final_second_order_for_failure
+                and residual_equation_above_target(
+                    assessment.get("residual", {}),
+                    args.species_residual_name,
+                )
+            ):
+                final_status = "SECOND_ORDER_SPECIES_RESIDUAL_PLATEAU"
+            classification = {
+                "status": final_status,
+                "details": (
+                    f"{stage_label} restore did not meet strict residual and "
+                    "report stability criteria."
+                ),
+            }
+            result["strategy_stage_status"] = final_status
+            result["limiting_restore_stage"] = stage_label
+            result["final_assessment_reason"] = classification["details"]
+            result["convergence_assessment"] = build_staged_restore_convergence_json(
+                first_order=first_order_assessment,
+                pressure=stage_results.get("pressure"),
+                momentum=stage_results.get("momentum"),
+                species=stage_results.get("species"),
+                classification=classification,
+                hotr_result=hotr_result,
+                blending_result=blending_result,
+                final_discretization=final_discretization_for_failure,
+            )
+            return result
+
+    try:
+        final_discretization = read_discretization_settings(solver)
+    except Exception as exc:
+        final_discretization = {"error": f"{type(exc).__name__}: {exc}"}
+    result["discretization_after_restore"] = json_field(final_discretization)
+    final_second_order = (
+        isinstance(final_discretization, dict)
+        and full_second_order_discretization_confirmed(final_discretization)
+    )
+    result["discretization_restore_status"] = (
+        "RESTORE_CONFIRMED" if final_second_order else "RESTORE_NOT_CONFIRMED"
+    )
+
+    species_assessment = stage_results["species"].get("assessment", {})
+    staged_strict = bool(
+        final_second_order
+        and species_assessment.get("strict_converged")
+        and all(
+            stage_results[label].get("status") == f"{label.upper()}_RESTORE_CONVERGED"
+            for label in ("pressure", "momentum", "species")
+        )
+    )
+    result["staged_restore_strict_converged"] = staged_strict
+    if staged_strict:
+        classification = {
+            "status": "STRICT_CONVERGED_ATTEMPT",
+            "details": (
+                "Pressure, momentum, and species restored to second order with "
+                "strict residual target met and stable report monitors."
+            ),
+        }
+    elif residual_equation_above_target(
+        species_assessment.get("residual", {}),
+        args.species_residual_name,
+    ):
+        classification = {
+            "status": "SECOND_ORDER_SPECIES_RESIDUAL_PLATEAU",
+            "details": "Species residual remains above target after full restore.",
+        }
+    else:
+        classification = {
+            "status": "SPECIES_RESTORE_NOT_CONVERGED",
+            "details": (
+                "Full second-order readback or final species-stage strict "
+                "convergence was not confirmed."
+            ),
+        }
+
+    result["strategy_stage_status"] = classification["status"]
+    result["limiting_restore_stage"] = "" if staged_strict else "species"
+    result["final_assessment_reason"] = classification["details"]
+    result["convergence_assessment"] = build_staged_restore_convergence_json(
+        first_order=first_order_assessment,
+        pressure=stage_results.get("pressure"),
+        momentum=stage_results.get("momentum"),
+        species=stage_results.get("species"),
+        classification=classification,
+        hotr_result=hotr_result,
+        blending_result=blending_result,
+        final_discretization=final_discretization,
+    )
+    return result
+
+
 def execute_solver_strategy(
     solver: Any,
     args: argparse.Namespace,
@@ -2775,6 +3731,24 @@ def execute_solver_strategy(
         "first_order_stage_report_values": {},
         "final_assessment_window": "",
         "final_assessment_reason": "",
+        "staged_restore_enabled": args.solver_strategy == "staged_second_order_restore",
+        "high_order_term_relaxation_before": "",
+        "high_order_term_relaxation_after": "",
+        "high_order_term_relaxation_apply_status": "",
+        "second_order_blending_before": "",
+        "second_order_blending_after": "",
+        "second_order_blending_apply_status": "",
+        "restore_pressure_status": "",
+        "restore_pressure_residual_latest": {},
+        "restore_pressure_report_values": {},
+        "restore_momentum_status": "",
+        "restore_momentum_residual_latest": {},
+        "restore_momentum_report_values": {},
+        "restore_species_status": "",
+        "restore_species_residual_latest": {},
+        "restore_species_report_values": {},
+        "limiting_restore_stage": "",
+        "staged_restore_strict_converged": False,
     }
     diagnostics = collect_solver_diagnostics(solver)
     result["diagnostics"] = diagnostics
@@ -2796,7 +3770,10 @@ def execute_solver_strategy(
             result["strategy_settings"] = {"status": "DAMPED_STEADY_SETTINGS_APPLIED"}
         elif args.solver_strategy == "pseudo_transient_ramp":
             result["strategy_settings"] = apply_pseudo_transient_ramp(solver, args)
-        elif args.solver_strategy == "first_order_ramp":
+        elif args.solver_strategy in {
+            "first_order_ramp",
+            "staged_second_order_restore",
+        }:
             result["strategy_settings"] = apply_first_order_ramp(solver)
             first_order_state = result["strategy_settings"]
             result["first_order_apply_status"] = str(first_order_state.get("status", ""))
@@ -2858,6 +3835,14 @@ def execute_solver_strategy(
             message=f"Could not apply solver strategy {args.solver_strategy}: {exc}",
             original_exception=exc,
         ) from exc
+
+    if args.solver_strategy == "staged_second_order_restore":
+        return execute_staged_second_order_restore(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            result=result,
+        )
 
     history, plateau_assessment = run_iteration_chunks(
         solver=solver,
@@ -3376,6 +4361,13 @@ def run_live_solver_rerun(
         print(f"promote_on_success={args.promote_on_success}")
         print(f"additional_iterations={args.additional_iterations}")
         print(f"post_restore_polish_iterations={args.post_restore_polish_iterations}")
+        print(f"restore_pressure_iterations={args.restore_pressure_iterations}")
+        print(f"restore_momentum_iterations={args.restore_momentum_iterations}")
+        print(f"restore_species_iterations={args.restore_species_iterations}")
+        print(f"use_high_order_term_relaxation={args.use_high_order_term_relaxation}")
+        print(f"second_order_blending_start={args.second_order_blending_start}")
+        print(f"second_order_blending_end={args.second_order_blending_end}")
+        print(f"second_order_blending_steps={args.second_order_blending_steps}")
 
         launch_metadata: dict[str, Any] = {}
         solver = launch_solver_session(
@@ -3428,15 +4420,19 @@ def run_live_solver_rerun(
             )
             return result
 
-        first_order_promotion_ready = (
-            args.solver_strategy != "first_order_ramp"
-            or (
+        strategy_promotion_ready = True
+        if args.solver_strategy == "first_order_ramp":
+            strategy_promotion_ready = (
                 bool(strategy_result.get("post_restore_strict_converged"))
                 and strategy_result.get("discretization_restore_status") == "RESTORE_CONFIRMED"
             )
-        )
+        elif args.solver_strategy == "staged_second_order_restore":
+            strategy_promotion_ready = (
+                bool(strategy_result.get("staged_restore_strict_converged"))
+                and strategy_result.get("discretization_restore_status") == "RESTORE_CONFIRMED"
+            )
 
-        if stage_status == "STRICT_CONVERGED_ATTEMPT" and first_order_promotion_ready:
+        if stage_status == "STRICT_CONVERGED_ATTEMPT" and strategy_promotion_ready:
             # Only strict-target convergence with stable monitors is treated as
             # success; never mark success on a merely stable-but-relaxed result.
             result["rerun_status"] = (
@@ -3455,6 +4451,10 @@ def run_live_solver_rerun(
             "SECOND_ORDER_POST_RESTORE_NOT_CONVERGED",
             "SECOND_ORDER_POST_RESTORE_MONITOR_UNSTABLE",
             "FIRST_ORDER_CONVERGED_RESTORE_CONFIRMED_NEEDS_POST_RESTORE_POLISH",
+            "PRESSURE_RESTORE_NOT_CONVERGED",
+            "MOMENTUM_RESTORE_NOT_CONVERGED",
+            "SPECIES_RESTORE_NOT_CONVERGED",
+            "SECOND_ORDER_SPECIES_RESIDUAL_PLATEAU",
         }:
             result["rerun_status"] = stage_status
         else:
@@ -3641,6 +4641,13 @@ def process_case(
         print(f"promote_on_success={str(args.promote_on_success).lower()}")
         print(f"additional_iterations={args.additional_iterations}")
         print(f"post_restore_polish_iterations={args.post_restore_polish_iterations}")
+        print(f"restore_pressure_iterations={args.restore_pressure_iterations}")
+        print(f"restore_momentum_iterations={args.restore_momentum_iterations}")
+        print(f"restore_species_iterations={args.restore_species_iterations}")
+        print(f"use_high_order_term_relaxation={args.use_high_order_term_relaxation}")
+        print(f"second_order_blending_start={args.second_order_blending_start}")
+        print(f"second_order_blending_end={args.second_order_blending_end}")
+        print(f"second_order_blending_steps={args.second_order_blending_steps}")
         print(f"case_dir exists: {case_dir_resolved.is_dir()}")
         print(f"final case exists: {final_case_file_resolved.is_file()}")
         print(f"final data exists: {final_data_file_resolved.is_file()}")
@@ -3746,6 +4753,17 @@ def process_case(
                     "first_order_error_summary",
                     "final_assessment_window",
                     "final_assessment_reason",
+                    "staged_restore_enabled",
+                    "high_order_term_relaxation_before",
+                    "high_order_term_relaxation_after",
+                    "high_order_term_relaxation_apply_status",
+                    "second_order_blending_before",
+                    "second_order_blending_after",
+                    "second_order_blending_apply_status",
+                    "restore_pressure_status",
+                    "restore_momentum_status",
+                    "restore_species_status",
+                    "limiting_restore_stage",
                     "failure_stage",
                     "returncode_or_exception",
                 ]:
@@ -3757,6 +4775,9 @@ def process_case(
                         args.post_restore_polish_iterations,
                     )
                 )
+                record["staged_restore_enabled"] = str(
+                    bool(live_result.get("staged_restore_enabled"))
+                ).lower()
                 record["convergence_assessment"] = str(
                     live_result.get("convergence_assessment", "")
                 )
@@ -3813,6 +4834,39 @@ def process_case(
                 ).lower()
                 record["post_restore_strict_converged"] = str(
                     bool(live_result.get("post_restore_strict_converged"))
+                ).lower()
+                record["restore_pressure_residual_latest"] = json.dumps(
+                    live_result.get("restore_pressure_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["restore_pressure_report_values"] = json.dumps(
+                    live_result.get("restore_pressure_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["restore_momentum_residual_latest"] = json.dumps(
+                    live_result.get("restore_momentum_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["restore_momentum_report_values"] = json.dumps(
+                    live_result.get("restore_momentum_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["restore_species_residual_latest"] = json.dumps(
+                    live_result.get("restore_species_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["restore_species_report_values"] = json.dumps(
+                    live_result.get("restore_species_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["staged_restore_strict_converged"] = str(
+                    bool(live_result.get("staged_restore_strict_converged"))
                 ).lower()
                 residual_assessment = live_result.get("residual_assessment", {}) or {}
                 record["residual_target_met"] = str(bool(residual_assessment.get("strict_met"))).lower()
@@ -3873,9 +4927,16 @@ def process_case(
             promotion_allowed = (
                 record["strict_convergence_status"] == "STRICT_CONVERGED_ATTEMPT"
                 and (
-                    args.solver_strategy != "first_order_ramp"
+                    args.solver_strategy
+                    not in {"first_order_ramp", "staged_second_order_restore"}
                     or (
-                        record["post_restore_strict_converged"] == "true"
+                        args.solver_strategy == "first_order_ramp"
+                        and record["post_restore_strict_converged"] == "true"
+                        and record["discretization_restore_status"] == "RESTORE_CONFIRMED"
+                    )
+                    or (
+                        args.solver_strategy == "staged_second_order_restore"
+                        and record["staged_restore_strict_converged"] == "true"
                         and record["discretization_restore_status"] == "RESTORE_CONFIRMED"
                     )
                 )
@@ -3883,7 +4944,7 @@ def process_case(
             if live_status == "SUCCESS_READY_TO_PROMOTE" and not promotion_allowed:
                 record["rerun_status"] = "NEEDS_MANUAL_REVIEW"
                 record["error_summary"] = (
-                    "Promotion blocked because strict convergence, post-restore "
+                    "Promotion blocked because strict convergence, strategy-specific "
                     "strict convergence, or restore confirmation was missing."
                 )
                 record["suggested_next_action"] = (
@@ -3966,6 +5027,30 @@ def process_case(
                     "Run first_order_ramp with --post-restore-polish-iterations "
                     "greater than zero so final classification uses restored "
                     "second-order monitor stability."
+                )
+            elif record["rerun_status"] == "PRESSURE_RESTORE_NOT_CONVERGED":
+                record["suggested_next_action"] = (
+                    "The staged pressure restore did not meet strict residual and "
+                    "report stability criteria. Review restore_pressure_* fields "
+                    "before increasing stage iterations."
+                )
+            elif record["rerun_status"] == "MOMENTUM_RESTORE_NOT_CONVERGED":
+                record["suggested_next_action"] = (
+                    "Pressure restore passed, but staged momentum restore did not. "
+                    "Review restore_momentum_* fields and consider a longer "
+                    "--restore-momentum-iterations budget."
+                )
+            elif record["rerun_status"] == "SPECIES_RESTORE_NOT_CONVERGED":
+                record["suggested_next_action"] = (
+                    "Pressure and momentum restore passed, but final species "
+                    "restore did not meet strict residual/report criteria. Review "
+                    "restore_species_* and blending fields."
+                )
+            elif record["rerun_status"] == "SECOND_ORDER_SPECIES_RESIDUAL_PLATEAU":
+                record["suggested_next_action"] = (
+                    "The full staged second-order restore completed, but the "
+                    "species residual remains above target. Increase "
+                    "--restore-species-iterations or review species numerics."
                 )
             elif record["rerun_status"] == "COMPLETED_NEEDS_REVIEW":
                 record["suggested_next_action"] = (
@@ -4055,6 +5140,9 @@ def write_summary(
         "Solver settings:",
         f"  additional_iterations: {args.additional_iterations}",
         f"  post_restore_polish_iterations: {args.post_restore_polish_iterations}",
+        f"  restore_pressure_iterations: {args.restore_pressure_iterations}",
+        f"  restore_momentum_iterations: {args.restore_momentum_iterations}",
+        f"  restore_species_iterations: {args.restore_species_iterations}",
         f"  solver_strategy: {args.solver_strategy}",
         f"  allow_iterate_after_ramp_failure: {args.allow_iterate_after_ramp_failure}",
         f"  iteration_chunk_size: {args.iteration_chunk_size}",
@@ -4067,6 +5155,10 @@ def write_summary(
         f"  plateau_min_residual_above_target_factor: {args.plateau_min_residual_above_target_factor}",
         f"  promote_on_success: {args.promote_on_success}",
         f"  pseudo_transient: {args.use_pseudo_transient if args.use_pseudo_transient is not None else 'preserve'}",
+        f"  use_high_order_term_relaxation: {args.use_high_order_term_relaxation}",
+        f"  second_order_blending_start: {args.second_order_blending_start}",
+        f"  second_order_blending_end: {args.second_order_blending_end}",
+        f"  second_order_blending_steps: {args.second_order_blending_steps}",
         f"  pressure_velocity_coupling: {args.pressure_velocity_coupling}",
         f"  relaxation_profile: {args.relaxation_profile}",
         f"  write_transcript: {args.write_transcript}",
