@@ -45,6 +45,9 @@ PLAN_FIELDS = [
     "planned_backup_dir",
     "matrix_case_name",
     "final_pair_exists",
+    "case_dir_exists",
+    "final_case_exists",
+    "final_data_exists",
 ]
 
 RESULT_FIELDS = [
@@ -67,6 +70,13 @@ RESULT_FIELDS = [
     "error_summary",
     "suggested_next_action",
     "log_file",
+    "launch_mode",
+    "launch_working_dir",
+    "launch_case_dir_resolved",
+    "launch_exception_type",
+    "launch_exception_message",
+    "processor_count",
+    "product_version",
 ]
 
 
@@ -264,6 +274,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Fluent product version for live reruns.",
     )
     parser.add_argument(
+        "--launch-mode",
+        choices=["solver", "meshing_to_solver"],
+        default="solver",
+        help=(
+            "How to launch Fluent for live reruns. solver launches directly in "
+            "solver mode; meshing_to_solver keeps the older compatibility path."
+        ),
+    )
+    parser.add_argument(
         "--processor-count",
         type=positive_int,
         default=50,
@@ -271,8 +290,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--graphics-driver",
-        default="dx11",
-        help="Fluent graphics driver for live reruns.",
+        default=None,
+        help=(
+            "Optional Fluent graphics driver for live reruns. Omit for solver-only "
+            "batch runs."
+        ),
     )
     parser.add_argument(
         "--fluent-start-timeout",
@@ -314,6 +336,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ]
     reject_windows_drive_paths_on_non_windows(unsafe_paths, parser)
 
+    args.results_root = args.results_root.resolve()
+    args.candidates_csv = args.candidates_csv.resolve()
+    args.output_dir = args.output_dir.resolve()
+    args.logs_dir = args.logs_dir.resolve()
+    args.report_script = args.report_script.resolve()
+
     report_cli_safe, report_cli_reason = report_worker_has_safe_direct_cli(args.report_script)
     args.report_cli_safe = report_cli_safe
     args.report_cli_reason = report_cli_reason
@@ -341,9 +369,36 @@ def reject_windows_drive_paths_on_non_windows(
     )
 
 
-def as_fluent_path(path: Path) -> str:
+def resolve_existing_dir(path: Path, label: str) -> Path:
+    """Resolve and require an existing directory."""
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"{label} is not an existing directory: {resolved}")
+    return resolved
+
+
+def resolve_existing_file(path: Path, label: str) -> Path:
+    """Resolve and require an existing file."""
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{label} is not an existing file: {resolved}")
+    return resolved
+
+
+def fluent_path(path: Path) -> str:
     """Convert a path to a Fluent-friendly absolute path."""
     return str(path.resolve()).replace("\\", "/")
+
+
+@contextmanager
+def pushd(path: Path):
+    """Temporarily change the process working directory."""
+    old = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old)
 
 
 def now_stamp() -> str:
@@ -483,7 +538,10 @@ def build_plan_rows(
             geo_name,
             case_name,
         )
-        final_pair_exists = final_case_file.is_file() and final_data_file.is_file()
+        case_dir_exists = case_dir.is_dir()
+        final_case_exists = final_case_file.is_file()
+        final_data_exists = final_data_file.is_file()
+        final_pair_exists = final_case_exists and final_data_exists
         planned_backup_dir = (
             case_dir / "post" / "solver_rerun" / "backups" / timestamp
         )
@@ -504,6 +562,9 @@ def build_plan_rows(
                 "planned_backup_dir": str(planned_backup_dir),
                 "matrix_case_name": "true",
                 "final_pair_exists": str(final_pair_exists).lower(),
+                "case_dir_exists": str(case_dir_exists).lower(),
+                "final_case_exists": str(final_case_exists).lower(),
+                "final_data_exists": str(final_data_exists).lower(),
             }
         )
 
@@ -544,9 +605,13 @@ def print_plan(plan_rows: list[dict[str, str]], stats: dict[str, int]) -> None:
         print(
             "  "
             f"{row['selected_index']}. {row['geo_name']}/{row['case_name']} "
+            f"case_dir_exists={row['case_dir_exists']} "
             f"final_pair_exists={row['final_pair_exists']} "
             f"convergence={row['convergence_status_before'] or 'UNKNOWN'}"
         )
+        print(f"     case_dir={row['case_dir']}")
+        print(f"     final_case_file={row['final_case_file']}")
+        print(f"     final_data_file={row['final_data_file']}")
 
 
 def load_prior_successes(results_csv: Path) -> set[tuple[str, str]]:
@@ -591,6 +656,7 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         case_name,
     )
     log_file = args.logs_dir / f"{geo_name}__{case_name}__solver_rerun.log"
+    case_dir = final_case_file.parent
 
     return {
         "selected_index": row["selected_index"],
@@ -612,6 +678,13 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "error_summary": "",
         "suggested_next_action": "",
         "log_file": str(log_file),
+        "launch_mode": args.launch_mode,
+        "launch_working_dir": str(case_dir.resolve()),
+        "launch_case_dir_resolved": str(case_dir.resolve()),
+        "launch_exception_type": "",
+        "launch_exception_message": "",
+        "processor_count": str(args.processor_count),
+        "product_version": args.product_version,
     }
 
 
@@ -621,7 +694,10 @@ def create_backup(
     final_data_file: Path,
     timestamp: str,
 ) -> Path:
-    backup_dir = case_dir / "post" / "solver_rerun" / "backups" / timestamp
+    case_dir = case_dir.resolve()
+    final_case_file = final_case_file.resolve()
+    final_data_file = final_data_file.resolve()
+    backup_dir = (case_dir / "post" / "solver_rerun" / "backups" / timestamp).resolve()
     backup_dir.mkdir(parents=True, exist_ok=False)
     shutil.copy2(final_case_file, backup_dir / final_case_file.name)
     shutil.copy2(final_data_file, backup_dir / final_data_file.name)
@@ -811,9 +887,20 @@ def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> None:
     )
 
 
+class FluentLaunchError(RuntimeError):
+    """Raised when Fluent cannot be launched or switched into solver mode."""
+
+    def __init__(self, message: str, original_exception: BaseException) -> None:
+        super().__init__(message)
+        self.original_exception = original_exception
+        self.exception_type = type(original_exception).__name__
+        self.exception_message = str(original_exception)
+
+
 def run_live_solver_rerun(
     case_dir: Path,
     final_case_file: Path,
+    final_data_file: Path,
     args: argparse.Namespace,
     log_path: Path,
 ) -> None:
@@ -823,41 +910,68 @@ def run_live_solver_rerun(
 
     pyfluent.config.check_health_timeout = args.fluent_health_timeout
 
+    case_dir = resolve_existing_dir(case_dir, "case_dir")
+    final_case_file = resolve_existing_file(final_case_file, "final case file")
+    final_data_file = resolve_existing_file(final_data_file, "final data file")
+    log_path = log_path.resolve()
+    launch_working_dir = case_dir
+    transcript_path = log_path.with_name(log_path.stem + "__fluent.trn").resolve()
+
     meshing = None
     solver = None
     transcript_is_running = False
-    original_working_directory = Path.cwd()
-    transcript_path = log_path.with_name(log_path.stem + "__fluent.trn")
 
     try:
-        os.chdir(case_dir)
-
-        print("\nLaunching Fluent in meshing mode, then switching to solver.")
+        print("\nLaunching Fluent for solver rerun.")
+        print(f"cwd before launch={Path.cwd()}")
         print(f"product_version={args.product_version}")
         print(f"processor_count={args.processor_count}")
-        print(f"case_dir={case_dir}")
+        print(f"launch_mode={args.launch_mode}")
+        print(f"launch_working_dir={launch_working_dir}")
+        print(f"resolved_case_dir={case_dir}")
+        print(f"resolved_final_case_file={final_case_file}")
+        print(f"resolved_final_data_file={final_data_file}")
+        print(f"additional_iterations={args.additional_iterations}")
 
-        meshing = pyfluent.launch_fluent(
-            product_version=args.product_version,
-            mode="meshing",
-            dimension=3,
-            precision="double",
-            processor_count=args.processor_count,
-            ui_mode="gui",
-            graphics_driver=args.graphics_driver,
-            start_timeout=args.fluent_start_timeout,
-            cwd=as_fluent_path(case_dir),
-        )
-        solver = meshing.switch_to_solver()
-        meshing = None
+        launch_kwargs = {
+            "product_version": args.product_version,
+            "mode": "solver" if args.launch_mode == "solver" else "meshing",
+            "dimension": 3,
+            "precision": "double",
+            "processor_count": args.processor_count,
+            "ui_mode": "gui",
+            "start_timeout": args.fluent_start_timeout,
+            "cwd": fluent_path(launch_working_dir),
+        }
+        if args.graphics_driver:
+            launch_kwargs["graphics_driver"] = args.graphics_driver
+
+        try:
+            with pushd(launch_working_dir):
+                print(f"cwd inside launch context={Path.cwd()}")
+                print(f"launch kwargs={launch_kwargs}")
+                launched = pyfluent.launch_fluent(**launch_kwargs)
+
+                if args.launch_mode == "meshing_to_solver":
+                    meshing = launched
+                    print("Switching from meshing mode to solver mode.")
+                    solver = meshing.switch_to_solver()
+                    meshing = None
+                else:
+                    solver = launched
+        except Exception as exc:
+            raise FluentLaunchError(
+                f"Fluent launch failed during {args.launch_mode} startup: {exc}",
+                exc,
+            ) from exc
 
         if args.write_transcript:
             print(f"Starting Fluent transcript: {transcript_path}")
-            solver.transcript.start(file_name=as_fluent_path(transcript_path))
+            solver.transcript.start(file_name=fluent_path(transcript_path))
             transcript_is_running = True
 
         print(f"Reading final case/data: {final_case_file}")
-        solver.settings.file.read_case_data(file_name=as_fluent_path(final_case_file))
+        solver.settings.file.read_case_data(file_name=fluent_path(final_case_file))
         print("Final case/data loaded. Solution will not be reinitialized.")
 
         apply_continuation_settings(solver=solver, args=args)
@@ -869,7 +983,7 @@ def run_live_solver_rerun(
         print("Continuation iterations completed.")
 
         print(f"Writing final case/data: {final_case_file}")
-        solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
+        solver.settings.file.write_case_data(file_name=fluent_path(final_case_file))
         print("Final case/data write completed.")
 
     finally:
@@ -891,11 +1005,6 @@ def run_live_solver_rerun(
                 solver.exit()
             except Exception as cleanup_error:
                 print(f"Warning: could not exit solver session: {cleanup_error}")
-
-        try:
-            os.chdir(original_working_directory)
-        except Exception as cleanup_error:
-            print(f"Warning: could not restore working directory: {cleanup_error}")
 
 
 def report_worker_has_safe_direct_cli(report_script: Path) -> tuple[bool, str]:
@@ -973,14 +1082,37 @@ def process_case(
         geo_name,
         case_name,
     )
-    log_path = Path(record["log_file"])
+    case_dir_resolved = case_dir.resolve()
+    final_case_file_resolved = final_case_file.resolve()
+    final_data_file_resolved = final_data_file.resolve()
+    launch_working_dir = case_dir_resolved
+    log_path = Path(record["log_file"]).resolve()
+    record["final_case_file"] = str(final_case_file_resolved)
+    record["final_data_file"] = str(final_data_file_resolved)
+    record["output_case_file"] = str(final_case_file_resolved)
+    record["output_data_file"] = str(final_data_file_resolved)
+    record["log_file"] = str(log_path)
+    record["launch_working_dir"] = str(launch_working_dir)
+    record["launch_case_dir_resolved"] = str(case_dir_resolved)
     start_time = time.monotonic()
 
     with case_log(log_path):
         print(f"Processing selected case {record['selected_index']}: {geo_name}/{case_name}")
         print(f"Dry run: {args.dry_run}")
-        print(f"Final case file: {final_case_file}")
-        print(f"Final data file: {final_data_file}")
+        print(f"cwd before launch: {Path.cwd()}")
+        print(f"resolved results_root: {args.results_root.resolve()}")
+        print(f"resolved case_dir: {case_dir_resolved}")
+        print(f"resolved final_case_file: {final_case_file_resolved}")
+        print(f"resolved final_data_file: {final_data_file_resolved}")
+        print(f"launch_mode: {args.launch_mode}")
+        print(f"launch_working_dir: {launch_working_dir}")
+        print(f"processor_count: {args.processor_count}")
+        print(f"product_version: {args.product_version}")
+        print(f"graphics_driver: {args.graphics_driver or 'not supplied'}")
+        print(f"additional_iterations: {args.additional_iterations}")
+        print(f"case_dir exists: {case_dir_resolved.is_dir()}")
+        print(f"final case exists: {final_case_file_resolved.is_file()}")
+        print(f"final data exists: {final_data_file_resolved.is_file()}")
 
         try:
             if (
@@ -995,7 +1127,11 @@ def process_case(
                 )
                 return record
 
-            final_pair_exists = final_case_file.is_file() and final_data_file.is_file()
+            case_dir_exists = case_dir_resolved.is_dir()
+            final_pair_exists = (
+                final_case_file_resolved.is_file()
+                and final_data_file_resolved.is_file()
+            )
 
             if args.dry_run:
                 record["rerun_status"] = "DRY_RUN"
@@ -1010,12 +1146,23 @@ def process_case(
                     record["suggested_next_action"] = "Run without --dry-run on the Windows server."
                 return record
 
+            if not case_dir_exists:
+                record["rerun_status"] = "FAILED_INVALID_CASE_DIR"
+                record["returncode_or_exception"] = "invalid case directory"
+                record["error_summary"] = (
+                    f"Case directory is not an existing directory: {case_dir_resolved}"
+                )
+                record["suggested_next_action"] = (
+                    "Verify --results-root, --geo-name, and --case-name on the Windows server."
+                )
+                return record
+
             if not final_pair_exists:
                 record["rerun_status"] = "FAILED_MISSING_FINAL_PAIR"
                 record["returncode_or_exception"] = "missing final case/data pair"
                 missing = [
                     str(path)
-                    for path in (final_case_file, final_data_file)
+                    for path in (final_case_file_resolved, final_data_file_resolved)
                     if not path.is_file()
                 ]
                 record["error_summary"] = "Missing: " + "; ".join(missing)
@@ -1037,9 +1184,9 @@ def process_case(
 
             try:
                 backup_dir = create_backup(
-                    case_dir=case_dir,
-                    final_case_file=final_case_file,
-                    final_data_file=final_data_file,
+                    case_dir=case_dir_resolved,
+                    final_case_file=final_case_file_resolved,
+                    final_data_file=final_data_file_resolved,
                     timestamp=run_timestamp,
                 )
                 record["backup_dir"] = str(backup_dir)
@@ -1056,11 +1203,23 @@ def process_case(
 
             try:
                 run_live_solver_rerun(
-                    case_dir=case_dir,
-                    final_case_file=final_case_file,
+                    case_dir=case_dir_resolved,
+                    final_case_file=final_case_file_resolved,
+                    final_data_file=final_data_file_resolved,
                     args=args,
                     log_path=log_path,
                 )
+            except FluentLaunchError as exc:
+                record["rerun_status"] = "FAILED_LAUNCH"
+                record["returncode_or_exception"] = short_exception(exc)
+                record["launch_exception_type"] = exc.exception_type
+                record["launch_exception_message"] = exc.exception_message
+                record["error_summary"] = short_exception(exc)
+                record["suggested_next_action"] = (
+                    "Inspect the launch path, Fluent installation, and PyFluent startup log."
+                )
+                traceback.print_exc()
+                return record
             except Exception as exc:
                 record["rerun_status"] = "FAILED_EXCEPTION"
                 record["returncode_or_exception"] = short_exception(exc)
@@ -1071,7 +1230,7 @@ def process_case(
                 traceback.print_exc()
                 return record
 
-            if not final_case_file.is_file() or not final_data_file.is_file():
+            if not final_case_file_resolved.is_file() or not final_data_file_resolved.is_file():
                 record["rerun_status"] = "FAILED_OUTPUT_MISSING_AFTER_RUN"
                 record["returncode_or_exception"] = "output final case/data missing"
                 record["error_summary"] = (
@@ -1140,6 +1299,10 @@ def write_summary(
         f"  pressure_velocity_coupling: {args.pressure_velocity_coupling}",
         f"  relaxation_profile: {args.relaxation_profile}",
         f"  write_transcript: {args.write_transcript}",
+        f"  launch_mode: {args.launch_mode}",
+        f"  processor_count: {args.processor_count}",
+        f"  product_version: {args.product_version}",
+        f"  graphics_driver: {args.graphics_driver or 'not supplied'}",
         "",
         "Report extraction:",
         f"  requested: {args.run_report_after_success}",
