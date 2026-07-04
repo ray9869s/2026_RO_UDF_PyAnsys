@@ -100,6 +100,16 @@ RESULT_FIELDS = [
     "monitor_rel_tol",
     "residual_growth_limit",
     "product_version",
+    "residual_target_effective",
+    "relaxation_profile",
+    "relaxation_apply_status",
+    "relaxation_before",
+    "relaxation_after",
+    "residual_latest",
+    "residual_target_met",
+    "plateau_detected",
+    "plateau_reason",
+    "strict_convergence_status",
 ]
 
 
@@ -320,13 +330,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--engineering-residual-threshold",
-        type=positive_float,
-        default=1e-5,
+        "--plateau-window-chunks",
+        type=positive_int,
+        default=3,
         help=(
-            "Residual value used only to label an outcome ENGINEERING_STABLE_ONLY "
-            "when monitors are stable but the strict --residual-target is not met. "
-            "This never changes Fluent's actual residual convergence criteria."
+            "Number of most-recent iteration chunks inspected for a residual "
+            "plateau (stuck above target with little chunk-to-chunk change)."
+        ),
+    )
+    parser.add_argument(
+        "--plateau-rel-change-tol",
+        type=positive_float,
+        default=0.02,
+        help=(
+            "Relative change threshold over the plateau window below which a "
+            "still-unconverged residual equation is considered stuck."
+        ),
+    )
+    parser.add_argument(
+        "--plateau-min-residual-above-target-factor",
+        type=positive_float,
+        default=1.2,
+        help=(
+            "A residual equation must remain at least this many times its "
+            "strict target to be eligible for plateau detection."
         ),
     )
     parser.add_argument(
@@ -861,6 +888,16 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "monitor_rel_tol": str(args.monitor_rel_tol),
         "residual_growth_limit": str(args.residual_growth_limit),
         "product_version": args.product_version,
+        "residual_target_effective": "",
+        "relaxation_profile": args.relaxation_profile,
+        "relaxation_apply_status": "",
+        "relaxation_before": "",
+        "relaxation_after": "",
+        "residual_latest": "",
+        "residual_target_met": "",
+        "plateau_detected": "false",
+        "plateau_reason": "",
+        "strict_convergence_status": "",
     }
 
 
@@ -1274,7 +1311,7 @@ def apply_pseudo_transient(solver: Any, use_pseudo_transient: bool | None) -> No
     print("No supported pseudo-transient setting path was found.")
 
 
-def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> dict[str, float]:
+def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> tuple[dict[str, float], dict[str, Any]]:
     solution = solver.settings.solution
     residual_targets = apply_residual_targets(
         solution=solution,
@@ -1289,12 +1326,12 @@ def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> dict[s
         solver=solver,
         use_pseudo_transient=args.use_pseudo_transient,
     )
-    apply_real_under_relaxation(
+    relaxation_result = apply_real_under_relaxation(
         solver=solver,
         profile=args.relaxation_profile,
         species_name=args.species_residual_name,
     )
-    return residual_targets
+    return residual_targets, relaxation_result
 
 
 def list_object_names(named_object: Any) -> list[str]:
@@ -1615,17 +1652,80 @@ def parse_residuals_from_transcript_text(text: str, target_names: set[str]) -> d
     return latest
 
 
+def detect_residual_plateau(
+    history: list[dict[str, Any]],
+    strict_targets: dict[str, float],
+    window_chunks: int,
+    rel_change_tol: float,
+    min_above_target_factor: float,
+) -> dict[str, Any]:
+    """Detect a residual equation stuck above its target across recent chunks.
+
+    Used to stop burning the iteration budget when a case has plateaued
+    (e.g. continuity flat around 1.6e-7 against a 1e-7 target) rather than
+    always running to the full --additional-iterations budget.
+    """
+    result: dict[str, Any] = {"detected": False, "reason": "", "per_equation": {}}
+    if not strict_targets:
+        result["reason"] = "No residual targets available for plateau assessment."
+        return result
+    if len(history) < window_chunks:
+        result["reason"] = f"Fewer than {window_chunks} chunks completed; plateau assessment deferred."
+        return result
+
+    recent = history[-window_chunks:]
+    stuck_equations: list[str] = []
+    per_equation: dict[str, Any] = {}
+    for name, target in strict_targets.items():
+        series = [snap.get("residual_numeric", {}).get(name) for snap in recent]
+        series = [float(v) for v in series if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if len(series) < window_chunks:
+            per_equation[name] = {"status": "insufficient_data", "series": series}
+            continue
+
+        above_target = series[-1] > target * min_above_target_factor
+        mean_abs = sum(abs(v) for v in series) / len(series)
+        rel_change = (max(series) - min(series)) / mean_abs if mean_abs > 0.0 else 0.0
+        flat = rel_change <= rel_change_tol
+        per_equation[name] = {
+            "series": series,
+            "latest": series[-1],
+            "target": target,
+            "above_target": above_target,
+            "rel_change": rel_change,
+            "flat": flat,
+        }
+        if above_target and flat:
+            stuck_equations.append(name)
+
+    result["per_equation"] = per_equation
+    if stuck_equations:
+        result["detected"] = True
+        result["reason"] = (
+            f"{stuck_equations} remained above {min_above_target_factor}x target with "
+            f"<= {rel_change_tol} relative change over the last {window_chunks} chunks."
+        )
+    else:
+        result["reason"] = "No plateau detected."
+    return result
+
+
 def run_iteration_chunks(
     solver: Any,
     total_iterations: int,
     chunk_size: int,
     transcript_path: Path | None,
     species_name: str,
-) -> list[dict[str, Any]]:
+    strict_targets: dict[str, float],
+    plateau_window_chunks: int,
+    plateau_rel_change_tol: float,
+    plateau_min_above_target_factor: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     history: list[dict[str, Any]] = []
     remaining = total_iterations
     chunk_index = 0
     target_names = {"continuity", "x-velocity", "y-velocity", "z-velocity", species_name.lower()}
+    plateau_result: dict[str, Any] = {"detected": False, "reason": "Iteration budget completed without a plateau check triggering."}
     while remaining > 0:
         chunk_index += 1
         iter_count = min(chunk_size, remaining)
@@ -1665,7 +1765,20 @@ def run_iteration_chunks(
             f"transcript_residual_keys={list(transcript_residuals.keys())}, "
             f"report_keys={list(snapshot.get('report_values', {}).keys())}"
         )
-    return history
+
+        plateau_result = detect_residual_plateau(
+            history=history,
+            strict_targets=strict_targets,
+            window_chunks=plateau_window_chunks,
+            rel_change_tol=plateau_rel_change_tol,
+            min_above_target_factor=plateau_min_above_target_factor,
+        )
+        if plateau_result["detected"]:
+            print(f"Residual plateau detected after chunk {chunk_index}: {plateau_result['reason']}")
+            print("Stopping iteration early instead of continuing to the full iteration budget.")
+            break
+
+    return history, plateau_result
 
 
 def assess_history(
@@ -1739,27 +1852,23 @@ def assess_history(
 def assess_residual_convergence(
     latest_residuals: dict[str, float],
     strict_targets: dict[str, float],
-    engineering_threshold: float,
 ) -> dict[str, Any]:
     """Compare the latest known residual values against the strict target.
 
-    strict_met/engineering_met are False (never None) whenever a target
-    equation's current value could not be determined -- per the requirement
-    that missing/failed residual extraction must never be treated as
-    STRICT_CONVERGED.
+    strict_met is False (never None) whenever a target equation's current
+    value could not be determined -- per the requirement that missing/failed
+    residual extraction must never be treated as strict convergence.
     """
     per_equation: dict[str, Any] = {}
     if not strict_targets:
         return {
             "strict_met": False,
-            "engineering_met": False,
             "data_available": False,
             "reason": "No residual convergence targets were available (criteria could not be read).",
             "per_equation": per_equation,
         }
 
     strict_met = True
-    engineering_met = True
     data_available = False
     missing: list[str] = []
     for name, target in strict_targets.items():
@@ -1768,18 +1877,14 @@ def assess_residual_convergence(
         if value is None:
             missing.append(name)
             strict_met = False
-            engineering_met = False
             continue
         data_available = True
         if value > target:
             strict_met = False
-        if value > engineering_threshold:
-            engineering_met = False
 
     reason = f"Residual current value unavailable for: {missing}." if missing else ""
     return {
         "strict_met": strict_met,
-        "engineering_met": engineering_met,
         "data_available": data_available,
         "reason": reason,
         "per_equation": per_equation,
@@ -1787,60 +1892,82 @@ def assess_residual_convergence(
 
 
 def classify_convergence(
-    strategy: str,
     monitor_assessment: dict[str, Any],
     residual_assessment: dict[str, Any],
+    plateau_assessment: dict[str, Any],
 ) -> dict[str, Any]:
-    """Combine monitor stability and strict/engineering residual checks into
-    one of the explicit convergence-goal labels required for reruns:
-    STRICT_CONVERGED, ENGINEERING_STABLE_ONLY, NOT_CONVERGED_STABLE_MONITORS,
-    NEEDS_TRANSIENT_REVIEW, or (mapped by the caller to FAILED_*) DIVERGED.
+    """Combine monitor stability, strict residual match, and plateau detection
+    into one of the explicit convergence-goal labels required for reruns:
+    STRICT_CONVERGED_ATTEMPT, NOT_CONVERGED_STABLE_MONITORS,
+    NOT_CONVERGED_RESIDUAL_PLATEAU, NEEDS_TRANSIENT_REVIEW, or (mapped by the
+    caller to FAILED_DIVERGED_DURING_RERUN) DIVERGED.
+
+    Plateau is checked before the generic "stable but unmet" case: a
+    residual equation stuck flat above target (e.g. continuity holding at
+    1.6e-7 against a 1e-7 target) is a more actionable diagnosis than a
+    blanket "stable monitors" label, even though the report monitor may
+    itself look stable in that situation.
     """
     if monitor_assessment.get("diverged"):
         return {"status": "DIVERGED", "details": monitor_assessment.get("details", "")}
 
     strict_met = bool(residual_assessment.get("strict_met"))
-    engineering_met = bool(residual_assessment.get("engineering_met"))
+
+    if strict_met and monitor_assessment.get("stable"):
+        return {
+            "status": "STRICT_CONVERGED_ATTEMPT",
+            "details": "Residual strict target met and report monitors are stable.",
+        }
+
+    if plateau_assessment.get("detected"):
+        return {
+            "status": "NOT_CONVERGED_RESIDUAL_PLATEAU",
+            "details": plateau_assessment.get("reason", "Residual plateau detected above target."),
+        }
 
     if monitor_assessment.get("stable"):
-        if strict_met:
-            return {
-                "status": "STRICT_CONVERGED",
-                "details": "Residual strict target met and report monitors are stable.",
-            }
-        if engineering_met:
-            return {
-                "status": "ENGINEERING_STABLE_ONLY",
-                "details": (
-                    "Monitors stable and residuals within the engineering threshold, "
-                    "but the strict residual target was not met."
-                ),
-            }
         return {
             "status": "NOT_CONVERGED_STABLE_MONITORS",
-            "details": (
-                "Monitors stable but residuals did not meet the strict target or the "
-                "engineering threshold."
-            ),
+            "details": "Monitors stable but residuals did not meet the strict target.",
         }
 
     if monitor_assessment.get("bounded_not_converged"):
-        if strategy in {"pseudo_transient_ramp", "first_order_ramp"}:
-            return {
-                "status": "NEEDS_TRANSIENT_REVIEW",
-                "details": (
-                    "Bounded oscillation persisted even after the damping/ramp "
-                    "strategy; recommend manual transient review."
-                ),
-            }
         return {
-            "status": "NOT_CONVERGED_STABLE_MONITORS",
-            "details": "Monitors bounded but not stable, and residual target not met.",
+            "status": "NEEDS_TRANSIENT_REVIEW",
+            "details": "Monitors bounded but oscillating, and residual target not met.",
         }
 
     return {
         "status": "COMPLETED_NEEDS_REVIEW",
         "details": "Monitor stability could not be determined from available data.",
+    }
+
+
+def summarize_relaxation_result(relaxation_result: dict[str, Any]) -> dict[str, str]:
+    """Flatten apply_real_under_relaxation's output into CSV-friendly fields."""
+    profile = relaxation_result.get("profile", "")
+    applied = relaxation_result.get("applied", [])
+
+    if profile == "baseline":
+        return {"apply_status": "BASELINE_NO_CHANGE", "before": "{}", "after": "{}"}
+    if not applied:
+        return {"apply_status": "NOT_ATTEMPTED", "before": "{}", "after": "{}"}
+
+    statuses = {entry.get("status") for entry in applied}
+    confirmed_or_skipped = statuses <= {"APPLIED_CONFIRMED", "SKIPPED_SPECIES_UNAVAILABLE"}
+    if confirmed_or_skipped and "APPLIED_CONFIRMED" in statuses:
+        apply_status = "ALL_CONFIRMED"
+    elif "APPLIED_CONFIRMED" in statuses:
+        apply_status = "PARTIAL_WARN"
+    else:
+        apply_status = "WARN_APPLY_URF_FAILED"
+
+    before = {entry.get("label"): entry.get("before") for entry in applied}
+    after = {entry.get("label"): entry.get("after") for entry in applied}
+    return {
+        "apply_status": apply_status,
+        "before": json.dumps(before, sort_keys=True, default=str),
+        "after": json.dumps(after, sort_keys=True, default=str),
     }
 
 
@@ -1856,6 +1983,7 @@ def execute_solver_strategy(
         "history": [],
         "monitor_assessment": {},
         "residual_assessment": {},
+        "plateau_assessment": {},
         "residual_targets": {},
     }
     diagnostics = collect_solver_diagnostics(solver)
@@ -1867,8 +1995,13 @@ def execute_solver_strategy(
         return result
 
     try:
-        residual_targets = apply_continuation_settings(solver=solver, args=args)
+        residual_targets, relaxation_result = apply_continuation_settings(solver=solver, args=args)
         result["residual_targets"] = residual_targets
+        result["residual_target_effective"] = json.dumps(residual_targets, sort_keys=True, default=str)
+        relaxation_summary = summarize_relaxation_result(relaxation_result)
+        result["relaxation_apply_status"] = relaxation_summary["apply_status"]
+        result["relaxation_before"] = relaxation_summary["before"]
+        result["relaxation_after"] = relaxation_summary["after"]
         if args.solver_strategy == "damped_steady":
             result["strategy_settings"] = {"status": "DAMPED_STEADY_SETTINGS_APPLIED"}
         elif args.solver_strategy == "pseudo_transient_ramp":
@@ -1885,14 +2018,19 @@ def execute_solver_strategy(
             original_exception=exc,
         ) from exc
 
-    history = run_iteration_chunks(
+    history, plateau_assessment = run_iteration_chunks(
         solver=solver,
         total_iterations=args.additional_iterations,
         chunk_size=args.iteration_chunk_size,
         transcript_path=transcript_path,
         species_name=args.species_residual_name,
+        strict_targets=result["residual_targets"],
+        plateau_window_chunks=args.plateau_window_chunks,
+        plateau_rel_change_tol=args.plateau_rel_change_tol,
+        plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
     )
     result["history"] = history
+    result["plateau_assessment"] = plateau_assessment
 
     if args.solver_strategy == "first_order_ramp":
         restored = restore_first_order_ramp(solver, result.get("strategy_settings", {}))
@@ -1908,18 +2046,19 @@ def execute_solver_strategy(
     result["monitor_assessment"] = monitor_assessment
 
     latest_residuals: dict[str, float] = dict(history[-1].get("residual_numeric", {})) if history else {}
+    result["residual_latest"] = latest_residuals
     residual_assessment = assess_residual_convergence(
         latest_residuals=latest_residuals,
         strict_targets=result["residual_targets"],
-        engineering_threshold=args.engineering_residual_threshold,
     )
     result["residual_assessment"] = residual_assessment
 
-    classification = classify_convergence(args.solver_strategy, monitor_assessment, residual_assessment)
+    classification = classify_convergence(monitor_assessment, residual_assessment, plateau_assessment)
     result["convergence_assessment"] = json.dumps(
         {
             "monitor": monitor_assessment,
             "residual": residual_assessment,
+            "plateau": plateau_assessment,
             "classification": classification,
         },
         sort_keys=True,
@@ -2188,7 +2327,7 @@ def run_live_solver_rerun(
             return result
 
         stage_status = strategy_result.get("strategy_stage_status")
-        if stage_status == "STRICT_CONVERGED":
+        if stage_status == "STRICT_CONVERGED_ATTEMPT":
             # Only strict-target convergence with stable monitors is treated as
             # success; never mark success on a merely stable-but-relaxed result.
             result["rerun_status"] = (
@@ -2197,8 +2336,8 @@ def run_live_solver_rerun(
                 else "SUCCESS_READY_TO_PROMOTE"
             )
         elif stage_status in {
-            "ENGINEERING_STABLE_ONLY",
             "NOT_CONVERGED_STABLE_MONITORS",
+            "NOT_CONVERGED_RESIDUAL_PLATEAU",
             "NEEDS_TRANSIENT_REVIEW",
             "NEEDS_MANUAL_REVIEW",
         }:
@@ -2489,6 +2628,27 @@ def process_case(
                     default=str,
                     sort_keys=True,
                 )
+                record["residual_target_effective"] = str(
+                    live_result.get("residual_target_effective", "")
+                )
+                record["relaxation_apply_status"] = str(
+                    live_result.get("relaxation_apply_status", "")
+                )
+                record["relaxation_before"] = str(live_result.get("relaxation_before", ""))
+                record["relaxation_after"] = str(live_result.get("relaxation_after", ""))
+                record["residual_latest"] = json.dumps(
+                    live_result.get("residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                residual_assessment = live_result.get("residual_assessment", {}) or {}
+                record["residual_target_met"] = str(bool(residual_assessment.get("strict_met"))).lower()
+                plateau_assessment = live_result.get("plateau_assessment", {}) or {}
+                record["plateau_detected"] = str(bool(plateau_assessment.get("detected"))).lower()
+                record["plateau_reason"] = str(plateau_assessment.get("reason", ""))
+                record["strict_convergence_status"] = str(
+                    live_result.get("strategy_stage_status", "")
+                )
             except FluentLaunchError as exc:
                 record["rerun_status"] = (
                     "FAILED_SWITCH_TO_SOLVER"
@@ -2578,6 +2738,19 @@ def process_case(
                     "Steady residual/report variation remains bounded but not stable; "
                     "consider transient or pseudo-transient manual review."
                 )
+            elif record["rerun_status"] == "NOT_CONVERGED_STABLE_MONITORS":
+                record["suggested_next_action"] = (
+                    "Report monitors are stable but the strict residual target was not "
+                    "met; consider a stronger --relaxation-profile or a longer run "
+                    "before treating this as success."
+                )
+            elif record["rerun_status"] == "NOT_CONVERGED_RESIDUAL_PLATEAU":
+                record["suggested_next_action"] = (
+                    "One or more residual equations plateaued above the strict target "
+                    "with little chunk-to-chunk change; iteration was stopped early. "
+                    "Consider --relaxation-profile strong or manual review before "
+                    "burning further iterations at these settings."
+                )
             elif record["rerun_status"] == "COMPLETED_NEEDS_REVIEW":
                 record["suggested_next_action"] = (
                     "Monitor extraction was incomplete or inconclusive; review staged "
@@ -2656,10 +2829,12 @@ def write_summary(
         f"  solver_strategy: {args.solver_strategy}",
         f"  iteration_chunk_size: {args.iteration_chunk_size}",
         f"  residual_target: {args.residual_target}",
-        f"  engineering_residual_threshold: {args.engineering_residual_threshold}",
         f"  monitor_window: {args.monitor_window}",
         f"  monitor_rel_tol: {args.monitor_rel_tol}",
         f"  residual_growth_limit: {args.residual_growth_limit}",
+        f"  plateau_window_chunks: {args.plateau_window_chunks}",
+        f"  plateau_rel_change_tol: {args.plateau_rel_change_tol}",
+        f"  plateau_min_residual_above_target_factor: {args.plateau_min_residual_above_target_factor}",
         f"  promote_on_success: {args.promote_on_success}",
         f"  pseudo_transient: {args.use_pseudo_transient if args.use_pseudo_transient is not None else 'preserve'}",
         f"  pressure_velocity_coupling: {args.pressure_velocity_coupling}",
