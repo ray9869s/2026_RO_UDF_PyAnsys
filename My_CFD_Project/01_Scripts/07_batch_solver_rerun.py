@@ -102,6 +102,16 @@ RESULT_FIELDS = [
     "discretization_restore_status",
     "discretization_after_restore",
     "first_order_error_summary",
+    "post_restore_polish_iterations",
+    "post_restore_residual_latest",
+    "post_restore_residual_target_met",
+    "post_restore_report_values",
+    "post_restore_monitor_assessment",
+    "post_restore_strict_converged",
+    "first_order_stage_residual_latest",
+    "first_order_stage_report_values",
+    "final_assessment_window",
+    "final_assessment_reason",
     "convergence_assessment",
     "monitor_window",
     "monitor_rel_tol",
@@ -336,6 +346,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--post-restore-polish-iterations",
+        type=non_negative_int,
+        default=None,
+        help=(
+            "Additional second-order iterations after first_order_ramp restore is "
+            "confirmed. Derived default: 300 for first_order_ramp, 0 for other "
+            "strategies unless explicitly requested."
+        ),
+    )
+    parser.add_argument(
         "--iteration-chunk-size",
         type=positive_int,
         default=200,
@@ -525,6 +545,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.coupled:
         args.pressure_velocity_coupling = "Coupled"
+
+    if args.post_restore_polish_iterations is None:
+        args.post_restore_polish_iterations = (
+            300 if args.solver_strategy == "first_order_ramp" else 0
+        )
 
     args.results_root = args.results_root or DEFAULT_RESULTS_ROOT
     args.candidates_csv = (
@@ -942,6 +967,16 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "discretization_restore_status": "",
         "discretization_after_restore": "",
         "first_order_error_summary": "",
+        "post_restore_polish_iterations": str(args.post_restore_polish_iterations),
+        "post_restore_residual_latest": "{}",
+        "post_restore_residual_target_met": "false",
+        "post_restore_report_values": "{}",
+        "post_restore_monitor_assessment": "{}",
+        "post_restore_strict_converged": "false",
+        "first_order_stage_residual_latest": "{}",
+        "first_order_stage_report_values": "{}",
+        "final_assessment_window": "",
+        "final_assessment_reason": "",
         "convergence_assessment": "",
         "monitor_window": str(args.monitor_window),
         "monitor_rel_tol": str(args.monitor_rel_tol),
@@ -2363,6 +2398,11 @@ def run_iteration_chunks(
     plateau_window_chunks: int,
     plateau_rel_change_tol: float,
     plateau_min_above_target_factor: float,
+    stage_name: str = "solver_stage",
+    early_stop_on_strict_stable: bool = False,
+    assessment_args: argparse.Namespace | None = None,
+    monitor_value_groups: tuple[str, ...] = ("residual_numeric", "report_values"),
+    monitor_require_two_samples: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     history: list[dict[str, Any]] = []
     remaining = total_iterations
@@ -2372,7 +2412,7 @@ def run_iteration_chunks(
     while remaining > 0:
         chunk_index += 1
         iter_count = min(chunk_size, remaining)
-        print(f"\nRunning iteration chunk {chunk_index}: {iter_count} iterations")
+        print(f"\nRunning {stage_name} iteration chunk {chunk_index}: {iter_count} iterations")
         try:
             solver.settings.solution.run_calculation.iterate(iter_count=iter_count)
         except Exception as exc:
@@ -2383,6 +2423,7 @@ def run_iteration_chunks(
                 original_exception=exc,
             ) from exc
         snapshot = collect_monitor_snapshot(solver)
+        snapshot["stage"] = stage_name
         snapshot["chunk_index"] = chunk_index
         snapshot["iterations_completed_in_chunk"] = iter_count
 
@@ -2421,12 +2462,34 @@ def run_iteration_chunks(
             print("Stopping iteration early instead of continuing to the full iteration budget.")
             break
 
+        if early_stop_on_strict_stable and assessment_args is not None:
+            latest_residuals = dict(snapshot.get("residual_numeric", {}))
+            residual_assessment = assess_residual_convergence(
+                latest_residuals=latest_residuals,
+                strict_targets=strict_targets,
+            )
+            monitor_assessment = assess_history(
+                history,
+                assessment_args,
+                value_groups=monitor_value_groups,
+                require_two_samples=monitor_require_two_samples,
+            )
+            if residual_assessment.get("strict_met") and monitor_assessment.get("stable"):
+                plateau_result["reason"] = (
+                    "Stopped early after strict residual target and stable monitors "
+                    f"in {stage_name}."
+                )
+                print(plateau_result["reason"])
+                break
+
     return history, plateau_result
 
 
 def assess_history(
     history: list[dict[str, Any]],
     args: argparse.Namespace,
+    value_groups: tuple[str, ...] = ("residual_numeric", "report_values"),
+    require_two_samples: bool = False,
 ) -> dict[str, Any]:
     assessment: dict[str, Any] = {
         "status": "MONITORS_UNAVAILABLE",
@@ -2434,10 +2497,11 @@ def assess_history(
         "stable": False,
         "bounded_not_converged": False,
         "details": "",
+        "value_groups": list(value_groups),
     }
     series: dict[str, list[float]] = {}
     for snapshot in history:
-        for group_name in ("residual_numeric", "report_values"):
+        for group_name in value_groups:
             values = snapshot.get(group_name, {})
             if not isinstance(values, dict):
                 continue
@@ -2446,14 +2510,18 @@ def assess_history(
                     series.setdefault(f"{group_name}:{name}", []).append(float(value))
 
     if not series:
-        assessment["details"] = "No numeric residual/report monitor values were available."
+        assessment["details"] = (
+            f"No numeric values were available for monitor groups {list(value_groups)}."
+        )
         return assessment
 
     worst_growth = 0.0
     max_rel_variation = 0.0
+    comparable_series_count = 0
     for name, values in series.items():
         if len(values) < 2:
             continue
+        comparable_series_count += 1
         first = abs(values[0])
         last = abs(values[-1])
         if first > 0.0:
@@ -2465,8 +2533,16 @@ def assess_history(
             max_rel_variation = max(max_rel_variation, abs(rel_variation))
         print(f"Assessment series {name}: first={values[0]} last={values[-1]}")
 
+    if require_two_samples and comparable_series_count == 0:
+        assessment["details"] = (
+            f"At least two numeric samples are required for monitor groups "
+            f"{list(value_groups)}."
+        )
+        return assessment
+
     assessment["worst_growth"] = worst_growth
     assessment["max_rel_variation"] = max_rel_variation
+    assessment["comparable_series_count"] = comparable_series_count
 
     if worst_growth > args.residual_growth_limit:
         assessment["status"] = "DIVERGED"
@@ -2532,6 +2608,60 @@ def assess_residual_convergence(
         "reason": reason,
         "per_equation": per_equation,
     }
+
+
+def latest_snapshot_group(history: list[dict[str, Any]], group_name: str) -> dict[str, Any]:
+    if not history:
+        return {}
+    values = history[-1].get(group_name, {})
+    return dict(values) if isinstance(values, dict) else {}
+
+
+def strict_residual_met_at_snapshot(
+    snapshot: dict[str, Any],
+    strict_targets: dict[str, float],
+) -> bool:
+    values = snapshot.get("residual_numeric", {})
+    if not isinstance(values, dict):
+        values = {}
+    return bool(
+        assess_residual_convergence(
+            latest_residuals=dict(values),
+            strict_targets=strict_targets,
+        ).get("strict_met")
+    )
+
+
+def history_after_first_strict_residual_met(
+    history: list[dict[str, Any]],
+    strict_targets: dict[str, float],
+    max_snapshots: int,
+) -> tuple[list[dict[str, Any]], str]:
+    if not history:
+        return [], "No monitor history was available."
+
+    first_met_index: int | None = None
+    for index, snapshot in enumerate(history):
+        if strict_residual_met_at_snapshot(snapshot, strict_targets):
+            first_met_index = index
+            break
+
+    if first_met_index is None:
+        window = history[-max(1, max_snapshots) :]
+        return (
+            window,
+            "Residual target was not met in the first-order stage; using the latest "
+            "available first_order_ramp_stage snapshots.",
+        )
+
+    post_met_history = history[first_met_index:]
+    window = post_met_history[-max(1, max_snapshots) :]
+    chunk_index = history[first_met_index].get("chunk_index", first_met_index + 1)
+    return (
+        window,
+        "Using first_order_ramp_stage snapshots after strict residual target was "
+        f"first met at chunk {chunk_index}.",
+    )
 
 
 def classify_convergence(
@@ -2635,6 +2765,16 @@ def execute_solver_strategy(
         "residual_assessment": {},
         "plateau_assessment": {},
         "residual_targets": {},
+        "post_restore_polish_iterations": args.post_restore_polish_iterations,
+        "post_restore_residual_latest": {},
+        "post_restore_residual_target_met": False,
+        "post_restore_report_values": {},
+        "post_restore_monitor_assessment": {},
+        "post_restore_strict_converged": False,
+        "first_order_stage_residual_latest": {},
+        "first_order_stage_report_values": {},
+        "final_assessment_window": "",
+        "final_assessment_reason": "",
     }
     diagnostics = collect_solver_diagnostics(solver)
     result["diagnostics"] = diagnostics
@@ -2729,11 +2869,44 @@ def execute_solver_strategy(
         plateau_window_chunks=args.plateau_window_chunks,
         plateau_rel_change_tol=args.plateau_rel_change_tol,
         plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
+        stage_name=(
+            "first_order_ramp_stage"
+            if args.solver_strategy == "first_order_ramp"
+            else "solver_stage"
+        ),
     )
     result["history"] = history
     result["plateau_assessment"] = plateau_assessment
 
+    latest_residuals: dict[str, float] = latest_snapshot_group(history, "residual_numeric")
+    result["residual_latest"] = latest_residuals
+    residual_assessment = assess_residual_convergence(
+        latest_residuals=latest_residuals,
+        strict_targets=result["residual_targets"],
+    )
+    result["residual_assessment"] = residual_assessment
+
     if args.solver_strategy == "first_order_ramp":
+        result["first_order_stage_residual_latest"] = latest_residuals
+        result["first_order_stage_report_values"] = latest_snapshot_group(history, "report_values")
+        first_order_report_assessment = assess_history(
+            history,
+            args,
+            value_groups=("report_values",),
+            require_two_samples=True,
+        )
+        fallback_window, fallback_reason = history_after_first_strict_residual_met(
+            history=history,
+            strict_targets=result["residual_targets"],
+            max_snapshots=max(2, args.plateau_window_chunks),
+        )
+        fallback_monitor_assessment = assess_history(
+            fallback_window,
+            args,
+            value_groups=("report_values",),
+            require_two_samples=True,
+        )
+
         restore_result = restore_first_order_ramp(solver, result.get("strategy_settings", {}))
         result["discretization_restore_status"] = str(restore_result.get("status", ""))
         result["discretization_after_restore"] = json_field(
@@ -2755,18 +2928,217 @@ def execute_solver_strategy(
                 "First-order ramp completed, but original discretization restore "
                 "was not verified."
             )
+            result["monitor_assessment"] = fallback_monitor_assessment
+            result["final_assessment_window"] = "first_order_ramp_stage"
+            result["final_assessment_reason"] = (
+                "Original second-order discretization restore was not confirmed; "
+                "post-restore polish was not run."
+            )
             return result
+
+        if args.post_restore_polish_iterations > 0:
+            post_restore_history, post_restore_plateau_assessment = run_iteration_chunks(
+                solver=solver,
+                total_iterations=args.post_restore_polish_iterations,
+                chunk_size=args.iteration_chunk_size,
+                transcript_path=transcript_path,
+                species_name=args.species_residual_name,
+                strict_targets=result["residual_targets"],
+                plateau_window_chunks=args.plateau_window_chunks,
+                plateau_rel_change_tol=args.plateau_rel_change_tol,
+                plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
+                stage_name="post_restore_second_order_stage",
+                early_stop_on_strict_stable=True,
+                assessment_args=args,
+                monitor_value_groups=("report_values",),
+                monitor_require_two_samples=True,
+            )
+            result["history"] = history + post_restore_history
+            result["plateau_assessment"] = post_restore_plateau_assessment
+
+            post_restore_residuals = latest_snapshot_group(
+                post_restore_history,
+                "residual_numeric",
+            )
+            post_restore_reports = latest_snapshot_group(
+                post_restore_history,
+                "report_values",
+            )
+            post_restore_residual_assessment = assess_residual_convergence(
+                latest_residuals=post_restore_residuals,
+                strict_targets=result["residual_targets"],
+            )
+            post_restore_report_assessment = assess_history(
+                post_restore_history,
+                args,
+                value_groups=("report_values",),
+                require_two_samples=True,
+            )
+            post_restore_all_assessment = assess_history(post_restore_history, args)
+
+            result["post_restore_residual_latest"] = post_restore_residuals
+            result["post_restore_residual_target_met"] = bool(
+                post_restore_residual_assessment.get("strict_met")
+            )
+            result["post_restore_report_values"] = post_restore_reports
+            result["post_restore_monitor_assessment"] = post_restore_report_assessment
+            result["monitor_assessment"] = post_restore_report_assessment
+            result["residual_latest"] = post_restore_residuals
+            result["residual_assessment"] = post_restore_residual_assessment
+            result["final_assessment_window"] = "post_restore_second_order_stage"
+            result["final_assessment_reason"] = (
+                "Post-restore polish ran after RESTORE_CONFIRMED; final monitor "
+                "classification excludes the intentional first-order ramp transient."
+            )
+
+            first_order_fully_confirmed = (
+                result.get("first_order_apply_status") == "FIRST_ORDER_APPLIED_CONFIRMED"
+            )
+            restore_confirmed = (
+                result.get("discretization_restore_status") == "RESTORE_CONFIRMED"
+            )
+            post_restore_diverged = bool(
+                post_restore_report_assessment.get("diverged")
+                or post_restore_all_assessment.get("diverged")
+            )
+            post_restore_strict_converged = bool(
+                first_order_fully_confirmed
+                and restore_confirmed
+                and post_restore_residual_assessment.get("strict_met")
+                and post_restore_report_assessment.get("stable")
+                and not post_restore_diverged
+            )
+            result["post_restore_strict_converged"] = post_restore_strict_converged
+
+            if post_restore_diverged:
+                classification = {
+                    "status": "DIVERGED",
+                    "details": (
+                        post_restore_report_assessment.get("details")
+                        or post_restore_all_assessment.get("details")
+                        or "Post-restore second-order monitors diverged."
+                    ),
+                }
+            elif not post_restore_residual_assessment.get("strict_met"):
+                classification = {
+                    "status": "SECOND_ORDER_POST_RESTORE_NOT_CONVERGED",
+                    "details": (
+                        "Post-restore second-order residuals did not meet the "
+                        "requested strict residual target."
+                    ),
+                }
+            elif not post_restore_report_assessment.get("stable"):
+                classification = {
+                    "status": "SECOND_ORDER_POST_RESTORE_MONITOR_UNSTABLE",
+                    "details": (
+                        "Post-restore second-order report monitors were not stable "
+                        "within monitor_rel_tol."
+                    ),
+                }
+            elif not first_order_fully_confirmed or not restore_confirmed:
+                classification = {
+                    "status": "NEEDS_MANUAL_REVIEW",
+                    "details": (
+                        "Post-restore strict convergence was met, but "
+                        "FIRST_ORDER_APPLIED_CONFIRMED and RESTORE_CONFIRMED are "
+                        "required before success classification."
+                    ),
+                }
+            else:
+                classification = {
+                    "status": "STRICT_CONVERGED_ATTEMPT",
+                    "details": (
+                        "Post-restore second-order residual target met and report "
+                        "monitors are stable."
+                    ),
+                }
+
+            result["convergence_assessment"] = json.dumps(
+                {
+                    "first_order_ramp_stage": {
+                        "monitor": first_order_report_assessment,
+                        "residual": residual_assessment,
+                        "plateau": plateau_assessment,
+                    },
+                    "post_restore_second_order_stage": {
+                        "monitor": post_restore_report_assessment,
+                        "monitor_all_numeric": post_restore_all_assessment,
+                        "residual": post_restore_residual_assessment,
+                        "plateau": post_restore_plateau_assessment,
+                    },
+                    "final_assessment_window": result["final_assessment_window"],
+                    "final_assessment_reason": result["final_assessment_reason"],
+                    "classification": classification,
+                },
+                sort_keys=True,
+                default=str,
+            )
+
+            if classification["status"] == "DIVERGED":
+                raise FluentStageError(
+                    status="FAILED_DIVERGED_DURING_RERUN",
+                    failure_stage="iterate",
+                    message=str(
+                        classification.get(
+                            "details",
+                            "Post-restore residual/report monitors diverged.",
+                        )
+                    ),
+                )
+
+            result["strategy_stage_status"] = classification["status"]
+            return result
+
+        result["monitor_assessment"] = fallback_monitor_assessment
+        result["final_assessment_window"] = "first_order_ramp_stage_after_strict_residual"
+        result["final_assessment_reason"] = (
+            f"{fallback_reason} Post-restore polish was not run, so final "
+            "first_order_ramp success is intentionally withheld."
+        )
+        if residual_assessment.get("strict_met"):
+            classification = {
+                "status": "FIRST_ORDER_CONVERGED_RESTORE_CONFIRMED_NEEDS_POST_RESTORE_POLISH",
+                "details": (
+                    "First-order residuals met the strict target and original "
+                    "second-order discretization was restored, but no post-restore "
+                    "second-order polish was run."
+                ),
+            }
+        else:
+            classification = classify_convergence(
+                fallback_monitor_assessment,
+                residual_assessment,
+                plateau_assessment,
+            )
+
+        result["convergence_assessment"] = json.dumps(
+            {
+                "first_order_ramp_stage": {
+                    "monitor": first_order_report_assessment,
+                    "final_window_monitor": fallback_monitor_assessment,
+                    "residual": residual_assessment,
+                    "plateau": plateau_assessment,
+                },
+                "final_assessment_window": result["final_assessment_window"],
+                "final_assessment_reason": result["final_assessment_reason"],
+                "classification": classification,
+            },
+            sort_keys=True,
+            default=str,
+        )
+
+        if classification["status"] == "DIVERGED":
+            raise FluentStageError(
+                status="FAILED_DIVERGED_DURING_RERUN",
+                failure_stage="iterate",
+                message=str(classification.get("details", "Residual/report monitors diverged.")),
+            )
+
+        result["strategy_stage_status"] = classification["status"]
+        return result
 
     monitor_assessment = assess_history(history, args)
     result["monitor_assessment"] = monitor_assessment
-
-    latest_residuals: dict[str, float] = dict(history[-1].get("residual_numeric", {})) if history else {}
-    result["residual_latest"] = latest_residuals
-    residual_assessment = assess_residual_convergence(
-        latest_residuals=latest_residuals,
-        strict_targets=result["residual_targets"],
-    )
-    result["residual_assessment"] = residual_assessment
 
     classification = classify_convergence(monitor_assessment, residual_assessment, plateau_assessment)
     result["convergence_assessment"] = json.dumps(
@@ -2786,34 +3158,6 @@ def execute_solver_strategy(
             failure_stage="iterate",
             message=str(classification.get("details", "Residual/report monitors diverged.")),
         )
-
-    if (
-        args.solver_strategy == "first_order_ramp"
-        and classification["status"] == "STRICT_CONVERGED_ATTEMPT"
-        and (
-            result.get("first_order_apply_status") not in FIRST_ORDER_CONFIRMED_STATUSES
-            or result.get("discretization_restore_status") != "RESTORE_CONFIRMED"
-        )
-    ):
-        result["strategy_stage_status"] = "NEEDS_MANUAL_REVIEW"
-        result["convergence_assessment"] = json_field(
-            {
-                "monitor": monitor_assessment,
-                "residual": residual_assessment,
-                "plateau": plateau_assessment,
-                "classification": classification,
-                "first_order_apply_status": result.get("first_order_apply_status", ""),
-                "discretization_restore_status": result.get(
-                    "discretization_restore_status",
-                    "",
-                ),
-                "details": (
-                    "Strict residual target was met, but first-order ramp apply "
-                    "and restore confirmation are required before promotion."
-                ),
-            }
-        )
-        return result
 
     result["strategy_stage_status"] = classification["status"]
     return result
@@ -3031,6 +3375,7 @@ def run_live_solver_rerun(
         print(f"solver_strategy={args.solver_strategy}")
         print(f"promote_on_success={args.promote_on_success}")
         print(f"additional_iterations={args.additional_iterations}")
+        print(f"post_restore_polish_iterations={args.post_restore_polish_iterations}")
 
         launch_metadata: dict[str, Any] = {}
         solver = launch_solver_session(
@@ -3083,7 +3428,15 @@ def run_live_solver_rerun(
             )
             return result
 
-        if stage_status == "STRICT_CONVERGED_ATTEMPT":
+        first_order_promotion_ready = (
+            args.solver_strategy != "first_order_ramp"
+            or (
+                bool(strategy_result.get("post_restore_strict_converged"))
+                and strategy_result.get("discretization_restore_status") == "RESTORE_CONFIRMED"
+            )
+        )
+
+        if stage_status == "STRICT_CONVERGED_ATTEMPT" and first_order_promotion_ready:
             # Only strict-target convergence with stable monitors is treated as
             # success; never mark success on a merely stable-but-relaxed result.
             result["rerun_status"] = (
@@ -3091,11 +3444,17 @@ def run_live_solver_rerun(
                 if not args.promote_on_success
                 else "SUCCESS_READY_TO_PROMOTE"
             )
+        elif stage_status == "STRICT_CONVERGED_ATTEMPT":
+            result["rerun_status"] = "NEEDS_MANUAL_REVIEW"
+            result["strategy_stage_status"] = "NEEDS_MANUAL_REVIEW"
         elif stage_status in {
             "NOT_CONVERGED_STABLE_MONITORS",
             "NOT_CONVERGED_RESIDUAL_PLATEAU",
             "NEEDS_TRANSIENT_REVIEW",
             "NEEDS_MANUAL_REVIEW",
+            "SECOND_ORDER_POST_RESTORE_NOT_CONVERGED",
+            "SECOND_ORDER_POST_RESTORE_MONITOR_UNSTABLE",
+            "FIRST_ORDER_CONVERGED_RESTORE_CONFIRMED_NEEDS_POST_RESTORE_POLISH",
         }:
             result["rerun_status"] = stage_status
         else:
@@ -3281,6 +3640,7 @@ def process_case(
         print(f"solver_strategy={args.solver_strategy}")
         print(f"promote_on_success={str(args.promote_on_success).lower()}")
         print(f"additional_iterations={args.additional_iterations}")
+        print(f"post_restore_polish_iterations={args.post_restore_polish_iterations}")
         print(f"case_dir exists: {case_dir_resolved.is_dir()}")
         print(f"final case exists: {final_case_file_resolved.is_file()}")
         print(f"final data exists: {final_data_file_resolved.is_file()}")
@@ -3384,11 +3744,19 @@ def process_case(
                     "discretization_restore_status",
                     "discretization_after_restore",
                     "first_order_error_summary",
+                    "final_assessment_window",
+                    "final_assessment_reason",
                     "failure_stage",
                     "returncode_or_exception",
                 ]:
                     if key in live_result and live_result.get(key) not in (None, ""):
                         record[key] = str(live_result[key])
+                record["post_restore_polish_iterations"] = str(
+                    live_result.get(
+                        "post_restore_polish_iterations",
+                        args.post_restore_polish_iterations,
+                    )
+                )
                 record["convergence_assessment"] = str(
                     live_result.get("convergence_assessment", "")
                 )
@@ -3415,6 +3783,37 @@ def process_case(
                     default=str,
                     sort_keys=True,
                 )
+                record["first_order_stage_residual_latest"] = json.dumps(
+                    live_result.get("first_order_stage_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["first_order_stage_report_values"] = json.dumps(
+                    live_result.get("first_order_stage_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["post_restore_residual_latest"] = json.dumps(
+                    live_result.get("post_restore_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["post_restore_report_values"] = json.dumps(
+                    live_result.get("post_restore_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["post_restore_monitor_assessment"] = json.dumps(
+                    live_result.get("post_restore_monitor_assessment", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["post_restore_residual_target_met"] = str(
+                    bool(live_result.get("post_restore_residual_target_met"))
+                ).lower()
+                record["post_restore_strict_converged"] = str(
+                    bool(live_result.get("post_restore_strict_converged"))
+                ).lower()
                 residual_assessment = live_result.get("residual_assessment", {}) or {}
                 record["residual_target_met"] = str(bool(residual_assessment.get("strict_met"))).lower()
                 plateau_assessment = live_result.get("plateau_assessment", {}) or {}
@@ -3471,6 +3870,27 @@ def process_case(
             live_status = str(live_result.get("rerun_status", "COMPLETED_NEEDS_REVIEW"))
             record["rerun_status"] = live_status
 
+            promotion_allowed = (
+                record["strict_convergence_status"] == "STRICT_CONVERGED_ATTEMPT"
+                and (
+                    args.solver_strategy != "first_order_ramp"
+                    or (
+                        record["post_restore_strict_converged"] == "true"
+                        and record["discretization_restore_status"] == "RESTORE_CONFIRMED"
+                    )
+                )
+            )
+            if live_status == "SUCCESS_READY_TO_PROMOTE" and not promotion_allowed:
+                record["rerun_status"] = "NEEDS_MANUAL_REVIEW"
+                record["error_summary"] = (
+                    "Promotion blocked because strict convergence, post-restore "
+                    "strict convergence, or restore confirmation was missing."
+                )
+                record["suggested_next_action"] = (
+                    "Review convergence_assessment before considering manual promotion."
+                )
+                return record
+
             if live_status == "SUCCESS_READY_TO_PROMOTE":
                 try:
                     backup_dir = promote_attempt_to_final(
@@ -3524,6 +3944,28 @@ def process_case(
                     "with little chunk-to-chunk change; iteration was stopped early. "
                     "Consider --relaxation-profile strong or manual review before "
                     "burning further iterations at these settings."
+                )
+            elif record["rerun_status"] == "SECOND_ORDER_POST_RESTORE_NOT_CONVERGED":
+                record["suggested_next_action"] = (
+                    "First-order ramp restored second-order settings, but the "
+                    "post-restore second-order polish did not meet the strict "
+                    "residual target. Increase --post-restore-polish-iterations or "
+                    "review solver settings before promotion."
+                )
+            elif record["rerun_status"] == "SECOND_ORDER_POST_RESTORE_MONITOR_UNSTABLE":
+                record["suggested_next_action"] = (
+                    "Post-restore residuals met the strict target, but report "
+                    "monitors were not stable within monitor_rel_tol. Review the "
+                    "post_restore_monitor_assessment before promotion."
+                )
+            elif (
+                record["rerun_status"]
+                == "FIRST_ORDER_CONVERGED_RESTORE_CONFIRMED_NEEDS_POST_RESTORE_POLISH"
+            ):
+                record["suggested_next_action"] = (
+                    "Run first_order_ramp with --post-restore-polish-iterations "
+                    "greater than zero so final classification uses restored "
+                    "second-order monitor stability."
                 )
             elif record["rerun_status"] == "COMPLETED_NEEDS_REVIEW":
                 record["suggested_next_action"] = (
@@ -3612,6 +4054,7 @@ def write_summary(
         "",
         "Solver settings:",
         f"  additional_iterations: {args.additional_iterations}",
+        f"  post_restore_polish_iterations: {args.post_restore_polish_iterations}",
         f"  solver_strategy: {args.solver_strategy}",
         f"  allow_iterate_after_ramp_failure: {args.allow_iterate_after_ramp_failure}",
         f"  iteration_chunk_size: {args.iteration_chunk_size}",
