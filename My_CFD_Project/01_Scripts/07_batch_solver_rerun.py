@@ -43,6 +43,9 @@ PLAN_FIELDS = [
     "final_case_file",
     "final_data_file",
     "planned_backup_dir",
+    "attempt_dir",
+    "attempt_case_file",
+    "attempt_data_file",
     "matrix_case_name",
     "final_pair_exists",
     "case_dir_exists",
@@ -70,12 +73,32 @@ RESULT_FIELDS = [
     "error_summary",
     "suggested_next_action",
     "log_file",
+    "solver_strategy",
+    "promote_on_success",
+    "attempt_dir",
+    "attempt_case_file",
+    "attempt_data_file",
+    "promoted_to_final",
+    "launcher_profile",
     "launch_mode",
+    "launch_mode_used",
     "launch_working_dir",
     "launch_case_dir_resolved",
     "launch_exception_type",
     "launch_exception_message",
+    "processor_count_requested",
+    "processor_count_used",
     "processor_count",
+    "start_timeout",
+    "fallback_used",
+    "meshing_to_solver_used",
+    "launch_kwargs",
+    "failure_stage",
+    "strategy_stage_status",
+    "convergence_assessment",
+    "monitor_window",
+    "monitor_rel_tol",
+    "residual_growth_limit",
     "product_version",
 ]
 
@@ -220,7 +243,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--additional-iterations",
         type=positive_int,
         default=3000,
-        help="Continuation iterations requested for each live rerun.",
+        help="Total iteration budget for the selected solver strategy.",
+    )
+    parser.add_argument(
+        "--solver-strategy",
+        choices=[
+            "continue_only",
+            "damped_steady",
+            "pseudo_transient_ramp",
+            "first_order_ramp",
+            "diagnose_only",
+        ],
+        default="damped_steady",
+        help="Continuation strategy applied after loading the final case/data.",
+    )
+    parser.add_argument(
+        "--iteration-chunk-size",
+        type=positive_int,
+        default=200,
+        help="Iteration chunk size used by staged solver strategies.",
+    )
+    parser.add_argument(
+        "--monitor-window",
+        type=positive_int,
+        default=200,
+        help="Last-window iteration count used for monitor stability assessment.",
+    )
+    parser.add_argument(
+        "--monitor-rel-tol",
+        type=positive_float,
+        default=0.005,
+        help="Relative monitor variation threshold for success assessment.",
+    )
+    parser.add_argument(
+        "--residual-growth-limit",
+        type=positive_float,
+        default=100.0,
+        help="Allowed residual growth factor before marking divergence.",
+    )
+    parser.add_argument(
+        "--promote-on-success",
+        dest="promote_on_success",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Promote staged attempt case/data to the final filenames only after "
+            "success criteria pass."
+        ),
     )
     parser.add_argument(
         "--residual-target",
@@ -276,17 +345,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--launch-mode",
         choices=["solver", "meshing_to_solver"],
-        default="solver",
+        default="meshing_to_solver",
         help=(
             "How to launch Fluent for live reruns. solver launches directly in "
             "solver mode; meshing_to_solver keeps the older compatibility path."
         ),
     )
     parser.add_argument(
+        "--launcher-profile",
+        choices=["known_good_postprocess", "solver_direct"],
+        default="known_good_postprocess",
+        help=(
+            "Launch profile. known_good_postprocess mirrors the working shear "
+            "postprocess launch path; solver_direct uses direct solver launch."
+        ),
+    )
+    parser.add_argument(
         "--processor-count",
         type=positive_int,
-        default=50,
+        default=4,
         help="Fluent processor count for live reruns.",
+    )
+    parser.add_argument(
+        "--no-launch-fallback",
+        action="store_true",
+        help=(
+            "Disable the one-time solver_direct Deadline Exceeded fallback to "
+            "meshing_to_solver with 4 processors."
+        ),
+    )
+    parser.add_argument(
+        "--ui-mode",
+        default="gui",
+        help="Fluent UI mode for live reruns.",
     )
     parser.add_argument(
         "--graphics-driver",
@@ -297,15 +388,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--start-timeout",
         "--fluent-start-timeout",
+        dest="start_timeout",
         type=positive_int,
-        default=300,
+        default=600,
         help="PyFluent launch start timeout in seconds.",
     )
     parser.add_argument(
         "--fluent-health-timeout",
         type=positive_int,
-        default=300,
+        default=600,
         help="PyFluent health check timeout in seconds.",
     )
     parser.add_argument(
@@ -523,6 +616,20 @@ def final_pair_for_case(
     return case_dir, final_case_file, final_data_file
 
 
+def attempt_pair_for_case(
+    case_dir: Path,
+    geo_name: str,
+    case_name: str,
+    timestamp: str,
+) -> tuple[Path, Path, Path]:
+    attempt_dir = (
+        case_dir / "post" / "solver_rerun" / "attempts" / timestamp
+    ).resolve()
+    attempt_case_file = attempt_dir / f"{geo_name}_{case_name}_rerun_attempt.cas.h5"
+    attempt_data_file = attempt_dir / f"{geo_name}_{case_name}_rerun_attempt.dat.h5"
+    return attempt_dir, attempt_case_file, attempt_data_file
+
+
 def build_plan_rows(
     candidates: list[dict[str, str]],
     args: argparse.Namespace,
@@ -545,6 +652,12 @@ def build_plan_rows(
         planned_backup_dir = (
             case_dir / "post" / "solver_rerun" / "backups" / timestamp
         )
+        attempt_dir, attempt_case_file, attempt_data_file = attempt_pair_for_case(
+            case_dir,
+            geo_name,
+            case_name,
+            timestamp,
+        )
 
         plan_rows.append(
             {
@@ -560,6 +673,9 @@ def build_plan_rows(
                 "final_case_file": str(final_case_file),
                 "final_data_file": str(final_data_file),
                 "planned_backup_dir": str(planned_backup_dir),
+                "attempt_dir": str(attempt_dir),
+                "attempt_case_file": str(attempt_case_file),
+                "attempt_data_file": str(attempt_data_file),
                 "matrix_case_name": "true",
                 "final_pair_exists": str(final_pair_exists).lower(),
                 "case_dir_exists": str(case_dir_exists).lower(),
@@ -612,6 +728,7 @@ def print_plan(plan_rows: list[dict[str, str]], stats: dict[str, int]) -> None:
         print(f"     case_dir={row['case_dir']}")
         print(f"     final_case_file={row['final_case_file']}")
         print(f"     final_data_file={row['final_data_file']}")
+        print(f"     attempt_case_file={row.get('attempt_case_file', '')}")
 
 
 def load_prior_successes(results_csv: Path) -> set[tuple[str, str]]:
@@ -623,7 +740,11 @@ def load_prior_successes(results_csv: Path) -> set[tuple[str, str]]:
         with results_csv.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
-                if row.get("rerun_status") == "SUCCESS":
+                if row.get("rerun_status") in {
+                    "SUCCESS",
+                    "SUCCESS_PROMOTED",
+                    "SUCCESS_ATTEMPT_ONLY",
+                }:
                     geo_name = row.get("geo_name", "")
                     case_name = row.get("case_name", "")
                     if geo_name and case_name:
@@ -678,12 +799,32 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "error_summary": "",
         "suggested_next_action": "",
         "log_file": str(log_file),
+        "solver_strategy": args.solver_strategy,
+        "promote_on_success": str(args.promote_on_success).lower(),
+        "attempt_dir": "",
+        "attempt_case_file": "",
+        "attempt_data_file": "",
+        "promoted_to_final": "false",
+        "launcher_profile": args.launcher_profile,
         "launch_mode": args.launch_mode,
+        "launch_mode_used": "",
         "launch_working_dir": str(case_dir.resolve()),
         "launch_case_dir_resolved": str(case_dir.resolve()),
         "launch_exception_type": "",
         "launch_exception_message": "",
+        "processor_count_requested": str(args.processor_count),
+        "processor_count_used": "",
         "processor_count": str(args.processor_count),
+        "start_timeout": str(args.start_timeout),
+        "fallback_used": "false",
+        "meshing_to_solver_used": "false",
+        "launch_kwargs": "",
+        "failure_stage": "",
+        "strategy_stage_status": "",
+        "convergence_assessment": "",
+        "monitor_window": str(args.monitor_window),
+        "monitor_rel_tol": str(args.monitor_rel_tol),
+        "residual_growth_limit": str(args.residual_growth_limit),
         "product_version": args.product_version,
     }
 
@@ -701,6 +842,25 @@ def create_backup(
     backup_dir.mkdir(parents=True, exist_ok=False)
     shutil.copy2(final_case_file, backup_dir / final_case_file.name)
     shutil.copy2(final_data_file, backup_dir / final_data_file.name)
+    return backup_dir
+
+
+def promote_attempt_to_final(
+    case_dir: Path,
+    final_case_file: Path,
+    final_data_file: Path,
+    attempt_case_file: Path,
+    attempt_data_file: Path,
+    timestamp: str,
+) -> Path:
+    backup_dir = create_backup(
+        case_dir=case_dir,
+        final_case_file=final_case_file,
+        final_data_file=final_data_file,
+        timestamp=timestamp,
+    )
+    shutil.copy2(attempt_case_file.resolve(), final_case_file.resolve())
+    shutil.copy2(attempt_data_file.resolve(), final_data_file.resolve())
     return backup_dir
 
 
@@ -887,23 +1047,602 @@ def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> None:
     )
 
 
+def list_object_names(named_object: Any) -> list[str]:
+    try:
+        names = named_object.get_object_names()
+        if names is not None:
+            return list(names)
+    except Exception:
+        pass
+    try:
+        state = named_object.get_state()
+        if isinstance(state, dict):
+            return sorted(str(key) for key in state.keys())
+        if isinstance(state, list):
+            return [str(item) for item in state]
+    except Exception:
+        pass
+    return []
+
+
+def first_numeric(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for child in value.values():
+            found = first_numeric(child)
+            if found is not None:
+                return found
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            found = first_numeric(child)
+            if found is not None:
+                return found
+    return None
+
+
+def residual_numeric_from_state(state: Any) -> float | None:
+    """Extract a current residual-like value without using convergence criteria."""
+    if not isinstance(state, dict):
+        return None
+
+    for key, value in state.items():
+        key_text = str(key).lower()
+        if "criteria" in key_text or "criterion" in key_text:
+            continue
+        if any(token in key_text for token in ("current", "residual", "value")):
+            numeric = first_numeric(value)
+            if numeric is not None:
+                return numeric
+
+    for key, value in state.items():
+        key_text = str(key).lower()
+        if "criteria" in key_text or "criterion" in key_text:
+            continue
+        found = residual_numeric_from_state(value)
+        if found is not None:
+            return found
+
+    return None
+
+
+def collect_solver_diagnostics(solver: Any) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "solution_methods": {},
+        "residual_equations": {},
+        "report_definitions": {},
+        "errors": [],
+    }
+    solution = solver.settings.solution
+
+    for label, getter in [
+        ("solution.methods", lambda: solution.methods.get_state()),
+        ("solution.controls", lambda: solution.controls.get_state()),
+        ("residual_equations", lambda: solution.monitor.residual.equations.get_state()),
+    ]:
+        try:
+            diagnostics[
+                "residual_equations" if label == "residual_equations" else "solution_methods"
+            ][label] = getter()
+            print(f"Diagnostic {label}: {diagnostics['residual_equations' if label == 'residual_equations' else 'solution_methods'][label]}")
+        except Exception as exc:
+            message = f"{label}: {type(exc).__name__}: {exc}"
+            diagnostics["errors"].append(message)
+            print(f"Could not collect diagnostic {message}")
+
+    try:
+        report_defs = solution.report_definitions
+        diagnostics["report_definitions"] = {
+            "flux": list_object_names(report_defs.flux),
+            "surface": list_object_names(report_defs.surface),
+            "volume": list_object_names(report_defs.volume),
+            "single_valued_expression": list_object_names(
+                report_defs.single_valued_expression
+            ),
+        }
+        print(f"Report definition diagnostics: {diagnostics['report_definitions']}")
+    except Exception as exc:
+        message = f"report_definitions: {type(exc).__name__}: {exc}"
+        diagnostics["errors"].append(message)
+        print(f"Could not collect diagnostic {message}")
+
+    return diagnostics
+
+
+def collect_monitor_snapshot(solver: Any) -> dict[str, Any]:
+    solution = solver.settings.solution
+    snapshot: dict[str, Any] = {
+        "residual_state": {},
+        "residual_numeric": {},
+        "report_values": {},
+        "errors": [],
+    }
+
+    try:
+        residual_state = solution.monitor.residual.equations.get_state()
+        snapshot["residual_state"] = residual_state
+        if isinstance(residual_state, dict):
+            for name, state in residual_state.items():
+                numeric = residual_numeric_from_state(state)
+                if numeric is not None:
+                    snapshot["residual_numeric"][str(name)] = numeric
+    except Exception as exc:
+        snapshot["errors"].append(f"residual_state: {type(exc).__name__}: {exc}")
+
+    try:
+        report_defs = solution.report_definitions
+        report_names: list[str] = []
+        for group in [
+            report_defs.flux,
+            report_defs.surface,
+            report_defs.volume,
+            report_defs.single_valued_expression,
+        ]:
+            report_names.extend(list_object_names(group))
+        for report_name in report_names:
+            if not (
+                "lmh" in report_name.lower()
+                or "mass" in report_name.lower()
+                or report_name.lower() in {"m_in", "m_out", "pp_m_in", "pp_m_out"}
+            ):
+                continue
+            try:
+                result = report_defs.compute(report_defs=[report_name])
+                numeric = first_numeric(result)
+                if numeric is not None:
+                    snapshot["report_values"][report_name] = numeric
+            except Exception as exc:
+                snapshot["errors"].append(
+                    f"report {report_name}: {type(exc).__name__}: {exc}"
+                )
+    except Exception as exc:
+        snapshot["errors"].append(f"report_values: {type(exc).__name__}: {exc}")
+
+    return snapshot
+
+
+def execute_tui_best_effort(solver: Any, label: str, commands: list[str]) -> list[str]:
+    errors: list[str] = []
+    for command in commands:
+        try:
+            print(f"Trying TUI fallback for {label}: {command}")
+            solver.execute_tui(command)
+            print(f"TUI fallback succeeded for {label}: {command}")
+            return errors
+        except Exception as exc:
+            message = f"{command}: {type(exc).__name__}: {exc}"
+            errors.append(message)
+            print(f"TUI fallback failed for {label}: {message}")
+    return errors
+
+
+def apply_conservative_under_relaxation(solver: Any) -> dict[str, Any]:
+    print("\nApplying damped steady strategy settings.")
+    result: dict[str, Any] = {"status": "ATTEMPTED", "errors": []}
+    try:
+        apply_relaxation_profile(solver.settings.solution, "conservative")
+    except Exception as exc:
+        result["errors"].append(f"settings relaxation: {type(exc).__name__}: {exc}")
+
+    tui_commands = [
+        "/solve/set/under-relaxation pressure 0.2",
+        "/solve/set/under-relaxation momentum 0.3",
+        "/solve/set/under-relaxation species 0.5",
+    ]
+    result["errors"].extend(
+        execute_tui_best_effort(solver, "under-relaxation", tui_commands)
+    )
+    return result
+
+
+def apply_pseudo_transient_ramp(solver: Any, args: argparse.Namespace) -> dict[str, Any]:
+    print("\nApplying pseudo-transient ramp strategy settings.")
+    result: dict[str, Any] = {"status": "ATTEMPTED", "errors": []}
+    try:
+        apply_pseudo_transient(solver, True)
+    except Exception as exc:
+        result["errors"].append(f"settings pseudo transient: {type(exc).__name__}: {exc}")
+
+    tui_commands = [
+        "/solve/set/pseudo-transient yes",
+        "/solve/set/pseudo-time-method yes",
+        "/solve/set/pseudo-transient-method yes",
+    ]
+    result["errors"].extend(
+        execute_tui_best_effort(solver, "pseudo-transient", tui_commands)
+    )
+    apply_conservative_under_relaxation(solver)
+    return result
+
+
+def apply_first_order_ramp(solver: Any) -> dict[str, Any]:
+    print("\nApplying first-order ramp strategy settings.")
+    result: dict[str, Any] = {
+        "status": "ATTEMPTED",
+        "restore_reliable": False,
+        "original_state": {},
+        "errors": [],
+    }
+    solution = solver.settings.solution
+    try:
+        methods = solution.methods
+        if hasattr(methods, "get_state"):
+            result["original_state"] = methods.get_state()
+            print(f"Original solution methods: {result['original_state']}")
+    except Exception as exc:
+        result["errors"].append(f"capture methods: {type(exc).__name__}: {exc}")
+
+    tui_commands = [
+        "/solve/set/discretization-scheme mom first-order-upwind",
+        "/solve/set/discretization-scheme species-0 first-order-upwind",
+        "/solve/set/discretization-scheme pressure standard",
+    ]
+    result["errors"].extend(
+        execute_tui_best_effort(solver, "first-order discretization", tui_commands)
+    )
+    apply_conservative_under_relaxation(solver)
+    return result
+
+
+def restore_first_order_ramp(solver: Any, strategy_state: dict[str, Any]) -> bool:
+    original_state = strategy_state.get("original_state")
+    if not original_state:
+        print("Original discretization state was not captured; restore is not reliable.")
+        return False
+    try:
+        solver.settings.solution.methods.set_state(original_state)
+        print("Original solution methods restored from captured state.")
+        return True
+    except Exception as exc:
+        print(f"Could not restore original solution methods: {type(exc).__name__}: {exc}")
+        return False
+
+
+def run_iteration_chunks(
+    solver: Any,
+    total_iterations: int,
+    chunk_size: int,
+) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    remaining = total_iterations
+    chunk_index = 0
+    while remaining > 0:
+        chunk_index += 1
+        iter_count = min(chunk_size, remaining)
+        print(f"\nRunning iteration chunk {chunk_index}: {iter_count} iterations")
+        try:
+            solver.settings.solution.run_calculation.iterate(iter_count=iter_count)
+        except Exception as exc:
+            raise FluentStageError(
+                status="FAILED_DIVERGED_DURING_RERUN",
+                failure_stage="iterate",
+                message=f"Iteration chunk {chunk_index} failed: {exc}",
+                original_exception=exc,
+            ) from exc
+        snapshot = collect_monitor_snapshot(solver)
+        snapshot["chunk_index"] = chunk_index
+        snapshot["iterations_completed_in_chunk"] = iter_count
+        history.append(snapshot)
+        remaining -= iter_count
+        print(
+            f"Chunk {chunk_index} monitor snapshot: residual_keys="
+            f"{list(snapshot.get('residual_numeric', {}).keys())}, report_keys="
+            f"{list(snapshot.get('report_values', {}).keys())}"
+        )
+    return history
+
+
+def assess_history(
+    history: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    assessment: dict[str, Any] = {
+        "status": "MONITORS_UNAVAILABLE",
+        "diverged": False,
+        "stable": False,
+        "bounded_not_converged": False,
+        "details": "",
+    }
+    series: dict[str, list[float]] = {}
+    for snapshot in history:
+        for group_name in ("residual_numeric", "report_values"):
+            values = snapshot.get(group_name, {})
+            if not isinstance(values, dict):
+                continue
+            for name, value in values.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    series.setdefault(f"{group_name}:{name}", []).append(float(value))
+
+    if not series:
+        assessment["details"] = "No numeric residual/report monitor values were available."
+        return assessment
+
+    worst_growth = 0.0
+    max_rel_variation = 0.0
+    for name, values in series.items():
+        if len(values) < 2:
+            continue
+        first = abs(values[0])
+        last = abs(values[-1])
+        if first > 0.0:
+            worst_growth = max(worst_growth, last / first)
+        window_values = values[-max(2, min(len(values), args.monitor_window)) :]
+        mean_abs = sum(abs(v) for v in window_values) / len(window_values)
+        if mean_abs > 0.0:
+            rel_variation = (max(window_values) - min(window_values)) / mean_abs
+            max_rel_variation = max(max_rel_variation, abs(rel_variation))
+        print(f"Assessment series {name}: first={values[0]} last={values[-1]}")
+
+    assessment["worst_growth"] = worst_growth
+    assessment["max_rel_variation"] = max_rel_variation
+
+    if worst_growth > args.residual_growth_limit:
+        assessment["status"] = "DIVERGED"
+        assessment["diverged"] = True
+        assessment["details"] = (
+            f"Residual/report growth {worst_growth:.3g} exceeded limit "
+            f"{args.residual_growth_limit:.3g}."
+        )
+    elif max_rel_variation <= args.monitor_rel_tol:
+        assessment["status"] = "STABLE"
+        assessment["stable"] = True
+        assessment["details"] = (
+            f"Last-window relative variation {max_rel_variation:.3g} is within "
+            f"{args.monitor_rel_tol:.3g}."
+        )
+    else:
+        assessment["status"] = "BOUNDED_NOT_CONVERGED"
+        assessment["bounded_not_converged"] = True
+        assessment["details"] = (
+            f"Monitor variation {max_rel_variation:.3g} remains above "
+            f"{args.monitor_rel_tol:.3g}; bounded but not converged."
+        )
+    return assessment
+
+
+def execute_solver_strategy(
+    solver: Any,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "strategy_stage_status": "NOT_STARTED",
+        "convergence_assessment": "",
+        "diagnostics": {},
+        "history": [],
+        "assessment": {},
+    }
+    diagnostics = collect_solver_diagnostics(solver)
+    result["diagnostics"] = diagnostics
+
+    if args.solver_strategy == "diagnose_only":
+        result["strategy_stage_status"] = "DIAGNOSE_ONLY_COMPLETED"
+        result["convergence_assessment"] = "DIAGNOSE_ONLY_NO_ITERATION"
+        return result
+
+    try:
+        apply_continuation_settings(solver=solver, args=args)
+        if args.solver_strategy == "damped_steady":
+            result["strategy_settings"] = apply_conservative_under_relaxation(solver)
+        elif args.solver_strategy == "pseudo_transient_ramp":
+            result["strategy_settings"] = apply_pseudo_transient_ramp(solver, args)
+        elif args.solver_strategy == "first_order_ramp":
+            result["strategy_settings"] = apply_first_order_ramp(solver)
+        else:
+            result["strategy_settings"] = {"status": "CONTINUE_ONLY"}
+    except Exception as exc:
+        raise FluentStageError(
+            status="FAILED_APPLY_STRATEGY",
+            failure_stage="apply_strategy",
+            message=f"Could not apply solver strategy {args.solver_strategy}: {exc}",
+            original_exception=exc,
+        ) from exc
+
+    history = run_iteration_chunks(
+        solver=solver,
+        total_iterations=args.additional_iterations,
+        chunk_size=args.iteration_chunk_size,
+    )
+    result["history"] = history
+
+    if args.solver_strategy == "first_order_ramp":
+        restored = restore_first_order_ramp(solver, result.get("strategy_settings", {}))
+        if not restored:
+            result["strategy_stage_status"] = "NEEDS_MANUAL_REVIEW"
+            result["convergence_assessment"] = (
+                "First-order ramp completed, but original discretization restore "
+                "was not verified."
+            )
+            return result
+
+    assessment = assess_history(history, args)
+    result["assessment"] = assessment
+    result["convergence_assessment"] = json.dumps(assessment, sort_keys=True)
+
+    if assessment.get("diverged"):
+        raise FluentStageError(
+            status="FAILED_DIVERGED_DURING_RERUN",
+            failure_stage="iterate",
+            message=str(assessment.get("details", "Residual/report monitors diverged.")),
+        )
+
+    if assessment.get("stable"):
+        result["strategy_stage_status"] = "STABLE"
+    elif assessment.get("bounded_not_converged"):
+        result["strategy_stage_status"] = "NEEDS_TRANSIENT_REVIEW"
+    else:
+        result["strategy_stage_status"] = "COMPLETED_NEEDS_REVIEW"
+    return result
+
+
 class FluentLaunchError(RuntimeError):
     """Raised when Fluent cannot be launched or switched into solver mode."""
 
-    def __init__(self, message: str, original_exception: BaseException) -> None:
+    def __init__(
+        self,
+        message: str,
+        original_exception: BaseException,
+        failure_stage: str = "launch",
+    ) -> None:
         super().__init__(message)
         self.original_exception = original_exception
         self.exception_type = type(original_exception).__name__
         self.exception_message = str(original_exception)
+        self.failure_stage = failure_stage
+
+
+class FluentStageError(RuntimeError):
+    """Raised for non-launch Fluent stages with explicit status classification."""
+
+    def __init__(
+        self,
+        status: str,
+        failure_stage: str,
+        message: str,
+        original_exception: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.failure_stage = failure_stage
+        self.original_exception = original_exception
+        self.exception_type = (
+            type(original_exception).__name__ if original_exception is not None else ""
+        )
+        self.exception_message = str(original_exception) if original_exception else message
+
+
+def deadline_exceeded(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "deadline exceeded" in text
+
+
+def effective_primary_launch_mode(args: argparse.Namespace) -> str:
+    if args.launcher_profile == "known_good_postprocess":
+        return "meshing_to_solver"
+    if args.launcher_profile == "solver_direct":
+        return "solver"
+    return args.launch_mode
+
+
+def make_launch_kwargs(
+    args: argparse.Namespace,
+    launch_mode: str,
+    launch_working_dir: Path,
+    processor_count: int,
+) -> dict[str, Any]:
+    launch_kwargs: dict[str, Any] = {
+        "product_version": args.product_version,
+        "mode": "solver" if launch_mode == "solver" else "meshing",
+        "dimension": 3,
+        "precision": "double",
+        "processor_count": processor_count,
+        "ui_mode": args.ui_mode,
+        "start_timeout": args.start_timeout,
+        "cwd": fluent_path(launch_working_dir),
+    }
+    if args.graphics_driver:
+        launch_kwargs["graphics_driver"] = args.graphics_driver
+    return launch_kwargs
+
+
+def launch_solver_session(
+    pyfluent: Any,
+    args: argparse.Namespace,
+    launch_working_dir: Path,
+    metadata: dict[str, Any],
+) -> Any:
+    primary_mode = effective_primary_launch_mode(args)
+    attempts: list[tuple[str, int, bool]] = [(primary_mode, args.processor_count, False)]
+    if (
+        args.launcher_profile == "solver_direct"
+        and primary_mode == "solver"
+        and not args.no_launch_fallback
+    ):
+        attempts.append(("meshing_to_solver", 4, True))
+
+    last_error: FluentLaunchError | None = None
+
+    for launch_mode, processor_count, is_fallback in attempts:
+        launch_kwargs = make_launch_kwargs(
+            args=args,
+            launch_mode=launch_mode,
+            launch_working_dir=launch_working_dir,
+            processor_count=processor_count,
+        )
+        metadata["launch_mode_used"] = launch_mode
+        metadata["processor_count_used"] = str(processor_count)
+        metadata["fallback_used"] = str(is_fallback).lower()
+        metadata["meshing_to_solver_used"] = str(launch_mode == "meshing_to_solver").lower()
+        metadata["launch_kwargs"] = json.dumps(launch_kwargs, sort_keys=True)
+
+        print(f"\nLaunch attempt: mode={launch_mode} fallback={is_fallback}")
+        print(f"launch kwargs={launch_kwargs}")
+
+        meshing = None
+        try:
+            with pushd(launch_working_dir):
+                print(f"cwd inside launch context={Path.cwd()}")
+                launched = pyfluent.launch_fluent(**launch_kwargs)
+
+                if launch_mode == "meshing_to_solver":
+                    meshing = launched
+                    print("Switching to solver...")
+                    try:
+                        solver = meshing.switch_to_solver()
+                    except Exception as exc:
+                        raise FluentLaunchError(
+                            f"Fluent switch_to_solver failed: {exc}",
+                            exc,
+                            failure_stage="switch_to_solver",
+                        ) from exc
+                    meshing = None
+                    print("Solver ready.")
+                    return solver
+
+                print("Solver ready.")
+                return launched
+        except FluentLaunchError as exc:
+            last_error = exc
+            if meshing is not None:
+                try:
+                    meshing.exit()
+                except Exception as cleanup_error:
+                    print(f"Warning: could not exit failed meshing session: {cleanup_error}")
+            if exc.failure_stage == "launch" and deadline_exceeded(exc) and not is_fallback:
+                print("Launch Deadline Exceeded; trying configured fallback if available.")
+                continue
+            raise
+        except Exception as exc:
+            last_error = FluentLaunchError(
+                f"Fluent launch failed during {launch_mode} startup: {exc}",
+                exc,
+                failure_stage="launch",
+            )
+            if meshing is not None:
+                try:
+                    meshing.exit()
+                except Exception as cleanup_error:
+                    print(f"Warning: could not exit failed meshing session: {cleanup_error}")
+            if deadline_exceeded(exc) and not is_fallback:
+                print("Launch Deadline Exceeded; trying configured fallback if available.")
+                continue
+            raise last_error from exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No Fluent launch attempts were configured.")
 
 
 def run_live_solver_rerun(
     case_dir: Path,
     final_case_file: Path,
     final_data_file: Path,
+    attempt_case_file: Path,
+    attempt_data_file: Path,
     args: argparse.Namespace,
     log_path: Path,
-) -> None:
+) -> dict[str, Any]:
     require_windows_for_live_run()
 
     import ansys.fluent.core as pyfluent  # Imported only for live non-dry-run execution.
@@ -913,57 +1652,51 @@ def run_live_solver_rerun(
     case_dir = resolve_existing_dir(case_dir, "case_dir")
     final_case_file = resolve_existing_file(final_case_file, "final case file")
     final_data_file = resolve_existing_file(final_data_file, "final data file")
+    attempt_case_file = attempt_case_file.resolve()
+    attempt_data_file = attempt_data_file.resolve()
     log_path = log_path.resolve()
     launch_working_dir = case_dir
     transcript_path = log_path.with_name(log_path.stem + "__fluent.trn").resolve()
 
-    meshing = None
     solver = None
     transcript_is_running = False
+    result: dict[str, Any] = {
+        "rerun_status": "",
+        "strategy_stage_status": "",
+        "convergence_assessment": "",
+        "attempt_saved": False,
+        "diagnostics": {},
+        "history": [],
+        "assessment": {},
+        "launch_metadata": {},
+    }
 
     try:
         print("\nLaunching Fluent for solver rerun.")
         print(f"cwd before launch={Path.cwd()}")
         print(f"product_version={args.product_version}")
-        print(f"processor_count={args.processor_count}")
+        print(f"launcher_profile={args.launcher_profile}")
         print(f"launch_mode={args.launch_mode}")
+        print(f"primary_launch_mode={effective_primary_launch_mode(args)}")
+        print(f"processor_count_requested={args.processor_count}")
         print(f"launch_working_dir={launch_working_dir}")
         print(f"resolved_case_dir={case_dir}")
         print(f"resolved_final_case_file={final_case_file}")
         print(f"resolved_final_data_file={final_data_file}")
+        print(f"attempt_case_file={attempt_case_file}")
+        print(f"attempt_data_file={attempt_data_file}")
+        print(f"solver_strategy={args.solver_strategy}")
+        print(f"promote_on_success={args.promote_on_success}")
         print(f"additional_iterations={args.additional_iterations}")
 
-        launch_kwargs = {
-            "product_version": args.product_version,
-            "mode": "solver" if args.launch_mode == "solver" else "meshing",
-            "dimension": 3,
-            "precision": "double",
-            "processor_count": args.processor_count,
-            "ui_mode": "gui",
-            "start_timeout": args.fluent_start_timeout,
-            "cwd": fluent_path(launch_working_dir),
-        }
-        if args.graphics_driver:
-            launch_kwargs["graphics_driver"] = args.graphics_driver
-
-        try:
-            with pushd(launch_working_dir):
-                print(f"cwd inside launch context={Path.cwd()}")
-                print(f"launch kwargs={launch_kwargs}")
-                launched = pyfluent.launch_fluent(**launch_kwargs)
-
-                if args.launch_mode == "meshing_to_solver":
-                    meshing = launched
-                    print("Switching from meshing mode to solver mode.")
-                    solver = meshing.switch_to_solver()
-                    meshing = None
-                else:
-                    solver = launched
-        except Exception as exc:
-            raise FluentLaunchError(
-                f"Fluent launch failed during {args.launch_mode} startup: {exc}",
-                exc,
-            ) from exc
+        launch_metadata: dict[str, Any] = {}
+        solver = launch_solver_session(
+            pyfluent=pyfluent,
+            args=args,
+            launch_working_dir=launch_working_dir,
+            metadata=launch_metadata,
+        )
+        result["launch_metadata"] = launch_metadata
 
         if args.write_transcript:
             print(f"Starting Fluent transcript: {transcript_path}")
@@ -971,20 +1704,64 @@ def run_live_solver_rerun(
             transcript_is_running = True
 
         print(f"Reading final case/data: {final_case_file}")
-        solver.settings.file.read_case_data(file_name=fluent_path(final_case_file))
+        try:
+            solver.settings.file.read_case_data(file_name=fluent_path(final_case_file))
+        except Exception as exc:
+            raise FluentStageError(
+                status="FAILED_READ_CASE_DATA",
+                failure_stage="read_case",
+                message=f"Could not read final case/data: {exc}",
+                original_exception=exc,
+            ) from exc
         print("Final case/data loaded. Solution will not be reinitialized.")
 
-        apply_continuation_settings(solver=solver, args=args)
+        strategy_result = execute_solver_strategy(solver=solver, args=args)
+        result.update(strategy_result)
 
-        print(f"\nContinuing solution for {args.additional_iterations} iterations.")
-        solver.settings.solution.run_calculation.iterate(
-            iter_count=args.additional_iterations
-        )
-        print("Continuation iterations completed.")
+        if args.solver_strategy == "diagnose_only":
+            result["rerun_status"] = "COMPLETED_NEEDS_REVIEW"
+            return result
 
-        print(f"Writing final case/data: {final_case_file}")
-        solver.settings.file.write_case_data(file_name=fluent_path(final_case_file))
-        print("Final case/data write completed.")
+        if strategy_result.get("strategy_stage_status") == "NEEDS_TRANSIENT_REVIEW":
+            result["rerun_status"] = "NEEDS_TRANSIENT_REVIEW"
+        elif strategy_result.get("strategy_stage_status") == "COMPLETED_NEEDS_REVIEW":
+            result["rerun_status"] = "COMPLETED_NEEDS_REVIEW"
+        elif strategy_result.get("strategy_stage_status") == "NEEDS_MANUAL_REVIEW":
+            result["rerun_status"] = "NEEDS_MANUAL_REVIEW"
+        elif strategy_result.get("strategy_stage_status") == "STABLE":
+            result["rerun_status"] = (
+                "SUCCESS_ATTEMPT_ONLY"
+                if not args.promote_on_success
+                else "SUCCESS_READY_TO_PROMOTE"
+            )
+        else:
+            result["rerun_status"] = "COMPLETED_NEEDS_REVIEW"
+
+        attempt_case_file.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Writing staged attempt case/data: {attempt_case_file}")
+        try:
+            solver.settings.file.write_case_data(file_name=fluent_path(attempt_case_file))
+        except Exception as exc:
+            raise FluentStageError(
+                status="FAILED_SAVE_ATTEMPT",
+                failure_stage="save",
+                message=f"Could not save staged attempt case/data: {exc}",
+                original_exception=exc,
+            ) from exc
+
+        if not attempt_case_file.is_file() or not attempt_data_file.is_file():
+            raise FluentStageError(
+                status="FAILED_SAVE_ATTEMPT",
+                failure_stage="save",
+                message=(
+                    "Staged write finished but attempt case/data pair is missing: "
+                    f"{attempt_case_file}; {attempt_data_file}"
+                ),
+            )
+
+        result["attempt_saved"] = True
+        print("Staged attempt case/data write completed.")
+        return result
 
     finally:
         if solver is not None and transcript_is_running:
@@ -993,12 +1770,6 @@ def run_live_solver_rerun(
                 transcript_is_running = False
             except Exception as cleanup_error:
                 print(f"Warning: could not stop Fluent transcript: {cleanup_error}")
-
-        if meshing is not None:
-            try:
-                meshing.exit()
-            except Exception as cleanup_error:
-                print(f"Warning: could not exit meshing session: {cleanup_error}")
 
         if solver is not None:
             try:
@@ -1085,15 +1856,38 @@ def process_case(
     case_dir_resolved = case_dir.resolve()
     final_case_file_resolved = final_case_file.resolve()
     final_data_file_resolved = final_data_file.resolve()
+    attempt_dir, attempt_case_file, attempt_data_file = attempt_pair_for_case(
+        case_dir_resolved,
+        geo_name,
+        case_name,
+        run_timestamp,
+    )
     launch_working_dir = case_dir_resolved
     log_path = Path(record["log_file"]).resolve()
     record["final_case_file"] = str(final_case_file_resolved)
     record["final_data_file"] = str(final_data_file_resolved)
-    record["output_case_file"] = str(final_case_file_resolved)
-    record["output_data_file"] = str(final_data_file_resolved)
+    record["output_case_file"] = str(attempt_case_file)
+    record["output_data_file"] = str(attempt_data_file)
+    record["attempt_dir"] = str(attempt_dir)
+    record["attempt_case_file"] = str(attempt_case_file)
+    record["attempt_data_file"] = str(attempt_data_file)
     record["log_file"] = str(log_path)
     record["launch_working_dir"] = str(launch_working_dir)
     record["launch_case_dir_resolved"] = str(case_dir_resolved)
+    record["launch_mode_used"] = effective_primary_launch_mode(args)
+    record["processor_count_used"] = str(args.processor_count)
+    record["meshing_to_solver_used"] = str(
+        effective_primary_launch_mode(args) == "meshing_to_solver"
+    ).lower()
+    record["launch_kwargs"] = json.dumps(
+        make_launch_kwargs(
+            args=args,
+            launch_mode=effective_primary_launch_mode(args),
+            launch_working_dir=launch_working_dir,
+            processor_count=args.processor_count,
+        ),
+        sort_keys=True,
+    )
     start_time = time.monotonic()
 
     with case_log(log_path):
@@ -1104,12 +1898,20 @@ def process_case(
         print(f"resolved case_dir: {case_dir_resolved}")
         print(f"resolved final_case_file: {final_case_file_resolved}")
         print(f"resolved final_data_file: {final_data_file_resolved}")
-        print(f"launch_mode: {args.launch_mode}")
-        print(f"launch_working_dir: {launch_working_dir}")
-        print(f"processor_count: {args.processor_count}")
-        print(f"product_version: {args.product_version}")
-        print(f"graphics_driver: {args.graphics_driver or 'not supplied'}")
-        print(f"additional_iterations: {args.additional_iterations}")
+        print(f"attempt_dir={attempt_dir}")
+        print(f"attempt_case_file={attempt_case_file}")
+        print(f"attempt_data_file={attempt_data_file}")
+        print(f"launcher_profile={args.launcher_profile}")
+        print(f"launch_mode={args.launch_mode}")
+        print(f"effective_launch_mode={effective_primary_launch_mode(args)}")
+        print(f"launch_working_dir={launch_working_dir}")
+        print(f"processor_count={args.processor_count}")
+        print(f"start_timeout={args.start_timeout}")
+        print(f"product_version={args.product_version}")
+        print(f"graphics_driver={args.graphics_driver or 'not supplied'}")
+        print(f"solver_strategy={args.solver_strategy}")
+        print(f"promote_on_success={str(args.promote_on_success).lower()}")
+        print(f"additional_iterations={args.additional_iterations}")
         print(f"case_dir exists: {case_dir_resolved.is_dir()}")
         print(f"final case exists: {final_case_file_resolved.is_file()}")
         print(f"final data exists: {final_data_file_resolved.is_file()}")
@@ -1183,46 +1985,79 @@ def process_case(
                 return record
 
             try:
-                backup_dir = create_backup(
+                live_result = run_live_solver_rerun(
                     case_dir=case_dir_resolved,
                     final_case_file=final_case_file_resolved,
                     final_data_file=final_data_file_resolved,
-                    timestamp=run_timestamp,
-                )
-                record["backup_dir"] = str(backup_dir)
-                print(f"Backup complete: {backup_dir}")
-            except Exception as exc:
-                record["rerun_status"] = "FAILED_BACKUP"
-                record["returncode_or_exception"] = short_exception(exc)
-                record["error_summary"] = short_exception(exc)
-                record["suggested_next_action"] = (
-                    "Fix backup path/permissions before allowing final case/data overwrite."
-                )
-                traceback.print_exc()
-                return record
-
-            try:
-                run_live_solver_rerun(
-                    case_dir=case_dir_resolved,
-                    final_case_file=final_case_file_resolved,
-                    final_data_file=final_data_file_resolved,
+                    attempt_case_file=attempt_case_file,
+                    attempt_data_file=attempt_data_file,
                     args=args,
                     log_path=log_path,
                 )
+                launch_metadata = live_result.get("launch_metadata", {})
+                for key in [
+                    "launch_mode_used",
+                    "processor_count_used",
+                    "fallback_used",
+                    "meshing_to_solver_used",
+                    "launch_kwargs",
+                ]:
+                    if key in launch_metadata:
+                        record[key] = str(launch_metadata[key])
+                record["strategy_stage_status"] = str(
+                    live_result.get("strategy_stage_status", "")
+                )
+                record["convergence_assessment"] = str(
+                    live_result.get("convergence_assessment", "")
+                )
+                record["diagnostics_json"] = json.dumps(
+                    live_result.get("diagnostics", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["monitor_history_json"] = json.dumps(
+                    live_result.get("history", []),
+                    default=str,
+                    sort_keys=True,
+                )
             except FluentLaunchError as exc:
-                record["rerun_status"] = "FAILED_LAUNCH"
+                record["rerun_status"] = (
+                    "FAILED_SWITCH_TO_SOLVER"
+                    if exc.failure_stage == "switch_to_solver"
+                    else "FAILED_LAUNCH"
+                )
                 record["returncode_or_exception"] = short_exception(exc)
                 record["launch_exception_type"] = exc.exception_type
                 record["launch_exception_message"] = exc.exception_message
+                record["failure_stage"] = exc.failure_stage
                 record["error_summary"] = short_exception(exc)
                 record["suggested_next_action"] = (
                     "Inspect the launch path, Fluent installation, and PyFluent startup log."
                 )
                 traceback.print_exc()
                 return record
+            except FluentStageError as exc:
+                record["rerun_status"] = exc.status
+                record["returncode_or_exception"] = short_exception(exc)
+                record["launch_exception_type"] = exc.exception_type
+                record["launch_exception_message"] = exc.exception_message
+                record["failure_stage"] = exc.failure_stage
+                record["error_summary"] = short_exception(exc)
+                if exc.status == "FAILED_DIVERGED_DURING_RERUN":
+                    record["suggested_next_action"] = (
+                        "Treat this as a steady-solver stability problem; review "
+                        "pseudo-transient or transient strategy manually."
+                    )
+                else:
+                    record["suggested_next_action"] = (
+                        "Inspect the per-case solver rerun log for the failed stage."
+                    )
+                traceback.print_exc()
+                return record
             except Exception as exc:
                 record["rerun_status"] = "FAILED_EXCEPTION"
                 record["returncode_or_exception"] = short_exception(exc)
+                record["failure_stage"] = "unknown"
                 record["error_summary"] = short_exception(exc)
                 record["suggested_next_action"] = (
                     "Inspect the per-case solver rerun log and Fluent transcript if present."
@@ -1230,22 +2065,77 @@ def process_case(
                 traceback.print_exc()
                 return record
 
-            if not final_case_file_resolved.is_file() or not final_data_file_resolved.is_file():
-                record["rerun_status"] = "FAILED_OUTPUT_MISSING_AFTER_RUN"
-                record["returncode_or_exception"] = "output final case/data missing"
-                record["error_summary"] = (
-                    "Solver command finished but final case/data pair was not found."
-                )
-                record["suggested_next_action"] = (
-                    "Inspect Fluent write_case_data output in the per-case log."
-                )
-                return record
+            live_status = str(live_result.get("rerun_status", "COMPLETED_NEEDS_REVIEW"))
+            record["rerun_status"] = live_status
 
-            record["rerun_status"] = "SUCCESS"
+            if live_status == "SUCCESS_READY_TO_PROMOTE":
+                try:
+                    backup_dir = promote_attempt_to_final(
+                        case_dir=case_dir_resolved,
+                        final_case_file=final_case_file_resolved,
+                        final_data_file=final_data_file_resolved,
+                        attempt_case_file=attempt_case_file,
+                        attempt_data_file=attempt_data_file,
+                        timestamp=run_timestamp,
+                    )
+                    record["backup_dir"] = str(backup_dir)
+                    record["promoted_to_final"] = "true"
+                    record["rerun_status"] = "SUCCESS_PROMOTED"
+                    print(f"Promoted staged attempt to final after backup: {backup_dir}")
+                except Exception as exc:
+                    record["rerun_status"] = "FAILED_BACKUP"
+                    record["returncode_or_exception"] = short_exception(exc)
+                    record["error_summary"] = short_exception(exc)
+                    record["suggested_next_action"] = (
+                        "Attempt files exist, but promotion backup/copy failed. "
+                        "Do not overwrite finals until this is reviewed."
+                    )
+                    traceback.print_exc()
+                    return record
+
+            if record["rerun_status"] == "SUCCESS_READY_TO_PROMOTE":
+                record["rerun_status"] = "SUCCESS_ATTEMPT_ONLY"
+
+            if record["rerun_status"] == "SUCCESS_ATTEMPT_ONLY":
+                record["suggested_next_action"] = (
+                    "Review staged attempt outputs before promotion to final."
+                )
+            elif record["rerun_status"] == "SUCCESS_PROMOTED":
+                record["suggested_next_action"] = (
+                    "Refresh inventory and run report/postprocessing as needed."
+                )
+            elif record["rerun_status"] == "NEEDS_TRANSIENT_REVIEW":
+                record["suggested_next_action"] = (
+                    "Steady residual/report variation remains bounded but not stable; "
+                    "consider transient or pseudo-transient manual review."
+                )
+            elif record["rerun_status"] == "COMPLETED_NEEDS_REVIEW":
+                record["suggested_next_action"] = (
+                    "Monitor extraction was incomplete or inconclusive; review staged "
+                    "attempt files and logs manually."
+                )
+            elif record["rerun_status"] == "NEEDS_MANUAL_REVIEW":
+                record["suggested_next_action"] = (
+                    "Strategy completed but restoration/assessment was not reliable; "
+                    "do not promote without manual review."
+                )
+
             record["returncode_or_exception"] = "0"
-            report_status, next_action = maybe_run_report_after_success(record, args)
-            record["report_extraction_status"] = report_status
-            record["suggested_next_action"] = next_action
+            if record["rerun_status"].startswith("SUCCESS"):
+                report_status, next_action = maybe_run_report_after_success(record, args)
+                record["report_extraction_status"] = report_status
+                if next_action:
+                    record["suggested_next_action"] = next_action
+            else:
+                record["report_extraction_status"] = "SKIPPED_NOT_SUCCESS"
+
+            if (
+                record["rerun_status"].startswith("SUCCESS")
+                and not Path(record["attempt_case_file"]).is_file()
+            ):
+                record["rerun_status"] = "FAILED_SAVE_ATTEMPT"
+                record["error_summary"] = "Success status but attempt case file is missing."
+                return record
             return record
 
         finally:
@@ -1294,13 +2184,22 @@ def write_summary(
         "",
         "Solver settings:",
         f"  additional_iterations: {args.additional_iterations}",
+        f"  solver_strategy: {args.solver_strategy}",
+        f"  iteration_chunk_size: {args.iteration_chunk_size}",
         f"  residual_target: {args.residual_target}",
+        f"  monitor_window: {args.monitor_window}",
+        f"  monitor_rel_tol: {args.monitor_rel_tol}",
+        f"  residual_growth_limit: {args.residual_growth_limit}",
+        f"  promote_on_success: {args.promote_on_success}",
         f"  pseudo_transient: {args.use_pseudo_transient if args.use_pseudo_transient is not None else 'preserve'}",
         f"  pressure_velocity_coupling: {args.pressure_velocity_coupling}",
         f"  relaxation_profile: {args.relaxation_profile}",
         f"  write_transcript: {args.write_transcript}",
+        f"  launcher_profile: {args.launcher_profile}",
         f"  launch_mode: {args.launch_mode}",
+        f"  effective_primary_launch_mode: {effective_primary_launch_mode(args)}",
         f"  processor_count: {args.processor_count}",
+        f"  start_timeout: {args.start_timeout}",
         f"  product_version: {args.product_version}",
         f"  graphics_driver: {args.graphics_driver or 'not supplied'}",
         "",
