@@ -113,6 +113,14 @@ RESULT_FIELDS = [
     "final_assessment_window",
     "final_assessment_reason",
     "staged_restore_enabled",
+    "flow_second_order_species_first_order_enabled",
+    "final_species_scheme",
+    "final_flow_scheme_status",
+    "species_second_order_skipped_reason",
+    "mixed_order_strict_converged",
+    "mixed_order_residual_latest",
+    "mixed_order_report_values",
+    "final_discretization_readback",
     "high_order_term_relaxation_before",
     "high_order_term_relaxation_after",
     "high_order_term_relaxation_apply_status",
@@ -181,6 +189,33 @@ STAGED_SECOND_ORDER_TARGETS = {
     "mom": ["second-order-upwind", "second-order", "Second Order Upwind", "second_order_upwind"],
     "species-0": ["second-order-upwind", "second-order", "Second Order Upwind", "second_order_upwind"],
 }
+MIXED_ORDER_FIRST_STAGE_CANDIDATES = {
+    "pressure": ["standard", "Standard"],
+    "mom": [
+        "first-order-upwind",
+        "First Order Upwind",
+        "first_order_upwind",
+    ],
+    "species-0": [
+        "first-order-upwind",
+        "First Order Upwind",
+        "first_order_upwind",
+    ],
+}
+MIXED_ORDER_REQUIRED_KEYS = {"pressure", "mom", "species-0"}
+MIXED_ORDER_FINAL_TARGETS = {
+    "pressure": ["second-order", "Second Order", "second_order"],
+    "mom": ["second-order-upwind", "Second Order Upwind", "second_order_upwind"],
+    "species-0": [
+        "first-order-upwind",
+        "First Order Upwind",
+        "first_order_upwind",
+    ],
+}
+MIXED_ORDER_SPECIES_SKIP_REASON = (
+    "species-0 second-order restore intentionally skipped because "
+    "staged_second_order_restore identified species as the limiting restore stage."
+)
 STAGED_RESTORE_STAGE_TO_KEY = {
     "pressure": "pressure",
     "momentum": "mom",
@@ -361,6 +396,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "pseudo_transient_ramp",
             "first_order_ramp",
             "staged_second_order_restore",
+            "flow_second_order_species_first_order",
             "diagnose_only",
         ],
         default="damped_steady",
@@ -370,9 +406,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-iterate-after-ramp-failure",
         action="store_true",
         help=(
-            "For first_order_ramp/staged_second_order_restore, continue iterating "
-            "even if the first-order discretization switch is not confirmed by "
-            "readback."
+            "For first_order_ramp/staged_second_order_restore/"
+            "flow_second_order_species_first_order, continue iterating even if "
+            "the first-order discretization switch is not confirmed by readback."
         ),
     )
     parser.add_argument(
@@ -1061,6 +1097,20 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "staged_restore_enabled": str(
             args.solver_strategy == "staged_second_order_restore"
         ).lower(),
+        "flow_second_order_species_first_order_enabled": str(
+            args.solver_strategy == "flow_second_order_species_first_order"
+        ).lower(),
+        "final_species_scheme": "",
+        "final_flow_scheme_status": "",
+        "species_second_order_skipped_reason": (
+            MIXED_ORDER_SPECIES_SKIP_REASON
+            if args.solver_strategy == "flow_second_order_species_first_order"
+            else ""
+        ),
+        "mixed_order_strict_converged": "false",
+        "mixed_order_residual_latest": "{}",
+        "mixed_order_report_values": "{}",
+        "final_discretization_readback": "{}",
         "high_order_term_relaxation_before": "",
         "high_order_term_relaxation_after": "",
         "high_order_term_relaxation_apply_status": "",
@@ -2301,6 +2351,78 @@ def apply_first_order_ramp(solver: Any) -> dict[str, Any]:
     return result
 
 
+def apply_mixed_order_first_stage(solver: Any) -> dict[str, Any]:
+    print("\nApplying mixed-order first-stage stabilization settings.")
+    result: dict[str, Any] = {
+        "status": "ATTEMPTED",
+        "restore_reliable": False,
+        "discretization_before": {},
+        "discretization_after_first_order": {},
+        "discretization_first_order_readback": {},
+        "key_results": {},
+        "errors": [],
+    }
+
+    try:
+        before = read_discretization_settings(solver)
+        result["discretization_before"] = before
+        result["restore_reliable"] = True
+        print(
+            "Original discretization settings from "
+            "solution.methods.spatial_discretization.discretization_scheme: "
+            f"{before}"
+        )
+    except Exception as exc:
+        message = f"capture discretization: {type(exc).__name__}: {exc}"
+        result["errors"].append(message)
+        result["status"] = "FAILED_APPLY_FIRST_ORDER"
+        result["first_order_error_summary"] = message
+        print(f"FAILED_APPLY_FIRST_ORDER: {message}")
+        return result
+
+    key_results: dict[str, dict[str, Any]] = {}
+    for key, candidates in MIXED_ORDER_FIRST_STAGE_CANDIDATES.items():
+        key_results[key] = apply_discretization_candidates(
+            solver=solver,
+            key=key,
+            candidates=candidates,
+            required=key in MIXED_ORDER_REQUIRED_KEYS,
+        )
+
+    result["key_results"] = key_results
+    try:
+        after = read_discretization_settings(solver)
+        result["discretization_after_first_order"] = after
+        print(f"Discretization after mixed-order first-stage attempt: {after}")
+    except Exception as exc:
+        message = f"read after first-order: {type(exc).__name__}: {exc}"
+        result["errors"].append(message)
+        print(f"Could not read discretization after first-order attempt: {message}")
+
+    result["discretization_first_order_readback"] = _first_order_readback_summary(
+        key_results
+    )
+
+    required_confirmed = all(
+        key_results.get(key, {}).get("status") == "CONFIRMED"
+        for key in MIXED_ORDER_REQUIRED_KEYS
+    )
+    result["status"] = (
+        "FIRST_ORDER_APPLIED_CONFIRMED"
+        if required_confirmed
+        else "FIRST_ORDER_SWITCH_NOT_CONFIRMED"
+    )
+
+    error_summary = _first_order_error_summary(key_results)
+    if result["errors"]:
+        error_summary = "; ".join(result["errors"] + ([error_summary] if error_summary else []))
+    result["first_order_error_summary"] = error_summary
+    print(f"Mixed-order first-stage apply status: {result['status']}")
+    if error_summary:
+        print(f"Mixed-order first-stage warnings/errors: {error_summary}")
+    return result
+
+
 def restore_first_order_ramp(solver: Any, strategy_state: dict[str, Any]) -> dict[str, Any]:
     original_state = strategy_state.get("discretization_before") or {}
     result: dict[str, Any] = {
@@ -2687,6 +2809,54 @@ def full_second_order_discretization_confirmed(state: dict[str, Any]) -> bool:
             return False
         expected = {normalize_discretization_value(value) for value in candidates}
         if normalize_discretization_value(state[key]) not in expected:
+            return False
+    return True
+
+
+def mixed_order_target_candidates(original_state: dict[str, Any], key: str) -> list[str]:
+    candidates: list[str] = []
+    original_value = original_state.get(key)
+    expected = {
+        normalize_discretization_value(value)
+        for value in MIXED_ORDER_FINAL_TARGETS.get(key, [])
+    }
+    if (
+        original_value is not None
+        and normalize_discretization_value(original_value) in expected
+    ):
+        candidates.append(str(original_value))
+    candidates.extend(MIXED_ORDER_FINAL_TARGETS.get(key, []))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        normalized = normalize_discretization_value(value)
+        if normalized not in seen:
+            seen.add(normalized)
+            deduped.append(value)
+    return deduped
+
+
+def _coerce_discretization_state(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(loaded, dict):
+            return loaded
+    return {}
+
+
+def mixed_order_discretization_confirmed(state: Any) -> bool:
+    coerced = _coerce_discretization_state(state)
+    for key, candidates in MIXED_ORDER_FINAL_TARGETS.items():
+        if key not in coerced:
+            return False
+        expected = {normalize_discretization_value(value) for value in candidates}
+        if normalize_discretization_value(coerced[key]) not in expected:
             return False
     return True
 
@@ -3425,6 +3595,54 @@ def run_staged_restore_component(
     return result
 
 
+def run_mixed_order_restore_component(
+    solver: Any,
+    args: argparse.Namespace,
+    transcript_path: Path | None,
+    stage_label: str,
+    original_state: dict[str, Any],
+    iterations: int,
+    residual_targets: dict[str, float],
+) -> dict[str, Any]:
+    key = STAGED_RESTORE_STAGE_TO_KEY[stage_label]
+    stage_prefix = stage_label.upper()
+    result: dict[str, Any] = {
+        "stage": stage_label,
+        "key": key,
+        "status": f"{stage_prefix}_RESTORE_NOT_CONVERGED",
+        "iterations_requested": iterations,
+        "restore_outcome": {},
+        "history": [],
+        "plateau": {},
+        "assessment": {},
+    }
+    candidates = mixed_order_target_candidates(original_state, key)
+    restore_outcome = apply_discretization_target(solver, key, candidates)
+    result["restore_outcome"] = restore_outcome
+    if restore_outcome.get("status") != "CONFIRMED":
+        result["status"] = f"{stage_prefix}_RESTORE_READBACK_FAILED"
+        result["assessment"] = {
+            "details": "Mixed-order discretization readback did not confirm restore.",
+        }
+        return result
+
+    history, plateau_result = run_plain_restore_iterations(
+        solver=solver,
+        args=args,
+        transcript_path=transcript_path,
+        stage_name=f"mixed_order_restore_{stage_label}_stage",
+        iterations=iterations,
+        residual_targets=residual_targets,
+    )
+    result["history"] = history
+    result["plateau"] = plateau_result
+    assessment = stage_iteration_assessment(history, args, residual_targets)
+    result["assessment"] = assessment
+    if assessment.get("strict_converged"):
+        result["status"] = f"{stage_prefix}_RESTORE_CONVERGED"
+    return result
+
+
 def build_staged_restore_convergence_json(
     first_order: dict[str, Any],
     pressure: dict[str, Any] | None,
@@ -3447,6 +3665,36 @@ def build_staged_restore_convergence_json(
         "restore_species_stage": compact(species),
         "high_order_term_relaxation": hotr_result,
         "second_order_blending": blending_result,
+        "final_discretization": final_discretization,
+        "classification": classification,
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def build_mixed_order_convergence_json(
+    first_order: dict[str, Any],
+    pressure: dict[str, Any] | None,
+    momentum: dict[str, Any] | None,
+    classification: dict[str, Any],
+    final_discretization: dict[str, Any],
+) -> str:
+    def compact(stage: dict[str, Any] | None) -> dict[str, Any] | None:
+        if stage is None:
+            return None
+        return {key: value for key, value in stage.items() if key != "history"}
+
+    payload = {
+        "strategy": "flow_second_order_species_first_order",
+        "mixed_order": True,
+        "full_second_order_attempted": False,
+        "final_targets": MIXED_ORDER_FINAL_TARGETS,
+        "first_order_stage": first_order,
+        "restore_pressure_stage": compact(pressure),
+        "restore_momentum_stage": compact(momentum),
+        "restore_species_stage": {
+            "status": "SKIPPED",
+            "reason": MIXED_ORDER_SPECIES_SKIP_REASON,
+        },
         "final_discretization": final_discretization,
         "classification": classification,
     }
@@ -3700,6 +3948,217 @@ def execute_staged_second_order_restore(
     return result
 
 
+def execute_flow_second_order_species_first_order(
+    solver: Any,
+    args: argparse.Namespace,
+    transcript_path: Path | None,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    result["flow_second_order_species_first_order_enabled"] = True
+    result["species_second_order_skipped_reason"] = MIXED_ORDER_SPECIES_SKIP_REASON
+    result["restore_species_status"] = "SKIPPED_MIXED_ORDER_SPECIES_FIRST_ORDER"
+    result["final_assessment_window"] = "flow_second_order_species_first_order"
+    first_order_state = result["strategy_settings"]
+    original_state = first_order_state.get("discretization_before", {})
+
+    history: list[dict[str, Any]] = []
+    first_order_history, first_order_plateau = run_iteration_chunks(
+        solver=solver,
+        total_iterations=args.additional_iterations,
+        chunk_size=args.iteration_chunk_size,
+        transcript_path=transcript_path,
+        species_name=args.species_residual_name,
+        strict_targets=result["residual_targets"],
+        plateau_window_chunks=args.plateau_window_chunks,
+        plateau_rel_change_tol=args.plateau_rel_change_tol,
+        plateau_min_above_target_factor=args.plateau_min_residual_above_target_factor,
+        stage_name="mixed_order_first_order_stage",
+        early_stop_on_strict_residual=True,
+    )
+    history.extend(first_order_history)
+    result["history"] = history
+    result["plateau_assessment"] = first_order_plateau
+    first_order_assessment = stage_iteration_assessment(
+        first_order_history,
+        args,
+        result["residual_targets"],
+    )
+    result["first_order_stage_residual_latest"] = first_order_assessment[
+        "latest_residuals"
+    ]
+    result["first_order_stage_report_values"] = first_order_assessment[
+        "latest_reports"
+    ]
+    result["residual_latest"] = first_order_assessment["latest_residuals"]
+    result["residual_assessment"] = first_order_assessment["residual"]
+
+    if not first_order_assessment["residual"].get("strict_met"):
+        classification = classify_convergence(
+            first_order_assessment["monitor"],
+            first_order_assessment["residual"],
+            first_order_plateau,
+        )
+        result["strategy_stage_status"] = classification["status"]
+        result["limiting_restore_stage"] = "first_order"
+        result["final_assessment_reason"] = (
+            "Mixed-order first stage did not meet the strict residual target; "
+            "pressure and momentum restore were not attempted."
+        )
+        result["convergence_assessment"] = build_mixed_order_convergence_json(
+            first_order=first_order_assessment,
+            pressure=None,
+            momentum=None,
+            classification=classification,
+            final_discretization={},
+        )
+        return result
+
+    stage_results: dict[str, dict[str, Any]] = {}
+    stage_iterations = {
+        "pressure": args.restore_pressure_iterations,
+        "momentum": args.restore_momentum_iterations,
+    }
+    final_status_by_stage = {
+        "pressure": "PRESSURE_RESTORE_NOT_CONVERGED",
+        "momentum": "MOMENTUM_RESTORE_NOT_CONVERGED",
+    }
+
+    for stage_label in ("pressure", "momentum"):
+        stage_result = run_mixed_order_restore_component(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            stage_label=stage_label,
+            original_state=original_state,
+            iterations=stage_iterations[stage_label],
+            residual_targets=result["residual_targets"],
+        )
+        stage_results[stage_label] = stage_result
+        history.extend(stage_result.get("history", []))
+        result["history"] = history
+        result["plateau_assessment"] = stage_result.get("plateau", {})
+        result[f"restore_{stage_label}_status"] = stage_result.get("status", "")
+        assessment = stage_result.get("assessment", {})
+        result[f"restore_{stage_label}_residual_latest"] = assessment.get(
+            "latest_residuals",
+            {},
+        )
+        result[f"restore_{stage_label}_report_values"] = assessment.get(
+            "latest_reports",
+            {},
+        )
+        result["residual_latest"] = assessment.get("latest_residuals", {})
+        result["residual_assessment"] = assessment.get("residual", {})
+        result["monitor_assessment"] = assessment.get("monitor", {})
+        result["mixed_order_residual_latest"] = assessment.get("latest_residuals", {})
+        result["mixed_order_report_values"] = assessment.get("latest_reports", {})
+
+        if stage_result.get("status") != f"{stage_label.upper()}_RESTORE_CONVERGED":
+            try:
+                final_discretization = read_discretization_settings(solver)
+            except Exception as exc:
+                final_discretization = {"error": f"{type(exc).__name__}: {exc}"}
+            result["final_discretization_readback"] = final_discretization
+            result["discretization_after_restore"] = json_field(final_discretization)
+            result["final_species_scheme"] = str(final_discretization.get("species-0", ""))
+            final_mixed_order = mixed_order_discretization_confirmed(final_discretization)
+            result["final_flow_scheme_status"] = (
+                "MIXED_ORDER_CONFIRMED"
+                if final_mixed_order
+                else "MIXED_ORDER_NOT_CONFIRMED"
+            )
+            result["discretization_restore_status"] = (
+                "RESTORE_CONFIRMED" if final_mixed_order else "RESTORE_NOT_CONFIRMED"
+            )
+            classification = {
+                "status": final_status_by_stage[stage_label],
+                "details": (
+                    f"Mixed-order {stage_label} restore did not meet strict "
+                    "residual and report stability criteria."
+                ),
+            }
+            result["strategy_stage_status"] = classification["status"]
+            result["limiting_restore_stage"] = stage_label
+            result["final_assessment_reason"] = classification["details"]
+            result["convergence_assessment"] = build_mixed_order_convergence_json(
+                first_order=first_order_assessment,
+                pressure=stage_results.get("pressure"),
+                momentum=stage_results.get("momentum"),
+                classification=classification,
+                final_discretization=final_discretization,
+            )
+            return result
+
+    try:
+        final_discretization = read_discretization_settings(solver)
+    except Exception as exc:
+        final_discretization = {"error": f"{type(exc).__name__}: {exc}"}
+    result["final_discretization_readback"] = final_discretization
+    result["discretization_after_restore"] = json_field(final_discretization)
+    result["final_species_scheme"] = str(final_discretization.get("species-0", ""))
+    final_mixed_order = mixed_order_discretization_confirmed(final_discretization)
+    result["final_flow_scheme_status"] = (
+        "MIXED_ORDER_CONFIRMED" if final_mixed_order else "MIXED_ORDER_NOT_CONFIRMED"
+    )
+    result["discretization_restore_status"] = (
+        "RESTORE_CONFIRMED" if final_mixed_order else "RESTORE_NOT_CONFIRMED"
+    )
+
+    momentum_assessment = stage_results["momentum"].get("assessment", {})
+    mixed_order_strict = bool(
+        final_mixed_order
+        and momentum_assessment.get("strict_converged")
+        and all(
+            stage_results[label].get("status") == f"{label.upper()}_RESTORE_CONVERGED"
+            for label in ("pressure", "momentum")
+        )
+    )
+    result["mixed_order_strict_converged"] = mixed_order_strict
+    result["mixed_order_residual_latest"] = momentum_assessment.get(
+        "latest_residuals",
+        {},
+    )
+    result["mixed_order_report_values"] = momentum_assessment.get("latest_reports", {})
+
+    if mixed_order_strict:
+        classification = {
+            "status": "STRICT_CONVERGED_ATTEMPT",
+            "details": (
+                "Mixed-order attempt confirmed pressure second-order, momentum "
+                "second-order-upwind, and species-0 first-order-upwind with strict "
+                "residual target met and stable report monitors."
+            ),
+        }
+    elif not final_mixed_order:
+        classification = {
+            "status": "MIXED_ORDER_DISCRETIZATION_NOT_CONFIRMED",
+            "details": (
+                "Final mixed-order readback did not confirm pressure second-order, "
+                "momentum second-order-upwind, and species-0 first-order-upwind."
+            ),
+        }
+    else:
+        classification = {
+            "status": "MOMENTUM_RESTORE_NOT_CONVERGED",
+            "details": (
+                "Mixed-order final readback was confirmed, but the final momentum "
+                "stage did not meet strict residual/report criteria."
+            ),
+        }
+
+    result["strategy_stage_status"] = classification["status"]
+    result["limiting_restore_stage"] = "" if mixed_order_strict else "mixed_order"
+    result["final_assessment_reason"] = classification["details"]
+    result["convergence_assessment"] = build_mixed_order_convergence_json(
+        first_order=first_order_assessment,
+        pressure=stage_results.get("pressure"),
+        momentum=stage_results.get("momentum"),
+        classification=classification,
+        final_discretization=final_discretization,
+    )
+    return result
+
+
 def execute_solver_strategy(
     solver: Any,
     args: argparse.Namespace,
@@ -3732,6 +4191,20 @@ def execute_solver_strategy(
         "final_assessment_window": "",
         "final_assessment_reason": "",
         "staged_restore_enabled": args.solver_strategy == "staged_second_order_restore",
+        "flow_second_order_species_first_order_enabled": (
+            args.solver_strategy == "flow_second_order_species_first_order"
+        ),
+        "final_species_scheme": "",
+        "final_flow_scheme_status": "",
+        "species_second_order_skipped_reason": (
+            MIXED_ORDER_SPECIES_SKIP_REASON
+            if args.solver_strategy == "flow_second_order_species_first_order"
+            else ""
+        ),
+        "mixed_order_strict_converged": False,
+        "mixed_order_residual_latest": {},
+        "mixed_order_report_values": {},
+        "final_discretization_readback": {},
         "high_order_term_relaxation_before": "",
         "high_order_term_relaxation_after": "",
         "high_order_term_relaxation_apply_status": "",
@@ -3773,8 +4246,12 @@ def execute_solver_strategy(
         elif args.solver_strategy in {
             "first_order_ramp",
             "staged_second_order_restore",
+            "flow_second_order_species_first_order",
         }:
-            result["strategy_settings"] = apply_first_order_ramp(solver)
+            if args.solver_strategy == "flow_second_order_species_first_order":
+                result["strategy_settings"] = apply_mixed_order_first_stage(solver)
+            else:
+                result["strategy_settings"] = apply_first_order_ramp(solver)
             first_order_state = result["strategy_settings"]
             result["first_order_apply_status"] = str(first_order_state.get("status", ""))
             result["discretization_before"] = json_field(
@@ -3838,6 +4315,13 @@ def execute_solver_strategy(
 
     if args.solver_strategy == "staged_second_order_restore":
         return execute_staged_second_order_restore(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            result=result,
+        )
+    if args.solver_strategy == "flow_second_order_species_first_order":
+        return execute_flow_second_order_species_first_order(
             solver=solver,
             args=args,
             transcript_path=transcript_path,
@@ -4415,8 +4899,8 @@ def run_live_solver_rerun(
                 or "first-order discretization switch was not confirmed"
             )
             print(
-                "Stopping before iteration/save because first_order_ramp was "
-                f"not confirmed: {stage_status}"
+                "Stopping before iteration/save because the first-order "
+                f"discretization switch was not confirmed: {stage_status}"
             )
             return result
 
@@ -4430,6 +4914,13 @@ def run_live_solver_rerun(
             strategy_promotion_ready = (
                 bool(strategy_result.get("staged_restore_strict_converged"))
                 and strategy_result.get("discretization_restore_status") == "RESTORE_CONFIRMED"
+            )
+        elif args.solver_strategy == "flow_second_order_species_first_order":
+            strategy_promotion_ready = (
+                bool(strategy_result.get("mixed_order_strict_converged"))
+                and mixed_order_discretization_confirmed(
+                    strategy_result.get("final_discretization_readback", {})
+                )
             )
 
         if stage_status == "STRICT_CONVERGED_ATTEMPT" and strategy_promotion_ready:
@@ -4455,6 +4946,7 @@ def run_live_solver_rerun(
             "MOMENTUM_RESTORE_NOT_CONVERGED",
             "SPECIES_RESTORE_NOT_CONVERGED",
             "SECOND_ORDER_SPECIES_RESIDUAL_PLATEAU",
+            "MIXED_ORDER_DISCRETIZATION_NOT_CONFIRMED",
         }:
             result["rerun_status"] = stage_status
         else:
@@ -4754,6 +5246,10 @@ def process_case(
                     "final_assessment_window",
                     "final_assessment_reason",
                     "staged_restore_enabled",
+                    "flow_second_order_species_first_order_enabled",
+                    "final_species_scheme",
+                    "final_flow_scheme_status",
+                    "species_second_order_skipped_reason",
                     "high_order_term_relaxation_before",
                     "high_order_term_relaxation_after",
                     "high_order_term_relaxation_apply_status",
@@ -4777,6 +5273,13 @@ def process_case(
                 )
                 record["staged_restore_enabled"] = str(
                     bool(live_result.get("staged_restore_enabled"))
+                ).lower()
+                record["flow_second_order_species_first_order_enabled"] = str(
+                    bool(
+                        live_result.get(
+                            "flow_second_order_species_first_order_enabled"
+                        )
+                    )
                 ).lower()
                 record["convergence_assessment"] = str(
                     live_result.get("convergence_assessment", "")
@@ -4868,6 +5371,24 @@ def process_case(
                 record["staged_restore_strict_converged"] = str(
                     bool(live_result.get("staged_restore_strict_converged"))
                 ).lower()
+                record["mixed_order_strict_converged"] = str(
+                    bool(live_result.get("mixed_order_strict_converged"))
+                ).lower()
+                record["mixed_order_residual_latest"] = json.dumps(
+                    live_result.get("mixed_order_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["mixed_order_report_values"] = json.dumps(
+                    live_result.get("mixed_order_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["final_discretization_readback"] = json.dumps(
+                    live_result.get("final_discretization_readback", {}),
+                    default=str,
+                    sort_keys=True,
+                )
                 residual_assessment = live_result.get("residual_assessment", {}) or {}
                 record["residual_target_met"] = str(bool(residual_assessment.get("strict_met"))).lower()
                 plateau_assessment = live_result.get("plateau_assessment", {}) or {}
@@ -4928,7 +5449,11 @@ def process_case(
                 record["strict_convergence_status"] == "STRICT_CONVERGED_ATTEMPT"
                 and (
                     args.solver_strategy
-                    not in {"first_order_ramp", "staged_second_order_restore"}
+                    not in {
+                        "first_order_ramp",
+                        "staged_second_order_restore",
+                        "flow_second_order_species_first_order",
+                    }
                     or (
                         args.solver_strategy == "first_order_ramp"
                         and record["post_restore_strict_converged"] == "true"
@@ -4938,6 +5463,13 @@ def process_case(
                         args.solver_strategy == "staged_second_order_restore"
                         and record["staged_restore_strict_converged"] == "true"
                         and record["discretization_restore_status"] == "RESTORE_CONFIRMED"
+                    )
+                    or (
+                        args.solver_strategy == "flow_second_order_species_first_order"
+                        and record["mixed_order_strict_converged"] == "true"
+                        and mixed_order_discretization_confirmed(
+                            record["final_discretization_readback"]
+                        )
                     )
                 )
             )
@@ -5051,6 +5583,13 @@ def process_case(
                     "The full staged second-order restore completed, but the "
                     "species residual remains above target. Increase "
                     "--restore-species-iterations or review species numerics."
+                )
+            elif record["rerun_status"] == "MIXED_ORDER_DISCRETIZATION_NOT_CONFIRMED":
+                record["suggested_next_action"] = (
+                    "The mixed-order strategy reached the final readback check, "
+                    "but pressure second-order, momentum second-order-upwind, "
+                    "and species-0 first-order-upwind were not all confirmed. "
+                    "Do not promote without manual review."
                 )
             elif record["rerun_status"] == "COMPLETED_NEEDS_REVIEW":
                 record["suggested_next_action"] = (
