@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -83,64 +84,6 @@ def make_case_name(u, p):
     p_str = f"p{int(round(p / 1.0e6))}M"
     return f"{u_str}_{p_str}"
 
-# ============================================================
-# Temporary config writer
-# ============================================================
-
-def write_temp_config(
-    temp_config_path,
-    geo_name,
-    case_name,
-    inlet_velocity_value,
-    outlet_gauge_pressure,
-    final_case_file,
-    final_data_file,
-):
-    project_root_val      = getattr(base_cfg, "project_root",               "C:/PyFluent/My_CFD_Project")
-    active_mem_names      = getattr(base_cfg, "active_membrane_base_names",  ["wall_top_mem", "wall_bottom_mem"])
-    buffer_wall_names     = getattr(base_cfg, "buffer_wall_base_names",      ["wall_top_buffer", "wall_bottom_buffer"])
-    rho                   = getattr(base_cfg, "rho",                         998.2)
-    mu                    = getattr(base_cfg, "mu",                          8.93e-4)
-    product_version       = getattr(base_cfg, "product_version",             "25.1.0")
-    processor_count       = getattr(base_cfg, "processor_count",             1)
-    graphics_driver       = getattr(base_cfg, "graphics_driver",             "dx11")
-    fluent_start_timeout  = getattr(base_cfg, "fluent_start_timeout",        300)
-    fluent_health_timeout = getattr(base_cfg, "fluent_health_timeout",       300)
-    domain_x_min_m        = getattr(base_cfg, "domain_x_min_m",              0.0)
-    domain_length_m       = getattr(base_cfg, "domain_length_m",             0.017325)
-    buffer_length_m       = getattr(base_cfg, "buffer_length_m",             0.003465)
-
-    lines = [
-        f"project_root = {repr(str(project_root_val))}",
-        "",
-        f"geo_name = {repr(geo_name)}",
-        f"case_name = {repr(case_name)}",
-        f"inlet_velocity_value = {repr(inlet_velocity_value)}",
-        f"outlet_gauge_pressure = {repr(outlet_gauge_pressure)}",
-        "",
-        f"final_case_file = {repr(str(final_case_file))}",
-        f"final_data_file = {repr(str(final_data_file))}",
-        "",
-        f"active_membrane_base_names = {repr(active_mem_names)}",
-        f"buffer_wall_base_names = {repr(buffer_wall_names)}",
-        "",
-        f"rho = {repr(rho)}",
-        f"mu = {repr(mu)}",
-        "",
-        f"product_version = {repr(product_version)}",
-        f"processor_count = {repr(processor_count)}",
-        f"graphics_driver = {repr(graphics_driver)}",
-        f"fluent_start_timeout = {repr(fluent_start_timeout)}",
-        f"fluent_health_timeout = {repr(fluent_health_timeout)}",
-        "",
-        f"domain_x_min_m = {repr(domain_x_min_m)}",
-        f"domain_length_m = {repr(domain_length_m)}",
-        f"buffer_length_m = {repr(buffer_length_m)}",
-    ]
-
-    temp_config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 # The batch run below executes only when this file is run directly.
 # Importing this module must not run the batch or write any files.
 if __name__ == "__main__":
@@ -190,10 +133,13 @@ if __name__ == "__main__":
     # ============================================================
 
     results_dir = Path(bcfg.project_root) / "03_Results"
-    temp_config_dir = Path(bcfg.temporary_config_dir)
     worker_script = Path(bcfg.single_case_worker)
     merged_summary_csv = Path(bcfg.merged_summary_csv)
     status_csv_path = Path(bcfg.status_csv)
+
+    # Cross-case aggregate CSVs live outside the per-case folders, so writing
+    # them is opt-in (see 00_batch_post_config.py).
+    write_aggregate_outputs = getattr(bcfg, "WRITE_AGGREGATE_OUTPUTS", False)
 
 
 
@@ -230,13 +176,19 @@ if __name__ == "__main__":
             "message":               "",
         }
 
+        overrides = {
+            "geo_name": geo_name,
+            "case_name": case_name,
+            "inlet_velocity_value": inlet_velocity_value,
+            "outlet_gauge_pressure": outlet_gauge_pressure,
+            "final_case_file": str(final_case_file),
+            "final_data_file": str(final_data_file),
+        }
+
         # --- Gate 1: DRY_RUN ---
         if bcfg.DRY_RUN:
-            temp_name = f"{geo_name}_{case_name}_post_config.py"
-            print(f"  [DRY_RUN] Worker     : {worker_script}")
-            print(f"  [DRY_RUN] Temp config: {temp_config_dir / temp_name}")
-            print(f"  [DRY_RUN] Case file  : {final_case_file}")
-            print(f"  [DRY_RUN] Data file  : {final_data_file}")
+            print(f"  [DRY_RUN] Worker   : {worker_script}")
+            print(f"  [DRY_RUN] Overrides: {json.dumps(overrides, indent=2)}")
             record["status"] = "DRY_RUN"
             record["message"] = "DRY_RUN: no execution"
             status_records.append(record)
@@ -271,23 +223,11 @@ if __name__ == "__main__":
             status_records.append(record)
             continue
 
-        # --- Write temp config ---
-        temp_config_dir.mkdir(parents=True, exist_ok=True)
-        temp_config_path = temp_config_dir / f"{geo_name}_{case_name}_post_config.py"
-        write_temp_config(
-            temp_config_path,
-            geo_name,
-            case_name,
-            inlet_velocity_value,
-            outlet_gauge_pressure,
-            final_case_file,
-            final_data_file,
-        )
-        print(f"  Temp config: {temp_config_path}")
-
         # --- Run worker ---
         env = os.environ.copy()
-        env["PYFLUENT_POST_CONFIG"] = str(temp_config_path)
+        env["PYFLUENT_POST_CONFIG"] = str(BASE_CONFIG_PATH)
+        env["PYFLUENT_POST_OVERRIDES"] = json.dumps(overrides)
+        print(f"  Overrides: {json.dumps(overrides)}")
 
         print(f"  Running worker ...")
         return_code = -1
@@ -337,20 +277,23 @@ if __name__ == "__main__":
 
 
     # ============================================================
-    # Save status CSV
+    # Save status CSV (opt-in aggregate output)
     # ============================================================
 
     print(f"\n{'='*60}")
-    print("Saving status CSV ...")
 
     status_df = pd.DataFrame(status_records)
 
-    try:
-        status_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        status_df.to_csv(status_csv_path, index=False, encoding="utf-8-sig")
-        print(f"Status CSV saved : {status_csv_path}")
-    except Exception as exc:
-        print(f"Warning: could not save status CSV: {exc}")
+    if write_aggregate_outputs:
+        print("Saving status CSV ...")
+        try:
+            status_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            status_df.to_csv(status_csv_path, index=False, encoding="utf-8-sig")
+            print(f"Status CSV saved : {status_csv_path}")
+        except Exception as exc:
+            print(f"Warning: could not save status CSV: {exc}")
+    else:
+        print("Status CSV write disabled (WRITE_AGGREGATE_OUTPUTS=False).")
 
     if status_records:
         counts = status_df["status"].value_counts().to_dict()
@@ -361,67 +304,71 @@ if __name__ == "__main__":
 
 
     # ============================================================
-    # Merge summary CSVs
+    # Merge summary CSVs (opt-in aggregate output)
     # ============================================================
 
     print(f"\n{'='*60}")
-    print("Merging summary CSVs ...")
 
-    merged_dfs = []
-
-    for geo_name, inlet_velocity_value, outlet_gauge_pressure in all_cases_full:
-        case_name = make_case_name(inlet_velocity_value, outlet_gauge_pressure)
-        summary_wide_csv = (
-            results_dir / geo_name / case_name / "post" / "reports" / "summary_metrics_wide.csv"
-        )
-
-        if not summary_wide_csv.is_file():
-            continue
-
-        try:
-            df = pd.read_csv(summary_wide_csv, encoding="utf-8-sig")
-        except Exception as exc:
-            print(f"  Warning: could not read {summary_wide_csv}: {exc}")
-            continue
-
-        df["geo_name"]             = geo_name
-        df["case_name"]            = case_name
-        df["inlet_velocity_value"] = inlet_velocity_value
-        df["outlet_gauge_pressure"]= outlet_gauge_pressure
-        df["outlet_pressure_MPa"]  = outlet_gauge_pressure / 1.0e6
-
-        is_non_converged = (geo_name, case_name) in bcfg.non_converged_cases
-        if is_non_converged:
-            df["convergence_note"]         = "max_iteration_reached_not_for_final_comparison"
-            df["use_for_final_comparison"] = False
-        else:
-            df["convergence_note"]         = "converged_or_accepted"
-            df["use_for_final_comparison"] = True
-
-        merged_dfs.append(df)
-        print(f"  Included: {geo_name} / {case_name}")
-
-    if not merged_dfs:
-        print("No summary CSVs found. Merged summary file not written.")
+    if not write_aggregate_outputs:
+        print("Merged summary CSV disabled (WRITE_AGGREGATE_OUTPUTS=False).")
     else:
-        merged_df = pd.concat(merged_dfs, ignore_index=True)
+        print("Merging summary CSVs ...")
 
-        front_cols = [
-            "geo_name", "case_name",
-            "inlet_velocity_value", "outlet_gauge_pressure", "outlet_pressure_MPa",
-            "convergence_note", "use_for_final_comparison",
-        ]
-        existing_front = [c for c in front_cols if c in merged_df.columns]
-        other_cols     = [c for c in merged_df.columns if c not in existing_front]
-        merged_df = merged_df[existing_front + other_cols]
+        merged_dfs = []
 
-        try:
-            merged_summary_csv.parent.mkdir(parents=True, exist_ok=True)
-            merged_df.to_csv(merged_summary_csv, index=False, encoding="utf-8-sig")
-            print(f"\nMerged summary CSV saved : {merged_summary_csv}")
-            print(f"Total rows               : {len(merged_df)}")
-        except Exception as exc:
-            print(f"Warning: could not save merged summary CSV: {exc}")
+        for geo_name, inlet_velocity_value, outlet_gauge_pressure in all_cases_full:
+            case_name = make_case_name(inlet_velocity_value, outlet_gauge_pressure)
+            summary_wide_csv = (
+                results_dir / geo_name / case_name / "post" / "reports" / "summary_metrics_wide.csv"
+            )
+
+            if not summary_wide_csv.is_file():
+                continue
+
+            try:
+                df = pd.read_csv(summary_wide_csv, encoding="utf-8-sig")
+            except Exception as exc:
+                print(f"  Warning: could not read {summary_wide_csv}: {exc}")
+                continue
+
+            df["geo_name"]             = geo_name
+            df["case_name"]            = case_name
+            df["inlet_velocity_value"] = inlet_velocity_value
+            df["outlet_gauge_pressure"]= outlet_gauge_pressure
+            df["outlet_pressure_MPa"]  = outlet_gauge_pressure / 1.0e6
+
+            is_non_converged = (geo_name, case_name) in bcfg.non_converged_cases
+            if is_non_converged:
+                df["convergence_note"]         = "max_iteration_reached_not_for_final_comparison"
+                df["use_for_final_comparison"] = False
+            else:
+                df["convergence_note"]         = "converged_or_accepted"
+                df["use_for_final_comparison"] = True
+
+            merged_dfs.append(df)
+            print(f"  Included: {geo_name} / {case_name}")
+
+        if not merged_dfs:
+            print("No summary CSVs found. Merged summary file not written.")
+        else:
+            merged_df = pd.concat(merged_dfs, ignore_index=True)
+
+            front_cols = [
+                "geo_name", "case_name",
+                "inlet_velocity_value", "outlet_gauge_pressure", "outlet_pressure_MPa",
+                "convergence_note", "use_for_final_comparison",
+            ]
+            existing_front = [c for c in front_cols if c in merged_df.columns]
+            other_cols     = [c for c in merged_df.columns if c not in existing_front]
+            merged_df = merged_df[existing_front + other_cols]
+
+            try:
+                merged_summary_csv.parent.mkdir(parents=True, exist_ok=True)
+                merged_df.to_csv(merged_summary_csv, index=False, encoding="utf-8-sig")
+                print(f"\nMerged summary CSV saved : {merged_summary_csv}")
+                print(f"Total rows               : {len(merged_df)}")
+            except Exception as exc:
+                print(f"Warning: could not save merged summary CSV: {exc}")
 
 
     # ============================================================

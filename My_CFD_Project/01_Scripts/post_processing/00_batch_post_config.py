@@ -11,13 +11,16 @@ CONTINUE_ON_FAILURE = True
 SKIP_EXISTING_REPORTS = True
 MAX_CASES = None
 
+# Cross-case aggregate outputs (status CSV + merged summary CSV below) live
+# outside the per-case folders, so writing them is opt-in.
+WRITE_AGGREGATE_OUTPUTS = False
+
 # --- Paths ---
 
 project_root = "C:/PyFluent/My_CFD_Project"
 post_processing_dir = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing"
 single_case_worker = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing/01_pyfluent_report_extract.py"
 base_post_config = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing/00_post_config.py"
-temporary_config_dir = "C:/PyFluent/My_CFD_Project/01_Scripts/post_processing/_batch_post_configs"
 
 merged_summary_csv = "C:/PyFluent/My_CFD_Project/03_Results/all_cases_post_summary.csv"
 status_csv = "C:/PyFluent/My_CFD_Project/03_Results/all_cases_post_status.csv"

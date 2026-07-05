@@ -55,6 +55,20 @@ def load_python_config(config_path):
 if __name__ == "__main__":
     cfg = load_python_config(CONFIG_PATH)
 
+    # Per-case overrides from the batch runner (JSON dict). Applied to the
+    # config module before the parameter binding below.
+    _overrides_env = os.environ.get("PYFLUENT_POST_OVERRIDES")
+    if _overrides_env:
+        try:
+            _overrides = json.loads(_overrides_env)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"PYFLUENT_POST_OVERRIDES is not valid JSON: {e}")
+        if not isinstance(_overrides, dict):
+            raise ValueError("PYFLUENT_POST_OVERRIDES must be a JSON object.")
+        for _key, _value in _overrides.items():
+            setattr(cfg, _key, _value)
+        print(f"Applied config overrides: {sorted(_overrides)}")
+
     print("Config loaded from:")
     print(CONFIG_PATH)
 
