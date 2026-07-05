@@ -27,11 +27,10 @@ except Exception:
 
 
 # ----------------------------------------------------------
-# Edit this path if needed.
-# Use the same Windows/Python environment that successfully ran meshing/solver.
+# Default config lives next to this script.
 # Override with the PYFLUENT_POST_CONFIG environment variable for batch runs.
 # ----------------------------------------------------------
-SCRIPT_DIR = Path(r"C:/PyFluent/My_CFD_Project/01_Scripts/post_processing")
+SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
 

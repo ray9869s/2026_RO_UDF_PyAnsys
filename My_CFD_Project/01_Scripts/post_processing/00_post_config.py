@@ -1,4 +1,13 @@
-project_root = r"C:/PyFluent/My_CFD_Project"
+import os
+from pathlib import Path
+
+# My_CFD_Project directory, derived from this file's location
+# (C:/PyFluent/My_CFD_Project on the server, the local copy in WSL).
+# Override with the PYFLUENT_PROJECT_ROOT environment variable if needed.
+project_root = os.environ.get(
+    "PYFLUENT_PROJECT_ROOT",
+    str(Path(__file__).resolve().parents[2]),
+)
 
 REQUIRED = "===== Edit here ====="
 

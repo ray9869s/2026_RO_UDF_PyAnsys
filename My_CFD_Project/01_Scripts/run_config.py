@@ -1,11 +1,14 @@
 # ==========================================================
 # run_config.py
 # Common configuration for meshing and solver automation
-# Location: C:/PyFluent/My_CFD_Project/01_Scripts/run_config.py
+# Location: My_CFD_Project/01_Scripts/run_config.py
 # ==========================================================
 
 # Edit only this file when changing geometry/case/run parameters.
 # meshing_code_*.py and solver_code_*.py should read values from this config.
+
+import os
+from pathlib import Path
 
 REQUIRED = "===== Edit here ====="
 
@@ -14,7 +17,13 @@ REQUIRED = "===== Edit here ====="
 # [1] Common project/case settings
 # ==========================================================
 
-project_root = r"C:/PyFluent/My_CFD_Project"
+# My_CFD_Project directory, derived from this file's location
+# (C:/PyFluent/My_CFD_Project on the server, the local copy in WSL).
+# Override with the PYFLUENT_PROJECT_ROOT environment variable if needed.
+project_root = os.environ.get(
+    "PYFLUENT_PROJECT_ROOT",
+    str(Path(__file__).resolve().parents[1]),
+)
 
 geo_name = REQUIRED
 case_name = REQUIRED

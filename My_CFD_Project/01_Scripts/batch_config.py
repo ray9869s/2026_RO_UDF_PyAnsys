@@ -13,7 +13,7 @@
 # Batch control flags
 # ----------------------------------------------------------
 
-# dry_run = True: print planned commands and generated configs, do not launch Fluent.
+# dry_run = True: print planned commands and per-case overrides, do not launch Fluent.
 dry_run = False
 
 # continue_on_failure = False: stop immediately when a case fails.
