@@ -51,6 +51,31 @@ outlet_gauge_pressures = [4.0e6, 6.0e6, 8.0e6]
 
 case_prefix = ""
 
+# --- Explicit post cases (mesh-qualified or custom case names) ---
+# When post_cases is non-empty, 01_batch_report_extract.py processes these
+# entries directly instead of generating geometries x velocities x pressures.
+#
+# Each entry may include:
+#   geo_name               (required)
+#   case_name              (optional; used as-is when given)
+#   base_case_name         (optional; case_name = base_case_name + "__" + mesh_case_name)
+#   mesh_case_name         (optional; qualifies the derived case_name)
+#   inlet_velocity_value   (optional; with outlet_gauge_pressure derives base_case_name)
+#   outlet_gauge_pressure  (optional)
+#   final_case_file        (optional explicit path; otherwise derived from case_name)
+#   final_data_file        (optional explicit path; otherwise derived from case_name)
+
+post_cases = [
+    # {
+    #     "geo_name": "Sin_ST",
+    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
+    #     "inlet_velocity_value": 0.1,
+    #     "outlet_gauge_pressure": 4.0e6,
+    #     # case_name is optional; if omitted:
+    #     # u0p1_p4M__mesh_max085_min005_cpg5_bl4
+    # },
+]
+
 # --- Known non-converged cases ---
 
 non_converged_cases = {

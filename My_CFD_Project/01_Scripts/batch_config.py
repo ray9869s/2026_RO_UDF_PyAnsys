@@ -88,10 +88,16 @@ common_solver_settings = {
 # Required keys:
 #   geo_name              - geometry folder under 03_Results
 #   mesh_case_name        - subfolder containing the mesh file to read
-#   case_name             - solver output folder and file prefix
 #   inlet_velocity_value  - inlet velocity [m/s]
 #   operating_pressure    - absolute operating pressure [Pa]
 #   outlet_gauge_pressure - gauge pressure at outlet [Pa]
+#
+# Case naming (resolved by batch_solver_sweep.py, in priority order):
+#   1. "case_name" given          -> used as-is (legacy behavior).
+#   2. "base_case_name" given     -> case_name = base_case_name + "__" + mesh_case_name
+#   3. neither given              -> base_case_name derived from velocity/pressure
+#                                    (0.1, 4.0e6 -> "u0p1_p4M"), then
+#                                    case_name = base_case_name + "__" + mesh_case_name
 #
 # Optional: override any key from common_solver_settings here.
 #
@@ -101,6 +107,7 @@ common_solver_settings = {
 #                      03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.dat.h5
 
 solver_sweep_cases = [
+    # Legacy simple case (explicit case_name, used as-is):
     # {
     #     "geo_name": "Empty",
     #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
@@ -108,5 +115,15 @@ solver_sweep_cases = [
     #     "inlet_velocity_value": 0.1,
     #     "operating_pressure": 101325.0,
     #     "outlet_gauge_pressure": 4.0e6,
+    # },
+    # Mesh-qualified Sin case:
+    # {
+    #     "geo_name": "Sin_ST",
+    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
+    #     "inlet_velocity_value": 0.1,
+    #     "operating_pressure": 101325.0,
+    #     "outlet_gauge_pressure": 4.0e6,
+    #     # case_name is optional; if omitted:
+    #     # u0p1_p4M__mesh_max085_min005_cpg5_bl4
     # },
 ]

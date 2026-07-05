@@ -84,6 +84,51 @@ def make_case_name(u, p):
     p_str = f"p{int(round(p / 1.0e6))}M"
     return f"{u_str}_{p_str}"
 
+
+def make_mesh_qualified_case_name(base_case_name, mesh_case_name):
+    if mesh_case_name:
+        return f"{base_case_name}__{mesh_case_name}"
+    return base_case_name
+
+
+def resolve_post_case(entry):
+    """Normalize a post case entry into the fields the batch loop needs.
+
+    case_name priority:
+      1. Explicit "case_name" is used as-is.
+      2. Explicit "base_case_name", mesh-qualified with mesh_case_name if given.
+      3. Derived base_case_name from inlet_velocity_value + outlet_gauge_pressure,
+         mesh-qualified with mesh_case_name if given.
+    """
+    geo_name = entry["geo_name"]
+    inlet_velocity_value = entry.get("inlet_velocity_value")
+    outlet_gauge_pressure = entry.get("outlet_gauge_pressure")
+    base_case_name = entry.get("base_case_name")
+    mesh_case_name = entry.get("mesh_case_name")
+    case_name = entry.get("case_name")
+
+    if not case_name:
+        if not base_case_name and inlet_velocity_value is not None and outlet_gauge_pressure is not None:
+            base_case_name = make_case_name(inlet_velocity_value, outlet_gauge_pressure)
+        if base_case_name:
+            case_name = make_mesh_qualified_case_name(base_case_name, mesh_case_name)
+    if not case_name:
+        raise ValueError(
+            f"post case entry for geo '{geo_name}' needs 'case_name', 'base_case_name', "
+            "or inlet_velocity_value + outlet_gauge_pressure."
+        )
+
+    return {
+        "geo_name": geo_name,
+        "case_name": case_name,
+        "base_case_name": base_case_name,
+        "mesh_case_name": mesh_case_name,
+        "inlet_velocity_value": inlet_velocity_value,
+        "outlet_gauge_pressure": outlet_gauge_pressure,
+        "final_case_file": entry.get("final_case_file"),
+        "final_data_file": entry.get("final_data_file"),
+    }
+
 # The batch run below executes only when this file is run directly.
 # Importing this module must not run the batch or write any files.
 if __name__ == "__main__":
@@ -102,13 +147,27 @@ if __name__ == "__main__":
     # ============================================================
     # Build case lists
     # ============================================================
+    # When post_cases is non-empty it is used verbatim (mesh-qualified or
+    # custom case names); otherwise the legacy geometry x velocity x pressure
+    # product is generated.
 
-    all_cases_full = [
-        (geo, u, p)
-        for geo in bcfg.geometries
-        for u in bcfg.inlet_velocities
-        for p in bcfg.outlet_gauge_pressures
-    ]
+    explicit_post_cases = list(getattr(bcfg, "post_cases", []) or [])
+
+    if explicit_post_cases:
+        all_cases_full = [resolve_post_case(entry) for entry in explicit_post_cases]
+        case_source = "explicit post_cases"
+    else:
+        all_cases_full = [
+            resolve_post_case({
+                "geo_name": geo,
+                "inlet_velocity_value": u,
+                "outlet_gauge_pressure": p,
+            })
+            for geo in bcfg.geometries
+            for u in bcfg.inlet_velocities
+            for p in bcfg.outlet_gauge_pressures
+        ]
+        case_source = "geometries x velocities x pressures"
 
     total_defined = len(all_cases_full)
 
@@ -120,6 +179,7 @@ if __name__ == "__main__":
 
     case_count = len(cases_to_run)
 
+    print(f"Case source         : {case_source}")
     print(f"Total cases defined : {total_defined}")
     print(f"Cases to process    : {case_count}")
     print(f"DRY_RUN             : {bcfg.DRY_RUN}")
@@ -149,13 +209,24 @@ if __name__ == "__main__":
 
     status_records = []
 
-    for idx, (geo_name, inlet_velocity_value, outlet_gauge_pressure) in enumerate(cases_to_run):
-        case_name = make_case_name(inlet_velocity_value, outlet_gauge_pressure)
+    for idx, case in enumerate(cases_to_run):
+        geo_name              = case["geo_name"]
+        case_name             = case["case_name"]
+        base_case_name        = case["base_case_name"]
+        mesh_case_name        = case["mesh_case_name"]
+        inlet_velocity_value  = case["inlet_velocity_value"]
+        outlet_gauge_pressure = case["outlet_gauge_pressure"]
         case_idx = idx + 1
 
         case_result_dir  = results_dir / geo_name / case_name
-        final_case_file  = case_result_dir / f"{geo_name}_{case_name}_final.cas.h5"
-        final_data_file  = case_result_dir / f"{geo_name}_{case_name}_final.dat.h5"
+        final_case_file  = (
+            Path(case["final_case_file"]) if case["final_case_file"]
+            else case_result_dir / f"{geo_name}_{case_name}_final.cas.h5"
+        )
+        final_data_file  = (
+            Path(case["final_data_file"]) if case["final_data_file"]
+            else case_result_dir / f"{geo_name}_{case_name}_final.dat.h5"
+        )
         report_dir       = case_result_dir / "post" / "reports"
         summary_wide_csv = report_dir / "summary_metrics_wide.csv"
 
@@ -166,6 +237,8 @@ if __name__ == "__main__":
             "total_cases":           case_count,
             "geo_name":              geo_name,
             "case_name":             case_name,
+            "base_case_name":        base_case_name,
+            "mesh_case_name":        mesh_case_name,
             "inlet_velocity_value":  inlet_velocity_value,
             "outlet_gauge_pressure": outlet_gauge_pressure,
             "final_case_file":       str(final_case_file),
@@ -179,14 +252,22 @@ if __name__ == "__main__":
         overrides = {
             "geo_name": geo_name,
             "case_name": case_name,
-            "inlet_velocity_value": inlet_velocity_value,
-            "outlet_gauge_pressure": outlet_gauge_pressure,
             "final_case_file": str(final_case_file),
             "final_data_file": str(final_data_file),
         }
+        if inlet_velocity_value is not None:
+            overrides["inlet_velocity_value"] = inlet_velocity_value
+        if outlet_gauge_pressure is not None:
+            overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
 
         # --- Gate 1: DRY_RUN ---
         if bcfg.DRY_RUN:
+            print(f"  [DRY_RUN] geo_name       : {geo_name}")
+            print(f"  [DRY_RUN] base_case_name : {base_case_name if base_case_name else '(n/a)'}")
+            print(f"  [DRY_RUN] mesh_case_name : {mesh_case_name if mesh_case_name else '(n/a)'}")
+            print(f"  [DRY_RUN] case_name      : {case_name}")
+            print(f"  [DRY_RUN] Final case: {final_case_file}")
+            print(f"  [DRY_RUN] Final data: {final_data_file}")
             print(f"  [DRY_RUN] Worker   : {worker_script}")
             print(f"  [DRY_RUN] Overrides: {json.dumps(overrides, indent=2)}")
             record["status"] = "DRY_RUN"
@@ -316,8 +397,11 @@ if __name__ == "__main__":
 
         merged_dfs = []
 
-        for geo_name, inlet_velocity_value, outlet_gauge_pressure in all_cases_full:
-            case_name = make_case_name(inlet_velocity_value, outlet_gauge_pressure)
+        for case in all_cases_full:
+            geo_name              = case["geo_name"]
+            case_name             = case["case_name"]
+            inlet_velocity_value  = case["inlet_velocity_value"]
+            outlet_gauge_pressure = case["outlet_gauge_pressure"]
             summary_wide_csv = (
                 results_dir / geo_name / case_name / "post" / "reports" / "summary_metrics_wide.csv"
             )
@@ -333,9 +417,12 @@ if __name__ == "__main__":
 
             df["geo_name"]             = geo_name
             df["case_name"]            = case_name
+            df["mesh_case_name"]       = case["mesh_case_name"]
             df["inlet_velocity_value"] = inlet_velocity_value
             df["outlet_gauge_pressure"]= outlet_gauge_pressure
-            df["outlet_pressure_MPa"]  = outlet_gauge_pressure / 1.0e6
+            df["outlet_pressure_MPa"]  = (
+                outlet_gauge_pressure / 1.0e6 if outlet_gauge_pressure is not None else None
+            )
 
             is_non_converged = (geo_name, case_name) in bcfg.non_converged_cases
             if is_non_converged:
