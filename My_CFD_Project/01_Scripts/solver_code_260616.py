@@ -5,6 +5,7 @@ import ansys.fluent.core as pyfluent
 import os
 import shutil
 import re
+import json
 import importlib.util
 from pathlib import Path
 
@@ -12,128 +13,145 @@ from pathlib import Path
 # ##### [1] Load Run Configuration #####
 # ==========================================================
 
-SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
-_default_config = SCRIPT_DIR / "run_config.py"
-_env = os.environ.get("PYFLUENT_RUN_CONFIG")
-CONFIG_PATH = Path(_env or str(_default_config)).resolve()
+# The script body below runs only when this file is executed directly.
+# Importing this module must not launch Fluent or write any files.
+if __name__ == "__main__":
+    SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+    _default_config = SCRIPT_DIR / "run_config.py"
+    _env = os.environ.get("PYFLUENT_RUN_CONFIG")
+    CONFIG_PATH = Path(_env or str(_default_config)).resolve()
 
-if not CONFIG_PATH.is_file():
-    raise FileNotFoundError(
-        f"Run config file not found: {CONFIG_PATH}. "
-        "Set PYFLUENT_RUN_CONFIG or place run_config.py next to this solver script."
+    if not CONFIG_PATH.is_file():
+        raise FileNotFoundError(
+            f"Run config file not found: {CONFIG_PATH}. "
+            "Set PYFLUENT_RUN_CONFIG or place run_config.py next to this solver script."
+        )
+
+    config_spec = importlib.util.spec_from_file_location("active_run_config", CONFIG_PATH)
+    cfg = importlib.util.module_from_spec(config_spec)
+    config_spec.loader.exec_module(cfg)
+
+    print(f"Loaded run config: {CONFIG_PATH}")
+
+    # Per-case overrides from the batch drivers (JSON dict). Applied to the
+    # config module before validation and parameter binding below.
+    _overrides_env = os.environ.get("PYFLUENT_RUN_OVERRIDES")
+    if _overrides_env:
+        try:
+            _overrides = json.loads(_overrides_env)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"PYFLUENT_RUN_OVERRIDES is not valid JSON: {e}")
+        if not isinstance(_overrides, dict):
+            raise ValueError("PYFLUENT_RUN_OVERRIDES must be a JSON object.")
+        for _key, _value in _overrides.items():
+            setattr(cfg, _key, _value)
+        print(f"Applied config overrides: {sorted(_overrides)}")
+
+    if not _env:
+        cfg.validate_for_solver()
+
+    # Project paths
+    project_root = cfg.project_root
+    geo_name = cfg.geo_name
+    case_name = cfg.case_name
+    mesh_case_name = getattr(cfg, "mesh_case_name", case_name)
+
+    case_path = os.path.join(project_root, "03_Results", geo_name, case_name)
+    mesh_case_path = os.path.join(project_root, "03_Results", geo_name, mesh_case_name)
+    mesh_file_path = os.path.join(mesh_case_path, f"{geo_name}_{mesh_case_name}.msh.h5")
+
+    # Inlet velocity setting
+    inlet_velocity_value = cfg.inlet_velocity_value
+    inlet_velocity = float(inlet_velocity_value)
+
+    # Template case path.
+    # This template case already contains the RO material/species setup.
+    template_case_path = os.path.join(
+        project_root,
+        "01_Templates",
+        cfg.template_case_file_name,
     )
 
-config_spec = importlib.util.spec_from_file_location("active_run_config", CONFIG_PATH)
-cfg = importlib.util.module_from_spec(config_spec)
-config_spec.loader.exec_module(cfg)
+    # Fluent launch settings
+    product_version = cfg.product_version
+    processor_count = cfg.processor_count
+    graphics_driver = cfg.graphics_driver
+    fluent_start_timeout = cfg.fluent_start_timeout
+    fluent_health_timeout = cfg.fluent_health_timeout
 
-print(f"Loaded run config: {CONFIG_PATH}")
+    # UDF source
+    udf_master_path = os.path.join(project_root, "02_UDFs", cfg.udf_source_file_name)
+    udf_case_path = os.path.join(case_path, os.path.basename(udf_master_path))
+    udf_library_name = cfg.udf_library_name
 
-if not _env:
-    cfg.validate_for_solver()
+    # Active membrane and buffer wall base names.
+    membrane_wall_base_names = list(cfg.membrane_wall_base_names)
+    buffer_wall_base_names = list(cfg.buffer_wall_base_names)
 
-# Project paths
-project_root = cfg.project_root
-geo_name = cfg.geo_name
-case_name = cfg.case_name
-mesh_case_name = getattr(cfg, "mesh_case_name", case_name)
+    # Separate log used for mesh replacement diagnostics.
+    solver_mesh_replace_log_path = os.path.join(
+        case_path,
+        f"solver_mesh_replace_log_{case_name}.txt",
+    )
 
-case_path = os.path.join(project_root, "03_Results", geo_name, case_name)
-mesh_case_path = os.path.join(project_root, "03_Results", geo_name, mesh_case_name)
-mesh_file_path = os.path.join(mesh_case_path, f"{geo_name}_{mesh_case_name}.msh.h5")
+    # Species/material settings
+    target_species_name = cfg.target_species_name
+    salt_material_name = cfg.salt_material_name
+    salt_chemical_formula = cfg.salt_chemical_formula
+    salt_mass_fraction = cfg.salt_mass_fraction
 
-# Inlet velocity setting
-inlet_velocity_value = cfg.inlet_velocity_value
-inlet_velocity = float(inlet_velocity_value)
+    salt_density = cfg.salt_density
+    salt_viscosity = cfg.salt_viscosity
+    salt_molecular_weight = cfg.salt_molecular_weight
 
-# Template case path.
-# This template case already contains the RO material/species setup.
-template_case_path = os.path.join(
-    project_root,
-    "01_Templates",
-    cfg.template_case_file_name,
-)
+    mixture_name = cfg.mixture_name
+    mixture_density = cfg.mixture_density
+    mixture_viscosity = cfg.mixture_viscosity
+    mass_diffusivity = cfg.mass_diffusivity
 
-# Fluent launch settings
-product_version = cfg.product_version
-processor_count = cfg.processor_count
-graphics_driver = cfg.graphics_driver
-fluent_start_timeout = cfg.fluent_start_timeout
-fluent_health_timeout = cfg.fluent_health_timeout
+    # Boundary values
+    operating_pressure = cfg.operating_pressure
+    outlet_gauge_pressure = cfg.outlet_gauge_pressure
 
-# UDF source
-udf_master_path = os.path.join(project_root, "02_UDFs", cfg.udf_source_file_name)
-udf_case_path = os.path.join(case_path, os.path.basename(udf_master_path))
-udf_library_name = cfg.udf_library_name
+    # UDM and UDF hooks
+    udm_count = cfg.udm_count
 
-# Active membrane and buffer wall base names.
-membrane_wall_base_names = list(cfg.membrane_wall_base_names)
-buffer_wall_base_names = list(cfg.buffer_wall_base_names)
+    adjust_function_name = f"RO_membrane_adjust::{udf_library_name}"
+    init_function_name = f"RO_UDF_init::{udf_library_name}"
 
-# Separate log used for mesh replacement diagnostics.
-solver_mesh_replace_log_path = os.path.join(
-    case_path,
-    f"solver_mesh_replace_log_{case_name}.txt",
-)
+    source_function_names = {
+        "mass": f"mass_source::{udf_library_name}",
+        "species_salt": f"species_salt_source::{udf_library_name}",
+        "x_momentum": f"x_mom_source::{udf_library_name}",
+        "y_momentum": f"y_mom_source::{udf_library_name}",
+        "z_momentum": f"z_mom_source::{udf_library_name}",
+    }
 
-# Species/material settings
-target_species_name = cfg.target_species_name
-salt_material_name = cfg.salt_material_name
-salt_chemical_formula = cfg.salt_chemical_formula
-salt_mass_fraction = cfg.salt_mass_fraction
+    # Solver run settings
+    residual_target = cfg.residual_target
+    max_iterations = cfg.max_iterations
+    run_calculation_enabled = cfg.run_calculation_enabled
 
-salt_density = cfg.salt_density
-salt_viscosity = cfg.salt_viscosity
-salt_molecular_weight = cfg.salt_molecular_weight
+    # Ramp/convergence safety.
+    use_ramp_convergence_safety = cfg.use_ramp_convergence_safety
+    ramp_full_iteration = cfg.ramp_full_iteration
+    post_ramp_buffer_iterations = cfg.post_ramp_buffer_iterations
+    minimum_full_source_iterations = ramp_full_iteration + post_ramp_buffer_iterations
 
-mixture_name = cfg.mixture_name
-mixture_density = cfg.mixture_density
-mixture_viscosity = cfg.mixture_viscosity
-mass_diffusivity = cfg.mass_diffusivity
+    # Output files
+    solver_log_path = os.path.join(case_path, f"solver_log_{case_name}.txt")
+    setup_case_file = os.path.join(case_path, f"{geo_name}_{case_name}_setup.cas.h5")
+    final_case_file = os.path.join(case_path, f"{geo_name}_{case_name}_final.cas.h5")
+    final_data_file = final_case_file.replace(".cas.h5", ".dat.h5")
 
-# Boundary values
-operating_pressure = cfg.operating_pressure
-outlet_gauge_pressure = cfg.outlet_gauge_pressure
-
-# UDM and UDF hooks
-udm_count = cfg.udm_count
-
-adjust_function_name = f"RO_membrane_adjust::{udf_library_name}"
-init_function_name = f"RO_UDF_init::{udf_library_name}"
-
-source_function_names = {
-    "mass": f"mass_source::{udf_library_name}",
-    "species_salt": f"species_salt_source::{udf_library_name}",
-    "x_momentum": f"x_mom_source::{udf_library_name}",
-    "y_momentum": f"y_mom_source::{udf_library_name}",
-    "z_momentum": f"z_mom_source::{udf_library_name}",
-}
-
-# Solver run settings
-residual_target = cfg.residual_target
-max_iterations = cfg.max_iterations
-run_calculation_enabled = cfg.run_calculation_enabled
-
-# Ramp/convergence safety.
-use_ramp_convergence_safety = cfg.use_ramp_convergence_safety
-ramp_full_iteration = cfg.ramp_full_iteration
-post_ramp_buffer_iterations = cfg.post_ramp_buffer_iterations
-minimum_full_source_iterations = ramp_full_iteration + post_ramp_buffer_iterations
-
-# Output files
-solver_log_path = os.path.join(case_path, f"solver_log_{case_name}.txt")
-setup_case_file = os.path.join(case_path, f"{geo_name}_{case_name}_setup.cas.h5")
-final_case_file = os.path.join(case_path, f"{geo_name}_{case_name}_final.cas.h5")
-final_data_file = final_case_file.replace(".cas.h5", ".dat.h5")
-
-# Report definitions
-update_rho_avg_report_definition = cfg.update_rho_avg_report_definition
-rho_avg_report_name = cfg.rho_avg_report_name
-rho_avg_report_field = cfg.rho_avg_report_field
-area_mem_report_name = cfg.area_mem_report_name
-lmh_report_name = cfg.lmh_report_name
-m_in_report_name = cfg.m_in_report_name
-m_out_report_name = cfg.m_out_report_name
+    # Report definitions
+    update_rho_avg_report_definition = cfg.update_rho_avg_report_definition
+    rho_avg_report_name = cfg.rho_avg_report_name
+    rho_avg_report_field = cfg.rho_avg_report_field
+    area_mem_report_name = cfg.area_mem_report_name
+    lmh_report_name = cfg.lmh_report_name
+    m_in_report_name = cfg.m_in_report_name
+    m_out_report_name = cfg.m_out_report_name
 
 # ==========================================================
 # ##### [2] Helper Functions #####
@@ -803,785 +821,786 @@ def set_residual_convergence_check(solution, species_name, enable):
 # ##### [3] Path Checks #####
 # ==========================================================
 
-if not os.path.exists(case_path):
-    os.makedirs(case_path)
+if __name__ == "__main__":
+    if not os.path.exists(case_path):
+        os.makedirs(case_path)
 
-if not os.path.isfile(mesh_file_path):
-    raise FileNotFoundError(f"Mesh file not found: {mesh_file_path}")
+    if not os.path.isfile(mesh_file_path):
+        raise FileNotFoundError(f"Mesh file not found: {mesh_file_path}")
 
-if not os.path.isfile(template_case_path):
-    raise FileNotFoundError(f"Template case file not found: {template_case_path}")
+    if not os.path.isfile(template_case_path):
+        raise FileNotFoundError(f"Template case file not found: {template_case_path}")
 
-if not os.path.isfile(udf_master_path):
-    raise FileNotFoundError(f"UDF source file not found: {udf_master_path}")
+    if not os.path.isfile(udf_master_path):
+        raise FileNotFoundError(f"UDF source file not found: {udf_master_path}")
 
-print(f"Case path: {case_path}")
-print(f"Mesh file: {mesh_file_path}")
-print(f"Template case: {template_case_path}")
-print(f"UDF master source: {udf_master_path}")
-print(f"UDF case copy: {udf_case_path}")
-print(f"Solver mesh-replace log: {solver_mesh_replace_log_path}")
-print(f"Solver log: {solver_log_path}")
+    print(f"Case path: {case_path}")
+    print(f"Mesh file: {mesh_file_path}")
+    print(f"Template case: {template_case_path}")
+    print(f"UDF master source: {udf_master_path}")
+    print(f"UDF case copy: {udf_case_path}")
+    print(f"Solver mesh-replace log: {solver_mesh_replace_log_path}")
+    print(f"Solver log: {solver_log_path}")
 
 
-# ==========================================================
-# ##### [4] Launch Fluent, Read Template Case, Replace Mesh #####
-# ==========================================================
+    # ==========================================================
+    # ##### [4] Launch Fluent, Read Template Case, Replace Mesh #####
+    # ==========================================================
 
-pyfluent.config.check_health_timeout = fluent_health_timeout
-
-meshing = None
-solver = None
-setup = None
-solution = None
-transcript_is_running = False
-original_working_directory = os.getcwd()
-
-try:
-    os.chdir(case_path)
-
-    print("Launching Fluent in meshing mode...", flush=True)
-
-    meshing = pyfluent.launch_fluent(
-        product_version=product_version,
-        mode="meshing",
-        dimension=3,
-        precision="double",
-        processor_count=processor_count,
-        ui_mode="gui",
-        graphics_driver=graphics_driver,
-        start_timeout=fluent_start_timeout,
-        cwd=as_fluent_path(case_path),
-    )
-
-    print("Meshing session launched successfully.", flush=True)
-    print("Switching from meshing mode to solver mode...", flush=True)
-
-    solver = meshing.switch_to_solver()
-
-    print("Switched to solver mode successfully.", flush=True)
+    pyfluent.config.check_health_timeout = fluent_health_timeout
 
     meshing = None
-
-    setup = solver.settings.setup
-    solution = solver.settings.solution
-
-    # Start a dedicated transcript for template loading and mesh replacement.
-    # This log is used to parse the zone-name to zone-id mapping.
-    solver.transcript.start(file_name=as_fluent_path(solver_mesh_replace_log_path))
-    transcript_is_running = True
-
-    print("Reading template case...", flush=True)
-
-    solver.settings.file.read_case(
-        file_name=as_fluent_path(template_case_path)
-    )
-
-    print("Template case loaded successfully.", flush=True)
-
-    print("Replacing mesh with target geometry mesh...", flush=True)
-
-    solver.settings.file.replace_mesh(
-        file_name=as_fluent_path(mesh_file_path)
-    )
-
-    print("Mesh replaced successfully.", flush=True)
-
-    solver.execute_tui(r"/mesh/check")
-    print("Solver-side mesh check completed.")
-
-    print("Skipping /mesh/check-quality in solver mode because this TUI command was invalid in the tested solver session.")
-
-    # Stop the mesh-replace transcript so that zone mapping lines are flushed to file.
-    solver.transcript.stop()
+    solver = None
+    setup = None
+    solution = None
     transcript_is_running = False
-
-    # Update solver-side thread names so the name-based UDF can use THREAD_NAME(t).
-    update_solver_thread_names(solver)
-
-    print(f"Active membrane wall base names for UDF (hardcoded in UDF): {membrane_wall_base_names}")
-    print(f"Buffer wall base names (no-slip, not membrane): {buffer_wall_base_names}")
-
-    # Start the main solver transcript for the remaining setup and calculation.
-    solver.transcript.start(file_name=as_fluent_path(solver_log_path))
-    transcript_is_running = True
-
-    print(f"Main solver log will be saved to: {solver_log_path}")
-
-
-    # ======================================================
-    # ##### [5] Check Zones #####
-    # ======================================================
-
-    boundary_zones_by_type = collect_boundary_zones(setup)
-    cell_zones_by_type = collect_cell_zones(setup)
-
-    print("Boundary zones by type:")
-    for zone_type, names in boundary_zones_by_type.items():
-        print(f"  {zone_type}: {names}")
-
-    print("Cell zones by type:")
-    for zone_type, names in cell_zones_by_type.items():
-        print(f"  {zone_type}: {names}")
-
-    boundary_zone_names = sorted(
-        zone_name
-        for names in boundary_zones_by_type.values()
-        for zone_name in names
-    )
-
-    cell_zone_names = sorted(
-        zone_name
-        for names in cell_zones_by_type.values()
-        for zone_name in names
-    )
-
-    print("All boundary zones:", boundary_zone_names)
-    print("All cell zones:", cell_zone_names)
-
-    inlet_zone_names = find_zones_by_base_name(boundary_zone_names, "inlet")
-    outlet_zone_names = find_zones_by_base_name(boundary_zone_names, "outlet")
-    membrane_wall_zone_names = find_zones_by_base_names(boundary_zone_names, membrane_wall_base_names)
-    buffer_wall_zone_names = find_zones_by_base_names(boundary_zone_names, buffer_wall_base_names)
-
-    if not inlet_zone_names:
-        raise ValueError(f"No inlet boundary zones found. Available boundary zones: {boundary_zone_names}")
-    if not outlet_zone_names:
-        raise ValueError(f"No outlet boundary zones found. Available boundary zones: {boundary_zone_names}")
-    if not membrane_wall_zone_names:
-        raise ValueError(f"No active membrane wall zones found for base names {membrane_wall_base_names}. Available boundary zones: {boundary_zone_names}")
-    if not buffer_wall_zone_names:
-        raise ValueError(f"No buffer wall zones found for base names {buffer_wall_base_names}. Available boundary zones: {boundary_zone_names}")
-
-    wall_zone_names = boundary_zones_by_type["wall"]
-
-    wall_spacer_zones = sorted(
-        zone_name for zone_name in wall_zone_names
-        if zone_name.startswith("wall_spacer")
-    )
-
-    print("Inlet zones:", inlet_zone_names)
-    print("Outlet zones:", outlet_zone_names)
-    print("Detected active membrane wall zones:", membrane_wall_zone_names)
-    print("Detected buffer wall zones:", buffer_wall_zone_names)
-    print("Detected spacer wall zones:", wall_spacer_zones)
-    print("All wall zones:", wall_zone_names)
-    print(f"Active membrane wall base names: {membrane_wall_base_names}")
-    print(f"Buffer wall base names: {buffer_wall_base_names}")
-
-
-    # ======================================================
-    # ##### [6] Confirm Boundary Zone Types #####
-    # ======================================================
-
-    boundary_zones_by_type = collect_boundary_zones(setup)
-
-    velocity_inlet_zones = boundary_zones_by_type.get("velocity_inlet", [])
-    pressure_outlet_zones = boundary_zones_by_type.get("pressure_outlet", [])
-    all_boundary_zone_names_for_type = sorted(
-        zone_name
-        for names in boundary_zones_by_type.values()
-        for zone_name in names
-    )
-
-    inlet_zone_names = find_zones_by_base_name(all_boundary_zone_names_for_type, "inlet")
-    outlet_zone_names = find_zones_by_base_name(all_boundary_zone_names_for_type, "outlet")
-
-    print("Current velocity-inlet zones:", velocity_inlet_zones)
-    print("Current pressure-outlet zones:", pressure_outlet_zones)
-    print("Detected inlet zones:", inlet_zone_names)
-    print("Detected outlet zones:", outlet_zone_names)
-
-    inlet_zones_to_convert = [name for name in inlet_zone_names if name not in velocity_inlet_zones]
-    outlet_zones_to_convert = [name for name in outlet_zone_names if name not in pressure_outlet_zones]
-
-    if inlet_zones_to_convert:
-        print(f"Setting inlet zones to velocity-inlet: {inlet_zones_to_convert}")
-        setup.boundary_conditions.set_zone_type(
-            zone_list=inlet_zones_to_convert,
-            new_type="velocity-inlet",
-        )
-    else:
-        print("All inlet zones are already velocity-inlet. Skipping type change.")
-
-    if outlet_zones_to_convert:
-        print(f"Setting outlet zones to pressure-outlet: {outlet_zones_to_convert}")
-        setup.boundary_conditions.set_zone_type(
-            zone_list=outlet_zones_to_convert,
-            new_type="pressure-outlet",
-        )
-    else:
-        print("All outlet zones are already pressure-outlet. Skipping type change.")
-
-    boundary_zones_by_type = collect_boundary_zones(setup)
-    cell_zones_by_type = collect_cell_zones(setup)
-
-    print("Boundary zones after type confirmation:")
-    for zone_type, names in boundary_zones_by_type.items():
-        print(f"  {zone_type}: {names}")
-
-    print("Cell zones after type confirmation:")
-    for zone_type, names in cell_zones_by_type.items():
-        print(f"  {zone_type}: {names}")
-
-
-    # ======================================================
-    # ##### [7] Select Fluid Cell Zones #####
-    # ======================================================
-
-    cell_zones_by_type = collect_cell_zones(setup)
-    fluid_zone_names = cell_zones_by_type.get("fluid", [])
-
-    print("Fluid cell zones:", fluid_zone_names)
-
-    if not fluid_zone_names:
-        raise ValueError(
-            f"No fluid cell zone found. "
-            f"Cell zones by type: {cell_zones_by_type}"
-        )
-
-    # Geometry can contain multiple disconnected fluid bodies.
-    # Apply UDF source terms and species patch to every fluid cell zone.
-    target_fluid_zones = list(fluid_zone_names)
-
-    print(f"Target fluid zones for source terms and patch: {target_fluid_zones}")
-
-    for fluid_zone_name in target_fluid_zones:
-        fluid_zone_object = setup.cell_zone_conditions.fluid[fluid_zone_name]
-        print(f"Fluid zone state: {fluid_zone_name}")
-        print(fluid_zone_object.get_state())
-
-    if update_rho_avg_report_definition:
-        recreate_volume_average_report_definition(
-            solution=solution,
-            report_name=rho_avg_report_name,
-            field_name=rho_avg_report_field,
-            cell_zones=target_fluid_zones,
-        )
-    else:
-        print("Skipping rho_avg report definition update.")
-
-
-    # ======================================================
-    # ##### [8] Verify Template Physics and Materials #####
-    # ======================================================
-
-    print("Viscous model state:")
-    print(setup.models.viscous.get_state())
-
-    print("Species model state:")
-    print(setup.models.species.get_state())
-
-    print("Energy model state:")
-    print(setup.models.energy.get_state())
-
-    mixture_materials = setup.materials.mixture.get_object_names()
-    print("Mixture materials:", mixture_materials)
-
-    if "mixture-template" in mixture_materials:
-        mixture_name = "mixture-template"
-    else:
-        mixture_name = mixture_materials[0]
-
-    mixture_object = setup.materials.mixture[mixture_name]
-
-    print("Mixture species state:")
-    print(mixture_object.species.get_state())
-
-    print("Mixture density state:")
-    print(mixture_object.density.get_state())
-
-    print("Mixture viscosity state:")
-    print(mixture_object.viscosity.get_state())
-
-    print("Mixture mass diffusivity state:")
-    print(mixture_object.mass_diffusivity.get_state())
-
-    print("Fluid zone states:")
-    for fluid_zone_name in target_fluid_zones:
-        print(f"Fluid zone state: {fluid_zone_name}")
-        print(setup.cell_zone_conditions.fluid[fluid_zone_name].get_state())
-
-
-    # ======================================================
-    # ##### [9] Operating Conditions #####
-    # ======================================================
-
-    setup.general.operating_conditions.operating_pressure = operating_pressure
-
-    print("Operating conditions state:")
-    print(setup.general.operating_conditions.get_state())
-
-    print(f"Operating pressure set to: {operating_pressure} Pa")
-    print(f"Target outlet gauge pressure value: {outlet_gauge_pressure} Pa")
-
-
-    # ======================================================
-    # ##### [10] Boundary Conditions #####
-    # ======================================================
-
-    # Refresh boundary zone lists after any type conversion.
-    boundary_zones_by_type = collect_boundary_zones(setup)
-    boundary_zone_names = sorted(
-        zone_name
-        for names in boundary_zones_by_type.values()
-        for zone_name in names
-    )
-
-    inlet_zone_names = find_zones_by_base_name(boundary_zone_names, "inlet")
-    outlet_zone_names = find_zones_by_base_name(boundary_zone_names, "outlet")
-    membrane_wall_zone_names = find_zones_by_base_names(boundary_zone_names, membrane_wall_base_names)
-    buffer_wall_zone_names = find_zones_by_base_names(boundary_zone_names, buffer_wall_base_names)
-
-    print("Applying inlet BC to zones:", inlet_zone_names)
-    print("Applying outlet BC to zones:", outlet_zone_names)
-    print("Detected active membrane wall zones for UDF name matching:", membrane_wall_zone_names)
-    print("Detected buffer wall zones (no-slip, not membrane):", buffer_wall_zone_names)
-
-    if not inlet_zone_names or not outlet_zone_names or not membrane_wall_zone_names:
-        raise ValueError(
-            "Missing inlet/outlet/membrane zones after type confirmation. "
-            f"Inlets={inlet_zone_names}, outlets={outlet_zone_names}, "
-            f"active membranes={membrane_wall_zone_names}"
-        )
-    if not buffer_wall_zone_names:
-        raise ValueError(
-            f"No buffer wall zones found for base names {buffer_wall_base_names} "
-            f"after type confirmation. Available boundary zones: {boundary_zone_names}"
-        )
-
-    # Determine species order from the first inlet, then apply the same BC to every inlet zone.
-    first_inlet_zone = inlet_zone_names[0]
-    vin_first = setup.boundary_conditions.velocity_inlet[first_inlet_zone]
-
-    inlet_species_state = vin_first.species.species_mass_fraction.get_state()
-    inlet_species_names = list(inlet_species_state.keys())
-
-    print("Available inlet species:")
-    print(inlet_species_names)
-
-    if target_species_name not in inlet_species_names:
-        raise ValueError(
-            f'Target species "{target_species_name}" was not found at the inlet. '
-            f"Available inlet species: {inlet_species_names}. "
-            "Check the template material/species setup before continuing."
-        )
-
-    species_name = target_species_name
-    salt_yi_index = inlet_species_names.index(species_name)
-
-    print(f"Target species selected: {species_name}")
-    print(f"SALT_YI_INDEX inferred from inlet species list: {salt_yi_index}")
-
-    for inlet_zone_name in inlet_zone_names:
-        vin = setup.boundary_conditions.velocity_inlet[inlet_zone_name]
-        vin.momentum.velocity_magnitude.value = inlet_velocity
-        vin.species.species_mass_fraction[species_name].value = salt_mass_fraction
-        print(f"Inlet BC set on {inlet_zone_name}: velocity={inlet_velocity} m/s, {species_name}={salt_mass_fraction}")
-        print(vin.get_state())
-
-    for outlet_zone_name in outlet_zone_names:
-        pout = setup.boundary_conditions.pressure_outlet[outlet_zone_name]
-        pout.momentum.gauge_pressure.value = outlet_gauge_pressure
-        print(f"Outlet gauge pressure set on {outlet_zone_name}: {outlet_gauge_pressure} Pa")
-
-        outlet_species_state = pout.species.backflow_species_mass_fraction.get_state()
-        outlet_species_names = list(outlet_species_state.keys())
-
-        if target_species_name in outlet_species_names:
-            pout.species.backflow_species_mass_fraction[target_species_name].value = salt_mass_fraction
-            print(
-                f"Outlet backflow species mass fraction set on {outlet_zone_name}: "
-                f"{target_species_name} = {salt_mass_fraction}"
-            )
-        else:
-            print(f"Warning: {target_species_name} was not found in outlet backflow species list for {outlet_zone_name}.")
-
-        print(pout.get_state())
-
-    wall_spacer_wall_objects = [
-        setup.boundary_conditions.wall[zone_name]
-        for zone_name in wall_spacer_zones
-    ]
-
-    membrane_wall_objects = [
-        setup.boundary_conditions.wall[zone_name]
-        for zone_name in membrane_wall_zone_names
-    ]
-
-    print(f"Membrane wall zones selected: {membrane_wall_zone_names}")
-    print(f"Number of membrane wall zones: {len(membrane_wall_objects)}")
-    print(f"Number of spacer wall zones: {len(wall_spacer_wall_objects)}")
-
-    for membrane_wall_zone_name, membrane_wall in zip(membrane_wall_zone_names, membrane_wall_objects):
-        print(f"Membrane wall state: {membrane_wall_zone_name}")
-        print(membrane_wall.get_state())
-
-    # Rebuild report definitions that depend on current boundary names.
-    # This fixes split-zone geometries where inlet/outlet/wall become inlet.1, outlet.1, wall.1, etc.
-    update_transport_report_definitions_for_current_zones(
-        solution=solution,
-        inlet_zones=inlet_zone_names,
-        outlet_zones=outlet_zone_names,
-        membrane_wall_zones=membrane_wall_zone_names,
-        density_value=mixture_density,
-        m_in_name=m_in_report_name,
-        m_out_name=m_out_report_name,
-        area_mem_name=area_mem_report_name,
-        lmh_name=lmh_report_name,
-    )
-
-
-    # ======================================================
-    # ##### [11] UDM Allocation + UDF Compile/Load #####
-    # ======================================================
-
-    print(f"UDF active membrane wall base names (hardcoded in UDF): {membrane_wall_base_names}")
-    print(f"UDF-9  = inlet-referenced CP, Cm/C_INLET_REF")
-    print(f"UDF-10 = cell-centered strain rate magnitude [1/s] (not wall shear rate)")
-    print(f"Using SALT_YI_INDEX = {salt_yi_index}")
-
-    # Allocate User-Defined Memory using Fluent TUI.
-    # The settings API path setup.user_defined.memory is not available in this solver tree.
-    solver.execute_tui(f"/define/user-defined/user-defined-memory {udm_count}")
-
-    print(f"Requested UDM memory locations: {udm_count}")
-
-    udf_case_path = copy_and_patch_udf_to_case_folder(
-        source_path=udf_master_path,
-        destination_path=udf_case_path,
-        salt_yi_index_value=salt_yi_index,
-    )
-
-    solver.tui.define.user_defined.compiled_functions(
-        "compile",
-        udf_library_name,
-        "yes",
-        as_fluent_path(udf_case_path),
-        "",
-        "",
-    )
-
-    print("UDF compile command completed.")
-
-    solver.tui.define.user_defined.compiled_functions(
-        "load",
-        udf_library_name,
-    )
-
-    print("UDF library loaded.")
-
-
-    # ======================================================
-    # ##### [12] Hook Adjust and Init Functions #####
-    # ======================================================
-
-    adjust_hook_tui = f'/define/user-defined/function-hooks/adjust "{adjust_function_name}"'
-    init_hook_tui = f'/define/user-defined/function-hooks/initialization "{init_function_name}"'
-
-    print("Trying adjust hook TUI command:")
-    print(adjust_hook_tui)
-    solver.execute_tui(adjust_hook_tui)
-    print("Adjust hook TUI command completed.")
-
-    print("Trying initialization hook TUI command:")
-    print(init_hook_tui)
-    solver.execute_tui(init_hook_tui)
-    print("Initialization hook TUI command completed.")
-
-
-    # ======================================================
-    # ##### [13] Enable and Hook Cell Zone UDF Source Terms #####
-    # ======================================================
-
-    # Use the species source key corresponding to SALT_YI_INDEX.
-    species_source_key = f"species-{salt_yi_index}"
-
-    source_term_map = {
-        "mass": source_function_names["mass"],
-        species_source_key: source_function_names["species_salt"],
-        "x-momentum": source_function_names["x_momentum"],
-        "y-momentum": source_function_names["y_momentum"],
-        "z-momentum": source_function_names["z_momentum"],
-    }
-
-    print("\nRequested source term hooks:")
-    print(source_term_map)
-
-
-    def hook_udf_source_term(fluid_zone_object, fluid_zone_name, term_key, udf_name):
-        """Hook one UDF source term to one fluid cell zone."""
-        term = fluid_zone_object.sources.terms[term_key]
-
-        # Use one source entry for each equation.
-        term.resize(1)
-        entry = term[0]
-
-        print(f"\nHooking source term for fluid zone '{fluid_zone_name}': {term_key}")
-        print("Before:")
-        print(entry.get_state())
-
-        entry.option.set_state("udf")
-        entry.udf.set_state(udf_name)
-
-        print("After:")
-        print(entry.get_state())
-
-
-    for fluid_zone_name in target_fluid_zones:
-        fluid_zone_object = setup.cell_zone_conditions.fluid[fluid_zone_name]
-
-        # Enable source terms for every fluid cell zone.
-        fluid_zone_object.sources.enable = True
-
-        print(f"\nFluid zone sources state before source-term hooking: {fluid_zone_name}")
-        print(fluid_zone_object.sources.get_state())
-
-        available_source_terms = list(fluid_zone_object.sources.terms.get_state().keys())
-
-        print(f"\nAvailable source term keys for fluid zone '{fluid_zone_name}':")
-        print(available_source_terms)
-
-        missing_source_terms = [
-            term_key for term_key in source_term_map
-            if term_key not in available_source_terms
-        ]
-
-        if missing_source_terms:
-            raise ValueError(
-                f"Missing source term keys in fluid zone '{fluid_zone_name}': "
-                f"{missing_source_terms}. "
-                f"Available source term keys: {available_source_terms}"
-            )
-
-        for term_key, udf_name in source_term_map.items():
-            hook_udf_source_term(
-                fluid_zone_object=fluid_zone_object,
-                fluid_zone_name=fluid_zone_name,
-                term_key=term_key,
-                udf_name=udf_name,
-            )
-
-        print(f"\nFull source terms state after hooking for fluid zone '{fluid_zone_name}':")
-        print(fluid_zone_object.sources.terms.get_state())
-
-        print(f"\nFull fluid zone sources state after hooking for fluid zone '{fluid_zone_name}':")
-        print(fluid_zone_object.sources.get_state())
-
-
-    # ======================================================
-    # ##### [14] Residual Settings #####
-    # ======================================================
-
-    residual_equations_state = solution.monitor.residual.equations.get_state()
-    available_residual_equations = list(residual_equations_state.keys())
-
-    print("Available residual equations:")
-    print(available_residual_equations)
-
-    target_residual_equations = [
-        "continuity",
-        "x-velocity",
-        "y-velocity",
-        "z-velocity",
-        species_name,
-    ]
-
-    print("Target residual equations:")
-    print(target_residual_equations)
-
-    for eq in target_residual_equations:
-        if eq in available_residual_equations:
-            res_eq = solution.monitor.residual.equations[eq]
-
-            print(f"\nSetting residual equation: {eq}")
-            print("Before:")
-            print(res_eq.get_state())
-
-            res_eq.monitor = True
-            res_eq.check_convergence = True
-
-            current_state = res_eq.get_state()
-
-            if "absolute_criteria" in current_state:
-                res_eq.absolute_criteria = residual_target
-            elif "relative_criteria" in current_state:
-                res_eq.relative_criteria = residual_target
-            else:
-                raise AttributeError(
-                    f"No residual criteria field found for equation '{eq}'. "
-                    f"Current state: {current_state}"
-                )
-
-            print("After:")
-            print(res_eq.get_state())
-            print(f"Residual criterion set: {eq} = {residual_target}")
-
-        else:
-            print(f"Residual equation not found. Skipping: {eq}")
-
-    print("\nResidual equations state after setting:")
-    print(solution.monitor.residual.equations.get_state())
-
-
-    # ======================================================
-    # ##### [15] Initialization and Species Patch #####
-    # ======================================================
-
-    print("Initialization state before hybrid initialization:")
-    print(solution.initialization.get_state())
-
-    solution.initialization.initialization_type = "hybrid"
-
-    solution.initialization.hybrid_initialize()
-
-    print("\nHybrid initialization completed.")
-
-    species_patch_variable = f"species-{salt_yi_index}"
-
-    patch_command = solution.initialization.patch.calculate_patch
-
-    patch_command(
-        domain="mixture",
-        cell_zones=target_fluid_zones,
-        registers=[],
-        variable=species_patch_variable,
-        reference_frame="Relative to Cell Zone",
-        use_custom_field_function=False,
-        custom_field_function_name="",
-        value=salt_mass_fraction,
-    )
-
-    print(
-        f"Patched fluid zones {target_fluid_zones}: "
-        f"{species_patch_variable} ({species_name}) = {salt_mass_fraction}"
-    )
-
-    print("\nInitialization state after hybrid initialization and patch:")
-    print(solution.initialization.get_state())
-
-
-    # ======================================================
-    # ##### [16] Save Setup Case #####
-    # ======================================================
-
-    solver.settings.file.write_case(file_name=as_fluent_path(setup_case_file))
-    print(f"Setup case saved: {setup_case_file}")
-
-    verify_file_exists(setup_case_file, "setup case file")
-
-
-    # ======================================================
-    # ##### [17] Run Calculation #####
-    # ======================================================
-
-    # This cell runs the solver calculation.
-    # If use_ramp_convergence_safety is True:
-    #   Phase 1 runs a fixed number of iterations with residual convergence stopping disabled.
-    #   Phase 2 re-enables convergence checks and lets Fluent stop early when residual criteria are met.
-
-    if run_calculation_enabled:
-        print("Starting solver calculation.")
-        print(f"Maximum iterations requested: {max_iterations}")
-        print(f"Residual target: {residual_target}")
-
-        if use_ramp_convergence_safety:
-            pre_convergence_iterations = minimum_full_source_iterations
-            remaining_iterations = max_iterations - pre_convergence_iterations
-
-            if remaining_iterations <= 0:
-                raise ValueError(
-                    "max_iterations must be larger than minimum_full_source_iterations. "
-                    f"max_iterations={max_iterations}, "
-                    f"minimum_full_source_iterations={minimum_full_source_iterations}"
-                )
-
-            print(
-                "\nRunning ramp-up phase without residual convergence stopping.\n"
-                f"Ramp full iteration: {ramp_full_iteration}\n"
-                f"Post-ramp buffer iterations: {post_ramp_buffer_iterations}\n"
-                f"Ramp-up phase iterations: {pre_convergence_iterations}"
-            )
-
-            set_residual_convergence_check(
-                solution=solution,
-                species_name=species_name,
-                enable=False,
-            )
-
-            solution.run_calculation.iterate(iter_count=pre_convergence_iterations)
-
-            print(
-                "\nRamp-up phase completed. "
-                "The membrane source ramp should now be fully applied."
-            )
-
-            print("\nRe-enabling residual convergence check for full-source convergence phase.")
-
-            set_residual_convergence_check(
-                solution=solution,
-                species_name=species_name,
-                enable=True,
-            )
-
-            print(f"\nRunning convergence phase. Maximum additional iterations: {remaining_iterations}")
-
-            solution.run_calculation.iterate(iter_count=remaining_iterations)
-
-        else:
-            print("\nRamp convergence safety is disabled.")
-            solution.run_calculation.iterate(iter_count=max_iterations)
-
-        print("\nSolver calculation completed.")
-
-        print("\nFinal residual equations state:")
-        print(solution.monitor.residual.equations.get_state())
-
-    else:
-        print("Run calculation is disabled. Skipping solver iterations.")
-
-
-    # ======================================================
-    # ##### [18] Save Final Case/Data #####
-    # ======================================================
-
-    solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
-    print(f"Final case/data write command completed: {final_case_file}")
-
-    verify_file_exists(final_case_file, "final case file")
-    verify_file_exists(final_data_file, "final data file")
-
-
-except Exception as e:
-    print("\n" + "=" * 72)
-    print("ERROR: Solver automation failed.")
-    print("=" * 72)
-    print(e)
-    print("=" * 72 + "\n")
-    raise
-
-finally:
-    if solver is not None and transcript_is_running:
-        try:
-            solver.transcript.stop()
-            transcript_is_running = False
-        except Exception as cleanup_error:
-            print(f"Warning: could not stop solver transcript during cleanup: {cleanup_error}")
-
-    if meshing is not None:
-        try:
-            meshing.exit()
-        except Exception as cleanup_error:
-            print(f"Warning: could not exit meshing session during cleanup: {cleanup_error}")
-
-    if solver is not None:
-        try:
-            solver.exit()
-        except Exception as cleanup_error:
-            print(f"Warning: could not exit solver session during cleanup: {cleanup_error}")
+    original_working_directory = os.getcwd()
 
     try:
-        os.chdir(original_working_directory)
-        print(f"Working directory restored: {original_working_directory}")
-    except Exception as cleanup_error:
-        print(f"Warning: could not restore working directory during cleanup: {cleanup_error}")
+        os.chdir(case_path)
+
+        print("Launching Fluent in meshing mode...", flush=True)
+
+        meshing = pyfluent.launch_fluent(
+            product_version=product_version,
+            mode="meshing",
+            dimension=3,
+            precision="double",
+            processor_count=processor_count,
+            ui_mode="gui",
+            graphics_driver=graphics_driver,
+            start_timeout=fluent_start_timeout,
+            cwd=as_fluent_path(case_path),
+        )
+
+        print("Meshing session launched successfully.", flush=True)
+        print("Switching from meshing mode to solver mode...", flush=True)
+
+        solver = meshing.switch_to_solver()
+
+        print("Switched to solver mode successfully.", flush=True)
+
+        meshing = None
+
+        setup = solver.settings.setup
+        solution = solver.settings.solution
+
+        # Start a dedicated transcript for template loading and mesh replacement.
+        # This log is used to parse the zone-name to zone-id mapping.
+        solver.transcript.start(file_name=as_fluent_path(solver_mesh_replace_log_path))
+        transcript_is_running = True
+
+        print("Reading template case...", flush=True)
+
+        solver.settings.file.read_case(
+            file_name=as_fluent_path(template_case_path)
+        )
+
+        print("Template case loaded successfully.", flush=True)
+
+        print("Replacing mesh with target geometry mesh...", flush=True)
+
+        solver.settings.file.replace_mesh(
+            file_name=as_fluent_path(mesh_file_path)
+        )
+
+        print("Mesh replaced successfully.", flush=True)
+
+        solver.execute_tui(r"/mesh/check")
+        print("Solver-side mesh check completed.")
+
+        print("Skipping /mesh/check-quality in solver mode because this TUI command was invalid in the tested solver session.")
+
+        # Stop the mesh-replace transcript so that zone mapping lines are flushed to file.
+        solver.transcript.stop()
+        transcript_is_running = False
+
+        # Update solver-side thread names so the name-based UDF can use THREAD_NAME(t).
+        update_solver_thread_names(solver)
+
+        print(f"Active membrane wall base names for UDF (hardcoded in UDF): {membrane_wall_base_names}")
+        print(f"Buffer wall base names (no-slip, not membrane): {buffer_wall_base_names}")
+
+        # Start the main solver transcript for the remaining setup and calculation.
+        solver.transcript.start(file_name=as_fluent_path(solver_log_path))
+        transcript_is_running = True
+
+        print(f"Main solver log will be saved to: {solver_log_path}")
+
+
+        # ======================================================
+        # ##### [5] Check Zones #####
+        # ======================================================
+
+        boundary_zones_by_type = collect_boundary_zones(setup)
+        cell_zones_by_type = collect_cell_zones(setup)
+
+        print("Boundary zones by type:")
+        for zone_type, names in boundary_zones_by_type.items():
+            print(f"  {zone_type}: {names}")
+
+        print("Cell zones by type:")
+        for zone_type, names in cell_zones_by_type.items():
+            print(f"  {zone_type}: {names}")
+
+        boundary_zone_names = sorted(
+            zone_name
+            for names in boundary_zones_by_type.values()
+            for zone_name in names
+        )
+
+        cell_zone_names = sorted(
+            zone_name
+            for names in cell_zones_by_type.values()
+            for zone_name in names
+        )
+
+        print("All boundary zones:", boundary_zone_names)
+        print("All cell zones:", cell_zone_names)
+
+        inlet_zone_names = find_zones_by_base_name(boundary_zone_names, "inlet")
+        outlet_zone_names = find_zones_by_base_name(boundary_zone_names, "outlet")
+        membrane_wall_zone_names = find_zones_by_base_names(boundary_zone_names, membrane_wall_base_names)
+        buffer_wall_zone_names = find_zones_by_base_names(boundary_zone_names, buffer_wall_base_names)
+
+        if not inlet_zone_names:
+            raise ValueError(f"No inlet boundary zones found. Available boundary zones: {boundary_zone_names}")
+        if not outlet_zone_names:
+            raise ValueError(f"No outlet boundary zones found. Available boundary zones: {boundary_zone_names}")
+        if not membrane_wall_zone_names:
+            raise ValueError(f"No active membrane wall zones found for base names {membrane_wall_base_names}. Available boundary zones: {boundary_zone_names}")
+        if not buffer_wall_zone_names:
+            raise ValueError(f"No buffer wall zones found for base names {buffer_wall_base_names}. Available boundary zones: {boundary_zone_names}")
+
+        wall_zone_names = boundary_zones_by_type["wall"]
+
+        wall_spacer_zones = sorted(
+            zone_name for zone_name in wall_zone_names
+            if zone_name.startswith("wall_spacer")
+        )
+
+        print("Inlet zones:", inlet_zone_names)
+        print("Outlet zones:", outlet_zone_names)
+        print("Detected active membrane wall zones:", membrane_wall_zone_names)
+        print("Detected buffer wall zones:", buffer_wall_zone_names)
+        print("Detected spacer wall zones:", wall_spacer_zones)
+        print("All wall zones:", wall_zone_names)
+        print(f"Active membrane wall base names: {membrane_wall_base_names}")
+        print(f"Buffer wall base names: {buffer_wall_base_names}")
+
+
+        # ======================================================
+        # ##### [6] Confirm Boundary Zone Types #####
+        # ======================================================
+
+        boundary_zones_by_type = collect_boundary_zones(setup)
+
+        velocity_inlet_zones = boundary_zones_by_type.get("velocity_inlet", [])
+        pressure_outlet_zones = boundary_zones_by_type.get("pressure_outlet", [])
+        all_boundary_zone_names_for_type = sorted(
+            zone_name
+            for names in boundary_zones_by_type.values()
+            for zone_name in names
+        )
+
+        inlet_zone_names = find_zones_by_base_name(all_boundary_zone_names_for_type, "inlet")
+        outlet_zone_names = find_zones_by_base_name(all_boundary_zone_names_for_type, "outlet")
+
+        print("Current velocity-inlet zones:", velocity_inlet_zones)
+        print("Current pressure-outlet zones:", pressure_outlet_zones)
+        print("Detected inlet zones:", inlet_zone_names)
+        print("Detected outlet zones:", outlet_zone_names)
+
+        inlet_zones_to_convert = [name for name in inlet_zone_names if name not in velocity_inlet_zones]
+        outlet_zones_to_convert = [name for name in outlet_zone_names if name not in pressure_outlet_zones]
+
+        if inlet_zones_to_convert:
+            print(f"Setting inlet zones to velocity-inlet: {inlet_zones_to_convert}")
+            setup.boundary_conditions.set_zone_type(
+                zone_list=inlet_zones_to_convert,
+                new_type="velocity-inlet",
+            )
+        else:
+            print("All inlet zones are already velocity-inlet. Skipping type change.")
+
+        if outlet_zones_to_convert:
+            print(f"Setting outlet zones to pressure-outlet: {outlet_zones_to_convert}")
+            setup.boundary_conditions.set_zone_type(
+                zone_list=outlet_zones_to_convert,
+                new_type="pressure-outlet",
+            )
+        else:
+            print("All outlet zones are already pressure-outlet. Skipping type change.")
+
+        boundary_zones_by_type = collect_boundary_zones(setup)
+        cell_zones_by_type = collect_cell_zones(setup)
+
+        print("Boundary zones after type confirmation:")
+        for zone_type, names in boundary_zones_by_type.items():
+            print(f"  {zone_type}: {names}")
+
+        print("Cell zones after type confirmation:")
+        for zone_type, names in cell_zones_by_type.items():
+            print(f"  {zone_type}: {names}")
+
+
+        # ======================================================
+        # ##### [7] Select Fluid Cell Zones #####
+        # ======================================================
+
+        cell_zones_by_type = collect_cell_zones(setup)
+        fluid_zone_names = cell_zones_by_type.get("fluid", [])
+
+        print("Fluid cell zones:", fluid_zone_names)
+
+        if not fluid_zone_names:
+            raise ValueError(
+                f"No fluid cell zone found. "
+                f"Cell zones by type: {cell_zones_by_type}"
+            )
+
+        # Geometry can contain multiple disconnected fluid bodies.
+        # Apply UDF source terms and species patch to every fluid cell zone.
+        target_fluid_zones = list(fluid_zone_names)
+
+        print(f"Target fluid zones for source terms and patch: {target_fluid_zones}")
+
+        for fluid_zone_name in target_fluid_zones:
+            fluid_zone_object = setup.cell_zone_conditions.fluid[fluid_zone_name]
+            print(f"Fluid zone state: {fluid_zone_name}")
+            print(fluid_zone_object.get_state())
+
+        if update_rho_avg_report_definition:
+            recreate_volume_average_report_definition(
+                solution=solution,
+                report_name=rho_avg_report_name,
+                field_name=rho_avg_report_field,
+                cell_zones=target_fluid_zones,
+            )
+        else:
+            print("Skipping rho_avg report definition update.")
+
+
+        # ======================================================
+        # ##### [8] Verify Template Physics and Materials #####
+        # ======================================================
+
+        print("Viscous model state:")
+        print(setup.models.viscous.get_state())
+
+        print("Species model state:")
+        print(setup.models.species.get_state())
+
+        print("Energy model state:")
+        print(setup.models.energy.get_state())
+
+        mixture_materials = setup.materials.mixture.get_object_names()
+        print("Mixture materials:", mixture_materials)
+
+        if "mixture-template" in mixture_materials:
+            mixture_name = "mixture-template"
+        else:
+            mixture_name = mixture_materials[0]
+
+        mixture_object = setup.materials.mixture[mixture_name]
+
+        print("Mixture species state:")
+        print(mixture_object.species.get_state())
+
+        print("Mixture density state:")
+        print(mixture_object.density.get_state())
+
+        print("Mixture viscosity state:")
+        print(mixture_object.viscosity.get_state())
+
+        print("Mixture mass diffusivity state:")
+        print(mixture_object.mass_diffusivity.get_state())
+
+        print("Fluid zone states:")
+        for fluid_zone_name in target_fluid_zones:
+            print(f"Fluid zone state: {fluid_zone_name}")
+            print(setup.cell_zone_conditions.fluid[fluid_zone_name].get_state())
+
+
+        # ======================================================
+        # ##### [9] Operating Conditions #####
+        # ======================================================
+
+        setup.general.operating_conditions.operating_pressure = operating_pressure
+
+        print("Operating conditions state:")
+        print(setup.general.operating_conditions.get_state())
+
+        print(f"Operating pressure set to: {operating_pressure} Pa")
+        print(f"Target outlet gauge pressure value: {outlet_gauge_pressure} Pa")
+
+
+        # ======================================================
+        # ##### [10] Boundary Conditions #####
+        # ======================================================
+
+        # Refresh boundary zone lists after any type conversion.
+        boundary_zones_by_type = collect_boundary_zones(setup)
+        boundary_zone_names = sorted(
+            zone_name
+            for names in boundary_zones_by_type.values()
+            for zone_name in names
+        )
+
+        inlet_zone_names = find_zones_by_base_name(boundary_zone_names, "inlet")
+        outlet_zone_names = find_zones_by_base_name(boundary_zone_names, "outlet")
+        membrane_wall_zone_names = find_zones_by_base_names(boundary_zone_names, membrane_wall_base_names)
+        buffer_wall_zone_names = find_zones_by_base_names(boundary_zone_names, buffer_wall_base_names)
+
+        print("Applying inlet BC to zones:", inlet_zone_names)
+        print("Applying outlet BC to zones:", outlet_zone_names)
+        print("Detected active membrane wall zones for UDF name matching:", membrane_wall_zone_names)
+        print("Detected buffer wall zones (no-slip, not membrane):", buffer_wall_zone_names)
+
+        if not inlet_zone_names or not outlet_zone_names or not membrane_wall_zone_names:
+            raise ValueError(
+                "Missing inlet/outlet/membrane zones after type confirmation. "
+                f"Inlets={inlet_zone_names}, outlets={outlet_zone_names}, "
+                f"active membranes={membrane_wall_zone_names}"
+            )
+        if not buffer_wall_zone_names:
+            raise ValueError(
+                f"No buffer wall zones found for base names {buffer_wall_base_names} "
+                f"after type confirmation. Available boundary zones: {boundary_zone_names}"
+            )
+
+        # Determine species order from the first inlet, then apply the same BC to every inlet zone.
+        first_inlet_zone = inlet_zone_names[0]
+        vin_first = setup.boundary_conditions.velocity_inlet[first_inlet_zone]
+
+        inlet_species_state = vin_first.species.species_mass_fraction.get_state()
+        inlet_species_names = list(inlet_species_state.keys())
+
+        print("Available inlet species:")
+        print(inlet_species_names)
+
+        if target_species_name not in inlet_species_names:
+            raise ValueError(
+                f'Target species "{target_species_name}" was not found at the inlet. '
+                f"Available inlet species: {inlet_species_names}. "
+                "Check the template material/species setup before continuing."
+            )
+
+        species_name = target_species_name
+        salt_yi_index = inlet_species_names.index(species_name)
+
+        print(f"Target species selected: {species_name}")
+        print(f"SALT_YI_INDEX inferred from inlet species list: {salt_yi_index}")
+
+        for inlet_zone_name in inlet_zone_names:
+            vin = setup.boundary_conditions.velocity_inlet[inlet_zone_name]
+            vin.momentum.velocity_magnitude.value = inlet_velocity
+            vin.species.species_mass_fraction[species_name].value = salt_mass_fraction
+            print(f"Inlet BC set on {inlet_zone_name}: velocity={inlet_velocity} m/s, {species_name}={salt_mass_fraction}")
+            print(vin.get_state())
+
+        for outlet_zone_name in outlet_zone_names:
+            pout = setup.boundary_conditions.pressure_outlet[outlet_zone_name]
+            pout.momentum.gauge_pressure.value = outlet_gauge_pressure
+            print(f"Outlet gauge pressure set on {outlet_zone_name}: {outlet_gauge_pressure} Pa")
+
+            outlet_species_state = pout.species.backflow_species_mass_fraction.get_state()
+            outlet_species_names = list(outlet_species_state.keys())
+
+            if target_species_name in outlet_species_names:
+                pout.species.backflow_species_mass_fraction[target_species_name].value = salt_mass_fraction
+                print(
+                    f"Outlet backflow species mass fraction set on {outlet_zone_name}: "
+                    f"{target_species_name} = {salt_mass_fraction}"
+                )
+            else:
+                print(f"Warning: {target_species_name} was not found in outlet backflow species list for {outlet_zone_name}.")
+
+            print(pout.get_state())
+
+        wall_spacer_wall_objects = [
+            setup.boundary_conditions.wall[zone_name]
+            for zone_name in wall_spacer_zones
+        ]
+
+        membrane_wall_objects = [
+            setup.boundary_conditions.wall[zone_name]
+            for zone_name in membrane_wall_zone_names
+        ]
+
+        print(f"Membrane wall zones selected: {membrane_wall_zone_names}")
+        print(f"Number of membrane wall zones: {len(membrane_wall_objects)}")
+        print(f"Number of spacer wall zones: {len(wall_spacer_wall_objects)}")
+
+        for membrane_wall_zone_name, membrane_wall in zip(membrane_wall_zone_names, membrane_wall_objects):
+            print(f"Membrane wall state: {membrane_wall_zone_name}")
+            print(membrane_wall.get_state())
+
+        # Rebuild report definitions that depend on current boundary names.
+        # This fixes split-zone geometries where inlet/outlet/wall become inlet.1, outlet.1, wall.1, etc.
+        update_transport_report_definitions_for_current_zones(
+            solution=solution,
+            inlet_zones=inlet_zone_names,
+            outlet_zones=outlet_zone_names,
+            membrane_wall_zones=membrane_wall_zone_names,
+            density_value=mixture_density,
+            m_in_name=m_in_report_name,
+            m_out_name=m_out_report_name,
+            area_mem_name=area_mem_report_name,
+            lmh_name=lmh_report_name,
+        )
+
+
+        # ======================================================
+        # ##### [11] UDM Allocation + UDF Compile/Load #####
+        # ======================================================
+
+        print(f"UDF active membrane wall base names (hardcoded in UDF): {membrane_wall_base_names}")
+        print(f"UDF-9  = inlet-referenced CP, Cm/C_INLET_REF")
+        print(f"UDF-10 = cell-centered strain rate magnitude [1/s] (not wall shear rate)")
+        print(f"Using SALT_YI_INDEX = {salt_yi_index}")
+
+        # Allocate User-Defined Memory using Fluent TUI.
+        # The settings API path setup.user_defined.memory is not available in this solver tree.
+        solver.execute_tui(f"/define/user-defined/user-defined-memory {udm_count}")
+
+        print(f"Requested UDM memory locations: {udm_count}")
+
+        udf_case_path = copy_and_patch_udf_to_case_folder(
+            source_path=udf_master_path,
+            destination_path=udf_case_path,
+            salt_yi_index_value=salt_yi_index,
+        )
+
+        solver.tui.define.user_defined.compiled_functions(
+            "compile",
+            udf_library_name,
+            "yes",
+            as_fluent_path(udf_case_path),
+            "",
+            "",
+        )
+
+        print("UDF compile command completed.")
+
+        solver.tui.define.user_defined.compiled_functions(
+            "load",
+            udf_library_name,
+        )
+
+        print("UDF library loaded.")
+
+
+        # ======================================================
+        # ##### [12] Hook Adjust and Init Functions #####
+        # ======================================================
+
+        adjust_hook_tui = f'/define/user-defined/function-hooks/adjust "{adjust_function_name}"'
+        init_hook_tui = f'/define/user-defined/function-hooks/initialization "{init_function_name}"'
+
+        print("Trying adjust hook TUI command:")
+        print(adjust_hook_tui)
+        solver.execute_tui(adjust_hook_tui)
+        print("Adjust hook TUI command completed.")
+
+        print("Trying initialization hook TUI command:")
+        print(init_hook_tui)
+        solver.execute_tui(init_hook_tui)
+        print("Initialization hook TUI command completed.")
+
+
+        # ======================================================
+        # ##### [13] Enable and Hook Cell Zone UDF Source Terms #####
+        # ======================================================
+
+        # Use the species source key corresponding to SALT_YI_INDEX.
+        species_source_key = f"species-{salt_yi_index}"
+
+        source_term_map = {
+            "mass": source_function_names["mass"],
+            species_source_key: source_function_names["species_salt"],
+            "x-momentum": source_function_names["x_momentum"],
+            "y-momentum": source_function_names["y_momentum"],
+            "z-momentum": source_function_names["z_momentum"],
+        }
+
+        print("\nRequested source term hooks:")
+        print(source_term_map)
+
+
+        def hook_udf_source_term(fluid_zone_object, fluid_zone_name, term_key, udf_name):
+            """Hook one UDF source term to one fluid cell zone."""
+            term = fluid_zone_object.sources.terms[term_key]
+
+            # Use one source entry for each equation.
+            term.resize(1)
+            entry = term[0]
+
+            print(f"\nHooking source term for fluid zone '{fluid_zone_name}': {term_key}")
+            print("Before:")
+            print(entry.get_state())
+
+            entry.option.set_state("udf")
+            entry.udf.set_state(udf_name)
+
+            print("After:")
+            print(entry.get_state())
+
+
+        for fluid_zone_name in target_fluid_zones:
+            fluid_zone_object = setup.cell_zone_conditions.fluid[fluid_zone_name]
+
+            # Enable source terms for every fluid cell zone.
+            fluid_zone_object.sources.enable = True
+
+            print(f"\nFluid zone sources state before source-term hooking: {fluid_zone_name}")
+            print(fluid_zone_object.sources.get_state())
+
+            available_source_terms = list(fluid_zone_object.sources.terms.get_state().keys())
+
+            print(f"\nAvailable source term keys for fluid zone '{fluid_zone_name}':")
+            print(available_source_terms)
+
+            missing_source_terms = [
+                term_key for term_key in source_term_map
+                if term_key not in available_source_terms
+            ]
+
+            if missing_source_terms:
+                raise ValueError(
+                    f"Missing source term keys in fluid zone '{fluid_zone_name}': "
+                    f"{missing_source_terms}. "
+                    f"Available source term keys: {available_source_terms}"
+                )
+
+            for term_key, udf_name in source_term_map.items():
+                hook_udf_source_term(
+                    fluid_zone_object=fluid_zone_object,
+                    fluid_zone_name=fluid_zone_name,
+                    term_key=term_key,
+                    udf_name=udf_name,
+                )
+
+            print(f"\nFull source terms state after hooking for fluid zone '{fluid_zone_name}':")
+            print(fluid_zone_object.sources.terms.get_state())
+
+            print(f"\nFull fluid zone sources state after hooking for fluid zone '{fluid_zone_name}':")
+            print(fluid_zone_object.sources.get_state())
+
+
+        # ======================================================
+        # ##### [14] Residual Settings #####
+        # ======================================================
+
+        residual_equations_state = solution.monitor.residual.equations.get_state()
+        available_residual_equations = list(residual_equations_state.keys())
+
+        print("Available residual equations:")
+        print(available_residual_equations)
+
+        target_residual_equations = [
+            "continuity",
+            "x-velocity",
+            "y-velocity",
+            "z-velocity",
+            species_name,
+        ]
+
+        print("Target residual equations:")
+        print(target_residual_equations)
+
+        for eq in target_residual_equations:
+            if eq in available_residual_equations:
+                res_eq = solution.monitor.residual.equations[eq]
+
+                print(f"\nSetting residual equation: {eq}")
+                print("Before:")
+                print(res_eq.get_state())
+
+                res_eq.monitor = True
+                res_eq.check_convergence = True
+
+                current_state = res_eq.get_state()
+
+                if "absolute_criteria" in current_state:
+                    res_eq.absolute_criteria = residual_target
+                elif "relative_criteria" in current_state:
+                    res_eq.relative_criteria = residual_target
+                else:
+                    raise AttributeError(
+                        f"No residual criteria field found for equation '{eq}'. "
+                        f"Current state: {current_state}"
+                    )
+
+                print("After:")
+                print(res_eq.get_state())
+                print(f"Residual criterion set: {eq} = {residual_target}")
+
+            else:
+                print(f"Residual equation not found. Skipping: {eq}")
+
+        print("\nResidual equations state after setting:")
+        print(solution.monitor.residual.equations.get_state())
+
+
+        # ======================================================
+        # ##### [15] Initialization and Species Patch #####
+        # ======================================================
+
+        print("Initialization state before hybrid initialization:")
+        print(solution.initialization.get_state())
+
+        solution.initialization.initialization_type = "hybrid"
+
+        solution.initialization.hybrid_initialize()
+
+        print("\nHybrid initialization completed.")
+
+        species_patch_variable = f"species-{salt_yi_index}"
+
+        patch_command = solution.initialization.patch.calculate_patch
+
+        patch_command(
+            domain="mixture",
+            cell_zones=target_fluid_zones,
+            registers=[],
+            variable=species_patch_variable,
+            reference_frame="Relative to Cell Zone",
+            use_custom_field_function=False,
+            custom_field_function_name="",
+            value=salt_mass_fraction,
+        )
+
+        print(
+            f"Patched fluid zones {target_fluid_zones}: "
+            f"{species_patch_variable} ({species_name}) = {salt_mass_fraction}"
+        )
+
+        print("\nInitialization state after hybrid initialization and patch:")
+        print(solution.initialization.get_state())
+
+
+        # ======================================================
+        # ##### [16] Save Setup Case #####
+        # ======================================================
+
+        solver.settings.file.write_case(file_name=as_fluent_path(setup_case_file))
+        print(f"Setup case saved: {setup_case_file}")
+
+        verify_file_exists(setup_case_file, "setup case file")
+
+
+        # ======================================================
+        # ##### [17] Run Calculation #####
+        # ======================================================
+
+        # This cell runs the solver calculation.
+        # If use_ramp_convergence_safety is True:
+        #   Phase 1 runs a fixed number of iterations with residual convergence stopping disabled.
+        #   Phase 2 re-enables convergence checks and lets Fluent stop early when residual criteria are met.
+
+        if run_calculation_enabled:
+            print("Starting solver calculation.")
+            print(f"Maximum iterations requested: {max_iterations}")
+            print(f"Residual target: {residual_target}")
+
+            if use_ramp_convergence_safety:
+                pre_convergence_iterations = minimum_full_source_iterations
+                remaining_iterations = max_iterations - pre_convergence_iterations
+
+                if remaining_iterations <= 0:
+                    raise ValueError(
+                        "max_iterations must be larger than minimum_full_source_iterations. "
+                        f"max_iterations={max_iterations}, "
+                        f"minimum_full_source_iterations={minimum_full_source_iterations}"
+                    )
+
+                print(
+                    "\nRunning ramp-up phase without residual convergence stopping.\n"
+                    f"Ramp full iteration: {ramp_full_iteration}\n"
+                    f"Post-ramp buffer iterations: {post_ramp_buffer_iterations}\n"
+                    f"Ramp-up phase iterations: {pre_convergence_iterations}"
+                )
+
+                set_residual_convergence_check(
+                    solution=solution,
+                    species_name=species_name,
+                    enable=False,
+                )
+
+                solution.run_calculation.iterate(iter_count=pre_convergence_iterations)
+
+                print(
+                    "\nRamp-up phase completed. "
+                    "The membrane source ramp should now be fully applied."
+                )
+
+                print("\nRe-enabling residual convergence check for full-source convergence phase.")
+
+                set_residual_convergence_check(
+                    solution=solution,
+                    species_name=species_name,
+                    enable=True,
+                )
+
+                print(f"\nRunning convergence phase. Maximum additional iterations: {remaining_iterations}")
+
+                solution.run_calculation.iterate(iter_count=remaining_iterations)
+
+            else:
+                print("\nRamp convergence safety is disabled.")
+                solution.run_calculation.iterate(iter_count=max_iterations)
+
+            print("\nSolver calculation completed.")
+
+            print("\nFinal residual equations state:")
+            print(solution.monitor.residual.equations.get_state())
+
+        else:
+            print("Run calculation is disabled. Skipping solver iterations.")
+
+
+        # ======================================================
+        # ##### [18] Save Final Case/Data #####
+        # ======================================================
+
+        solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
+        print(f"Final case/data write command completed: {final_case_file}")
+
+        verify_file_exists(final_case_file, "final case file")
+        verify_file_exists(final_data_file, "final data file")
+
+
+    except Exception as e:
+        print("\n" + "=" * 72)
+        print("ERROR: Solver automation failed.")
+        print("=" * 72)
+        print(e)
+        print("=" * 72 + "\n")
+        raise
+
+    finally:
+        if solver is not None and transcript_is_running:
+            try:
+                solver.transcript.stop()
+                transcript_is_running = False
+            except Exception as cleanup_error:
+                print(f"Warning: could not stop solver transcript during cleanup: {cleanup_error}")
+
+        if meshing is not None:
+            try:
+                meshing.exit()
+            except Exception as cleanup_error:
+                print(f"Warning: could not exit meshing session during cleanup: {cleanup_error}")
+
+        if solver is not None:
+            try:
+                solver.exit()
+            except Exception as cleanup_error:
+                print(f"Warning: could not exit solver session during cleanup: {cleanup_error}")
+
+        try:
+            os.chdir(original_working_directory)
+            print(f"Working directory restored: {original_working_directory}")
+        except Exception as cleanup_error:
+            print(f"Warning: could not restore working directory during cleanup: {cleanup_error}")

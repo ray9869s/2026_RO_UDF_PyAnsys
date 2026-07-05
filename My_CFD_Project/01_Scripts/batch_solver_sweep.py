@@ -6,15 +6,14 @@
 # ==========================================================
 
 import importlib.util
+import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
-BATCH_RUN_CONFIGS_DIR = SCRIPT_DIR / "_batch_run_configs"
 BASE_RUN_CONFIG_PATH = SCRIPT_DIR / "run_config.py"
 SOLVER_SCRIPT_PATH = SCRIPT_DIR / "solver_code_260616.py"
 
@@ -26,64 +25,6 @@ def _load_module(name, path):
     return mod
 
 
-def _safe_name(s):
-    """Sanitize a string for use as a filename component."""
-    return re.sub(r"[^\w\-]", "_", str(s)).strip("_")
-
-
-def _generate_solver_config(case_dict, common_settings, index):
-    """Write a temporary override config for one solver case and return its path."""
-    geo_name = case_dict["geo_name"]
-    mesh_case_name = case_dict["mesh_case_name"]
-    case_name = case_dict["case_name"]
-    inlet_velocity_value = case_dict["inlet_velocity_value"]
-    operating_pressure = case_dict["operating_pressure"]
-    outlet_gauge_pressure = case_dict["outlet_gauge_pressure"]
-
-    filename = f"solver_{index:03d}_{_safe_name(geo_name)}_{_safe_name(case_name)}.py"
-    config_path = BATCH_RUN_CONFIGS_DIR / filename
-
-    merged = {**common_settings, **case_dict}
-
-    run_calculation_enabled = merged.get("run_calculation_enabled", True)
-    max_iterations = merged.get("max_iterations", 2000)
-    residual_target = merged.get("residual_target", 1e-7)
-
-    lines = [
-        "# Auto-generated solver override config — do not edit manually.",
-        "from pathlib import Path",
-        "import sys",
-        "",
-        "SCRIPT_DIR = Path(__file__).resolve().parents[1]",
-        "if str(SCRIPT_DIR) not in sys.path:",
-        "    sys.path.insert(0, str(SCRIPT_DIR))",
-        "",
-        "from run_config import *",
-        "",
-        f"geo_name = {geo_name!r}",
-        f"case_name = {case_name!r}",
-        f"mesh_case_name = {mesh_case_name!r}",
-        f"inlet_velocity_value = {inlet_velocity_value!r}",
-        f"operating_pressure = {operating_pressure!r}",
-        f"outlet_gauge_pressure = {outlet_gauge_pressure!r}",
-        f"run_calculation_enabled = {run_calculation_enabled!r}",
-        f"max_iterations = {max_iterations!r}",
-        f"residual_target = {residual_target!r}",
-    ]
-
-    handled = {
-        "geo_name", "mesh_case_name", "case_name",
-        "inlet_velocity_value", "operating_pressure", "outlet_gauge_pressure",
-        "run_calculation_enabled", "max_iterations", "residual_target",
-    }
-    for k, v in merged.items():
-        if k not in handled:
-            lines.append(f"{k} = {v!r}")
-
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return config_path
-
-
 def main():
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
@@ -92,8 +33,6 @@ def main():
     skip_existing_final_data = getattr(batchcfg, "skip_existing_final_data", True)
     common_solver_settings = getattr(batchcfg, "common_solver_settings", {})
     solver_sweep_cases = getattr(batchcfg, "solver_sweep_cases", [])
-
-    BATCH_RUN_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
 
     base_cfg = _load_module("_base_cfg", BASE_RUN_CONFIG_PATH)
     project_root = base_cfg.project_root
@@ -146,14 +85,15 @@ def main():
                 skipped.append(label)
                 continue
 
-        config_path = _generate_solver_config(case_dict, common_solver_settings, i)
-        print(f"Generated config: {config_path}")
+        overrides = {**common_solver_settings, **case_dict}
+        print(f"Overrides: {json.dumps(overrides, indent=2)}")
 
         cmd = [sys.executable, str(SOLVER_SCRIPT_PATH)]
-        env = {**os.environ, "PYFLUENT_RUN_CONFIG": str(config_path)}
+        env = {**os.environ, "PYFLUENT_RUN_OVERRIDES": json.dumps(overrides)}
+        # The worker must load the base run_config.py, not a leftover env config.
+        env.pop("PYFLUENT_RUN_CONFIG", None)
 
         print(f"Command: {' '.join(cmd)}")
-        print(f"PYFLUENT_RUN_CONFIG={config_path}")
 
         if dry_run:
             print("[DRY RUN] Skipping Fluent execution.")
