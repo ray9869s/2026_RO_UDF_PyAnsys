@@ -127,6 +127,14 @@ RESULT_FIELDS = [
     "second_order_blending_before",
     "second_order_blending_after",
     "second_order_blending_apply_status",
+    "blending_ramp_iterations",
+    "blending_hold_iterations",
+    "blending_hold_residual_latest",
+    "blending_hold_report_values",
+    "blending_hold_monitor_assessment",
+    "blending_hold_residual_target_met",
+    "blending_hold_strict_converged",
+    "momentum_restore_assessment_window",
     "restore_pressure_status",
     "restore_pressure_residual_latest",
     "restore_pressure_report_values",
@@ -470,6 +478,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Number of blending values used during the staged species restore "
             "(staged_second_order_restore) or momentum restore "
             "(flow_second_order_species_first_order)."
+        ),
+    )
+    parser.add_argument(
+        "--blending-hold-iterations",
+        type=non_negative_int,
+        default=1000,
+        help=(
+            "Iteration budget run at the final blending value after the "
+            "flow_second_order_species_first_order momentum blending ramp. "
+            "The hold-phase history alone is used for the final momentum "
+            "restore convergence assessment; 0 disables the hold phase and "
+            "falls back to assessing the full ramp history."
         ),
     )
     parser.add_argument(
@@ -1122,6 +1142,14 @@ def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str,
         "second_order_blending_before": "",
         "second_order_blending_after": "",
         "second_order_blending_apply_status": "",
+        "blending_ramp_iterations": "0",
+        "blending_hold_iterations": str(args.blending_hold_iterations),
+        "blending_hold_residual_latest": "{}",
+        "blending_hold_report_values": "{}",
+        "blending_hold_monitor_assessment": "{}",
+        "blending_hold_residual_target_met": "false",
+        "blending_hold_strict_converged": "false",
+        "momentum_restore_assessment_window": "",
         "restore_pressure_status": "",
         "restore_pressure_residual_latest": "{}",
         "restore_pressure_report_values": "{}",
@@ -3633,7 +3661,7 @@ def run_mixed_order_restore_component(
         return result
 
     if stage_label == "momentum" and blending_result and blending_result.get("editable"):
-        history, plateau_result, blending_result = run_blending_ramp_iterations(
+        ramp_history, plateau_result, blending_result = run_blending_ramp_iterations(
             solver=solver,
             args=args,
             transcript_path=transcript_path,
@@ -3643,6 +3671,51 @@ def run_mixed_order_restore_component(
             blending_result=blending_result,
         )
         result["blending_result"] = blending_result
+        result["blending_ramp_iterations"] = sum(
+            int(snapshot.get("iterations_completed_in_chunk", 0))
+            for snapshot in ramp_history
+        )
+        result["ramp_assessment"] = (
+            stage_iteration_assessment(ramp_history, args, residual_targets)
+            if ramp_history
+            else {}
+        )
+        history = list(ramp_history)
+
+        hold_history: list[dict[str, Any]] = []
+        if args.blending_hold_iterations > 0:
+            print(
+                f"\nStarting final-blending hold phase: "
+                f"{args.blending_hold_iterations} iterations at blending "
+                f"{blending_result.get('after', '')!r}"
+            )
+            hold_history, plateau_result = run_plain_restore_iterations(
+                solver=solver,
+                args=args,
+                transcript_path=transcript_path,
+                stage_name=(
+                    f"mixed_order_restore_{stage_label}_stage_blending_hold"
+                ),
+                iterations=args.blending_hold_iterations,
+                residual_targets=residual_targets,
+            )
+            history.extend(hold_history)
+        result["blending_hold_iterations"] = sum(
+            int(snapshot.get("iterations_completed_in_chunk", 0))
+            for snapshot in hold_history
+        )
+
+        if hold_history:
+            assessment = stage_iteration_assessment(
+                hold_history,
+                args,
+                residual_targets,
+            )
+            result["assessment_window"] = "final_blending_hold_phase"
+        else:
+            assessment = stage_iteration_assessment(history, args, residual_targets)
+            result["assessment_window"] = "momentum_restore_ramp_history"
+        result["hold_assessment"] = assessment if hold_history else {}
     else:
         history, plateau_result = run_plain_restore_iterations(
             solver=solver,
@@ -3652,9 +3725,10 @@ def run_mixed_order_restore_component(
             iterations=iterations,
             residual_targets=residual_targets,
         )
+        assessment = stage_iteration_assessment(history, args, residual_targets)
+        result["assessment_window"] = f"{stage_label}_restore_stage"
     result["history"] = history
     result["plateau"] = plateau_result
-    assessment = stage_iteration_assessment(history, args, residual_targets)
     result["assessment"] = assessment
     if assessment.get("strict_converged"):
         result["status"] = f"{stage_prefix}_RESTORE_CONVERGED"
@@ -4119,6 +4193,40 @@ def execute_flow_second_order_species_first_order(
                 "",
             )
 
+        if stage_label == "momentum":
+            result["momentum_restore_assessment_window"] = stage_result.get(
+                "assessment_window",
+                "",
+            )
+            result["blending_ramp_iterations"] = stage_result.get(
+                "blending_ramp_iterations",
+                0,
+            )
+            result["blending_hold_iterations"] = stage_result.get(
+                "blending_hold_iterations",
+                0,
+            )
+            hold_assessment = stage_result.get("hold_assessment") or {}
+            if hold_assessment:
+                result["blending_hold_residual_latest"] = hold_assessment.get(
+                    "latest_residuals",
+                    {},
+                )
+                result["blending_hold_report_values"] = hold_assessment.get(
+                    "latest_reports",
+                    {},
+                )
+                result["blending_hold_monitor_assessment"] = hold_assessment.get(
+                    "monitor",
+                    {},
+                )
+                result["blending_hold_residual_target_met"] = bool(
+                    hold_assessment.get("residual", {}).get("strict_met")
+                )
+                result["blending_hold_strict_converged"] = bool(
+                    hold_assessment.get("strict_converged")
+                )
+
         if stage_result.get("status") != f"{stage_label.upper()}_RESTORE_CONVERGED":
             try:
                 final_discretization = read_discretization_settings(solver)
@@ -4281,6 +4389,14 @@ def execute_solver_strategy(
         "second_order_blending_before": "",
         "second_order_blending_after": "",
         "second_order_blending_apply_status": "",
+        "blending_ramp_iterations": 0,
+        "blending_hold_iterations": 0,
+        "blending_hold_residual_latest": {},
+        "blending_hold_report_values": {},
+        "blending_hold_monitor_assessment": {},
+        "blending_hold_residual_target_met": False,
+        "blending_hold_strict_converged": False,
+        "momentum_restore_assessment_window": "",
         "restore_pressure_status": "",
         "restore_pressure_residual_latest": {},
         "restore_pressure_report_values": {},
@@ -4922,6 +5038,7 @@ def run_live_solver_rerun(
         print(f"second_order_blending_start={args.second_order_blending_start}")
         print(f"second_order_blending_end={args.second_order_blending_end}")
         print(f"second_order_blending_steps={args.second_order_blending_steps}")
+        print(f"blending_hold_iterations={args.blending_hold_iterations}")
 
         launch_metadata: dict[str, Any] = {}
         solver = launch_solver_session(
@@ -5210,6 +5327,7 @@ def process_case(
         print(f"second_order_blending_start={args.second_order_blending_start}")
         print(f"second_order_blending_end={args.second_order_blending_end}")
         print(f"second_order_blending_steps={args.second_order_blending_steps}")
+        print(f"blending_hold_iterations={args.blending_hold_iterations}")
         print(f"case_dir exists: {case_dir_resolved.is_dir()}")
         print(f"final case exists: {final_case_file_resolved.is_file()}")
         print(f"final data exists: {final_data_file_resolved.is_file()}")
@@ -5456,6 +5574,36 @@ def process_case(
                     live_result.get("mixed_order_report_values", {}),
                     default=str,
                     sort_keys=True,
+                )
+                record["blending_ramp_iterations"] = str(
+                    live_result.get("blending_ramp_iterations", 0)
+                )
+                record["blending_hold_iterations"] = str(
+                    live_result.get("blending_hold_iterations", 0)
+                )
+                record["blending_hold_residual_latest"] = json.dumps(
+                    live_result.get("blending_hold_residual_latest", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["blending_hold_report_values"] = json.dumps(
+                    live_result.get("blending_hold_report_values", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["blending_hold_monitor_assessment"] = json.dumps(
+                    live_result.get("blending_hold_monitor_assessment", {}),
+                    default=str,
+                    sort_keys=True,
+                )
+                record["blending_hold_residual_target_met"] = str(
+                    bool(live_result.get("blending_hold_residual_target_met"))
+                ).lower()
+                record["blending_hold_strict_converged"] = str(
+                    bool(live_result.get("blending_hold_strict_converged"))
+                ).lower()
+                record["momentum_restore_assessment_window"] = str(
+                    live_result.get("momentum_restore_assessment_window", "")
                 )
                 record["final_discretization_readback"] = json.dumps(
                     live_result.get("final_discretization_readback", {}),
@@ -5771,6 +5919,7 @@ def write_summary(
         f"  second_order_blending_start: {args.second_order_blending_start}",
         f"  second_order_blending_end: {args.second_order_blending_end}",
         f"  second_order_blending_steps: {args.second_order_blending_steps}",
+        f"  blending_hold_iterations: {args.blending_hold_iterations}",
         f"  pressure_velocity_coupling: {args.pressure_velocity_coupling}",
         f"  relaxation_profile: {args.relaxation_profile}",
         f"  write_transcript: {args.write_transcript}",
