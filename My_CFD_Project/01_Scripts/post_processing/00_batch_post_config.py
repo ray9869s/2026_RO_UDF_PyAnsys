@@ -25,12 +25,14 @@ status_csv = "C:/PyFluent/My_CFD_Project/03_Results/all_cases_post_status.csv"
 # --- Case definitions ---
 
 geometries = [
-    "Empty",
-    "Diamond_Spacer",
-    "Pillar",
-    "Hole_Pillar",
-    "Multi_Layer_equal",
-    "Multi_Layer_diff",
+    # "Empty",
+    # "Diamond_Spacer",
+    # "Pillar",
+    # "Hole_Pillar",
+    # "Multi_Layer_equal",
+    # "Multi_Layer_diff",
+    "Sin_ST",
+    "Sin_SL"
 ]
 
 inlet_velocities = [0.1, 0.2, 0.3]
@@ -42,13 +44,13 @@ case_prefix = ""
 # --- Known non-converged cases ---
 
 non_converged_cases = {
-    ("Diamond_Spacer", "u0p1_p4M"),
-    ("Diamond_Spacer", "u0p1_p6M"),
-    ("Diamond_Spacer", "u0p1_p8M"),
-    ("Multi_Layer_equal", "u0p3_p4M"),
-    ("Multi_Layer_equal", "u0p3_p6M"),
-    ("Multi_Layer_equal", "u0p3_p8M"),
-    ("Multi_Layer_diff", "u0p3_p4M"),
-    ("Multi_Layer_diff", "u0p3_p6M"),
-    ("Multi_Layer_diff", "u0p3_p8M"),
+    # ("Diamond_Spacer", "u0p1_p4M"),
+    # ("Diamond_Spacer", "u0p1_p6M"),
+    # ("Diamond_Spacer", "u0p1_p8M"),
+    # ("Multi_Layer_equal", "u0p3_p4M"),
+    # ("Multi_Layer_equal", "u0p3_p6M"),
+    # ("Multi_Layer_equal", "u0p3_p8M"),
+    # ("Multi_Layer_diff", "u0p3_p4M"),
+    # ("Multi_Layer_diff", "u0p3_p6M"),
+    # ("Multi_Layer_diff", "u0p3_p8M"),
 }
