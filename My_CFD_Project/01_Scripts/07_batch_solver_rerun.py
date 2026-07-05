@@ -447,7 +447,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Best-effort enable solution.methods.high_order_term_relaxation.enable "
             "with readback confirmation. Derived default: enabled for "
-            "staged_second_order_restore."
+            "staged_second_order_restore and flow_second_order_species_first_order."
         ),
     )
     parser.add_argument(
@@ -466,7 +466,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--second-order-blending-steps",
         type=positive_int,
         default=5,
-        help="Number of blending values used during the staged species restore.",
+        help=(
+            "Number of blending values used during the staged species restore "
+            "(staged_second_order_restore) or momentum restore "
+            "(flow_second_order_species_first_order)."
+        ),
     )
     parser.add_argument(
         "--iteration-chunk-size",
@@ -664,9 +668,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             300 if args.solver_strategy == "first_order_ramp" else 0
         )
     if args.use_high_order_term_relaxation is None:
-        args.use_high_order_term_relaxation = (
-            args.solver_strategy == "staged_second_order_restore"
-        )
+        args.use_high_order_term_relaxation = args.solver_strategy in {
+            "staged_second_order_restore",
+            "flow_second_order_species_first_order",
+        }
 
     args.results_root = args.results_root or DEFAULT_RESULTS_ROOT
     args.candidates_csv = (
@@ -3603,6 +3608,7 @@ def run_mixed_order_restore_component(
     original_state: dict[str, Any],
     iterations: int,
     residual_targets: dict[str, float],
+    blending_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = STAGED_RESTORE_STAGE_TO_KEY[stage_label]
     stage_prefix = stage_label.upper()
@@ -3626,14 +3632,26 @@ def run_mixed_order_restore_component(
         }
         return result
 
-    history, plateau_result = run_plain_restore_iterations(
-        solver=solver,
-        args=args,
-        transcript_path=transcript_path,
-        stage_name=f"mixed_order_restore_{stage_label}_stage",
-        iterations=iterations,
-        residual_targets=residual_targets,
-    )
+    if stage_label == "momentum" and blending_result and blending_result.get("editable"):
+        history, plateau_result, blending_result = run_blending_ramp_iterations(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            stage_name=f"mixed_order_restore_{stage_label}_stage",
+            total_iterations=iterations,
+            residual_targets=residual_targets,
+            blending_result=blending_result,
+        )
+        result["blending_result"] = blending_result
+    else:
+        history, plateau_result = run_plain_restore_iterations(
+            solver=solver,
+            args=args,
+            transcript_path=transcript_path,
+            stage_name=f"mixed_order_restore_{stage_label}_stage",
+            iterations=iterations,
+            residual_targets=residual_targets,
+        )
     result["history"] = history
     result["plateau"] = plateau_result
     assessment = stage_iteration_assessment(history, args, residual_targets)
@@ -3677,6 +3695,8 @@ def build_mixed_order_convergence_json(
     momentum: dict[str, Any] | None,
     classification: dict[str, Any],
     final_discretization: dict[str, Any],
+    hotr_result: dict[str, Any],
+    blending_result: dict[str, Any],
 ) -> str:
     def compact(stage: dict[str, Any] | None) -> dict[str, Any] | None:
         if stage is None:
@@ -3695,6 +3715,8 @@ def build_mixed_order_convergence_json(
             "status": "SKIPPED",
             "reason": MIXED_ORDER_SPECIES_SKIP_REASON,
         },
+        "high_order_term_relaxation": hotr_result,
+        "second_order_blending": blending_result,
         "final_discretization": final_discretization,
         "classification": classification,
     }
@@ -4004,14 +4026,49 @@ def execute_flow_second_order_species_first_order(
             "Mixed-order first stage did not meet the strict residual target; "
             "pressure and momentum restore were not attempted."
         )
+        skipped_hotr_result = {
+            "status": "SKIPPED_FIRST_ORDER_STAGE_NOT_CONVERGED",
+            "before": "",
+            "after": "",
+            "errors": [],
+        }
+        skipped_blending_result = {
+            "status": "SKIPPED_FIRST_ORDER_STAGE_NOT_CONVERGED",
+            "before": "",
+            "after": "",
+            "editable": False,
+            "steps": [],
+            "errors": [],
+        }
+        result["high_order_term_relaxation_before"] = skipped_hotr_result["before"]
+        result["high_order_term_relaxation_after"] = skipped_hotr_result["after"]
+        result["high_order_term_relaxation_apply_status"] = skipped_hotr_result["status"]
+        result["second_order_blending_before"] = skipped_blending_result["before"]
+        result["second_order_blending_after"] = skipped_blending_result["after"]
+        result["second_order_blending_apply_status"] = skipped_blending_result["status"]
         result["convergence_assessment"] = build_mixed_order_convergence_json(
             first_order=first_order_assessment,
             pressure=None,
             momentum=None,
             classification=classification,
             final_discretization={},
+            hotr_result=skipped_hotr_result,
+            blending_result=skipped_blending_result,
         )
         return result
+
+    hotr_result = apply_high_order_term_relaxation(
+        solver,
+        bool(args.use_high_order_term_relaxation),
+    )
+    result["high_order_term_relaxation_before"] = hotr_result.get("before", "")
+    result["high_order_term_relaxation_after"] = hotr_result.get("after", "")
+    result["high_order_term_relaxation_apply_status"] = hotr_result.get("status", "")
+
+    blending_result = prepare_second_order_blending(solver, args)
+    result["second_order_blending_before"] = blending_result.get("before", "")
+    result["second_order_blending_after"] = blending_result.get("after", "")
+    result["second_order_blending_apply_status"] = blending_result.get("status", "")
 
     stage_results: dict[str, dict[str, Any]] = {}
     stage_iterations = {
@@ -4032,6 +4089,7 @@ def execute_flow_second_order_species_first_order(
             original_state=original_state,
             iterations=stage_iterations[stage_label],
             residual_targets=result["residual_targets"],
+            blending_result=blending_result if stage_label == "momentum" else None,
         )
         stage_results[stage_label] = stage_result
         history.extend(stage_result.get("history", []))
@@ -4052,6 +4110,14 @@ def execute_flow_second_order_species_first_order(
         result["monitor_assessment"] = assessment.get("monitor", {})
         result["mixed_order_residual_latest"] = assessment.get("latest_residuals", {})
         result["mixed_order_report_values"] = assessment.get("latest_reports", {})
+
+        if stage_label == "momentum" and "blending_result" in stage_result:
+            blending_result = stage_result["blending_result"]
+            result["second_order_blending_after"] = blending_result.get("after", "")
+            result["second_order_blending_apply_status"] = blending_result.get(
+                "status",
+                "",
+            )
 
         if stage_result.get("status") != f"{stage_label.upper()}_RESTORE_CONVERGED":
             try:
@@ -4086,6 +4152,8 @@ def execute_flow_second_order_species_first_order(
                 momentum=stage_results.get("momentum"),
                 classification=classification,
                 final_discretization=final_discretization,
+                hotr_result=hotr_result,
+                blending_result=blending_result,
             )
             return result
 
@@ -4155,6 +4223,8 @@ def execute_flow_second_order_species_first_order(
         momentum=stage_results.get("momentum"),
         classification=classification,
         final_discretization=final_discretization,
+        hotr_result=hotr_result,
+        blending_result=blending_result,
     )
     return result
 
@@ -5167,6 +5237,9 @@ def process_case(
                 record["rerun_status"] = "DRY_RUN"
                 record["returncode_or_exception"] = "0"
                 record["report_extraction_status"] = "SKIPPED_DRY_RUN"
+                if args.solver_strategy == "flow_second_order_species_first_order":
+                    record["high_order_term_relaxation_apply_status"] = "SKIPPED_DRY_RUN"
+                    record["second_order_blending_apply_status"] = "SKIPPED_DRY_RUN"
                 if not final_pair_exists:
                     record["error_summary"] = "Final case/data pair is missing in dry-run precheck."
                     record["suggested_next_action"] = (
