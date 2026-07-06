@@ -847,6 +847,7 @@ if __name__ == "__main__":
     print("Solver input summary")
     print("=" * 72)
     print(f"Input mode: {input_mode}")
+    print("Launch path: meshing_to_solver")
     print(f"Restart case file path: {restart_from_case_file if restart_from_case_file is not None else '(n/a)'}")
     print(f"Restart data file path: {restart_from_data_file if restart_from_data_file is not None else '(n/a)'}")
     print(f"Target case folder: {case_path}")
@@ -865,6 +866,22 @@ if __name__ == "__main__":
         if not os.path.isfile(restart_from_data_file):
             raise FileNotFoundError(
                 f"Restart data file not found: {restart_from_data_file}"
+            )
+
+        restart_source_paths = {
+            normalize_path(restart_from_case_file),
+            normalize_path(restart_from_data_file),
+        }
+        target_output_paths = {
+            normalize_path(setup_case_file),
+            normalize_path(final_case_file),
+            normalize_path(final_data_file),
+        }
+        overlapping_paths = restart_source_paths & target_output_paths
+        if overlapping_paths:
+            raise ValueError(
+                "Restart source files must not be overwritten by target outputs: "
+                f"{sorted(overlapping_paths)}. Choose a different target case_name."
             )
 
         if not os.path.exists(case_path):
@@ -973,11 +990,15 @@ if __name__ == "__main__":
             solver.transcript.stop()
             transcript_is_running = False
         else:
-            print("Launching Fluent in solver mode for restart continuation...", flush=True)
+            # Direct solver-mode launch failed on the Windows server with
+            # "Failed to construct hwtree for collect command. 0x8000ffff".
+            # Reuse the stable meshing-mode launch + switch_to_solver() path
+            # from the mesh workflow instead.
+            print("Launching Fluent in meshing mode for restart continuation...", flush=True)
 
-            solver = pyfluent.launch_fluent(
+            meshing = pyfluent.launch_fluent(
                 product_version=product_version,
-                mode="solver",
+                mode="meshing",
                 dimension=3,
                 precision="double",
                 processor_count=processor_count,
@@ -987,7 +1008,14 @@ if __name__ == "__main__":
                 cwd=as_fluent_path(case_path),
             )
 
-            print("Solver session launched successfully.", flush=True)
+            print("Meshing session launched successfully.", flush=True)
+            print("Switching from meshing mode to solver mode...", flush=True)
+
+            solver = meshing.switch_to_solver()
+
+            print("Switched to solver mode successfully.", flush=True)
+
+            meshing = None
 
             setup = solver.settings.setup
             solution = solver.settings.solution
