@@ -16,6 +16,13 @@ for fouling/mixing analysis from ONE solved final case:
        - vorticity magnitude on the channel z-mid plane (active region only)
        - Q-criterion on the yz slice at active x/L = 0.50
 
+Slice visual quality:
+  yz slice figures use smooth shading, hidden mesh edges, nodal-averaged
+  display of cell-centered (Fluent) variables via ElemToNode, a continuous
+  high-level-count palette, a right-outside colorbar, and a small camera fit
+  margin — all configurable below and all best-effort (WARN, never fail).
+  Q-criterion / vortex figures keep their previous rendering.
+
 Q-criterion / vorticity fallback:
   Existing result variables are searched first. If Q-criterion (or vorticity)
   is not in the loaded results, it is computed from the velocity vector via
@@ -142,6 +149,27 @@ CONFIG: dict = {
     # (vector; EnSight colors by its magnitude). Used for the vortex mid-plane
     # figure only — yz vorticity slices still require a dataset variable.
     "compute_vorticity_if_missing": True,
+
+    # --- yz slice visual quality (slice figures ONLY; Q/vortex figures keep
+    #     their previous rendering) ---
+    # smooth_slice_rendering: smooth-shaded surfaces AND nodal display of
+    # cell-centered variables (Fluent data is element-centered, which renders
+    # as flat per-cell "blocky" patches even on a fine mesh; ElemToNode
+    # averaging gives a continuous interpolated field).
+    "smooth_slice_rendering": True,
+    # hide_slice_edges: hide the element/mesh edge overlay on slice parts.
+    "hide_slice_edges": True,
+    # contour_level_count: number of palette levels (more = smoother ramp).
+    "contour_level_count": 64,
+    # use_continuous_palette: continuous color interpolation instead of bands.
+    "use_continuous_palette": True,
+    # colorbar_position: "right_outside" moves the legend to the right edge so
+    # it does not overlap the slice; any other value leaves EnSight defaults.
+    "colorbar_position": "right_outside",
+    "colorbar_width_fraction": 0.05,
+    # camera_fit_margin: extra zoom-out after fit (0.08 = ~8 % margin) so the
+    # slice does not touch the viewport border. 0.0 disables.
+    "camera_fit_margin": 0.08,
 }
 
 # Keys that may be overridden via the PYFLUENT_EXTRA_FIGURES_OVERRIDES env
@@ -157,6 +185,9 @@ OVERRIDABLE_KEYS = {
     "qcriterion_auto_fraction",
     "compute_qcriterion_if_missing", "qcriterion_variable_name",
     "strict_qcriterion_required", "compute_vorticity_if_missing",
+    "smooth_slice_rendering", "hide_slice_edges", "contour_level_count",
+    "use_continuous_palette", "colorbar_position", "colorbar_width_fraction",
+    "camera_fit_margin",
 }
 
 # ---------------------------------------------------------------------------
@@ -642,7 +673,8 @@ def read_palette_max(session: Any, var_desc: str) -> Optional[float]:
 
 
 def set_view(session: Any, direction: Tuple[float, float, float],
-             up_axis: Tuple[float, float, float]) -> None:
+             up_axis: Tuple[float, float, float],
+             fit_margin: float = 0.0) -> None:
     try:
         session.ensight.utils.views.set_view_direction(
             direction[0], direction[1], direction[2],
@@ -654,6 +686,14 @@ def set_view(session: Any, direction: Tuple[float, float, float],
         session.ensight.view_transf.fit(0)
     except Exception as exc:
         print(f"WARNING: view fit failed: {exc}")
+    if fit_margin and fit_margin > 0.0:
+        # Server testing of 03_pyensight_contour_export.py empirically
+        # confirmed that on this EnSight build view_transf.zoom(v) zooms OUT
+        # for v > 1 — so 1.0 + margin adds whitespace around the fitted view.
+        try:
+            session.ensight.view_transf.zoom(1.0 + float(fit_margin))
+        except Exception as exc:
+            print(f"WARNING: camera fit margin ({fit_margin}) not applied: {exc}")
 
 
 def export_png(session: Any, output_file: Path, cfg: dict) -> bool:
@@ -673,6 +713,201 @@ def export_png(session: Any, output_file: Path, cfg: dict) -> bool:
         return False
     print(f"Exported: {output_file}")
     return True
+
+
+# ---------------------------------------------------------------------------
+# yz slice visual quality (slice figures only — Q/vortex figures unchanged)
+# ---------------------------------------------------------------------------
+
+_PRINTED_ONCE: set = set()
+
+
+def _print_once(tag: str, message: str) -> None:
+    """Print a per-run status line only the first time (5 slice positions x
+    4 fields would otherwise repeat every rendering message 20 times)."""
+    if tag not in _PRINTED_ONCE:
+        _PRINTED_ONCE.add(tag)
+        print(message)
+
+
+def apply_slice_part_style(session: Any, part: Any, cfg: dict) -> None:
+    """Hide mesh/element edges and enable smooth shading on one slice part.
+    Failures are warnings only — the figure is still exported."""
+    enums = session.ensight.objs.enums
+
+    if cfg["hide_slice_edges"]:
+        try:
+            part.HIDDENLINE = 0
+            _print_once("edges", "  Slice style: element/mesh edge overlay hidden (HIDDENLINE=0).")
+        except Exception as exc:
+            _print_once("edges", f"WARNING: could not hide slice edges: {exc}")
+
+    if cfg["smooth_slice_rendering"]:
+        applied = None
+        for enum_name in ("SHAD_SMOOTH_REFINED", "SHAD_SMOOTH", "SHAD_GOURAUD"):
+            try:
+                part.SHADING = getattr(enums, enum_name)
+                applied = enum_name
+                break
+            except Exception:
+                continue
+        if applied:
+            _print_once("shading", f"  Slice style: smooth shading applied (SHADING={applied}).")
+        else:
+            _print_once("shading", "WARNING: smooth shading could not be applied; "
+                                   "using the part's default shading.")
+
+
+def resolve_slice_display_variable(
+    session: Any,
+    var_obj: Any,
+    var_desc: str,
+    source_parts: List[Any],
+    cfg: dict,
+) -> str:
+    """Return the variable DESCRIPTION to color slices by. Fluent variables
+    are usually element(cell)-centered, which EnSight renders as flat per-cell
+    patches ("blocky"). When smooth_slice_rendering is on and the variable is
+    element-centered, create a nodal-averaged copy via the Calculator:
+        <name>_nodal = ElemToNode(plist, <var>)
+    Falls back to the original variable with a WARNING on any failure."""
+    if not cfg["smooth_slice_rendering"]:
+        return var_desc
+
+    try:
+        elem_enum = session.ensight.objs.enums.ENS_VAR_ELEM
+        location = var_obj.LOCATION
+    except Exception as exc:
+        _print_once(f"nodal:{var_desc}",
+                    f"WARNING: could not read centering of '{var_desc}' ({exc}); "
+                    "rendering it as-is.")
+        return var_desc
+
+    if location != elem_enum:
+        _print_once(f"nodal:{var_desc}",
+                    f"  Slice style: '{var_desc}' is already node-based; "
+                    "interpolated rendering needs no conversion.")
+        return var_desc
+
+    nodal_name = re.sub(r"\W", "_", var_desc) + "_nodal"
+    try:
+        _get_or_create_calc_variable(
+            session, nodal_name, f"ElemToNode(plist,{var_desc})",
+            source_parts, step=f"ElemToNode for '{var_desc}'",
+        )
+        _print_once(f"nodal:{var_desc}",
+                    f"  Slice style: '{var_desc}' is cell-centered — using "
+                    f"nodal-averaged '{nodal_name}' for smooth interpolated rendering.")
+        return nodal_name
+    except RuntimeError as exc:
+        _print_once(f"nodal:{var_desc}",
+                    f"WARNING: nodal conversion of '{var_desc}' failed ({exc}); "
+                    "rendering the cell-centered variable (may look blocky).")
+        return var_desc
+
+
+def _find_palette(session: Any, var_desc: str) -> Optional[Any]:
+    try:
+        for palette in session.ensight.objs.core.PALETTES:
+            if _normalize(palette.DESCRIPTION) == _normalize(var_desc):
+                return palette
+    except Exception:
+        pass
+    return None
+
+
+def tune_slice_palette(session: Any, var_desc: str, cfg: dict) -> None:
+    """Continuous interpolation + more levels for a smooth color ramp."""
+    palette = _find_palette(session, var_desc)
+    if palette is None:
+        _print_once(f"pal:{var_desc}",
+                    f"WARNING: palette for '{var_desc}' not found; palette "
+                    "interpolation/levels left at EnSight defaults.")
+        return
+
+    if cfg["use_continuous_palette"]:
+        try:
+            palette.INTERP = session.ensight.objs.enums.PALETTE_CONTINUOUS
+            _print_once(f"interp:{var_desc}",
+                        f"  Slice palette '{var_desc}': continuous interpolation.")
+        except Exception as exc:
+            _print_once(f"interp:{var_desc}",
+                        f"WARNING: continuous palette for '{var_desc}' failed: {exc}")
+
+    level_count = int(cfg["contour_level_count"])
+    if level_count > 0:
+        applied = False
+        try:
+            palette.NLEVELS = level_count
+            applied = True
+        except Exception:
+            try:
+                palette.COLORS_PER_LEVEL = level_count
+                applied = True
+            except Exception as exc:
+                _print_once(f"levels:{var_desc}",
+                            f"WARNING: contour level count for '{var_desc}' "
+                            f"not applied: {exc}")
+        if applied:
+            _print_once(f"levels:{var_desc}",
+                        f"  Slice palette '{var_desc}': contour level count = {level_count}.")
+
+
+def position_slice_colorbar(session: Any, var_desc: str, cfg: dict) -> None:
+    """Move the legend/colorbar to the right edge of the viewport so it does
+    not overlap the slice. Only the 'right_outside' preset is implemented;
+    any other value leaves the EnSight default placement."""
+    if str(cfg["colorbar_position"]) != "right_outside":
+        _print_once("legend", f"  Slice colorbar: position '{cfg['colorbar_position']}' "
+                              "not a known preset; leaving EnSight default.")
+        return
+
+    enums = session.ensight.objs.enums
+    try:
+        legends = [
+            a for a in session.ensight.objs.core.ANNOTS
+            if getattr(a, "ANNOTTYPE", None) == enums.ANNOT_LEGEND
+        ]
+    except Exception as exc:
+        _print_once("legend", f"WARNING: could not list legend annotations: {exc}")
+        return
+    if not legends:
+        _print_once("legend", "WARNING: no legend/colorbar annotation found to reposition.")
+        return
+
+    # Prefer the legend tied to this variable (VARCOMP back-reference);
+    # otherwise fall back to the first legend.
+    target = None
+    for legend in legends:
+        try:
+            varcomp = legend.VARCOMP
+            if varcomp and _normalize(varcomp[0][0].DESCRIPTION) == _normalize(var_desc):
+                target = legend
+                break
+        except Exception:
+            continue
+    if target is None:
+        target = legends[0]
+
+    width = float(cfg["colorbar_width_fraction"])
+    layout = {
+        "WIDTH": width,
+        "HEIGHT": 0.70,
+        "LOCATIONX": 0.98 - width,  # flush to the right edge, outside the slice
+        "LOCATIONY": 0.15,
+    }
+    failures = []
+    for attr, value in layout.items():
+        try:
+            setattr(target, attr, value)
+        except Exception as exc:
+            failures.append(f"{attr}: {exc}")
+    if failures:
+        _print_once("legend", "WARNING: colorbar placement partly failed: "
+                              + "; ".join(failures))
+    else:
+        _print_once("legend", f"  Slice colorbar: placed right-outside "
+                              f"(x={layout['LOCATIONX']:.2f}, width={width}).")
 
 
 # ---------------------------------------------------------------------------
@@ -1004,6 +1239,16 @@ def print_plan(cfg: dict, paths: dict) -> None:
     print(f"Output (vortex)      : {paths['vortex_dir']}")
     print(f"Image size           : {cfg['image_width']} x {cfg['image_height']}")
 
+    print("\nSlice rendering quality (yz slice figures only):")
+    print(f"  smooth_slice_rendering : {cfg['smooth_slice_rendering']}"
+          "  (smooth shading + nodal ElemToNode display of cell-centered variables)")
+    print(f"  hide_slice_edges       : {cfg['hide_slice_edges']}")
+    print(f"  contour_level_count    : {cfg['contour_level_count']}")
+    print(f"  use_continuous_palette : {cfg['use_continuous_palette']}")
+    print(f"  colorbar_position      : {cfg['colorbar_position']} "
+          f"(width fraction {cfg['colorbar_width_fraction']})")
+    print(f"  camera_fit_margin      : {cfg['camera_fit_margin']}")
+
     print("\nActive membrane region:")
     print(f"  active membrane part candidates : {cfg['active_membrane_part_candidates']}")
     print(f"  buffer part candidates (EXCLUDED): {cfg['buffer_part_candidates']}")
@@ -1168,6 +1413,25 @@ def run_export(cfg: dict, paths: dict) -> int:
         setup_clean_scene(session)
 
         # --- 1. yz slices ----------------------------------------------
+        # Slice-only visual quality: nodal display variables are resolved once
+        # per field (cell-centered Fluent variables render as flat per-cell
+        # patches; ElemToNode gives a continuous interpolated field). Computed
+        # on the parent fluid parts so every slice position inherits them.
+        slice_display_desc: dict = {}
+        if available_slice_fields:
+            print("\nSlice rendering quality "
+                  f"(smooth={cfg['smooth_slice_rendering']}, "
+                  f"hide_edges={cfg['hide_slice_edges']}, "
+                  f"levels={cfg['contour_level_count']}, "
+                  f"continuous={cfg['use_continuous_palette']}, "
+                  f"colorbar={cfg['colorbar_position']}, "
+                  f"fit_margin={cfg['camera_fit_margin']}):")
+            for key in available_slice_fields:
+                var_obj, var_desc = found_vars[key]
+                slice_display_desc[key] = resolve_slice_display_variable(
+                    session, var_obj, var_desc, fluid_parts, cfg,
+                )
+
         for f, x_pos in slice_positions:
             if not available_slice_fields:
                 break
@@ -1178,12 +1442,17 @@ def run_export(cfg: dict, paths: dict) -> int:
             if slice_part is None:
                 print(f"WARNING: skipping all figures at active x/L={f:.3f} (clip failed).")
                 continue
+            apply_slice_part_style(session, slice_part, cfg)
             for key in available_slice_fields:
                 _var_obj, var_desc = found_vars[key]
+                display_desc = slice_display_desc.get(key, var_desc)
                 out_file = paths["slices_dir"] / f"yz_active_{tag}_{SLICE_FILE_SUFFIX[key]}.png"
                 show_only_parts(session, [slice_part])
-                color_part_by_variable(session, slice_part, var_desc)
-                set_view(session, (1.0, 0.0, 0.0), up_axis=(0.0, 0.0, 1.0))
+                color_part_by_variable(session, slice_part, display_desc)
+                tune_slice_palette(session, display_desc, cfg)
+                position_slice_colorbar(session, display_desc, cfg)
+                set_view(session, (1.0, 0.0, 0.0), up_axis=(0.0, 0.0, 1.0),
+                         fit_margin=float(cfg["camera_fit_margin"]))
                 if export_png(session, out_file, cfg):
                     exported.append(out_file)
 
