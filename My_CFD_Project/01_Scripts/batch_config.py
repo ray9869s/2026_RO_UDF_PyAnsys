@@ -101,10 +101,20 @@ common_solver_settings = {
 #
 # Optional: override any key from common_solver_settings here.
 #
-# Required mesh input: 03_Results/<geo_name>/<mesh_case_name>/<geo_name>_<mesh_case_name>.msh.h5
-# Solver outputs:      03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_setup.cas.h5
-#                      03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.cas.h5
-#                      03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.dat.h5
+# Optional restart/continuation input:
+#   restart_from_case_file - converged source .cas.h5 file to read instead of the mesh
+#   restart_from_data_file - matching converged source .dat.h5 file
+#
+# Provide both restart files to continue from a lower-velocity final solution.
+# Provide neither to keep legacy mesh initialization behavior.
+#
+# Mesh initialization input:
+#   03_Results/<geo_name>/<mesh_case_name>/<geo_name>_<mesh_case_name>.msh.h5
+#
+# Solver outputs:
+#   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_setup.cas.h5
+#   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.cas.h5
+#   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.dat.h5
 
 solver_sweep_cases = [
     # Legacy simple case (explicit case_name, used as-is):
@@ -125,5 +135,24 @@ solver_sweep_cases = [
     #     "outlet_gauge_pressure": 4.0e6,
     #     # case_name is optional; if omitted:
     #     # u0p1_p4M__mesh_max085_min005_cpg5_bl4
+    # },
+    # Restart/continuation Sin case:
+    # {
+    #     "geo_name": "Sin_ST",
+    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
+    #     "case_name": "mesh_max085_min005_cpg5_bl4_u0p2_p4M",
+    #     "inlet_velocity_value": 0.2,
+    #     "operating_pressure": 101325.0,
+    #     "outlet_gauge_pressure": 4.0e6,
+    #     "restart_from_case_file": (
+    #         "C:/PyFluent/My_CFD_Project/03_Results/Sin_ST/"
+    #         "mesh_max085_min005_cpg5_bl4_u0p1_p4M/"
+    #         "Sin_ST_mesh_max085_min005_cpg5_bl4_u0p1_p4M_final.cas.h5"
+    #     ),
+    #     "restart_from_data_file": (
+    #         "C:/PyFluent/My_CFD_Project/03_Results/Sin_ST/"
+    #         "mesh_max085_min005_cpg5_bl4_u0p1_p4M/"
+    #         "Sin_ST_mesh_max085_min005_cpg5_bl4_u0p1_p4M_final.dat.h5"
+    #     ),
     # },
 ]

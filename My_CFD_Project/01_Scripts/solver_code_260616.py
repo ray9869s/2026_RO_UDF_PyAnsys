@@ -60,6 +60,27 @@ if __name__ == "__main__":
     mesh_case_path = os.path.join(project_root, "03_Results", geo_name, mesh_case_name)
     mesh_file_path = os.path.join(mesh_case_path, f"{geo_name}_{mesh_case_name}.msh.h5")
 
+    def _optional_path_from_config(name):
+        value = getattr(cfg, name, None)
+        if value is None:
+            return None
+        if not str(value).strip():
+            raise ValueError(f"{name} must be a non-empty path when provided.")
+        return Path(value).expanduser()
+
+    restart_from_case_file = _optional_path_from_config("restart_from_case_file")
+    restart_from_data_file = _optional_path_from_config("restart_from_data_file")
+
+    has_restart_case_file = restart_from_case_file is not None
+    has_restart_data_file = restart_from_data_file is not None
+
+    if has_restart_case_file != has_restart_data_file:
+        raise ValueError(
+            "restart_from_case_file and restart_from_data_file must be provided together."
+        )
+
+    input_mode = "restart_continuation" if has_restart_case_file else "mesh_initialization"
+
     # Inlet velocity setting
     inlet_velocity_value = cfg.inlet_velocity_value
     inlet_velocity = float(inlet_velocity_value)
@@ -822,29 +843,65 @@ def set_residual_convergence_check(solution, species_name, enable):
 # ==========================================================
 
 if __name__ == "__main__":
-    if not os.path.exists(case_path):
-        os.makedirs(case_path)
+    print("=" * 72)
+    print("Solver input summary")
+    print("=" * 72)
+    print(f"Input mode: {input_mode}")
+    print(f"Restart case file path: {restart_from_case_file if restart_from_case_file is not None else '(n/a)'}")
+    print(f"Restart data file path: {restart_from_data_file if restart_from_data_file is not None else '(n/a)'}")
+    print(f"Target case folder: {case_path}")
+    print(f"Target case_name: {case_name}")
+    print(f"Target setup case: {setup_case_file}")
+    print(f"Target final case: {final_case_file}")
+    print(f"Target final data: {final_data_file}")
+    print("=" * 72)
 
-    if not os.path.isfile(mesh_file_path):
-        raise FileNotFoundError(f"Mesh file not found: {mesh_file_path}")
+    if input_mode == "restart_continuation":
+        if not os.path.isfile(restart_from_case_file):
+            raise FileNotFoundError(
+                f"Restart case file not found: {restart_from_case_file}"
+            )
 
-    if not os.path.isfile(template_case_path):
-        raise FileNotFoundError(f"Template case file not found: {template_case_path}")
+        if not os.path.isfile(restart_from_data_file):
+            raise FileNotFoundError(
+                f"Restart data file not found: {restart_from_data_file}"
+            )
+
+        if not os.path.exists(case_path):
+            os.makedirs(case_path)
+    else:
+        if not os.path.exists(case_path):
+            os.makedirs(case_path)
+
+        if not os.path.isfile(mesh_file_path):
+            raise FileNotFoundError(f"Mesh file not found: {mesh_file_path}")
+
+        if not os.path.isfile(template_case_path):
+            raise FileNotFoundError(f"Template case file not found: {template_case_path}")
 
     if not os.path.isfile(udf_master_path):
         raise FileNotFoundError(f"UDF source file not found: {udf_master_path}")
 
     print(f"Case path: {case_path}")
-    print(f"Mesh file: {mesh_file_path}")
-    print(f"Template case: {template_case_path}")
+    if input_mode == "restart_continuation":
+        print(f"Restart case file: {restart_from_case_file}")
+        print(f"Restart data file: {restart_from_data_file}")
+        print("Mesh file: (not used for restart_continuation)")
+        print("Template case: (not used for restart_continuation)")
+    else:
+        print(f"Mesh file: {mesh_file_path}")
+        print(f"Template case: {template_case_path}")
     print(f"UDF master source: {udf_master_path}")
     print(f"UDF case copy: {udf_case_path}")
-    print(f"Solver mesh-replace log: {solver_mesh_replace_log_path}")
+    if input_mode == "mesh_initialization":
+        print(f"Solver mesh-replace log: {solver_mesh_replace_log_path}")
+    else:
+        print("Solver mesh-replace log: (not used for restart_continuation)")
     print(f"Solver log: {solver_log_path}")
 
 
     # ==========================================================
-    # ##### [4] Launch Fluent, Read Template Case, Replace Mesh #####
+    # ##### [4] Launch Fluent and Load Input Case #####
     # ==========================================================
 
     pyfluent.config.check_health_timeout = fluent_health_timeout
@@ -859,61 +916,93 @@ if __name__ == "__main__":
     try:
         os.chdir(case_path)
 
-        print("Launching Fluent in meshing mode...", flush=True)
+        if input_mode == "mesh_initialization":
+            print("Launching Fluent in meshing mode...", flush=True)
 
-        meshing = pyfluent.launch_fluent(
-            product_version=product_version,
-            mode="meshing",
-            dimension=3,
-            precision="double",
-            processor_count=processor_count,
-            ui_mode="gui",
-            graphics_driver=graphics_driver,
-            start_timeout=fluent_start_timeout,
-            cwd=as_fluent_path(case_path),
-        )
+            meshing = pyfluent.launch_fluent(
+                product_version=product_version,
+                mode="meshing",
+                dimension=3,
+                precision="double",
+                processor_count=processor_count,
+                ui_mode="gui",
+                graphics_driver=graphics_driver,
+                start_timeout=fluent_start_timeout,
+                cwd=as_fluent_path(case_path),
+            )
 
-        print("Meshing session launched successfully.", flush=True)
-        print("Switching from meshing mode to solver mode...", flush=True)
+            print("Meshing session launched successfully.", flush=True)
+            print("Switching from meshing mode to solver mode...", flush=True)
 
-        solver = meshing.switch_to_solver()
+            solver = meshing.switch_to_solver()
 
-        print("Switched to solver mode successfully.", flush=True)
+            print("Switched to solver mode successfully.", flush=True)
 
-        meshing = None
+            meshing = None
 
-        setup = solver.settings.setup
-        solution = solver.settings.solution
+            setup = solver.settings.setup
+            solution = solver.settings.solution
 
-        # Start a dedicated transcript for template loading and mesh replacement.
-        # This log is used to parse the zone-name to zone-id mapping.
-        solver.transcript.start(file_name=as_fluent_path(solver_mesh_replace_log_path))
-        transcript_is_running = True
+            # Start a dedicated transcript for template loading and mesh replacement.
+            # This log is used to parse the zone-name to zone-id mapping.
+            solver.transcript.start(file_name=as_fluent_path(solver_mesh_replace_log_path))
+            transcript_is_running = True
 
-        print("Reading template case...", flush=True)
+            print("Reading template case...", flush=True)
 
-        solver.settings.file.read_case(
-            file_name=as_fluent_path(template_case_path)
-        )
+            solver.settings.file.read_case(
+                file_name=as_fluent_path(template_case_path)
+            )
 
-        print("Template case loaded successfully.", flush=True)
+            print("Template case loaded successfully.", flush=True)
 
-        print("Replacing mesh with target geometry mesh...", flush=True)
+            print("Replacing mesh with target geometry mesh...", flush=True)
 
-        solver.settings.file.replace_mesh(
-            file_name=as_fluent_path(mesh_file_path)
-        )
+            solver.settings.file.replace_mesh(
+                file_name=as_fluent_path(mesh_file_path)
+            )
 
-        print("Mesh replaced successfully.", flush=True)
+            print("Mesh replaced successfully.", flush=True)
 
-        solver.execute_tui(r"/mesh/check")
-        print("Solver-side mesh check completed.")
+            solver.execute_tui(r"/mesh/check")
+            print("Solver-side mesh check completed.")
 
-        print("Skipping /mesh/check-quality in solver mode because this TUI command was invalid in the tested solver session.")
+            print("Skipping /mesh/check-quality in solver mode because this TUI command was invalid in the tested solver session.")
 
-        # Stop the mesh-replace transcript so that zone mapping lines are flushed to file.
-        solver.transcript.stop()
-        transcript_is_running = False
+            # Stop the mesh-replace transcript so that zone mapping lines are flushed to file.
+            solver.transcript.stop()
+            transcript_is_running = False
+        else:
+            print("Launching Fluent in solver mode for restart continuation...", flush=True)
+
+            solver = pyfluent.launch_fluent(
+                product_version=product_version,
+                mode="solver",
+                dimension=3,
+                precision="double",
+                processor_count=processor_count,
+                ui_mode="gui",
+                graphics_driver=graphics_driver,
+                start_timeout=fluent_start_timeout,
+                cwd=as_fluent_path(case_path),
+            )
+
+            print("Solver session launched successfully.", flush=True)
+
+            setup = solver.settings.setup
+            solution = solver.settings.solution
+
+            print("Reading restart case...", flush=True)
+            solver.settings.file.read_case(
+                file_name=as_fluent_path(restart_from_case_file)
+            )
+            print("Restart case loaded successfully.", flush=True)
+
+            print("Reading restart data...", flush=True)
+            solver.settings.file.read_data(
+                file_name=as_fluent_path(restart_from_data_file)
+            )
+            print("Restart data loaded successfully.", flush=True)
 
         # Update solver-side thread names so the name-based UDF can use THREAD_NAME(t).
         update_solver_thread_names(solver)
@@ -1447,37 +1536,45 @@ if __name__ == "__main__":
         # ##### [15] Initialization and Species Patch #####
         # ======================================================
 
-        print("Initialization state before hybrid initialization:")
-        print(solution.initialization.get_state())
+        if input_mode == "restart_continuation":
+            print(
+                "Restart continuation mode: skipping hybrid initialization and species patch "
+                "so the loaded restart data remains the initial solution."
+            )
+            print("Initialization state from restart data:")
+            print(solution.initialization.get_state())
+        else:
+            print("Initialization state before hybrid initialization:")
+            print(solution.initialization.get_state())
 
-        solution.initialization.initialization_type = "hybrid"
+            solution.initialization.initialization_type = "hybrid"
 
-        solution.initialization.hybrid_initialize()
+            solution.initialization.hybrid_initialize()
 
-        print("\nHybrid initialization completed.")
+            print("\nHybrid initialization completed.")
 
-        species_patch_variable = f"species-{salt_yi_index}"
+            species_patch_variable = f"species-{salt_yi_index}"
 
-        patch_command = solution.initialization.patch.calculate_patch
+            patch_command = solution.initialization.patch.calculate_patch
 
-        patch_command(
-            domain="mixture",
-            cell_zones=target_fluid_zones,
-            registers=[],
-            variable=species_patch_variable,
-            reference_frame="Relative to Cell Zone",
-            use_custom_field_function=False,
-            custom_field_function_name="",
-            value=salt_mass_fraction,
-        )
+            patch_command(
+                domain="mixture",
+                cell_zones=target_fluid_zones,
+                registers=[],
+                variable=species_patch_variable,
+                reference_frame="Relative to Cell Zone",
+                use_custom_field_function=False,
+                custom_field_function_name="",
+                value=salt_mass_fraction,
+            )
 
-        print(
-            f"Patched fluid zones {target_fluid_zones}: "
-            f"{species_patch_variable} ({species_name}) = {salt_mass_fraction}"
-        )
+            print(
+                f"Patched fluid zones {target_fluid_zones}: "
+                f"{species_patch_variable} ({species_name}) = {salt_mass_fraction}"
+            )
 
-        print("\nInitialization state after hybrid initialization and patch:")
-        print(solution.initialization.get_state())
+            print("\nInitialization state after hybrid initialization and patch:")
+            print(solution.initialization.get_state())
 
 
         # ======================================================

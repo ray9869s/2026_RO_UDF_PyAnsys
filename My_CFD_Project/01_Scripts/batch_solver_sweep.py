@@ -79,6 +79,29 @@ def resolve_case_names(case_dict):
     return base_case_name, case_dict["case_name"]
 
 
+def resolve_input_mode(case_settings):
+    """Return the solver input mode and optional restart source paths."""
+    restart_case = case_settings.get("restart_from_case_file")
+    restart_data = case_settings.get("restart_from_data_file")
+
+    has_restart_case = restart_case is not None
+    has_restart_data = restart_data is not None
+
+    if has_restart_case != has_restart_data:
+        raise ValueError(
+            "restart_from_case_file and restart_from_data_file must be provided together."
+        )
+
+    if has_restart_case:
+        if not str(restart_case).strip() or not str(restart_data).strip():
+            raise ValueError(
+                "restart_from_case_file and restart_from_data_file must be non-empty paths."
+            )
+        return "restart_continuation", restart_case, restart_data
+
+    return "mesh_initialization", None, None
+
+
 def main():
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
@@ -110,44 +133,72 @@ def main():
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")
         print(f"{'='*72}")
-        print(f"geo_name       : {geo_name}")
-        print(f"mesh_case_name : {mesh_case_name}")
-        print(f"base_case_name : {base_case_name if base_case_name else '(n/a)'}")
-        print(f"case_name      : {case_name}")
-
-        expected_mesh = os.path.join(
-            project_root, "03_Results", geo_name, mesh_case_name,
-            f"{geo_name}_{mesh_case_name}.msh.h5",
-        )
-        expected_final_case = os.path.join(
-            project_root, "03_Results", geo_name, case_name,
-            f"{geo_name}_{case_name}_final.cas.h5",
-        )
-        expected_final_data = expected_final_case.replace(".cas.h5", ".dat.h5")
-
-        print(f"Required mesh input:  {expected_mesh}")
-        print(f"Expected final case:  {expected_final_case}")
-        print(f"Expected final data:  {expected_final_data}")
-
         overrides = {**common_solver_settings, **case_dict}
         # The solver must receive the resolved case_name; base_case_name is
         # batch-side naming metadata only, not a solver config key.
         overrides["case_name"] = case_name
         overrides.pop("base_case_name", None)
+
+        input_mode, restart_case_file, restart_data_file = resolve_input_mode(overrides)
+
+        expected_mesh = os.path.join(
+            project_root, "03_Results", geo_name, mesh_case_name,
+            f"{geo_name}_{mesh_case_name}.msh.h5",
+        )
+        target_case_folder = os.path.join(
+            project_root, "03_Results", geo_name, case_name,
+        )
+        expected_final_case = os.path.join(
+            target_case_folder,
+            f"{geo_name}_{case_name}_final.cas.h5",
+        )
+        expected_final_data = expected_final_case.replace(".cas.h5", ".dat.h5")
+
+        print(f"geo_name       : {geo_name}")
+        print(f"mesh_case_name : {mesh_case_name}")
+        print(f"base_case_name : {base_case_name if base_case_name else '(n/a)'}")
+        print(f"case_name      : {case_name}")
+        print(f"input_mode     : {input_mode}")
+        if input_mode == "restart_continuation":
+            print(f"Restart case file: {restart_case_file}")
+            print(f"Restart data file: {restart_data_file}")
+            print(f"Mesh input       : (not used for restart_continuation)")
+        else:
+            print(f"Required mesh input: {expected_mesh}")
+        print(f"Target case folder: {target_case_folder}")
+        print(f"Target case_name  : {case_name}")
+        print(f"Target final case : {expected_final_case}")
+        print(f"Target final data : {expected_final_data}")
         print(f"Overrides: {json.dumps(overrides, indent=2)}")
 
         cmd = [sys.executable, str(SOLVER_SCRIPT_PATH)]
         print(f"Command: {' '.join(cmd)}")
 
         if dry_run:
-            if not os.path.isfile(expected_mesh):
+            if input_mode == "mesh_initialization" and not os.path.isfile(expected_mesh):
                 print("[DRY RUN] Note: mesh file not found (expected when run off-server).")
+            if input_mode == "restart_continuation":
+                if not os.path.isfile(restart_case_file):
+                    print("[DRY RUN] Note: restart case file not found (expected when run off-server).")
+                if not os.path.isfile(restart_data_file):
+                    print("[DRY RUN] Note: restart data file not found (expected when run off-server).")
             print("[DRY RUN] Skipping Fluent execution.")
             skipped.append(label)
             continue
 
-        if not os.path.isfile(expected_mesh):
-            print(f"FAILED (pre-check): Mesh file not found: {expected_mesh}")
+        missing_input_files = []
+        if input_mode == "restart_continuation":
+            if not os.path.isfile(restart_case_file):
+                missing_input_files.append(f"Restart case file not found: {restart_case_file}")
+            if not os.path.isfile(restart_data_file):
+                missing_input_files.append(f"Restart data file not found: {restart_data_file}")
+        elif not os.path.isfile(expected_mesh):
+            missing_input_files.append(f"Mesh file not found: {expected_mesh}")
+
+        if missing_input_files:
+            print("FAILED (pre-check):")
+            for message in missing_input_files:
+                print(f"  {message}")
             failures.append(label)
             if not continue_on_failure:
                 print("Stopping batch because continue_on_failure=False.")
