@@ -56,6 +56,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import traceback
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -131,6 +132,15 @@ CONFIG: dict = {
     "qcriterion_threshold": None,
     "qcriterion_threshold_mode": "auto_active_max_fraction",
     "qcriterion_auto_fraction": 0.02,
+    # qcriterion_threshold_list: explicit list of iso thresholds. When
+    # non-empty it wins over qcriterion_threshold and the auto mode; one
+    # figure is exported per value as
+    #   qcriterion_iso_velocity_colored_thr_<value>.png
+    # (existing threshold-specific files are never overwritten). When every
+    # threshold source is unavailable (no list, no single value, auto Q max
+    # readback fails), a conservative default sweep is exported instead of
+    # skipping the iso figure entirely — see DEFAULT_Q_THRESHOLD_SWEEP.
+    "qcriterion_threshold_list": [],
 
     # --- EnSight Calculator fallbacks for missing variables ---
     # When Q-criterion is not present in the loaded results, compute it from
@@ -182,7 +192,7 @@ OVERRIDABLE_KEYS = {
     "include_x_velocity", "include_vorticity", "include_qcriterion",
     "image_width", "image_height",
     "qcriterion_threshold", "qcriterion_threshold_mode",
-    "qcriterion_auto_fraction",
+    "qcriterion_auto_fraction", "qcriterion_threshold_list",
     "compute_qcriterion_if_missing", "qcriterion_variable_name",
     "strict_qcriterion_required", "compute_vorticity_if_missing",
     "smooth_slice_rendering", "hide_slice_edges", "contour_level_count",
@@ -232,6 +242,13 @@ VELOCITY_VECTOR_CANDIDATES: List[str] = [
 
 # Names of the intermediate Calculator variables (reused if already present)
 COMPUTED_VORTICITY_NAME = "Vorticity_computed"
+
+# Fallback Q iso-surface threshold sweep [1/s^2], used when no explicit
+# threshold(s) are configured and the automatic active-region Q max readback
+# fails. Spans the range typical for sub-mm spacer channels at these Re.
+DEFAULT_Q_THRESHOLD_SWEEP: List[float] = [
+    100.0, 300.0, 1000.0, 3000.0, 10000.0, 30000.0, 100000.0,
+]
 
 FIELD_DISPLAY_LABELS: dict = {
     "concentration": "Concentration (NaCl)",
@@ -354,6 +371,15 @@ def _safe_mkdir(p: Path) -> bool:
 def _frac_tag(fraction: float) -> str:
     """0.05 -> 'x005', 0.50 -> 'x050', 0.95 -> 'x095'."""
     return f"x{int(round(fraction * 100)):03d}"
+
+
+def _threshold_tag(value: float) -> str:
+    """Filename-safe threshold tag: 100.0 -> '100', 523.7 -> '523p7',
+    2.5e-05 -> '2p5em05'."""
+    v = float(value)
+    if v == int(v) and abs(v) < 1e15:
+        return str(int(v))
+    return f"{v:g}".replace("-", "m").replace("+", "").replace(".", "p")
 
 
 def requested_slice_fields(cfg: dict) -> List[str]:
@@ -1013,6 +1039,57 @@ def create_iso_surface_part(
         return None
 
 
+def resolve_qcriterion_thresholds(
+    session: Any,
+    cfg: dict,
+    q_desc: str,
+    active_volume_parts: List[Any],
+) -> Tuple[List[float], str]:
+    """Return (thresholds, source_label) for the Q iso-surface figures.
+    Priority: qcriterion_threshold_list > qcriterion_threshold > automatic
+    active-region Q max fraction > DEFAULT_Q_THRESHOLD_SWEEP. Never returns
+    an empty list — Q iso export is no longer skipped outright."""
+    raw_list = list(cfg.get("qcriterion_threshold_list") or [])
+    if raw_list:
+        thresholds: List[float] = []
+        for raw in raw_list:
+            try:
+                thresholds.append(float(raw))
+            except (TypeError, ValueError):
+                print(f"WARNING: qcriterion_threshold_list entry {raw!r} is not "
+                      "a number; ignored.")
+        if thresholds:
+            return thresholds, "config qcriterion_threshold_list"
+        print("WARNING: qcriterion_threshold_list contained no usable numbers; "
+              "falling through to the other threshold sources.")
+
+    if cfg["qcriterion_threshold"] is not None:
+        return [float(cfg["qcriterion_threshold"])], "config qcriterion_threshold"
+
+    if str(cfg["qcriterion_threshold_mode"]) == "auto_active_max_fraction":
+        # Read max Q of the ACTIVE region (visible clipped volume), not of
+        # the full domain including the buffers.
+        q_max = None
+        try:
+            show_only_parts(session, active_volume_parts)
+            color_part_by_variable(session, active_volume_parts[0], q_desc)
+            q_max = read_palette_max(session, q_desc)
+        except Exception as exc:
+            print(f"WARNING: active-region Q max readback raised: {exc}")
+        if q_max is not None and q_max > 0.0:
+            threshold = float(cfg["qcriterion_auto_fraction"]) * q_max
+            print(f"Q-criterion auto threshold: {cfg['qcriterion_auto_fraction']} "
+                  f"* active-region max ({q_max:.6g}) = {threshold:.6g}")
+            return [threshold], "auto_active_max_fraction"
+        print("WARNING: Could not read Q max; exporting default threshold "
+              "sweep instead.")
+        return list(DEFAULT_Q_THRESHOLD_SWEEP), "default sweep (auto Q max unavailable)"
+
+    print("WARNING: qcriterion_threshold_mode='manual' but no threshold or "
+          "threshold list was given; exporting default threshold sweep instead.")
+    return list(DEFAULT_Q_THRESHOLD_SWEEP), "default sweep (no manual threshold)"
+
+
 # ---------------------------------------------------------------------------
 # EnSight Calculator fallbacks for missing Q-criterion / vorticity
 # ---------------------------------------------------------------------------
@@ -1277,9 +1354,26 @@ def print_plan(cfg: dict, paths: dict) -> None:
 
     print("\nRequested vortex figures:")
     if cfg["include_qcriterion"]:
+        thr_list = list(cfg.get("qcriterion_threshold_list") or [])
+        if thr_list:
+            print("  Q iso thresholds (qcriterion_threshold_list) — one figure each:")
+            for t in thr_list:
+                try:
+                    print("    vortex/qcriterion_iso_velocity_colored_thr_"
+                          f"{_threshold_tag(float(t))}.png")
+                except (TypeError, ValueError):
+                    print(f"    (invalid threshold entry {t!r} — will be ignored)")
+        elif cfg["qcriterion_threshold"] is not None:
+            print("  vortex/qcriterion_iso_velocity_colored_thr_"
+                  f"{_threshold_tag(float(cfg['qcriterion_threshold']))}.png "
+                  "(explicit qcriterion_threshold)")
+        else:
+            print(f"  Q iso threshold: mode={cfg['qcriterion_threshold_mode']}; "
+                  "if the active-region Q max cannot be read, a default sweep "
+                  f"{[f'{t:g}' for t in DEFAULT_Q_THRESHOLD_SWEEP]} is exported "
+                  "as ..._thr_<value>.png")
         print("  vortex/qcriterion_iso_velocity_colored.png "
-              f"(threshold={cfg['qcriterion_threshold']}, "
-              f"mode={cfg['qcriterion_threshold_mode']})")
+              "(generic copy of the first successful threshold)")
         print("  vortex/qcriterion_yz_active_x050.png")
         print("  Q-criterion variable strategy (real run only):")
         print("    1) search existing result variables "
@@ -1581,47 +1675,78 @@ def run_export(cfg: dict, paths: dict) -> int:
                         if export_png(session, out_file, cfg):
                             exported.append(out_file)
 
-        # 2c. Q-criterion iso-surface colored by velocity magnitude
+        # 2c. Q-criterion iso-surface(s) colored by velocity magnitude — one
+        # figure per resolved threshold; a failed threshold never stops the
+        # remaining ones or the rest of the script.
+        q_iso_strict_failure = False
         if cfg["include_qcriterion"] and q_available and active_volume_parts:
             q_obj, q_desc = found_vars["qcriterion"]
+            print(f"\nQ iso-surface export: Q variable = '{q_desc}'")
 
-            threshold = cfg["qcriterion_threshold"]
-            if threshold is None:
-                if str(cfg["qcriterion_threshold_mode"]) == "auto_active_max_fraction":
-                    # Read max Q of the ACTIVE region (visible clipped volume),
-                    # not of the full domain including buffers.
-                    show_only_parts(session, active_volume_parts)
-                    color_part_by_variable(session, active_volume_parts[0], q_desc)
-                    q_max = read_palette_max(session, q_desc)
-                    if q_max is not None and q_max > 0.0:
-                        threshold = float(cfg["qcriterion_auto_fraction"]) * q_max
-                        print(f"Q-criterion auto threshold: "
-                              f"{cfg['qcriterion_auto_fraction']} * active-region "
-                              f"max ({q_max:.6g}) = {threshold:.6g}")
-                    else:
-                        print("WARNING: could not read active-region Q max; "
-                              "set qcriterion_threshold manually. Iso figure skipped.")
-                else:
-                    print("WARNING: qcriterion_threshold is None with "
-                          "qcriterion_threshold_mode='manual'; set a threshold "
-                          "value. Iso figure skipped.")
-
-            if threshold is not None:
-                iso_part = create_iso_surface_part(
-                    session, q_obj, float(threshold),
-                    "qcriterion_iso_active", active_volume_parts,
+            if "velocity_mag" not in found_vars:
+                print("WARNING: velocity-magnitude variable not found; "
+                      "Q iso-surface figures skipped.")
+                q_iso_strict_failure = True
+            else:
+                _u_obj, u_desc = found_vars["velocity_mag"]
+                thresholds, thr_source = resolve_qcriterion_thresholds(
+                    session, cfg, q_desc, active_volume_parts,
                 )
-                if iso_part is not None and "velocity_mag" in found_vars:
-                    _u_obj, u_desc = found_vars["velocity_mag"]
-                    out_file = paths["vortex_dir"] / "qcriterion_iso_velocity_colored.png"
+                print(f"Q iso thresholds ({thr_source}): "
+                      f"[{', '.join(f'{t:g}' for t in thresholds)}]")
+
+                generic_file = paths["vortex_dir"] / "qcriterion_iso_velocity_colored.png"
+                generic_written = False
+                iso_exported_count = 0
+                iso_skipped_existing = 0
+                for threshold in thresholds:
+                    tag = _threshold_tag(threshold)
+                    thr_file = (paths["vortex_dir"]
+                                / f"qcriterion_iso_velocity_colored_thr_{tag}.png")
+                    if thr_file.is_file():
+                        print(f"  threshold {threshold:g}: {thr_file.name} "
+                              "already exists — not overwritten.")
+                        iso_skipped_existing += 1
+                        continue
+                    print(f"  threshold {threshold:g} -> {thr_file.name}")
+                    iso_part = create_iso_surface_part(
+                        session, q_obj, float(threshold),
+                        f"qcrit_iso_thr_{tag}", active_volume_parts,
+                    )
+                    if iso_part is None:
+                        print(f"WARNING: iso-surface creation failed at "
+                              f"threshold {threshold:g}; continuing with the next one.")
+                        continue
+                    if get_part_extents(iso_part) is None:
+                        print(f"WARNING: iso-surface at threshold {threshold:g} "
+                              "has no readable extents — it may be empty (no Q "
+                              "above this value); exporting anyway.")
                     show_only_parts(session, [iso_part])
                     color_part_by_variable(session, iso_part, u_desc)
                     set_view(session, (1.0, 1.0, 1.0), up_axis=(0.0, 0.0, 1.0))
-                    if export_png(session, out_file, cfg):
-                        exported.append(out_file)
-                elif iso_part is not None:
-                    print("WARNING: velocity-magnitude variable not found; "
-                          "iso-surface left uncolored and not exported.")
+                    if export_png(session, thr_file, cfg):
+                        exported.append(thr_file)
+                        iso_exported_count += 1
+                        if not generic_written:
+                            # Keep the generic filename pointing at the first
+                            # successful threshold of this run (overwrite OK).
+                            try:
+                                shutil.copyfile(thr_file, generic_file)
+                                exported.append(generic_file)
+                                print(f"Exported: {generic_file} "
+                                      f"(copy of {thr_file.name})")
+                                generic_written = True
+                            except OSError as exc:
+                                print("WARNING: could not update generic iso "
+                                      f"filename: {exc}")
+                    else:
+                        print(f"WARNING: export failed at threshold "
+                              f"{threshold:g}; continuing with the next one.")
+
+                if iso_exported_count == 0 and iso_skipped_existing == 0:
+                    print("WARNING: no Q iso-surface figure could be exported "
+                          "at any threshold (see warnings above).")
+                    q_iso_strict_failure = True
 
         # --- summary ------------------------------------------------------
         print("\n" + "=" * 76)
@@ -1631,6 +1756,10 @@ def run_export(cfg: dict, paths: dict) -> int:
         if not exported:
             print("  (none — see warnings above)")
         print("=" * 76)
+        if q_iso_strict_failure and cfg["strict_qcriterion_required"]:
+            print("ERROR: Q iso-surface export failed and "
+                  "strict_qcriterion_required=True.")
+            return 1
         return 0 if exported else 1
     finally:
         try:
