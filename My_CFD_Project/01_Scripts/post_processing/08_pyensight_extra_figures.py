@@ -180,6 +180,31 @@ CONFIG: dict = {
     # camera_fit_margin: extra zoom-out after fit (0.08 = ~8 % margin) so the
     # slice does not touch the viewport border. 0.0 disables.
     "camera_fit_margin": 0.08,
+
+    # --- Q iso-surface presentation style (Q iso figures ONLY:
+    #     qcriterion_iso_velocity_colored[_thr_*].png; slices untouched) ---
+    # qiso_clean_scene is the master switch for the scene cleanup below; the
+    # individual flags control each effect. All are best-effort (WARN, never
+    # fail) because EnSight builds differ.
+    "qiso_clean_scene": True,
+    "qiso_white_background": True,
+    "qiso_background_rgb": [1.0, 1.0, 1.0],
+    "qiso_disable_shadows": True,
+    "qiso_disable_reflections": True,
+    "qiso_disable_ground_plane": True,
+    "qiso_hide_axes": True,
+    "qiso_hide_grid": True,
+    "qiso_hide_bounding_box": True,
+    # Iso-surface part style
+    "qiso_smooth_shading": True,
+    "qiso_hide_edges": True,
+    # The iso SURFACE is a Q-criterion level set, but its COLOR is velocity
+    # magnitude by default — so "Velocity [m/s]" is the correct colorbar
+    # title. Set qiso_color_by_velocity=False to color by Q instead (the
+    # colorbar title then becomes "Q-criterion [1/s^2]").
+    "qiso_color_by_velocity": True,
+    "qiso_colorbar_title": "Velocity [m/s]",
+    "qiso_camera_fit_margin": 0.08,
 }
 
 # Keys that may be overridden via the PYFLUENT_EXTRA_FIGURES_OVERRIDES env
@@ -198,6 +223,11 @@ OVERRIDABLE_KEYS = {
     "smooth_slice_rendering", "hide_slice_edges", "contour_level_count",
     "use_continuous_palette", "colorbar_position", "colorbar_width_fraction",
     "camera_fit_margin",
+    "qiso_clean_scene", "qiso_white_background", "qiso_background_rgb",
+    "qiso_disable_shadows", "qiso_disable_reflections",
+    "qiso_disable_ground_plane", "qiso_hide_axes", "qiso_hide_grid",
+    "qiso_hide_bounding_box", "qiso_smooth_shading", "qiso_hide_edges",
+    "qiso_color_by_velocity", "qiso_colorbar_title", "qiso_camera_fit_margin",
 }
 
 # ---------------------------------------------------------------------------
@@ -937,6 +967,132 @@ def position_slice_colorbar(session: Any, var_desc: str, cfg: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Q iso-surface presentation style (Q iso figures only — slices untouched)
+# ---------------------------------------------------------------------------
+
+def _try_scene_setting(label: str, func: Any) -> None:
+    """Apply one scene/rendering setting; print applied/WARNING, never raise.
+    EnSight builds differ, so every attribute is best-effort."""
+    try:
+        func()
+        print(f"  Q iso scene: {label}: applied")
+    except Exception as exc:
+        print(f"WARNING: Q iso scene: {label} unavailable: {exc}")
+
+
+def setup_qiso_scene(session: Any, cfg: dict) -> None:
+    """Presentation cleanup for Q iso-surface figures: solid white background,
+    no shadows/reflections/ground plane/grid/axes/bounding box. Global
+    viewport state — called once, right before iso export (all slice figures
+    are already written by then). A failed setting never blocks the export."""
+    if not cfg["qiso_clean_scene"]:
+        print("  Q iso scene: qiso_clean_scene=False — scene left as-is.")
+        return
+    try:
+        ens = session.ensight
+    except Exception as exc:
+        print(f"WARNING: Q iso scene cleanup unavailable (no session API): {exc}")
+        return
+
+    # Master switch for EnSight's environment "scene" (floor + effects) —
+    # belt-and-braces before the individual toggles below.
+    _try_scene_setting("environment scene off", lambda: ens.scene.active("OFF"))
+
+    if cfg["qiso_white_background"]:
+        rgb = [float(c) for c in cfg["qiso_background_rgb"]]
+
+        def _solid_background() -> None:
+            vport = ens.objs.core.VPORTS[0]
+            vport.BACKGROUNDTYPE = ens.objs.enums.VPORT_CONS  # solid (no gradient)
+            vport.CONSTANTRGB = rgb
+
+        _try_scene_setting(f"solid background rgb={rgb} (gradient off)",
+                           _solid_background)
+
+    if cfg["qiso_disable_shadows"]:
+        _try_scene_setting("scene shadows off", lambda: ens.scene.shadow("OFF"))
+        _try_scene_setting("ground-plane shadow off",
+                           lambda: ens.scene.ground_plane_shadow("OFF"))
+
+        def _lights_no_shadows() -> None:
+            for light in ens.objs.core.LIGHTSOURCES:
+                light.CASTS_SHADOWS = 0
+
+        _try_scene_setting("light-source shadow casting off", _lights_no_shadows)
+
+    if cfg["qiso_disable_reflections"]:
+        _try_scene_setting("ground-plane reflections off",
+                           lambda: ens.scene.ground_plane_reflection("OFF"))
+
+    if cfg["qiso_disable_ground_plane"]:
+        _try_scene_setting("ground plane off",
+                           lambda: ens.scene.ground_plane_visible("OFF"))
+
+    if cfg["qiso_hide_grid"]:
+        _try_scene_setting("ground-plane grid off",
+                           lambda: ens.scene.ground_plane_grid("OFF"))
+
+    if cfg["qiso_hide_axes"]:
+        _try_scene_setting("scene axes off", lambda: ens.scene.axis_visible("OFF"))
+
+        def _global_axes_off() -> None:
+            ens.objs.core.VPORTS[0].GLOBALAXISVISIBLE = 0
+            ens.annotation.axis_global("off")
+
+        _try_scene_setting("global axis triad off", _global_axes_off)
+
+    if cfg["qiso_hide_bounding_box"]:
+        _try_scene_setting("bounding box display off",
+                           lambda: ens.view.bounds("OFF"))
+
+
+def apply_qiso_part_style(session: Any, part: Any, cfg: dict) -> None:
+    """Edge hiding + smooth shading for one Q iso-surface part."""
+    enums = session.ensight.objs.enums
+
+    if cfg["qiso_hide_edges"]:
+        try:
+            part.HIDDENLINE = 0
+            _print_once("qiso_edges",
+                        "  Q iso style: element/mesh edge overlay hidden (HIDDENLINE=0).")
+        except Exception as exc:
+            _print_once("qiso_edges",
+                        f"WARNING: could not hide Q iso edges: {exc}")
+
+    if cfg["qiso_smooth_shading"]:
+        applied = None
+        for enum_name in ("SHAD_SMOOTH_REFINED", "SHAD_SMOOTH", "SHAD_GOURAUD"):
+            try:
+                part.SHADING = getattr(enums, enum_name)
+                applied = enum_name
+                break
+            except Exception:
+                continue
+        if applied:
+            _print_once("qiso_shading",
+                        f"  Q iso style: smooth shading applied (SHADING={applied}).")
+        else:
+            _print_once("qiso_shading",
+                        "WARNING: Q iso smooth shading could not be applied; "
+                        "using the part's default shading.")
+
+
+def apply_qiso_colorbar_title(session: Any, var_desc: str, title: str) -> None:
+    """Set the legend/colorbar title for the palette coloring the iso surface
+    (legend command class: select_palette_begin / title / select_palette_end)."""
+    try:
+        legend = session.ensight.legend
+        legend.select_palette_begin(var_desc)
+        legend.title(title)
+        legend.select_palette_end()
+        _print_once("qiso_title",
+                    f"  Q iso colorbar: title set to '{title}'.")
+    except Exception as exc:
+        _print_once("qiso_title",
+                    f"WARNING: could not set Q iso colorbar title '{title}': {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Clip / iso-surface part creation
 # ---------------------------------------------------------------------------
 
@@ -1375,6 +1531,23 @@ def print_plan(cfg: dict, paths: dict) -> None:
         print("  vortex/qcriterion_iso_velocity_colored.png "
               "(generic copy of the first successful threshold)")
         print("  vortex/qcriterion_yz_active_x050.png")
+        if cfg["qiso_color_by_velocity"]:
+            print("  Q iso rendering: surface colored by VELOCITY MAGNITUDE, "
+                  f"colorbar title '{cfg['qiso_colorbar_title']}'")
+        else:
+            print("  Q iso rendering: surface colored by Q-CRITERION "
+                  "(qiso_color_by_velocity=False), colorbar title "
+                  "'Q-criterion [1/s^2]'")
+        print(f"  Q iso clean scene: {cfg['qiso_clean_scene']} "
+              f"(white_bg={cfg['qiso_white_background']}, "
+              f"no_shadows={cfg['qiso_disable_shadows']}, "
+              f"no_reflections={cfg['qiso_disable_reflections']}, "
+              f"no_ground_plane={cfg['qiso_disable_ground_plane']}, "
+              f"no_axes={cfg['qiso_hide_axes']}, no_grid={cfg['qiso_hide_grid']}, "
+              f"no_bbox={cfg['qiso_hide_bounding_box']})")
+        print(f"  Q iso part style: smooth_shading={cfg['qiso_smooth_shading']}, "
+              f"hide_edges={cfg['qiso_hide_edges']}, "
+              f"fit_margin={cfg['qiso_camera_fit_margin']}")
         print("  Q-criterion variable strategy (real run only):")
         print("    1) search existing result variables "
               f"({', '.join(FIELD_VAR_CANDIDATES['qcriterion'][:5])}, ...)")
@@ -1683,12 +1856,31 @@ def run_export(cfg: dict, paths: dict) -> int:
             q_obj, q_desc = found_vars["qcriterion"]
             print(f"\nQ iso-surface export: Q variable = '{q_desc}'")
 
-            if "velocity_mag" not in found_vars:
-                print("WARNING: velocity-magnitude variable not found; "
-                      "Q iso-surface figures skipped.")
-                q_iso_strict_failure = True
+            # Surface = Q level set; COLOR = velocity magnitude by default,
+            # so the colorbar title stays "Velocity [m/s]". Optionally color
+            # by Q itself (qiso_color_by_velocity=False).
+            color_desc: Optional[str] = None
+            colorbar_title = ""
+            if cfg["qiso_color_by_velocity"]:
+                if "velocity_mag" in found_vars:
+                    color_desc = found_vars["velocity_mag"][1]
+                    colorbar_title = str(cfg["qiso_colorbar_title"])
+                    print(f"Q iso coloring: velocity magnitude ('{color_desc}'), "
+                          f"colorbar title '{colorbar_title}'.")
+                else:
+                    print("WARNING: velocity-magnitude variable not found; "
+                          "Q iso-surface figures skipped.")
+                    q_iso_strict_failure = True
             else:
-                _u_obj, u_desc = found_vars["velocity_mag"]
+                color_desc = q_desc
+                colorbar_title = "Q-criterion [1/s^2]"
+                print(f"Q iso coloring: Q-criterion itself ('{color_desc}'), "
+                      f"colorbar title '{colorbar_title}' "
+                      "(qiso_color_by_velocity=False).")
+
+            if color_desc is not None:
+                print("Q iso scene cleanup:")
+                setup_qiso_scene(session, cfg)
                 thresholds, thr_source = resolve_qcriterion_thresholds(
                     session, cfg, q_desc, active_volume_parts,
                 )
@@ -1722,8 +1914,11 @@ def run_export(cfg: dict, paths: dict) -> int:
                               "has no readable extents — it may be empty (no Q "
                               "above this value); exporting anyway.")
                     show_only_parts(session, [iso_part])
-                    color_part_by_variable(session, iso_part, u_desc)
-                    set_view(session, (1.0, 1.0, 1.0), up_axis=(0.0, 0.0, 1.0))
+                    apply_qiso_part_style(session, iso_part, cfg)
+                    color_part_by_variable(session, iso_part, color_desc)
+                    apply_qiso_colorbar_title(session, color_desc, colorbar_title)
+                    set_view(session, (1.0, 1.0, 1.0), up_axis=(0.0, 0.0, 1.0),
+                             fit_margin=float(cfg["qiso_camera_fit_margin"]))
                     if export_png(session, thr_file, cfg):
                         exported.append(thr_file)
                         iso_exported_count += 1
