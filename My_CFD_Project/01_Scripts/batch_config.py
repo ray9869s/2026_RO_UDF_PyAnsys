@@ -73,10 +73,20 @@ mesh_batch_cases = [
 # ----------------------------------------------------------
 # Any key here can be overridden per case in solver_sweep_cases.
 
+# DEADLINE CAMPAIGN (Ansys Simulation Challenge presentation):
+# preliminary screening runs, capped at 1000 iterations per case. The solver
+# always writes <geo>_<case>_final.cas.h5/.dat.h5 after the iteration loop,
+# so final files are saved even when the residual target (kept at 1e-7) is
+# not reached within 1000 iterations. "run_label" is a passive marker: it is
+# echoed in the per-case overrides JSON (batch console) and in the solver's
+# "Applied config overrides" transcript line, so these runs can later be
+# identified as preliminary. It changes no solver behavior and no report
+# values.
 common_solver_settings = {
     "run_calculation_enabled": True,
-    "max_iterations": 2000,
+    "max_iterations": 1000,
     "residual_target": 1e-7,
+    "run_label": "preliminary_deadline_1000iter",
 }
 
 
@@ -116,43 +126,52 @@ common_solver_settings = {
 #   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.cas.h5
 #   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.dat.h5
 
-solver_sweep_cases = [
-    # Legacy simple case (explicit case_name, used as-is):
-    # {
-    #     "geo_name": "Empty",
-    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
-    #     "case_name": "u0p1_p4M",
-    #     "inlet_velocity_value": 0.1,
-    #     "operating_pressure": 101325.0,
-    #     "outlet_gauge_pressure": 4.0e6,
-    # },
-    # Mesh-qualified Sin case:
-    # {
-    #     "geo_name": "Sin_ST",
-    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
-    #     "inlet_velocity_value": 0.1,
-    #     "operating_pressure": 101325.0,
-    #     "outlet_gauge_pressure": 4.0e6,
-    #     # case_name is optional; if omitted:
-    #     # u0p1_p4M__mesh_max085_min005_cpg5_bl4
-    # },
-    # Restart/continuation Sin case:
-    # {
-    #     "geo_name": "Sin_ST",
-    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
-    #     "case_name": "mesh_max085_min005_cpg5_bl4_u0p2_p4M",
-    #     "inlet_velocity_value": 0.2,
-    #     "operating_pressure": 101325.0,
-    #     "outlet_gauge_pressure": 4.0e6,
-    #     "restart_from_case_file": (
-    #         "C:/PyFluent/My_CFD_Project/03_Results/Sin_ST/"
-    #         "mesh_max085_min005_cpg5_bl4_u0p1_p4M/"
-    #         "Sin_ST_mesh_max085_min005_cpg5_bl4_u0p1_p4M_final.cas.h5"
-    #     ),
-    #     "restart_from_data_file": (
-    #         "C:/PyFluent/My_CFD_Project/03_Results/Sin_ST/"
-    #         "mesh_max085_min005_cpg5_bl4_u0p1_p4M/"
-    #         "Sin_ST_mesh_max085_min005_cpg5_bl4_u0p1_p4M_final.dat.h5"
-    #     ),
-    # },
-]
+# ----------------------------------------------------------
+# DEADLINE CAMPAIGN case list (24 cases, run strictly in this order)
+# ----------------------------------------------------------
+# Group 1 (cases 1-6):  Multi_Layer_diff / Multi_Layer_equal at u=0.3 m/s,
+#   standard mesh mesh_max085_min005_cpg5_bl3 (same as the main non-sinusoidal
+#   campaign), legacy plain case names (u0p3_p4M, ...).
+# Group 2 (cases 7-15): Sin_ST full u x p sweep on the COARSE mesh
+#   mesh_max100_min006_cpg3_bl3.
+# Group 3 (cases 16-24): Sin_SL, same sweep and coarse mesh.
+#
+# Sin case names are auto-derived by resolve_case_names() in
+# batch_solver_sweep.py using the CURRENT mesh-qualified convention
+# (base__mesh), e.g.:
+#   u0p1_p4M__mesh_max100_min006_cpg3_bl3
+# These are distinct from every existing fine-mesh sinusoidal result folder,
+# so nothing is overwritten. skip_existing_final_data=True additionally
+# protects any case whose final cas/dat already exist.
+
+_ML_MESH = "mesh_max085_min005_cpg5_bl3"
+_SIN_MESH = "mesh_max100_min006_cpg3_bl3"
+_P_OPERATING = 101325.0  # absolute operating pressure [Pa]
+
+solver_sweep_cases = []
+
+# Group 1: non-sinusoidal convergence-sensitive cases (u = 0.3 m/s)
+for _geo in ("Multi_Layer_diff", "Multi_Layer_equal"):
+    for _p_out in (4.0e6, 6.0e6, 8.0e6):
+        solver_sweep_cases.append({
+            "geo_name": _geo,
+            "mesh_case_name": _ML_MESH,
+            "case_name": f"u0p3_p{int(_p_out / 1.0e6)}M",  # legacy plain name
+            "inlet_velocity_value": 0.3,
+            "operating_pressure": _P_OPERATING,
+            "outlet_gauge_pressure": _p_out,
+        })
+
+# Groups 2-3: Sin_ST then Sin_SL preliminary sweeps on the coarse mesh
+for _geo in ("Sin_ST", "Sin_SL"):
+    for _u in (0.1, 0.2, 0.3):
+        for _p_out in (4.0e6, 6.0e6, 8.0e6):
+            solver_sweep_cases.append({
+                "geo_name": _geo,
+                "mesh_case_name": _SIN_MESH,
+                # case_name omitted on purpose -> mesh-qualified name derived
+                # by the batch driver, e.g. u0p1_p4M__mesh_max100_min006_cpg3_bl3
+                "inlet_velocity_value": _u,
+                "operating_pressure": _P_OPERATING,
+                "outlet_gauge_pressure": _p_out,
+            })
