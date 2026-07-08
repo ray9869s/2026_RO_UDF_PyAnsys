@@ -39,9 +39,22 @@ Buffer exclusion:
   fractions of the ACTIVE membrane x-range, and vortex visualizations are
   clipped to that x-range.
 
+Presentation contour mode (presentation_contour_mode=True):
+  Slice/vortex figures are written to presentation_{slices,vortex}/ instead
+  of the classic {slices,vortex}/ folders, each variable with a fixed
+  *_range config uses that SAME palette min/max across all geometries and
+  operating conditions (no per-slice auto-rescale), the in-image
+  colorbar/legend is hidden (hide_colorbar_in_contour), and standalone
+  horizontal colorbar PNGs with the same palette and min/max are exported
+  to presentation_colorbars/ (export_separate_colorbars; needs Pillow).
+  With presentation_contour_mode=False the classic output behavior is
+  completely unchanged.
+
 This script does NOT modify or replace any existing post-processing script.
 It only ever writes PNG images under:
-  03_Results/<geo_name>/<case_name>/post/figures/extra/{slices,vortex}/
+  03_Results/<geo_name>/<case_name>/post/figures/extra/
+    {slices,vortex}/                                (classic mode)
+    presentation_{slices,vortex,colorbars}/         (presentation mode)
 
 Usage:
   python 08_pyensight_extra_figures.py                       # dry run (default)
@@ -73,6 +86,19 @@ try:
     _PYENSIGHT_AVAILABLE = True
 except ImportError as _exc:
     _PYENSIGHT_IMPORT_ERROR = str(_exc)
+
+# Pillow is only needed for the standalone presentation colorbar PNGs
+# (export_separate_colorbars) — never for dry runs or the contour figures.
+_PIL_AVAILABLE = False
+_PIL_IMPORT_ERROR = ""
+
+try:
+    from PIL import Image as _PILImage
+    from PIL import ImageDraw as _PILImageDraw
+    from PIL import ImageFont as _PILImageFont
+    _PIL_AVAILABLE = True
+except ImportError as _exc:
+    _PIL_IMPORT_ERROR = str(_exc)
 
 # ---------------------------------------------------------------------------
 # Paths — relative to this script; never hard-code C:\ or Windows paths
@@ -181,6 +207,35 @@ CONFIG: dict = {
     # slice does not touch the viewport border. 0.0 disables.
     "camera_fit_margin": 0.08,
 
+    # --- presentation-ready contour exports --------------------------------
+    # presentation_contour_mode: master switch. When True:
+    #   * slice/vortex figures go to presentation_slices/ and
+    #     presentation_vortex/ (the classic slices/ and vortex/ folders and
+    #     their contents are untouched),
+    #   * every variable with a fixed *_range below uses that SAME palette
+    #     min/max across all geometries and operating conditions — the
+    #     palette is NOT auto-rescaled per slice,
+    #   * the in-image colorbar/legend can be hidden and standalone colorbar
+    #     PNGs exported instead (see the two flags below).
+    # When False, nothing about the classic output behavior changes.
+    "presentation_contour_mode": True,
+    # hide_colorbar_in_contour: hide the legend/colorbar inside the exported
+    # contour images (presentation mode only).
+    "hide_colorbar_in_contour": True,
+    # export_separate_colorbars: write standalone horizontal colorbar PNGs
+    # (exact same palette + min/max as the contour figures) to
+    # presentation_colorbars/. Requires Pillow (pip install pillow); a
+    # missing Pillow warns and skips only the colorbar files.
+    "export_separate_colorbars": True,
+    # Fixed palette ranges [min, max] per variable. None keeps the classic
+    # per-slice auto-range for that variable (its standalone colorbar range
+    # is then read back from the live palette, best-effort).
+    "concentration_range": [0.035, 0.045],
+    "velocity_range": [0.0, 0.6],
+    "vorticity_range": None,
+    # Velocity range for the Q iso-surface coloring (own figure + colorbar).
+    "qiso_velocity_range": [0.0, 0.6],
+
     # --- Q iso-surface presentation style (Q iso figures ONLY:
     #     qcriterion_iso_velocity_colored[_thr_*].png; slices untouched) ---
     # qiso_clean_scene is the master switch for the scene cleanup below; the
@@ -223,6 +278,9 @@ OVERRIDABLE_KEYS = {
     "smooth_slice_rendering", "hide_slice_edges", "contour_level_count",
     "use_continuous_palette", "colorbar_position", "colorbar_width_fraction",
     "camera_fit_margin",
+    "presentation_contour_mode", "hide_colorbar_in_contour",
+    "export_separate_colorbars", "concentration_range", "velocity_range",
+    "vorticity_range", "qiso_velocity_range",
     "qiso_clean_scene", "qiso_white_background", "qiso_background_rgb",
     "qiso_disable_shadows", "qiso_disable_reflections",
     "qiso_disable_ground_plane", "qiso_hide_axes", "qiso_hide_grid",
@@ -295,6 +353,37 @@ SLICE_FILE_SUFFIX: dict = {
     "x_velocity": "x_velocity",
     "vorticity_mag": "vorticity_mag",
 }
+
+# Presentation mode: which CONFIG key holds the fixed [min, max] palette
+# range for each slice field. None = that field has no fixed range and keeps
+# the classic per-slice auto-rescale (x-velocity is signed, so no shared
+# non-negative range applies to it).
+PRESENTATION_RANGE_CONFIG_KEY: dict = {
+    "concentration": "concentration_range",
+    "velocity_mag": "velocity_range",
+    "x_velocity": None,
+    "vorticity_mag": "vorticity_range",
+}
+
+# Standalone colorbar files (presentation mode): key -> (filename, title).
+# The qiso_velocity title is None because it comes from qiso_colorbar_title.
+PRESENTATION_COLORBAR_FILES: dict = {
+    "concentration": ("colorbar_concentration.png", "NaCl mass fraction [-]"),
+    "velocity_mag": ("colorbar_velocity_magnitude.png", "Velocity magnitude [m/s]"),
+    "vorticity_mag": ("colorbar_vorticity_magnitude.png", "Vorticity magnitude [1/s]"),
+    "qiso_velocity": ("colorbar_qiso_velocity.png", None),
+}
+
+# EnSight's default rainbow palette (position 0-1 -> RGB 0-1), used for the
+# standalone colorbar PNGs whenever the live palette colors cannot be read
+# back from the session (LEVELS_AND_COLORS readback is best-effort).
+DEFAULT_PALETTE_KNOTS: List[Tuple[float, Tuple[float, float, float]]] = [
+    (0.00, (0.0, 0.0, 1.0)),
+    (0.25, (0.0, 1.0, 1.0)),
+    (0.50, (0.0, 1.0, 0.0)),
+    (0.75, (1.0, 1.0, 0.0)),
+    (1.00, (1.0, 0.0, 0.0)),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +465,9 @@ def build_paths(cfg: dict) -> dict:
         "final_data_file": case_path / f"{geo_name}_{case_name}_final.dat.h5",
         "slices_dir": extra_dir / "slices",
         "vortex_dir": extra_dir / "vortex",
+        "presentation_slices_dir": extra_dir / "presentation_slices",
+        "presentation_vortex_dir": extra_dir / "presentation_vortex",
+        "presentation_colorbars_dir": extra_dir / "presentation_colorbars",
     }
 
 
@@ -423,6 +515,43 @@ def requested_slice_fields(cfg: dict) -> List[str]:
     if cfg["include_vorticity"]:
         fields.append("vorticity_mag")
     return fields
+
+
+def _parse_fixed_range(raw: Any, name: str) -> Optional[Tuple[float, float]]:
+    """Validate one presentation *_range config value. None passes through
+    (= auto range); anything else must be [min, max] with min < max."""
+    if raw is None:
+        return None
+    try:
+        lo, hi = float(raw[0]), float(raw[1])
+        if len(raw) != 2:
+            raise ValueError
+    except (TypeError, ValueError, IndexError, KeyError):
+        raise ValueError(
+            f"Config '{name}' must be null or a [min, max] pair of numbers; got {raw!r}."
+        ) from None
+    if not lo < hi:
+        raise ValueError(f"Config '{name}': min ({lo}) must be < max ({hi}).")
+    return lo, hi
+
+
+def validate_presentation_ranges(cfg: dict) -> None:
+    """Raise ValueError early (before any launch) on malformed *_range values."""
+    for name in ("concentration_range", "velocity_range", "vorticity_range",
+                 "qiso_velocity_range"):
+        _parse_fixed_range(cfg.get(name), name)
+
+
+def presentation_fixed_range(cfg: dict, field_key: str) -> Optional[Tuple[float, float]]:
+    """Fixed [min, max] palette range for a slice field in presentation mode.
+    None when presentation mode is off, the field has no range config key,
+    or the configured value is null (= keep per-slice auto-range)."""
+    if not cfg["presentation_contour_mode"]:
+        return None
+    range_key = PRESENTATION_RANGE_CONFIG_KEY.get(field_key)
+    if range_key is None:
+        return None
+    return _parse_fixed_range(cfg.get(range_key), range_key)
 
 
 def manual_extents(cfg: dict) -> Optional[Tuple[float, float]]:
@@ -703,8 +832,44 @@ def show_only_parts(session: Any, visible_parts: List[Any]) -> None:
             pass
 
 
-def color_part_by_variable(session: Any, part: Any, var_desc: str) -> None:
+def color_part_by_variable(
+    session: Any,
+    part: Any,
+    var_desc: str,
+    fixed_range: Optional[Tuple[float, float]] = None,
+) -> None:
+    """Color part by var_desc. fixed_range=None keeps the classic behavior
+    (rescale the palette to the visible part); a (min, max) pair instead
+    pins the palette to that range and never auto-rescales (presentation
+    mode: same color scale across all slices, geometries and conditions)."""
     part.COLORBYPALETTE = var_desc
+
+    if fixed_range is not None:
+        lo, hi = fixed_range
+        applied = False
+        try:
+            for palette in session.ensight.objs.core.PALETTES:
+                if _normalize(palette.DESCRIPTION) == _normalize(var_desc):
+                    try:
+                        palette.MINMAX = [lo, hi]
+                        applied = True
+                    except Exception:
+                        palette.set_minmax(lo, hi)
+                        applied = True
+                    break
+        except Exception:
+            pass
+        if applied:
+            _print_once(f"fixedrange:{var_desc}",
+                        f"  Presentation palette '{var_desc}': FIXED range "
+                        f"[{lo:g}, {hi:g}] (no per-slice auto-rescale).")
+        else:
+            _print_once(f"fixedrange:{var_desc}",
+                        f"WARNING: fixed range [{lo:g}, {hi:g}] could not be "
+                        f"applied to palette '{var_desc}'; EnSight's own range "
+                        "is in effect — figures may not share one color scale.")
+        return
+
     # Best-effort: rescale the palette to the visible (active-region) part so
     # the color range reflects the active membrane region, not the buffers.
     try:
@@ -714,6 +879,55 @@ def color_part_by_variable(session: Any, part: Any, var_desc: str) -> None:
                 break
     except Exception:
         pass
+
+
+def read_palette_minmax(session: Any, var_desc: str) -> Optional[Tuple[float, float]]:
+    palette = _find_palette(session, var_desc)
+    if palette is None:
+        return None
+    try:
+        minmax = _flatten_numeric(palette.MINMAX)
+        if len(minmax) == 2 and minmax[0] < minmax[1]:
+            return minmax[0], minmax[1]
+    except Exception:
+        pass
+    return None
+
+
+def hide_contour_legends(session: Any) -> None:
+    """Hide every legend/colorbar annotation currently in the scene
+    (presentation mode, hide_colorbar_in_contour=True). Legends are created
+    lazily when a part is colored, so this runs before each figure export.
+    Best-effort: a failure warns and the figure is still exported."""
+    try:
+        enums = session.ensight.objs.enums
+        legends = [
+            a for a in session.ensight.objs.core.ANNOTS
+            if getattr(a, "ANNOTTYPE", None) == enums.ANNOT_LEGEND
+        ]
+    except Exception as exc:
+        _print_once("hide_legend",
+                    f"WARNING: could not list legend annotations to hide: {exc}")
+        return
+    if not legends:
+        return
+    hidden = 0
+    for legend in legends:
+        for attr, value in (("VISIBLE", False), ("VISIBLE", 0), ("visible", False)):
+            try:
+                setattr(legend, attr, value)
+                hidden += 1
+                break
+            except Exception:
+                continue
+    if hidden == len(legends):
+        _print_once("hide_legend",
+                    "  Presentation: in-image colorbar/legend HIDDEN "
+                    f"({hidden} legend annotation(s)).")
+    else:
+        _print_once("hide_legend",
+                    f"WARNING: only {hidden}/{len(legends)} legend annotations "
+                    "could be hidden; some figures may still show a colorbar.")
 
 
 def read_palette_max(session: Any, var_desc: str) -> Optional[float]:
@@ -964,6 +1178,170 @@ def position_slice_colorbar(session: Any, var_desc: str, cfg: dict) -> None:
     else:
         _print_once("legend", f"  Slice colorbar: placed right-outside "
                               f"(x={layout['LOCATIONX']:.2f}, width={width}).")
+
+
+# ---------------------------------------------------------------------------
+# Standalone presentation colorbar PNGs (presentation mode only)
+# ---------------------------------------------------------------------------
+
+def read_palette_color_knots(
+    session: Any, var_desc: str,
+) -> Optional[List[Tuple[float, Tuple[float, float, float]]]]:
+    """Best-effort readback of the live palette's (position, RGB) knots via
+    ENS_PALETTE.LEVELS_AND_COLORS, so the standalone colorbar uses the exact
+    colors of the contour figures. Returns None (caller falls back to
+    DEFAULT_PALETTE_KNOTS) when unreadable or ambiguous."""
+    palette = _find_palette(session, var_desc)
+    if palette is None:
+        return None
+    try:
+        raw = palette.LEVELS_AND_COLORS
+    except Exception:
+        return None
+    nums = _flatten_numeric(raw, limit=4096)
+    # Expected layout: rows of [level, r, g, b].
+    if len(nums) < 8 or len(nums) % 4 != 0:
+        return None
+    rows = [nums[i:i + 4] for i in range(0, len(nums), 4)]
+    levels = [r[0] for r in rows]
+    if levels[0] >= levels[-1]:
+        return None
+    if any(levels[i] > levels[i + 1] for i in range(len(levels) - 1)):
+        return None
+    channels = [c for r in rows for c in r[1:4]]
+    if min(channels) < 0.0 or max(channels) > 255.0:
+        return None
+    scale = 255.0 if max(channels) > 1.0 else 1.0
+    span = levels[-1] - levels[0]
+    return [
+        ((r[0] - levels[0]) / span, (r[1] / scale, r[2] / scale, r[3] / scale))
+        for r in rows
+    ]
+
+
+def _interp_knots(
+    knots: List[Tuple[float, Tuple[float, float, float]]], t: float,
+) -> Tuple[float, float, float]:
+    if t <= knots[0][0]:
+        return knots[0][1]
+    for (p0, c0), (p1, c1) in zip(knots, knots[1:]):
+        if t <= p1:
+            w = 0.0 if p1 == p0 else (t - p0) / (p1 - p0)
+            return tuple(c0[i] + w * (c1[i] - c0[i]) for i in range(3))
+    return knots[-1][1]
+
+
+def _load_colorbar_font(size: int) -> Any:
+    for name in ("DejaVuSans.ttf", "arial.ttf", "Arial.ttf"):
+        try:
+            return _PILImageFont.truetype(name, size)
+        except Exception:
+            continue
+    try:
+        return _PILImageFont.load_default(size=size)  # Pillow >= 10.1
+    except TypeError:
+        return _PILImageFont.load_default()
+
+
+def render_horizontal_colorbar(
+    out_file: Path,
+    vmin: float,
+    vmax: float,
+    title: str,
+    knots: List[Tuple[float, Tuple[float, float, float]]],
+    tick_count: int = 6,
+    width: int = 1600,
+    height: int = 300,
+) -> bool:
+    """Render one horizontal colorbar PNG: title above, gradient bar with a
+    thin border, tick marks and value labels below."""
+    img = _PILImage.new("RGB", (width, height), (255, 255, 255))
+    draw = _PILImageDraw.Draw(img)
+    title_font = _load_colorbar_font(46)
+    tick_font = _load_colorbar_font(38)
+
+    margin_x = 100
+    bar_left, bar_right = margin_x, width - margin_x
+    bar_top, bar_height = 95, 85
+    bar_bottom = bar_top + bar_height
+
+    for px in range(bar_left, bar_right):
+        t = (px - bar_left) / max(1, bar_right - 1 - bar_left)
+        rgb = _interp_knots(knots, t)
+        color = tuple(max(0, min(255, int(round(255.0 * c)))) for c in rgb)
+        draw.line([(px, bar_top), (px, bar_bottom)], fill=color)
+    draw.rectangle([bar_left, bar_top, bar_right - 1, bar_bottom],
+                   outline=(60, 60, 60), width=2)
+
+    title_box = draw.textbbox((0, 0), title, font=title_font)
+    draw.text(((width - (title_box[2] - title_box[0])) / 2.0, 22),
+              title, fill=(0, 0, 0), font=title_font)
+
+    for i in range(tick_count):
+        t = i / (tick_count - 1)
+        x = bar_left + t * (bar_right - 1 - bar_left)
+        draw.line([(x, bar_bottom), (x, bar_bottom + 14)], fill=(60, 60, 60), width=2)
+        label = f"{vmin + t * (vmax - vmin):.5g}"
+        box = draw.textbbox((0, 0), label, font=tick_font)
+        label_w = box[2] - box[0]
+        label_x = min(max(x - label_w / 2.0, 4), width - label_w - 4)
+        draw.text((label_x, bar_bottom + 22), label, fill=(0, 0, 0), font=tick_font)
+
+    try:
+        img.save(str(out_file))
+    except OSError as exc:
+        print(f"WARNING: could not save colorbar {out_file.name}: {exc}")
+        return False
+    return out_file.is_file()
+
+
+def export_presentation_colorbars(
+    session: Any,
+    colorbars_dir: Path,
+    jobs: List[dict],
+) -> List[Path]:
+    """Export the standalone colorbar PNGs. Each job:
+      {file_name, title, var_desc, fixed_range (None = read live palette)}.
+    Everything is best-effort — a failed colorbar never fails the run."""
+    if not jobs:
+        return []
+    if not _PIL_AVAILABLE:
+        print("WARNING: Pillow (PIL) is not installed — standalone colorbar "
+              "PNGs skipped. Install with: pip install pillow\n"
+              f"  Import error: {_PIL_IMPORT_ERROR}")
+        return []
+    if not _safe_mkdir(colorbars_dir):
+        print(f"WARNING: refusing to create unsafe colorbar path: {colorbars_dir}")
+        return []
+
+    print(f"\nStandalone presentation colorbars -> {colorbars_dir}")
+    exported: List[Path] = []
+    for job in jobs:
+        rng = job["fixed_range"]
+        range_source = "fixed config range"
+        if rng is None:
+            rng = read_palette_minmax(session, job["var_desc"])
+            range_source = "live palette min/max (auto-ranged variable)"
+        if rng is None:
+            print(f"WARNING: {job['file_name']}: no fixed range configured and "
+                  "the live palette min/max could not be read back — skipped "
+                  "(a colorbar with an unknown range would be misleading).")
+            continue
+        knots = read_palette_color_knots(session, job["var_desc"])
+        knots_source = "live EnSight palette colors"
+        if knots is None:
+            knots = DEFAULT_PALETTE_KNOTS
+            knots_source = ("default EnSight rainbow (live palette colors "
+                            "not readable on this build)")
+        out_file = colorbars_dir / job["file_name"]
+        if render_horizontal_colorbar(out_file, rng[0], rng[1], job["title"], knots):
+            print(f"Exported colorbar: {out_file}")
+            print(f"    title '{job['title']}', range [{rng[0]:g}, {rng[1]:g}] "
+                  f"({range_source}), colors: {knots_source}")
+            exported.append(out_file)
+        else:
+            print(f"WARNING: colorbar {job['file_name']} could not be rendered.")
+    return exported
 
 
 # ---------------------------------------------------------------------------
@@ -1468,9 +1846,43 @@ def print_plan(cfg: dict, paths: dict) -> None:
           f"  [{'exists' if paths['final_case_file'].is_file() else 'MISSING'}]")
     print(f"Input data file      : {paths['final_data_file']}"
           f"  [{'exists' if paths['final_data_file'].is_file() else 'MISSING'}]")
-    print(f"Output (slices)      : {paths['slices_dir']}")
-    print(f"Output (vortex)      : {paths['vortex_dir']}")
+    presentation = bool(cfg["presentation_contour_mode"])
+    slices_out = paths["presentation_slices_dir"] if presentation else paths["slices_dir"]
+    vortex_out = paths["presentation_vortex_dir"] if presentation else paths["vortex_dir"]
+    print(f"Output (slices)      : {slices_out}")
+    print(f"Output (vortex)      : {vortex_out}")
     print(f"Image size           : {cfg['image_width']} x {cfg['image_height']}")
+
+    print(f"\nPresentation contour mode: {presentation}")
+    if presentation:
+        for key in ("concentration", "velocity_mag", "x_velocity", "vorticity_mag"):
+            rng = presentation_fixed_range(cfg, key)
+            if rng is not None:
+                print(f"  {FIELD_DISPLAY_LABELS[key]:24s}: FIXED color range "
+                      f"[{rng[0]:g}, {rng[1]:g}] (shared across all cases)")
+            else:
+                print(f"  {FIELD_DISPLAY_LABELS[key]:24s}: no fixed range — "
+                      "per-slice auto-range (classic behavior)")
+        qiso_rng = _parse_fixed_range(cfg.get("qiso_velocity_range"), "qiso_velocity_range")
+        if qiso_rng is not None:
+            print(f"  {'Q iso velocity coloring':24s}: FIXED color range "
+                  f"[{qiso_rng[0]:g}, {qiso_rng[1]:g}]")
+        else:
+            print(f"  {'Q iso velocity coloring':24s}: no fixed range — auto-range")
+        print(f"  hide_colorbar_in_contour  : {cfg['hide_colorbar_in_contour']}")
+        print(f"  export_separate_colorbars : {cfg['export_separate_colorbars']}")
+        if cfg["export_separate_colorbars"]:
+            print(f"  Colorbar output           : {paths['presentation_colorbars_dir']}")
+            print("    colorbar_concentration.png / colorbar_velocity_magnitude.png")
+            print("    colorbar_vorticity_magnitude.png (if vorticity available)")
+            print("    colorbar_qiso_velocity.png (if Q iso figures exported)")
+            if not _PIL_AVAILABLE:
+                print("  WARNING: Pillow (PIL) is not installed — standalone "
+                      "colorbars would be skipped in a real run "
+                      "(pip install pillow).")
+        print("  Classic slices/ and vortex/ folders are NOT touched in this mode.")
+    else:
+        print("  (classic output behavior — unchanged)")
 
     print("\nSlice rendering quality (yz slice figures only):")
     print(f"  smooth_slice_rendering : {cfg['smooth_slice_rendering']}"
@@ -1506,7 +1918,7 @@ def print_plan(cfg: dict, paths: dict) -> None:
         print(f"  {FIELD_DISPLAY_LABELS[key]:24s}: {'yes' if included else 'no (disabled)'}")
         if included:
             for f in fractions:
-                print(f"    slices/yz_active_{_frac_tag(f)}_{SLICE_FILE_SUFFIX[key]}.png")
+                print(f"    {slices_out.name}/yz_active_{_frac_tag(f)}_{SLICE_FILE_SUFFIX[key]}.png")
 
     print("\nRequested vortex figures:")
     if cfg["include_qcriterion"]:
@@ -1515,12 +1927,12 @@ def print_plan(cfg: dict, paths: dict) -> None:
             print("  Q iso thresholds (qcriterion_threshold_list) — one figure each:")
             for t in thr_list:
                 try:
-                    print("    vortex/qcriterion_iso_velocity_colored_thr_"
+                    print(f"    {vortex_out.name}/qcriterion_iso_velocity_colored_thr_"
                           f"{_threshold_tag(float(t))}.png")
                 except (TypeError, ValueError):
                     print(f"    (invalid threshold entry {t!r} — will be ignored)")
         elif cfg["qcriterion_threshold"] is not None:
-            print("  vortex/qcriterion_iso_velocity_colored_thr_"
+            print(f"  {vortex_out.name}/qcriterion_iso_velocity_colored_thr_"
                   f"{_threshold_tag(float(cfg['qcriterion_threshold']))}.png "
                   "(explicit qcriterion_threshold)")
         else:
@@ -1528,9 +1940,9 @@ def print_plan(cfg: dict, paths: dict) -> None:
                   "if the active-region Q max cannot be read, a default sweep "
                   f"{[f'{t:g}' for t in DEFAULT_Q_THRESHOLD_SWEEP]} is exported "
                   "as ..._thr_<value>.png")
-        print("  vortex/qcriterion_iso_velocity_colored.png "
+        print(f"  {vortex_out.name}/qcriterion_iso_velocity_colored.png "
               "(generic copy of the first successful threshold)")
-        print("  vortex/qcriterion_yz_active_x050.png")
+        print(f"  {vortex_out.name}/qcriterion_yz_active_x050.png")
         if cfg["qiso_color_by_velocity"]:
             print("  Q iso rendering: surface colored by VELOCITY MAGNITUDE, "
                   f"colorbar title '{cfg['qiso_colorbar_title']}'")
@@ -1564,7 +1976,7 @@ def print_plan(cfg: dict, paths: dict) -> None:
     else:
         print("  Q-criterion figures: no (disabled)")
     if cfg["include_vorticity"]:
-        print("  vortex/vorticity_mag_active_mid.png")
+        print(f"  {vortex_out.name}/vorticity_mag_active_mid.png")
         if cfg["compute_vorticity_if_missing"]:
             print("    (if no vorticity variable exists, "
                   f"{COMPUTED_VORTICITY_NAME}=Vort(plist,Velocity) is computed "
@@ -1599,6 +2011,15 @@ def run_export(cfg: dict, paths: dict) -> int:
             except Exception:
                 pass
         return 1
+
+    presentation = bool(cfg["presentation_contour_mode"])
+    hide_legend = presentation and bool(cfg["hide_colorbar_in_contour"])
+    slices_out_dir = paths["presentation_slices_dir"] if presentation else paths["slices_dir"]
+    vortex_out_dir = paths["presentation_vortex_dir"] if presentation else paths["vortex_dir"]
+    # Variable DESCRIPTION actually rendered per colorbar key — filled in as
+    # figures are exported, consumed by the standalone colorbar export.
+    colorbar_var_desc: dict = {}
+    qiso_fixed_range: Optional[Tuple[float, float]] = None
 
     exported: List[Path] = []
     try:
@@ -1672,10 +2093,40 @@ def run_export(cfg: dict, paths: dict) -> int:
             print(f"  active x/L = {f:.3f}  ->  x = {x:.8g} m")
 
         # --- output folders (only now — never in dry run) ---------------
-        for d in (paths["slices_dir"], paths["vortex_dir"]):
+        for d in (slices_out_dir, vortex_out_dir):
             if not _safe_mkdir(d):
                 print(f"ERROR: refusing to create unsafe output path: {d}")
                 return 1
+
+        if presentation:
+            print("\nPresentation contour mode: ON")
+            for key in ("concentration", "velocity_mag", "x_velocity",
+                        "vorticity_mag"):
+                rng = presentation_fixed_range(cfg, key)
+                if rng is not None:
+                    print(f"  {FIELD_DISPLAY_LABELS[key]:24s}: FIXED color range "
+                          f"[{rng[0]:g}, {rng[1]:g}] (same palette min/max "
+                          "across all geometries/conditions)")
+                else:
+                    print(f"  {FIELD_DISPLAY_LABELS[key]:24s}: no fixed range "
+                          "configured — per-slice auto-range (classic behavior)")
+            if cfg["include_qcriterion"] and cfg["qiso_color_by_velocity"]:
+                qiso_fixed_range = _parse_fixed_range(
+                    cfg.get("qiso_velocity_range"), "qiso_velocity_range",
+                )
+                if qiso_fixed_range is not None:
+                    print(f"  {'Q iso velocity coloring':24s}: FIXED color range "
+                          f"[{qiso_fixed_range[0]:g}, {qiso_fixed_range[1]:g}]")
+                else:
+                    print(f"  {'Q iso velocity coloring':24s}: no fixed range "
+                          "configured — auto-range (classic behavior)")
+            print(f"  In-image colorbar/legend  : "
+                  f"{'HIDDEN in all figures' if hide_legend else 'kept (hide_colorbar_in_contour=False)'}")
+            print(f"  Separate colorbar PNGs    : "
+                  + (f"ON -> {paths['presentation_colorbars_dir']}"
+                     if cfg["export_separate_colorbars"] else "off"))
+            print(f"  Contour output folders    : {slices_out_dir}")
+            print(f"                              {vortex_out_dir}")
 
         setup_clean_scene(session)
 
@@ -1713,15 +2164,20 @@ def run_export(cfg: dict, paths: dict) -> int:
             for key in available_slice_fields:
                 _var_obj, var_desc = found_vars[key]
                 display_desc = slice_display_desc.get(key, var_desc)
-                out_file = paths["slices_dir"] / f"yz_active_{tag}_{SLICE_FILE_SUFFIX[key]}.png"
+                out_file = slices_out_dir / f"yz_active_{tag}_{SLICE_FILE_SUFFIX[key]}.png"
                 show_only_parts(session, [slice_part])
-                color_part_by_variable(session, slice_part, display_desc)
+                color_part_by_variable(session, slice_part, display_desc,
+                                       fixed_range=presentation_fixed_range(cfg, key))
                 tune_slice_palette(session, display_desc, cfg)
-                position_slice_colorbar(session, display_desc, cfg)
+                if hide_legend:
+                    hide_contour_legends(session)
+                else:
+                    position_slice_colorbar(session, display_desc, cfg)
                 set_view(session, (1.0, 0.0, 0.0), up_axis=(0.0, 0.0, 1.0),
                          fit_margin=float(cfg["camera_fit_margin"]))
                 if export_png(session, out_file, cfg):
                     exported.append(out_file)
+                    colorbar_var_desc.setdefault(key, display_desc)
 
         # --- 2. vortex figures ------------------------------------------
         active_volume_parts: List[Any] = []
@@ -1787,9 +2243,11 @@ def run_export(cfg: dict, paths: dict) -> int:
             )
             if mid_slice is not None:
                 _q_obj, q_desc = found_vars["qcriterion"]
-                out_file = paths["vortex_dir"] / "qcriterion_yz_active_x050.png"
+                out_file = vortex_out_dir / "qcriterion_yz_active_x050.png"
                 show_only_parts(session, [mid_slice])
                 color_part_by_variable(session, mid_slice, q_desc)
+                if hide_legend:
+                    hide_contour_legends(session)
                 set_view(session, (1.0, 0.0, 0.0), up_axis=(0.0, 0.0, 1.0))
                 if export_png(session, out_file, cfg):
                     exported.append(out_file)
@@ -1841,12 +2299,18 @@ def run_export(cfg: dict, paths: dict) -> int:
                     )
                     if mid_plane is not None:
                         _v_obj, v_desc = found_vars["vorticity_mag"]
-                        out_file = paths["vortex_dir"] / "vorticity_mag_active_mid.png"
+                        out_file = vortex_out_dir / "vorticity_mag_active_mid.png"
                         show_only_parts(session, [mid_plane])
-                        color_part_by_variable(session, mid_plane, v_desc)
+                        color_part_by_variable(
+                            session, mid_plane, v_desc,
+                            fixed_range=presentation_fixed_range(cfg, "vorticity_mag"),
+                        )
+                        if hide_legend:
+                            hide_contour_legends(session)
                         set_view(session, (0.0, 0.0, 1.0), up_axis=(0.0, 1.0, 0.0))
                         if export_png(session, out_file, cfg):
                             exported.append(out_file)
+                            colorbar_var_desc.setdefault("vorticity_mag", v_desc)
 
         # 2c. Q-criterion iso-surface(s) colored by velocity magnitude — one
         # figure per resolved threshold; a failed threshold never stops the
@@ -1887,13 +2351,13 @@ def run_export(cfg: dict, paths: dict) -> int:
                 print(f"Q iso thresholds ({thr_source}): "
                       f"[{', '.join(f'{t:g}' for t in thresholds)}]")
 
-                generic_file = paths["vortex_dir"] / "qcriterion_iso_velocity_colored.png"
+                generic_file = vortex_out_dir / "qcriterion_iso_velocity_colored.png"
                 generic_written = False
                 iso_exported_count = 0
                 iso_skipped_existing = 0
                 for threshold in thresholds:
                     tag = _threshold_tag(threshold)
-                    thr_file = (paths["vortex_dir"]
+                    thr_file = (vortex_out_dir
                                 / f"qcriterion_iso_velocity_colored_thr_{tag}.png")
                     if thr_file.is_file():
                         print(f"  threshold {threshold:g}: {thr_file.name} "
@@ -1915,8 +2379,12 @@ def run_export(cfg: dict, paths: dict) -> int:
                               "above this value); exporting anyway.")
                     show_only_parts(session, [iso_part])
                     apply_qiso_part_style(session, iso_part, cfg)
-                    color_part_by_variable(session, iso_part, color_desc)
-                    apply_qiso_colorbar_title(session, color_desc, colorbar_title)
+                    color_part_by_variable(session, iso_part, color_desc,
+                                           fixed_range=qiso_fixed_range)
+                    if hide_legend:
+                        hide_contour_legends(session)
+                    else:
+                        apply_qiso_colorbar_title(session, color_desc, colorbar_title)
                     set_view(session, (1.0, 1.0, 1.0), up_axis=(0.0, 0.0, 1.0),
                              fit_margin=float(cfg["qiso_camera_fit_margin"]))
                     if export_png(session, thr_file, cfg):
@@ -1942,6 +2410,39 @@ def run_export(cfg: dict, paths: dict) -> int:
                     print("WARNING: no Q iso-surface figure could be exported "
                           "at any threshold (see warnings above).")
                     q_iso_strict_failure = True
+                elif cfg["qiso_color_by_velocity"]:
+                    colorbar_var_desc.setdefault("qiso_velocity", color_desc)
+
+        # --- 3. standalone presentation colorbars ------------------------
+        if presentation and cfg["export_separate_colorbars"]:
+            colorbar_jobs: List[dict] = []
+            for key in ("concentration", "velocity_mag", "vorticity_mag"):
+                if key not in colorbar_var_desc:
+                    continue
+                file_name, title = PRESENTATION_COLORBAR_FILES[key]
+                colorbar_jobs.append({
+                    "file_name": file_name,
+                    "title": title,
+                    "var_desc": colorbar_var_desc[key],
+                    "fixed_range": presentation_fixed_range(cfg, key),
+                })
+            if "qiso_velocity" in colorbar_var_desc:
+                file_name, _ = PRESENTATION_COLORBAR_FILES["qiso_velocity"]
+                colorbar_jobs.append({
+                    "file_name": file_name,
+                    "title": str(cfg["qiso_colorbar_title"]),
+                    "var_desc": colorbar_var_desc["qiso_velocity"],
+                    "fixed_range": qiso_fixed_range,
+                })
+            if colorbar_jobs:
+                exported.extend(export_presentation_colorbars(
+                    session, paths["presentation_colorbars_dir"], colorbar_jobs,
+                ))
+            else:
+                print("\nWARNING: no figure used a colorbar-eligible variable — "
+                      "no standalone colorbars to export.")
+        elif presentation:
+            print("\nStandalone colorbars: export_separate_colorbars=False — skipped.")
 
         # --- summary ------------------------------------------------------
         print("\n" + "=" * 76)
@@ -1973,6 +2474,7 @@ def main() -> int:
     try:
         cfg = build_config(args)
         manual_extents(cfg)  # validate early (raises on min >= max)
+        validate_presentation_ranges(cfg)  # validate *_range pairs early
     except ValueError as exc:
         print(f"ERROR: {exc}")
         return 1
