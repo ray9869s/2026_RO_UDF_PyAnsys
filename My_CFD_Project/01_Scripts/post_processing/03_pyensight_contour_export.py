@@ -84,7 +84,7 @@ def _safe_mkdir(p: Path) -> bool:
 # Field specifications
 # ---------------------------------------------------------------------------
 
-DEFAULT_FIELDS: List[str] = ["cp_inlet", "lmh", "wall_shear_rate", "velocity_midplane"]
+DEFAULT_FIELDS: List[str] = ["cp_inlet", "water_flux", "lmh", "salt_flux"]
 
 # Candidates are tried in order (exact, then normalised) against ENS_VAR.DESCRIPTION.
 FIELD_SPECS: dict = {
