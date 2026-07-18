@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import os
 import platform
@@ -360,6 +361,20 @@ class LogParseResult:
     launch_error_evidence: list[str] = field(default_factory=list)
 
 
+def _default_max_iter_target() -> int:
+    """Read the batch campaign iteration cap from batch_config when available."""
+    batch_config_path = Path(__file__).resolve().parents[1] / "batch_config.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_batch_config_for_inventory", batch_config_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load batch config: {batch_config_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return int(module.common_solver_settings.get("max_iterations", 2000))
+    except Exception:
+        return 2000
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a read-only inventory of RO CFD result cases."
@@ -378,7 +393,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--geo-name", type=str, default=None, help="Optional geometry filter.")
     parser.add_argument("--case-name", type=str, default=None, help="Optional case-name filter.")
-    parser.add_argument("--max-iter", type=int, default=2000, help="Maximum iteration target (default: 2000).")
+    parser.add_argument(
+        "--max-iter",
+        type=int,
+        default=_default_max_iter_target(),
+        help=(
+            "Maximum iteration target "
+            "(default: batch_config common_solver_settings.max_iterations)."
+        ),
+    )
     parser.add_argument(
         "--include-hidden",
         action="store_true",
@@ -823,7 +846,9 @@ def parse_logs(
         if solver_analyses:
             result.iteration_notes.append("No plausible iteration number detected in parsed solver log text.")
         else:
-            result.iteration_notes.append("No solver_run log was found; convergence status uses file/report evidence only.")
+            result.iteration_notes.append(
+                "No solver_run log was found; convergence status is based on non-solver logs only."
+            )
 
     has_failure = bool(
         result.failure_evidence
@@ -841,8 +866,6 @@ def parse_logs(
     elif has_max_iter:
         result.convergence_status = MAX_ITER_REACHED
     elif has_converged:
-        result.convergence_status = CONVERGED
-    elif has_case_data_pair and has_summary_metrics_wide:
         result.convergence_status = CONVERGED
     elif has_completion:
         result.convergence_status = POSSIBLY_INCOMPLETE

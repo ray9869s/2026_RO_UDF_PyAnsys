@@ -53,10 +53,19 @@ class TestInventoryConvergenceClassification:
         )
         assert result.convergence_status == inventory.MAX_ITER_REACHED
 
-    def test_campaign_1000_iterations_with_default_2000_target_falls_through_to_converged(
-        self, inventory
-    ):
-        """F-02: 1000-iter campaign + default --max-iter 2000 + artifacts => CONVERGED."""
+    def test_campaign_1000_iterations_with_batch_config_default_is_max_iter_reached(self, inventory):
+        max_iter_target = inventory._default_max_iter_target()
+        assert max_iter_target == 1000
+        result = inventory.parse_logs(
+            analyses=[solver_analysis(inventory, "iteration: 1000\n")],
+            max_iter_target=max_iter_target,
+            has_case_data_pair=True,
+            has_summary_metrics_wide=True,
+        )
+        assert result.hit_max_iter_target is True
+        assert result.convergence_status == inventory.MAX_ITER_REACHED
+
+    def test_campaign_1000_iterations_with_explicit_2000_target_is_possibly_incomplete(self, inventory):
         result = inventory.parse_logs(
             analyses=[solver_analysis(inventory, "iteration: 1000\n")],
             max_iter_target=2000,
@@ -64,7 +73,7 @@ class TestInventoryConvergenceClassification:
             has_summary_metrics_wide=True,
         )
         assert result.hit_max_iter_target is False
-        assert result.convergence_status == inventory.CONVERGED
+        assert result.convergence_status == inventory.POSSIBLY_INCOMPLETE
 
     def test_campaign_1000_iterations_with_matching_target_is_max_iter_reached(self, inventory):
         result = inventory.parse_logs(
@@ -76,8 +85,7 @@ class TestInventoryConvergenceClassification:
         assert result.hit_max_iter_target is True
         assert result.convergence_status == inventory.MAX_ITER_REACHED
 
-    def test_artifacts_with_only_non_solver_logs_are_converged(self, inventory):
-        """F-02: cas/dat + summary_metrics_wide upgrade status without solver evidence."""
+    def test_artifacts_with_only_non_solver_logs_are_possibly_incomplete(self, inventory):
         result = inventory.parse_logs(
             analyses=[
                 inventory.LogFileAnalysis(
@@ -90,7 +98,7 @@ class TestInventoryConvergenceClassification:
             has_case_data_pair=True,
             has_summary_metrics_wide=True,
         )
-        assert result.convergence_status == inventory.CONVERGED
+        assert result.convergence_status == inventory.POSSIBLY_INCOMPLETE
 
     def test_case_data_without_summary_stays_incomplete(self, inventory):
         result = inventory.parse_logs(
@@ -110,6 +118,7 @@ class TestInventoryConvergenceClassification:
         )
         assert result.convergence_status == inventory.UNKNOWN_NO_LOG
 
-    def test_default_max_iter_cli_value_is_2000(self, inventory):
+    def test_default_max_iter_cli_matches_batch_config(self, inventory):
         args = inventory.parse_args([])
-        assert args.max_iter == 2000
+        assert args.max_iter == inventory._default_max_iter_target()
+        assert args.max_iter == 1000
