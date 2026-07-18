@@ -503,7 +503,7 @@ def load_base_config() -> Any:
 
 
 def parse_case_operating_values(case_name: str) -> tuple[Optional[float], Optional[float]]:
-    match = re.fullmatch(r"u(\d+)p(\d+)_p(\d+)M", case_name)
+    match = re.fullmatch(r"u(\d+)p(\d+)_p(\d+)M(?:__.+)?", case_name)
     if not match:
         return None, None
     inlet_velocity = float(f"{match.group(1)}.{match.group(2)}")

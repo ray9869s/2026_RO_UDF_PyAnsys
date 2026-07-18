@@ -158,15 +158,16 @@ class TestParseCaseOperatingValues:
         assert p == expected_p
 
     @pytest.mark.parametrize(
-        "mesh_qualified_name",
+        ("mesh_qualified_name", "expected_u", "expected_p"),
         [
-            f"u0p1_p4M__{SIN_MESH}",
-            f"u0p2_p6M__{SIN_MESH}",
-            f"u0p3_p8M__{SIN_MESH}",
+            (f"u0p1_p4M__{SIN_MESH}", 0.1, 4.0e6),
+            (f"u0p2_p6M__{SIN_MESH}", 0.2, 6.0e6),
+            (f"u0p3_p8M__{SIN_MESH}", 0.3, 8.0e6),
         ],
     )
-    def test_mesh_qualified_names_currently_unparsed(self, post_batch, mesh_qualified_name):
-        """F-01 characterization: 06's parser only accepts plain uXpY_pZM names."""
+    def test_mesh_qualified_names_parse_operating_values(
+        self, post_batch, mesh_qualified_name, expected_u, expected_p
+    ):
         u, p = post_batch.parse_case_operating_values(mesh_qualified_name)
-        assert u is None
-        assert p is None
+        assert u == expected_u
+        assert p == expected_p
