@@ -1299,6 +1299,7 @@ def export_presentation_colorbars(
     session: Any,
     colorbars_dir: Path,
     jobs: List[dict],
+    planned_exports: Optional[List[Path]] = None,
 ) -> List[Path]:
     """Export the standalone colorbar PNGs. Each job:
       {file_name, title, var_desc, fixed_range (None = read live palette)}.
@@ -1334,6 +1335,8 @@ def export_presentation_colorbars(
             knots_source = ("default EnSight rainbow (live palette colors "
                             "not readable on this build)")
         out_file = colorbars_dir / job["file_name"]
+        if planned_exports is not None:
+            planned_exports.append(out_file)
         if render_horizontal_colorbar(out_file, rng[0], rng[1], job["title"], knots):
             print(f"Exported colorbar: {out_file}")
             print(f"    title '{job['title']}', range [{rng[0]:g}, {rng[1]:g}] "
@@ -1991,6 +1994,40 @@ def print_plan(cfg: dict, paths: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Planned-export bookkeeping (pure — testable without PyEnSight)
+# ---------------------------------------------------------------------------
+
+def count_planned_exported(
+    planned_exports: List[Path],
+    exported: List[Path],
+) -> Tuple[int, int]:
+    """Return (success_count, planned_count). exported may include unplanned copies."""
+    if not planned_exports:
+        return 0, 0
+    exported_set = {p.resolve() for p in exported}
+    success = sum(1 for p in planned_exports if p.resolve() in exported_set)
+    return success, len(planned_exports)
+
+
+def resolve_extra_figures_exit_code(
+    exported: List[Path],
+    planned_exports: List[Path],
+    *,
+    q_iso_strict_failure: bool = False,
+    strict_qcriterion_required: bool = False,
+) -> int:
+    if q_iso_strict_failure and strict_qcriterion_required:
+        return 1
+    if not exported:
+        return 1
+    if planned_exports:
+        success, total = count_planned_exported(planned_exports, exported)
+        if success < total:
+            return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Real export run
 # ---------------------------------------------------------------------------
 
@@ -2022,6 +2059,7 @@ def run_export(cfg: dict, paths: dict) -> int:
     qiso_fixed_range: Optional[Tuple[float, float]] = None
 
     exported: List[Path] = []
+    planned_exports: List[Path] = []
     try:
         print_variable_inventory(session)
 
@@ -2175,6 +2213,7 @@ def run_export(cfg: dict, paths: dict) -> int:
                     position_slice_colorbar(session, display_desc, cfg)
                 set_view(session, (1.0, 0.0, 0.0), up_axis=(0.0, 0.0, 1.0),
                          fit_margin=float(cfg["camera_fit_margin"]))
+                planned_exports.append(out_file)
                 if export_png(session, out_file, cfg):
                     exported.append(out_file)
                     colorbar_var_desc.setdefault(key, display_desc)
@@ -2249,6 +2288,7 @@ def run_export(cfg: dict, paths: dict) -> int:
                 if hide_legend:
                     hide_contour_legends(session)
                 set_view(session, (1.0, 0.0, 0.0), up_axis=(0.0, 0.0, 1.0))
+                planned_exports.append(out_file)
                 if export_png(session, out_file, cfg):
                     exported.append(out_file)
 
@@ -2308,6 +2348,7 @@ def run_export(cfg: dict, paths: dict) -> int:
                         if hide_legend:
                             hide_contour_legends(session)
                         set_view(session, (0.0, 0.0, 1.0), up_axis=(0.0, 1.0, 0.0))
+                        planned_exports.append(out_file)
                         if export_png(session, out_file, cfg):
                             exported.append(out_file)
                             colorbar_var_desc.setdefault("vorticity_mag", v_desc)
@@ -2387,6 +2428,7 @@ def run_export(cfg: dict, paths: dict) -> int:
                         apply_qiso_colorbar_title(session, color_desc, colorbar_title)
                     set_view(session, (1.0, 1.0, 1.0), up_axis=(0.0, 0.0, 1.0),
                              fit_margin=float(cfg["qiso_camera_fit_margin"]))
+                    planned_exports.append(thr_file)
                     if export_png(session, thr_file, cfg):
                         exported.append(thr_file)
                         iso_exported_count += 1
@@ -2437,6 +2479,7 @@ def run_export(cfg: dict, paths: dict) -> int:
             if colorbar_jobs:
                 exported.extend(export_presentation_colorbars(
                     session, paths["presentation_colorbars_dir"], colorbar_jobs,
+                    planned_exports=planned_exports,
                 ))
             else:
                 print("\nWARNING: no figure used a colorbar-eligible variable — "
@@ -2446,6 +2489,9 @@ def run_export(cfg: dict, paths: dict) -> int:
 
         # --- summary ------------------------------------------------------
         print("\n" + "=" * 76)
+        if planned_exports:
+            success, total = count_planned_exported(planned_exports, exported)
+            print(f"Exported {success}/{total} planned figure(s)")
         print(f"Exported {len(exported)} figure(s):")
         for p in exported:
             print(f"  {p}")
@@ -2456,7 +2502,12 @@ def run_export(cfg: dict, paths: dict) -> int:
             print("ERROR: Q iso-surface export failed and "
                   "strict_qcriterion_required=True.")
             return 1
-        return 0 if exported else 1
+        return resolve_extra_figures_exit_code(
+            exported,
+            planned_exports,
+            q_iso_strict_failure=q_iso_strict_failure,
+            strict_qcriterion_required=bool(cfg["strict_qcriterion_required"]),
+        )
     finally:
         try:
             session.close()
