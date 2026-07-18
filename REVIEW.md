@@ -263,6 +263,117 @@ batch again labels `SUCCESS`.
 For MFBO, solver execution success, numerical convergence, acceptance for
 analysis, and post-processing completeness must be separate states.
 
+#### F-20 — Universal `cp_inlet` WARN: EnSight bulk-center-average path fails on every post-processed case
+
+Severity: **High** (systematic incorrect CP definition on all contour exports;
+masked as `WARN` + exit 0 under pre-fix orchestration)
+
+**Symptom (production):** All 46 post-processed cases with
+`contour_export_status.json` show `summary.warn = 1` and `summary.failed = 0`.
+The single `WARN` record is always `field_key = cp_inlet`. Typical message:
+
+```text
+WARN: bulk center avg failed (all_candidates_failed: bbox:
+ failed_to_get_bounding_box | z=0: clip_failed(clip_cmd=ok,z=0...) | ...)
+```
+
+**Affected scope:** Every geometry and every case in the post-processed set (46/46
+with status JSON). Not case-specific geometry; indicates a systematic EnSight API /
+part-detection failure rather than sporadic mesh issues.
+
+**Code path (`03_pyensight_contour_export.py`):**
+
+1. **Strategy 0 — PyFluent CSV** (`:3664-3699`, `_read_pyfluent_bulk_center_avg`
+   `:3342-3382`): reads `c_bulk_center_area_avg` from
+   `post/reports/summary_metrics_wide.csv`. On production runs this either was
+   unavailable at contour-export time or failed the plausibility gate (`:3672-3695`),
+   because Strategy 1 was reached on every case.
+
+2. **Strategy 1 — EnSight center-plane average** (`:3701-3706` →
+   `compute_bulk_center_average` `:2875-3038`):
+   - `find_fluid_volume_parts()` (`:2688-2700`) collects 3-D volume parts.
+   - `get_part_bounding_box()` (`:2717-2724`) calls `_accumulate_parts_extents`
+     (`:2703-2714`), which probes each part via `_first_success_for_object` →
+     `attempt_object_bounds` (`:1081-1127`, `BOUNDS_API_ATTEMPTS` `:227-244`).
+     Requires `zmin < zmax` (`:2722-2723`). Production diag
+     `bbox: failed_to_get_bounding_box` means **no fluid part returned usable
+     3-D extents** on this PyEnSight build.
+   - Fallback z candidates `CENTER_PLANE_Z_CANDIDATES = [0.0, 0.000385]` (`:192`)
+     are tried when bbox fails (`:2954-2956`).
+   - For each z, `_try_create_clip_at_z` (`:2784-2830`) issues
+     `session.ensight.clip.*` on selected volume part numbers. Production shows
+     `clip_cmd=ok` followed by `clip_failed(...)` — the command language call
+     succeeds but **no new part is detected** (`:2812-2826`,
+     `no_new_parts_after_clip`), so the center plane is never created.
+   - When every z candidate fails, `final_result = all_candidates_failed`
+     (`:3036-3038`) and the cp_inlet handler records
+     `WARN: bulk center avg failed ({plane_diag})` (`:3737-3744`).
+
+3. **Fallback 1 — inlet reference** (`:3746-3777`): when `bulk_avg is None`,
+   `create_cp_wall_direct(session, salt_desc, inlet_ref)` builds
+   `CP_WALL_DIRECT = salt / inlet_ref` using `UDF_C_INLET_REF` or inlet mass
+   fraction (`:3748-3758`). Adds a second WARN:
+   `CP using inlet reference (...), center-plane avg unavailable`. **The PNG is
+   still written** (`:4316-4324`): any warnings downgrade the record to
+   `STATUS_WARN`, not `FAILED`; `export.image()` runs with the inlet-reference
+   CP variable (or UDM_9 if that also fails — not observed in the 46-case
+   pattern).
+
+**What the export still produces:** A `cp_inlet` membrane PNG in the fixed
+`[1.00, 1.15]` palette range, but CP is computed as **wall salt concentration
+divided by the inlet reference**, not by the channel-center bulk average. Colorbar
+metadata notes `bulk_reference_mode=inlet_reference_fallback` when the fallback
+succeeds (`:4346-4350`). Physically this is a mislabeled concentration ratio, not
+true CP; the WARN is diagnostically correct but pre-fix orchestration recorded
+stage `SUCCESS`.
+
+**Root-cause hypothesis:**
+
+- **Primary:** PyEnSight 0.11.x on the server does not expose part bounds through
+  any of the `BOUNDS_API_ATTEMPTS` attributes/methods on 3-D fluid volume parts,
+  and/or returns degenerate z-extents (`zmin >= zmax`), so `get_part_bounding_box`
+  always returns `None`.
+- **Secondary:** The z-normal clip workflow assumes clip creates a **new** part
+  discoverable by `PARTNUMBER` delta (`:2812-2817`). On this build the clip may
+  modify geometry in place or register parts differently, so `plane_part` stays
+  `None` even when `clip_cmd=ok`.
+- **Universality** across geometries/cases rules out mesh-specific coordinates;
+  points to API/session contract drift, not RO geometry.
+- **Relation to deferred F-08 / #7 (case-only `load_data` fallback):** Possibly
+  related if attempt-2 case-only loading leaves volume parts without full result
+  geometry metadata, but **weak as sole explanation**: the other three contour
+  fields (`water_flux`, `lmh`, `salt_flux`) export `SUCCESS` on the same
+  session, so case/data loading is functional. Bounds and clip are more likely
+  broken independent of load path; still worth verifying whether attempt-1
+  dual-file load vs attempt-2 case-only changes part EXTENTS/clip behavior on
+  the server (add post-load diagnostic logging in a future commit).
+
+**Proposed fix (post-campaign; implement alongside deferred #7 review):**
+
+1. **Prefer Strategy 0:** Ensure report extraction runs before contours in batch
+   order (already typical) and widen/relax plausibility or log why CSV values
+   are rejected; treat a valid `c_bulk_center_area_avg` as authoritative and
+   skip EnSight AMEAN entirely when present.
+2. **Repair Strategy 1 for current PyEnSight:**
+   - Add server-side bounds diagnostic dump (reuse `attempt_object_bounds` on
+     fluid volume parts) to identify which API works on 0.11.6.
+   - Replace clip-by-PARTNUMBER-delta with a named-part lookup or
+     `ensight.utils` clip helper if available on this build.
+   - Consider reusing membrane-view bounds path (`get_membrane_view_bounds`,
+     `:2727-2733`) which does not require `zmin < zmax`, only for z-mid
+     estimation — not for CP itself.
+3. **Tighten success contract (deferred F-03 #1):** Treat inlet-reference CP as
+   `WARN` at orchestrator level (now recorded post commit `4d4d85a`) and
+   eventually fail or flag campaigns that never achieve
+   `bulk_reference_mode=center_plane_area_weighted_average*`.
+4. **Do not change UDF physics or contour filenames**; fix is confined to bulk
+   reference acquisition in `03`.
+
+**Verification after fix:** On server, re-export one case per geometry; expect
+`cp_inlet` record `SUCCESS` (or `WARN` only for genuine physics edge cases),
+`bulk_reference_mode` containing `center_plane` or `pyfluent_report_csv`, and
+`summary.warn = 0` for the basic four-field contour set.
+
 ### Maintainability and reliability
 
 #### F-07 — The suspected `07` duplication is real in infrastructure, but not a safe wholesale extraction
@@ -515,6 +626,57 @@ The archive scripts are not used by active drivers, but they are full copies.
 Date-stamped worker names make each new revision likely to become another copy.
 Keep existing names as compatibility entry points, but move reusable
 implementation behind stable modules rather than creating another dated copy.
+
+## Approval checkpoint
+
+Phase 2 ends here. No runtime source, UDF, Scheme, geometry, config, or output
+schema has been changed. Phase 3 should begin only after the owner selects and
+approves specific plan items and explicitly decides whether items 5-7 may wait
+until the active 24-case campaign has completed.
+
+## Phase 3 — Verified on production data (2026-07-18)
+
+Read-only checks against the server's actual campaign output, captured while the
+24-case campaign was still running on **pre-fix** code. WSL-side SAFE-slice
+commits (`F-01` parser fix, `F-02` inventory defaults, `F-03` status inference,
+`F-03` `08` partial-export exit, `F-03` `03` default fields) landed before this
+verification run but had not yet been deployed to the server at inspection time.
+
+### Verified on production data (2026-07-18)
+
+- **F-01 CONFIRMED:** All 15 post-processed mesh-qualified cases
+  (`Sin_SL` / `Sin_ST`, `*__mesh_max100_min006_cpg3_bl3`) have
+  `expected_outlet_gauge_pressure = 6000000.0` in
+  `post/reports/pressure_report.csv` — including the 4 MPa and 8 MPa cases
+  (not only the accidental 6 MPa matches). **Remediation after deploy:** re-run
+  report extraction for those 15 cases so corrected operating metadata is written.
+- **F-02 LATENT (no corruption):** Newest `_inventory/case_inventory.csv` is
+  dated 2026-07-04, before the campaign started. All 93 rows have
+  `max_iter_target=2000` (default confirmed in the wild), 0 mesh-qualified rows,
+  0 `CONVERGED`-without-evidence rows. The fix landed before the bug could
+  mislabel anything.
+- **F-03 #4 CONFIRMED:** 46 cases have `contour_export_status.json` with
+  `summary = {success: 3, warn: 1, failed: 0}`; one case
+  (`Diamond_Spacer/u0p1_p4M__attempt_20260705_161718`) has `failed: 4`. The
+  `batch_postprocess_results.csv` from the last orchestrator run records
+  `pyensight_contour_stage_status = SUCCESS` for all its rows — exactly the
+  masking the commit-3 JSON-inference fix addresses.
+- **Shear status JSONs:** All 45 directories with shear PNGs have
+  `shear_contour_status.json` — no `UNKNOWN` wave expected from commit 3 on
+  shear after deploy.
+
+#### F-03 SAFE slice — closed in repo (2026-07-18)
+
+| Commit | Change |
+|--------|--------|
+| `3c14ab7` | `03` `DEFAULT_FIELDS` aligned with inventory basic set |
+| `d49f4fe` | `08` nonzero exit on partial export |
+| `4d4d85a` | `06` JSON stage-status inference + missing-inventory exit 2 |
+
+Deferred within F-03: `03` / `03b` WARN → nonzero exit (#1, #2).
+
+See **F-20** for the systematic `cp_inlet` bulk-average WARN observed across all
+46 production contour status JSONs.
 
 ## Verification of the six suspected issues
 
@@ -776,10 +938,3 @@ Estimated diff: **180-300 lines**.
 No implementation commit should mix output-semantic fixes with helper
 extraction. Each commit should pass pure-Python tests and preserve entry-point
 names and external interfaces.
-
-## Approval checkpoint
-
-Phase 2 ends here. No runtime source, UDF, Scheme, geometry, config, or output
-schema has been changed. Phase 3 should begin only after the owner selects and
-approves specific plan items and explicitly decides whether items 5-7 may wait
-until the active 24-case campaign has completed.
