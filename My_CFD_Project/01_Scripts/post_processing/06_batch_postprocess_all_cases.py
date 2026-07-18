@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +46,8 @@ STATUS_SKIPPED_DISABLED = "SKIPPED_DISABLED"
 STATUS_SKIPPED_MISSING_CFF = "SKIPPED_MISSING_CFF"
 STATUS_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
+STATUS_WARN = "WARN"
+STATUS_UNKNOWN = "UNKNOWN"
 STATUS_DRY_RUN = "DRY_RUN"
 
 SHEAR_EXPORT_MODE_AUTO = "auto"
@@ -246,6 +248,144 @@ def read_inventory_csv(path: Path) -> tuple[list[dict[str, str]], str]:
             return list(csv.DictReader(fh)), ""
     except (OSError, csv.Error) as exc:
         return [], f"Could not read inventory CSV {path}: {exc}"
+
+
+def safe_read_json(path: Path) -> tuple[dict[str, Any], str]:
+    if not path.is_file():
+        return {}, ""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, str(exc)
+    if not isinstance(payload, dict):
+        return {}, "JSON root is not an object"
+    return payload, ""
+
+
+def int_from_any(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def infer_contour_stage_status(
+    status_path: Path,
+    worker_returncode: Optional[int],
+    requested_fields: list[str],
+) -> tuple[str, str]:
+    if worker_returncode is not None and worker_returncode != 0:
+        return STATUS_FAILED, ""
+
+    payload, error = safe_read_json(status_path)
+    if not payload:
+        if not status_path.is_file():
+            return STATUS_UNKNOWN, "status JSON missing after worker exit 0"
+        return STATUS_UNKNOWN, f"status JSON unreadable after worker exit 0: {error}"
+
+    summary = payload.get("summary")
+    failed_count = 0
+    warn_count = 0
+    if isinstance(summary, dict):
+        failed_count = int_from_any(summary.get("failed")) or 0
+        warn_count = int_from_any(summary.get("warn")) or 0
+
+    explicit_status = str(
+        payload.get("overall_status") or payload.get("status") or ""
+    ).strip().upper()
+
+    field_statuses: dict[str, str] = {}
+    records = payload.get("records")
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            field_key = str(record.get("field_key", "")).strip()
+            if field_key in requested_fields:
+                field_statuses[field_key] = str(record.get("status", "")).strip().upper()
+
+    if failed_count > 0 or explicit_status == "FAILED":
+        return STATUS_FAILED, ""
+    for field_key in requested_fields:
+        if field_statuses.get(field_key) == "FAILED":
+            return STATUS_FAILED, ""
+
+    missing_fields = [field_key for field_key in requested_fields if field_key not in field_statuses]
+    if missing_fields:
+        return STATUS_UNKNOWN, (
+            "requested field(s) missing from status JSON records: "
+            + ", ".join(missing_fields)
+        )
+
+    if warn_count > 0 or explicit_status == "WARN":
+        return STATUS_WARN, ""
+    for field_key in requested_fields:
+        if field_statuses.get(field_key) == "WARN":
+            return STATUS_WARN, ""
+
+    if requested_fields and all(field_statuses.get(field_key) == "SUCCESS" for field_key in requested_fields):
+        return STATUS_SUCCESS, ""
+    if explicit_status == "SUCCESS":
+        return STATUS_SUCCESS, ""
+
+    return STATUS_UNKNOWN, "status JSON present but contour stage outcome could not be inferred"
+
+
+def infer_shear_stage_status(
+    status_path: Path,
+    worker_returncode: Optional[int],
+) -> tuple[str, str]:
+    if worker_returncode is not None and worker_returncode != 0:
+        return STATUS_FAILED, ""
+
+    payload, error = safe_read_json(status_path)
+    if not payload:
+        if not status_path.is_file():
+            return STATUS_UNKNOWN, "status JSON missing after worker exit 0"
+        return STATUS_UNKNOWN, f"status JSON unreadable after worker exit 0: {error}"
+
+    explicit_status = str(
+        payload.get("status") or payload.get("overall_status") or ""
+    ).strip().upper()
+    native_status = str(payload.get("native_status") or "").strip().upper()
+    fallback_status = str(payload.get("fallback_status") or "").strip().upper()
+
+    if explicit_status == "FAILED":
+        return STATUS_FAILED, ""
+    if native_status == "FAILED" and bool(payload.get("native_attempted")):
+        return STATUS_FAILED, ""
+    if fallback_status == "FAILED" and bool(payload.get("fallback_attempted")):
+        return STATUS_FAILED, ""
+
+    if explicit_status == "WARN":
+        return STATUS_WARN, ""
+
+    if explicit_status == "SUCCESS":
+        return STATUS_SUCCESS, ""
+
+    return STATUS_UNKNOWN, "status JSON present but shear stage outcome could not be inferred"
+
+
+def refine_recorded_stage_status(
+    planned_status: str,
+    stage_result: StageResult,
+    infer_fn: Any,
+    *infer_args: Any,
+) -> tuple[str, str]:
+    if planned_status != STATUS_PLANNED:
+        return stage_result.status, ""
+    if stage_result.status == STATUS_DRY_RUN:
+        return STATUS_DRY_RUN, ""
+    if stage_result.returncode != 0:
+        return stage_result.status, ""
+    return infer_fn(*infer_args)
 
 
 def is_explicit_solver_status_requested(statuses: set[str]) -> bool:
@@ -787,19 +927,40 @@ def execute_case(
             "shear_retry_fallback", retry_command, retry_log, args.dry_run, env=build_subprocess_env()
         )
 
-    final_shear_status = shear_result.status
-    final_shear_returncode = shear_result.returncode
-    if shear_retry_result is not None and shear_retry_result.status == STATUS_SUCCESS:
-        final_shear_status = STATUS_SUCCESS
-        final_shear_returncode = shear_retry_result.returncode
+    shear_counting_result = (
+        shear_retry_result
+        if (shear_retry_result is not None and shear_retry_result.status == STATUS_SUCCESS)
+        else shear_result
+    )
+    final_shear_returncode = shear_counting_result.returncode
+
+    contour_status_file = paths["contours_dir"] / "contour_export_status.json"
+    contour_recorded_status, contour_status_note = refine_recorded_stage_status(
+        contour_status_planned,
+        contour_result,
+        infer_contour_stage_status,
+        contour_status_file,
+        contour_result.returncode,
+        fields,
+    )
+    shear_status_file = paths["contours_dir"] / "shear_contour_status.json"
+    final_shear_status, shear_status_note = refine_recorded_stage_status(
+        shear_status_planned,
+        shear_counting_result,
+        infer_shear_stage_status,
+        shear_status_file,
+        shear_counting_result.returncode,
+    )
 
     total_runtime = time.monotonic() - start_total
     error_parts = [
         part
         for part in (
             report_result.error_summary,
-            contour_result.error_summary,
-            shear_result.error_summary if final_shear_status != STATUS_SUCCESS else "",
+            contour_result.error_summary if contour_recorded_status == STATUS_FAILED else "",
+            shear_counting_result.error_summary if final_shear_status == STATUS_FAILED else "",
+            contour_status_note,
+            shear_status_note,
         )
         if part
     ]
@@ -810,7 +971,7 @@ def execute_case(
         "case_dir": case_dir.as_posix(),
         "selected_index": selected_index,
         "report_stage_status": report_result.status,
-        "pyensight_contour_stage_status": contour_result.status,
+        "pyensight_contour_stage_status": contour_recorded_status,
         "shear_stage_status": final_shear_status,
         "report_returncode": report_result.returncode,
         "contour_returncode": contour_result.returncode,
@@ -828,8 +989,9 @@ def execute_case(
         "error_summary": " | ".join(error_parts),
         "runtime_seconds_total": round(total_runtime, 3),
         "suggested_next_action": suggest_next_action(
-            report_result, contour_result,
-            shear_retry_result if (shear_retry_result is not None and shear_retry_result.status == STATUS_SUCCESS) else shear_result,
+            report_result,
+            replace(contour_result, status=contour_recorded_status),
+            replace(shear_counting_result, status=final_shear_status),
         ),
         "stage_details": {
             "report": stage_result_to_dict(report_result),
@@ -1025,8 +1187,8 @@ def run(args: argparse.Namespace) -> int:
     statuses = parse_status_filters(args.case_status)
     rows, error = read_inventory_csv(args.inventory_csv)
     if error:
-        print(error)
-        return 0
+        print(error, file=sys.stderr)
+        return 2
 
     selected_all = select_cases(rows, statuses, args.geo_name, args.case_name)
     selected = slice_cases(selected_all, args.start_index, args.limit)
