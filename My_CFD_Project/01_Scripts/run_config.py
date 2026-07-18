@@ -189,6 +189,11 @@ def _require_positive_number(name, value):
     """Raise ValueError when a config value is not a positive number."""
     _require_set(name, value)
 
+    if isinstance(value, bool):
+        raise TypeError(
+            f"run_config.py value must be numeric, not bool: {name}={value!r}"
+        )
+
     if not isinstance(value, (int, float)):
         raise TypeError(
             f"run_config.py value must be numeric: {name}={value!r}"
@@ -203,6 +208,11 @@ def _require_positive_number(name, value):
 def _require_nonnegative_number(name, value):
     """Raise ValueError when a config value is not a non-negative number."""
     _require_set(name, value)
+
+    if isinstance(value, bool):
+        raise TypeError(
+            f"run_config.py value must be numeric, not bool: {name}={value!r}"
+        )
 
     if not isinstance(value, (int, float)):
         raise TypeError(

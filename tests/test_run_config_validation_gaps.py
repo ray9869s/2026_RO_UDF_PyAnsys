@@ -27,12 +27,13 @@ def cfg():
 
 
 class TestNumericHelperGaps:
-    def test_true_passes_positive_number_check(self, cfg):
-        # bool is a numeric subtype in Python; True > 0.
-        cfg._require_positive_number("processor_count", True)
+    def test_true_rejected_by_positive_number_check(self, cfg):
+        with pytest.raises(TypeError, match="must be numeric, not bool"):
+            cfg._require_positive_number("processor_count", True)
 
-    def test_false_passes_nonnegative_number_check(self, cfg):
-        cfg._require_nonnegative_number("periodic_shift_x", False)
+    def test_false_rejected_by_nonnegative_number_check(self, cfg):
+        with pytest.raises(TypeError, match="must be numeric, not bool"):
+            cfg._require_nonnegative_number("periodic_shift_x", False)
 
 
 class TestMeshingValidationGaps:

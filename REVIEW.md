@@ -211,6 +211,26 @@ launch (`batch_meshing.py:83-84`, `batch_solver_sweep.py:215-216`), so this
 specific bypass affects direct/custom-config invocation rather than the active
 batch.
 
+**Partial fix (2026-07-18):** `_require_positive_number` and
+`_require_nonnegative_number` now reject `bool` values explicitly. Safe for the
+active campaign: the only override bool (`run_calculation_enabled`) never
+reaches these helpers; numerically validated override fields are int/float.
+
+#### F-04 remainder (deferred — revisit after campaign completes)
+
+Severity: **High** (unchanged overall finding)
+
+Still open after the bool-guard partial fix:
+
+- unrestricted `setattr` override application (unknown keys, function overwrite);
+- no `m_min <= m_max` cross-field check;
+- inlet velocity float-convertible only, not positive;
+- outlet/operating pressure and salt mass fraction not range-validated;
+- `PYFLUENT_RUN_CONFIG` custom-path invocation skips `validate_for_*()` entirely.
+
+Address via centralized config merge with allowlists and stronger validation once
+the active 24-case campaign is complete.
+
 #### F-05 — Rerun selection excludes mesh-qualified active-campaign cases
 
 Severity: **High**
