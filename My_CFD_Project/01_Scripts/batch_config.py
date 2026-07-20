@@ -1,177 +1,45 @@
-# ==========================================================
-# batch_config.py
-# Batch run configuration for meshing sweeps and solver parameter sweeps
-# Location: My_CFD_Project/01_Scripts/batch_config.py
-# ==========================================================
+# Auto-generated temporary batch_config.py for Sin_ST / Sin_SL 3-mesh solver sweep.
+# Original config is backed up at:
+# My_CFD_Project/01_Scripts/batch_config_before_sin_3mesh_20260716_231030.py
 
-# Edit this file to define your batch cases.
-# batch_meshing.py reads mesh_batch_cases and common_mesh_settings.
-# batch_solver_sweep.py reads solver_sweep_cases and common_solver_settings.
+from pathlib import Path
+import importlib.util
 
+_backup_path = Path(__file__).with_name("batch_config_before_sin_3mesh_20260716_231030.py")
+_spec = importlib.util.spec_from_file_location("_backup_batch_config", _backup_path)
+_backup = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_backup)
 
-# ----------------------------------------------------------
-# Batch control flags
-# ----------------------------------------------------------
-
-# dry_run = True: print planned commands and per-case overrides, do not launch Fluent.
 dry_run = False
-
-# continue_on_failure = False: stop immediately when a case fails.
-# continue_on_failure = True: continue after a failed case, summarize failures at the end.
 continue_on_failure = True
-
-# skip_existing_mesh = True: if the target .msh.h5 file already exists, skip that case.
 skip_existing_mesh = True
-
-# skip_existing_final_data = True: if both final .cas.h5 and .dat.h5 already exist, skip that case.
 skip_existing_final_data = True
 
+common_mesh_settings = getattr(_backup, "common_mesh_settings", {})
+mesh_batch_cases = []
 
-# ----------------------------------------------------------
-# Shared mesh settings applied to every meshing case
-# ----------------------------------------------------------
-# Any key here can be overridden per case in mesh_batch_cases.
+common_solver_settings = getattr(_backup, "common_solver_settings", {})
 
-common_mesh_settings = {
-    "m_max": 0.085,    # Maximum mesh size [mm]
-    "m_min": 0.005,    # Minimum mesh size [mm]
-    "m_cpg": 5,       # Cells per gap [-]
-    "bl_layers": 4,   # Boundary layer count [-]
-}
-
-
-# ----------------------------------------------------------
-# Meshing batch cases
-# ----------------------------------------------------------
-# Each entry generates one meshing run using meshing_code_260616.py.
-#
-# Required keys:
-#   geo_name         - geometry file name (without .dsco), also names the 03_Results subfolder
-#   mesh_case_name   - subfolder and file prefix for mesh output under 03_Results/<geo_name>/
-#   wall_spacer_labels - list of face labels for spacer local sizing / boundary layers
-#
-# Optional: override any key from common_mesh_settings here.
-#
-# Output: 03_Results/<geo_name>/<mesh_case_name>/<geo_name>_<mesh_case_name>.msh.h5
-
-mesh_batch_cases = [
-    {
-        "geo_name": "Sin_ST",
-        "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
-        "wall_spacer_labels": ["wall_spacer","wall_spacer_axial","wall_spacer_bridge"],
-    },
-    {
-        "geo_name": "Sin_SL",
-        "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
-        "wall_spacer_labels": ["wall_spacer","wall_spacer_axial","wall_spacer_bridge"],
-    },
+_P_OPERATING = 101325.0
+_GEOMETRIES = ["Sin_ST", "Sin_SL"]
+_MESHES = [
+    "mesh_max100_min006_cpg3_bl3",
+    "mesh_max100_min006_cpg5_bl4",
+    "mesh_max085_min006_cpg5_bl4",
 ]
-
-
-# ----------------------------------------------------------
-# Shared solver settings applied to every solver case
-# ----------------------------------------------------------
-# Any key here can be overridden per case in solver_sweep_cases.
-
-# DEADLINE CAMPAIGN (Ansys Simulation Challenge presentation):
-# preliminary screening runs, capped at 1000 iterations per case. The solver
-# always writes <geo>_<case>_final.cas.h5/.dat.h5 after the iteration loop,
-# so final files are saved even when the residual target (kept at 1e-7) is
-# not reached within 1000 iterations. "run_label" is a passive marker: it is
-# echoed in the per-case overrides JSON (batch console) and in the solver's
-# "Applied config overrides" transcript line, so these runs can later be
-# identified as preliminary. It changes no solver behavior and no report
-# values.
-common_solver_settings = {
-    "run_calculation_enabled": True,
-    "max_iterations": 1000,
-    "residual_target": 1e-7,
-    "run_label": "preliminary_deadline_1000iter",
-}
-
-
-# ----------------------------------------------------------
-# Solver sweep cases
-# ----------------------------------------------------------
-# Each entry generates one solver run using solver_code_260616.py.
-#
-# Required keys:
-#   geo_name              - geometry folder under 03_Results
-#   mesh_case_name        - subfolder containing the mesh file to read
-#   inlet_velocity_value  - inlet velocity [m/s]
-#   operating_pressure    - absolute operating pressure [Pa]
-#   outlet_gauge_pressure - gauge pressure at outlet [Pa]
-#
-# Case naming (resolved by batch_solver_sweep.py, in priority order):
-#   1. "case_name" given          -> used as-is (legacy behavior).
-#   2. "base_case_name" given     -> case_name = base_case_name + "__" + mesh_case_name
-#   3. neither given              -> base_case_name derived from velocity/pressure
-#                                    (0.1, 4.0e6 -> "u0p1_p4M"), then
-#                                    case_name = base_case_name + "__" + mesh_case_name
-#
-# Optional: override any key from common_solver_settings here.
-#
-# Optional restart/continuation input:
-#   restart_from_case_file - converged source .cas.h5 file to read instead of the mesh
-#   restart_from_data_file - matching converged source .dat.h5 file
-#
-# Provide both restart files to continue from a lower-velocity final solution.
-# Provide neither to keep legacy mesh initialization behavior.
-#
-# Mesh initialization input:
-#   03_Results/<geo_name>/<mesh_case_name>/<geo_name>_<mesh_case_name>.msh.h5
-#
-# Solver outputs:
-#   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_setup.cas.h5
-#   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.cas.h5
-#   03_Results/<geo_name>/<case_name>/<geo_name>_<case_name>_final.dat.h5
-
-# ----------------------------------------------------------
-# DEADLINE CAMPAIGN case list (24 cases, run strictly in this order)
-# ----------------------------------------------------------
-# Group 1 (cases 1-6):  Multi_Layer_diff / Multi_Layer_equal at u=0.3 m/s,
-#   standard mesh mesh_max085_min005_cpg5_bl3 (same as the main non-sinusoidal
-#   campaign), legacy plain case names (u0p3_p4M, ...).
-# Group 2 (cases 7-15): Sin_ST full u x p sweep on the COARSE mesh
-#   mesh_max100_min006_cpg3_bl3.
-# Group 3 (cases 16-24): Sin_SL, same sweep and coarse mesh.
-#
-# Sin case names are auto-derived by resolve_case_names() in
-# batch_solver_sweep.py using the CURRENT mesh-qualified convention
-# (base__mesh), e.g.:
-#   u0p1_p4M__mesh_max100_min006_cpg3_bl3
-# These are distinct from every existing fine-mesh sinusoidal result folder,
-# so nothing is overwritten. skip_existing_final_data=True additionally
-# protects any case whose final cas/dat already exist.
-
-_ML_MESH = "mesh_max085_min005_cpg5_bl3"
-_SIN_MESH = "mesh_max100_min006_cpg3_bl3"
-_P_OPERATING = 101325.0  # absolute operating pressure [Pa]
+_VELOCITIES = [0.1, 0.2, 0.3]
+_PRESSURES = [4.0e6, 6.0e6, 8.0e6]
 
 solver_sweep_cases = []
 
-# Group 1: non-sinusoidal convergence-sensitive cases (u = 0.3 m/s)
-for _geo in ("Multi_Layer_diff", "Multi_Layer_equal"):
-    for _p_out in (4.0e6, 6.0e6, 8.0e6):
-        solver_sweep_cases.append({
-            "geo_name": _geo,
-            "mesh_case_name": _ML_MESH,
-            "case_name": f"u0p3_p{int(_p_out / 1.0e6)}M",  # legacy plain name
-            "inlet_velocity_value": 0.3,
-            "operating_pressure": _P_OPERATING,
-            "outlet_gauge_pressure": _p_out,
-        })
-
-# Groups 2-3: Sin_ST then Sin_SL preliminary sweeps on the coarse mesh
-for _geo in ("Sin_ST", "Sin_SL"):
-    for _u in (0.1, 0.2, 0.3):
-        for _p_out in (4.0e6, 6.0e6, 8.0e6):
-            solver_sweep_cases.append({
-                "geo_name": _geo,
-                "mesh_case_name": _SIN_MESH,
-                # case_name omitted on purpose -> mesh-qualified name derived
-                # by the batch driver, e.g. u0p1_p4M__mesh_max100_min006_cpg3_bl3
-                "inlet_velocity_value": _u,
-                "operating_pressure": _P_OPERATING,
-                "outlet_gauge_pressure": _p_out,
-            })
+for _geo in _GEOMETRIES:
+    for _mesh in _MESHES:
+        for _u in _VELOCITIES:
+            for _p_out in _PRESSURES:
+                solver_sweep_cases.append({
+                    "geo_name": _geo,
+                    "mesh_case_name": _mesh,
+                    "inlet_velocity_value": _u,
+                    "operating_pressure": _P_OPERATING,
+                    "outlet_gauge_pressure": _p_out,
+                })
