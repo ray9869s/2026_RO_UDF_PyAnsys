@@ -4596,6 +4596,14 @@ def _write_colorbar_metadata_and_update_records(
         print("Colorbar metadata: nothing written (see WARNING messages above, if any).")
 
 
+def resolve_contour_export_exit_code(records: List[ExportRecord]) -> int:
+    if any(r.status == STATUS_FAILED for r in records):
+        return 2
+    if any(r.status == STATUS_WARN for r in records):
+        return 1
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -4861,8 +4869,7 @@ def main() -> int:
     save_status(records, figures_dir, geo_name, case_name, **status_kwargs)
     _print_summary(records, figures_dir)
 
-    n_failed = sum(1 for r in records if r.status == STATUS_FAILED)
-    return 2 if n_failed > 0 else 0
+    return resolve_contour_export_exit_code(records)
 
 
 if __name__ == "__main__":
