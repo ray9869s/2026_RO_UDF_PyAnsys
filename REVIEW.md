@@ -35,9 +35,9 @@ The most important correctness risks found are:
 4. JSON config overrides are applied as unrestricted, untyped attributes, while
    validation is incomplete and is skipped entirely for an explicit
    `PYFLUENT_RUN_CONFIG`.
-5. The current-matrix filter in `07_batch_solver_rerun.py` accepts only plain
+5. ~~The current-matrix filter in `07_batch_solver_rerun.py` accepts only plain
    names such as `u0p3_p4M`, excluding the 18 mesh-qualified sinusoidal cases in
-   the active campaign.
+   the active campaign.~~ **RESOLVED** (F-05, 2026-07-21).
 
 The active campaign should not be refactored in place. The first implementation
 work should be pure-Python characterization tests and low-risk helper extraction.
@@ -183,9 +183,10 @@ solve-trust **together with** one of:
 - a residual or `max_iter_only` filter in `rerun_candidates.csv` generation, or
 - a pre-run quality gate in `07_batch_solver_rerun.py` `select_candidates()`.
 
-See also **F-05** (mesh-qualified names excluded from `07`'s matrix regex today)
-and **F-21** (`case_status` filters cascade after inventory reclassification;
-any future F-02c change must update `06` / runbook status unions).
+See also **F-21** (`case_status` filters cascade after inventory reclassification;
+any future F-02c change must update `06` / runbook status unions). **F-05**
+(mesh-qualified rerun selection) is **RESOLVED** — regenerate
+`active_solver_rerun_candidates.csv` from current inventory before live reruns.
 
 #### F-03 — Post-processing subprocess success does not mean requested outputs succeeded
 
@@ -301,16 +302,34 @@ Campaign compatibility: mesh settings `(0.085, 0.005)` and `(0.1, 0.006)`;
 solver `(u, p)` grid `0.1–0.3 m/s × 4–8 MPa` at `operating_pressure=101325`;
 default `salt_mass_fraction=0.035` — all pass the hardened validators in tests.
 
-#### F-05 — Rerun selection excludes mesh-qualified active-campaign cases
+#### F-05 — Rerun selection excludes mesh-qualified active-campaign cases — **RESOLVED** (2026-07-21)
 
-Severity: **High**
+Severity: **High** — **RESOLVED**
 
-`07_batch_solver_rerun.py:27` defines
-`MATRIX_CASE_RE = r"^u\d+p\d+_p\d+M$"`, and `:844-865` drops nonmatches.
-This excludes names such as
-`u0p1_p4M__mesh_max100_min006_cpg3_bl3`, which represent 18 of the 24 cases in
-the current matrix. Any inventory-driven recovery plan using this entry point
-will silently count them as `non_matrix_case_name` rather than select them.
+Original finding: `07_batch_solver_rerun.py` `select_candidates()` used
+`MATRIX_CASE_RE = r"^u\d+p\d+_p\d+M$"` on the full `case_name`, dropping
+mesh-qualified names such as `u0p1_p4M__mesh_max100_min006_cpg3_bl3` as
+`non_matrix_case_name` even when the base token (`u0p1_p4M`) is in the active
+matrix.
+
+**Status:** **RESOLVED** — `select_candidates()` now tests matrix membership on
+`strip_mesh_suffix(case_name)[0]` via `is_matrix_base_case_name()` from
+`_solver_common`. The full mesh-qualified `case_name` is unchanged in the
+candidate dict for case-dir paths, final/attempt filenames, launch, promotion,
+report extraction, and skip-existing dedup.
+
+| Commit | Change |
+|--------|--------|
+| `cb88807` | Wire base-token matrix filter in `07`; unit tests + synthetic fixture CSV |
+
+**Verification:** pytest `tests/test_07_select_candidates.py` and
+`tests/fixtures/active_solver_rerun_candidates_f05.csv`; server `--dry-run`
+confirms mesh-qualified campaign rows are selected (`non_matrix_case_name: 0`).
+
+**Operational note:** regenerate `03_Results/_inventory/active_solver_rerun_candidates.csv`
+from current inventory (`rerun_candidates.csv`) before any live rerun. The
+on-server copy may be stale — legacy plain `u0p1` rows from Diamond/Multi_Layer
+geometries, not the Sin campaign mesh-qualified unconverged cases.
 
 #### F-06 — Completion and convergence have different meanings but share “success” labels
 

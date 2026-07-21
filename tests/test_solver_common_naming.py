@@ -137,8 +137,8 @@ class TestResolveCaseNamesParity:
         assert common.resolve_case_names(case_dict) == legacy_resolve_case_names(case_dict)
 
 
-class TestStagedF05HelpersUnwired:
-    """Present in _solver_common but not used by batch or 07 in phase 2."""
+class TestF05MatrixBaseCaseNameHelpers:
+    """strip_mesh_suffix / is_matrix_base_case_name used by 07 select_candidates."""
 
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
     def test_strip_mesh_suffix_round_trip(self, common, velocity, pressure, base_name, mesh_name):

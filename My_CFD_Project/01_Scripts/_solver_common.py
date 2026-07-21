@@ -138,10 +138,7 @@ def resolve_case_names(case_dict) -> tuple[Any, str]:
 
 
 def strip_mesh_suffix(case_name: str) -> tuple[str, str | None]:
-    """Split a mesh-qualified case name into (base_case_name, mesh_suffix).
-
-    Staged for F-05; not wired into selection logic in phase 2.
-    """
+    """Split a mesh-qualified case name into (base_case_name, mesh_suffix)."""
     if "__" not in case_name:
         return case_name, None
     base, mesh = case_name.split("__", 1)
@@ -149,10 +146,7 @@ def strip_mesh_suffix(case_name: str) -> tuple[str, str | None]:
 
 
 def is_matrix_base_case_name(case_name: str) -> bool:
-    """True when case_name matches the plain matrix token (no mesh suffix).
-
-    Staged for F-05; not wired into 07 select_candidates in phase 2.
-    """
+    """True when case_name matches the plain matrix token (no mesh suffix)."""
     return bool(MATRIX_BASE_CASE_RE.match(case_name))
 
 
