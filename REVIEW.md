@@ -185,51 +185,45 @@ problem is the final success contract, not the existence of fallbacks.
 
 #### F-04 — Override application is unrestricted and validation is inconsistent
 
-Severity: **High**
+Severity: **High** — **RESOLVED** (2026-07-21)
 
-Both active workers apply every JSON key with `setattr(cfg, key, value)`:
+Original finding: both active workers applied every JSON key with unrestricted
+`setattr`, validation was incomplete, and `PYFLUENT_RUN_CONFIG` silently
+skipped `validate_for_*()`.
 
-- `meshing_code_260616.py:35-47`
-- `solver_code_260616.py:36-48`
-- `01_pyfluent_report_extract.py:57-69`
+**Status:** **RESOLVED** in three commits after the 24+36-case campaign
+completed. All new checks were confirmed against completed-campaign override
+values (`batch_config.py` + backup solver/mesh lists); no real campaign
+combination is newly rejected.
 
-Unknown keys are accepted, existing functions or imported names can be
-overwritten, and values are not coerced against a schema. `run_config.py`
-validates only a subset of fields. Examples:
-
-- no `m_min <= m_max` relationship;
-- inlet velocity need only be float-convertible, not positive;
-- outlet/operating pressure and salt mass fraction are not range-validated;
-- booleans enter numeric `isinstance(..., (int, float))` checks (`True` passes
-  a positive check, while `False` passes a nonnegative check).
-
-Additionally, `meshing_code_260616.py:49-50` and
-`solver_code_260616.py:50-51` skip `validate_for_*()` whenever
-`PYFLUENT_RUN_CONFIG` is set. A custom path therefore disables even the current
-validation. The normal batch drivers remove that environment variable before
-launch (`batch_meshing.py:83-84`, `batch_solver_sweep.py:215-216`), so this
-specific bypass affects direct/custom-config invocation rather than the active
-batch.
+| Commit | Change |
+|--------|--------|
+| `2b70122` | Allowlisted override merge on `run_config` and `00_post_config`; workers reject unknown keys and callable overwrites |
+| `e585d6a` | `m_min <= m_max`; positive inlet velocity; pressure and `salt_mass_fraction` range checks |
+| `7f562e5` | Validate after overrides in all modes; explicit `PYFLUENT_SKIP_VALIDATION` opt-out; batch drivers `env.pop` the skip var |
 
 **Partial fix (2026-07-18):** `_require_positive_number` and
-`_require_nonnegative_number` now reject `bool` values explicitly. Safe for the
-active campaign: the only override bool (`run_calculation_enabled`) never
-reaches these helpers; numerically validated override fields are int/float.
+`_require_nonnegative_number` now reject `bool` values explicitly (predates
+the remainder work above).
 
-#### F-04 remainder (deferred — revisit after campaign completes)
+#### F-04 remainder — **RESOLVED** (2026-07-21)
 
-Severity: **High** (unchanged overall finding)
+All items from the deferred remainder are closed:
 
-Still open after the bool-guard partial fix:
+- unrestricted `setattr` → allowlisted `apply_run_config_overrides` /
+  `apply_post_config_overrides` with extension keys for batch-only fields;
+- no `m_min <= m_max` → added in `validate_for_meshing()`;
+- inlet velocity float-only → `_require_positive_float` (numeric or numeric string);
+- outlet/operating pressure and `salt_mass_fraction` → range-validated in
+  `validate_for_solver()`;
+- `PYFLUENT_RUN_CONFIG` silent validation skip → removed; validation runs by
+  default after overrides; `PYFLUENT_SKIP_VALIDATION=1` (or `true`/`yes`) is
+  the explicit debug opt-out. Batch drivers always validate (they pop the skip
+  var alongside `PYFLUENT_RUN_CONFIG`).
 
-- unrestricted `setattr` override application (unknown keys, function overwrite);
-- no `m_min <= m_max` cross-field check;
-- inlet velocity float-convertible only, not positive;
-- outlet/operating pressure and salt mass fraction not range-validated;
-- `PYFLUENT_RUN_CONFIG` custom-path invocation skips `validate_for_*()` entirely.
-
-Address via centralized config merge with allowlists and stronger validation once
-the active 24-case campaign is complete.
+Campaign compatibility: mesh settings `(0.085, 0.005)` and `(0.1, 0.006)`;
+solver `(u, p)` grid `0.1–0.3 m/s × 4–8 MPa` at `operating_pressure=101325`;
+default `salt_mass_fraction=0.035` — all pass the hardened validators in tests.
 
 #### F-05 — Rerun selection excludes mesh-qualified active-campaign cases
 
