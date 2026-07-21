@@ -3,11 +3,13 @@
 Phase 1 (07 consolidation): path helpers.
 Phase 2: case naming helpers (batch wired; 07 selection unchanged).
 Phase 3: input mode + solver worker artifact exit helpers.
+Phase 4: pure convergence math extracted from 07_batch_solver_rerun.
 No PyFluent imports.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 from typing import Any, Iterable
@@ -247,3 +249,284 @@ def describe_solver_worker_failure(returncode: int) -> str:
     if returncode == SOLVER_EXIT_ARTIFACT_FAILURE:
         return "final case/data missing or empty"
     return "worker failed"
+
+
+# ---------------------------------------------------------------------------
+# convergence_pure — transcript/monitor assessment (07_batch_solver_rerun)
+# ---------------------------------------------------------------------------
+
+
+def blending_ramp_values(start: float, end: float, steps: int) -> list[float]:
+    if steps <= 1:
+        return [float(end)]
+    delta = (float(end) - float(start)) / float(steps - 1)
+    return [float(start) + delta * index for index in range(steps)]
+
+
+def parse_transcript_residual_columns(header_line: str) -> list[str] | None:
+    tokens = header_line.split()
+    if not tokens:
+        return None
+    lowered = [token.lower() for token in tokens]
+    if "continuity" not in lowered:
+        return None
+    return lowered
+
+
+def parse_residuals_from_transcript_text(text: str, target_names: set[str]) -> dict[str, float]:
+    """Best-effort extraction of the latest per-equation residual values.
+
+    Fluent's console/transcript prints a residual table with a header row
+    (containing 'continuity') followed by numeric iteration rows. This is a
+    fallback for when the settings API residual-equation objects expose only
+    convergence criteria, not the live current value (the reported cause of
+    residual_keys=[] in monitor snapshots). Parsing is intentionally
+    tolerant: unparsable lines are skipped rather than raising, and the
+    caller must treat an empty result as "unknown", not "converged".
+    """
+    latest: dict[str, float] = {}
+    columns: list[str] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "continuity" in line.lower() and not line[0].isdigit():
+            candidate_columns = parse_transcript_residual_columns(line)
+            if candidate_columns:
+                columns = candidate_columns
+            continue
+        if columns is None:
+            continue
+        tokens = line.split()
+        if not tokens:
+            continue
+        try:
+            int(tokens[0])
+        except ValueError:
+            continue
+        row_values: dict[str, float] = {}
+        for name, token in zip(columns[1:], tokens[1:]):
+            if name not in target_names:
+                continue
+            try:
+                row_values[name] = float(token)
+            except ValueError:
+                row_values = {}
+                break
+        if row_values:
+            latest.update(row_values)
+    return latest
+
+
+def detect_residual_plateau(
+    history: list[dict[str, Any]],
+    strict_targets: dict[str, float],
+    window_chunks: int,
+    rel_change_tol: float,
+    min_above_target_factor: float,
+) -> dict[str, Any]:
+    """Detect a residual equation stuck above its target across recent chunks."""
+    result: dict[str, Any] = {"detected": False, "reason": "", "per_equation": {}}
+    if not strict_targets:
+        result["reason"] = "No residual targets available for plateau assessment."
+        return result
+    if len(history) < window_chunks:
+        result["reason"] = f"Fewer than {window_chunks} chunks completed; plateau assessment deferred."
+        return result
+
+    recent = history[-window_chunks:]
+    stuck_equations: list[str] = []
+    per_equation: dict[str, Any] = {}
+    for name, target in strict_targets.items():
+        series = [snap.get("residual_numeric", {}).get(name) for snap in recent]
+        series = [float(v) for v in series if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if len(series) < window_chunks:
+            per_equation[name] = {"status": "insufficient_data", "series": series}
+            continue
+
+        above_target = series[-1] > target * min_above_target_factor
+        mean_abs = sum(abs(v) for v in series) / len(series)
+        rel_change = (max(series) - min(series)) / mean_abs if mean_abs > 0.0 else 0.0
+        flat = rel_change <= rel_change_tol
+        per_equation[name] = {
+            "series": series,
+            "latest": series[-1],
+            "target": target,
+            "above_target": above_target,
+            "rel_change": rel_change,
+            "flat": flat,
+        }
+        if above_target and flat:
+            stuck_equations.append(name)
+
+    result["per_equation"] = per_equation
+    if stuck_equations:
+        result["detected"] = True
+        result["reason"] = (
+            f"{stuck_equations} remained above {min_above_target_factor}x target with "
+            f"<= {rel_change_tol} relative change over the last {window_chunks} chunks."
+        )
+    else:
+        result["reason"] = "No plateau detected."
+    return result
+
+
+def assess_history(
+    history: list[dict[str, Any]],
+    args: argparse.Namespace,
+    value_groups: tuple[str, ...] = ("residual_numeric", "report_values"),
+    require_two_samples: bool = False,
+) -> dict[str, Any]:
+    assessment: dict[str, Any] = {
+        "status": "MONITORS_UNAVAILABLE",
+        "diverged": False,
+        "stable": False,
+        "bounded_not_converged": False,
+        "details": "",
+        "value_groups": list(value_groups),
+    }
+    series: dict[str, list[float]] = {}
+    for snapshot in history:
+        for group_name in value_groups:
+            values = snapshot.get(group_name, {})
+            if not isinstance(values, dict):
+                continue
+            for name, value in values.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    series.setdefault(f"{group_name}:{name}", []).append(float(value))
+
+    if not series:
+        assessment["details"] = (
+            f"No numeric values were available for monitor groups {list(value_groups)}."
+        )
+        return assessment
+
+    worst_growth = 0.0
+    max_rel_variation = 0.0
+    comparable_series_count = 0
+    for name, values in series.items():
+        if len(values) < 2:
+            continue
+        comparable_series_count += 1
+        first = abs(values[0])
+        last = abs(values[-1])
+        if first > 0.0:
+            worst_growth = max(worst_growth, last / first)
+        window_values = values[-max(2, min(len(values), args.monitor_window)) :]
+        mean_abs = sum(abs(v) for v in window_values) / len(window_values)
+        if mean_abs > 0.0:
+            rel_variation = (max(window_values) - min(window_values)) / mean_abs
+            max_rel_variation = max(max_rel_variation, abs(rel_variation))
+        print(f"Assessment series {name}: first={values[0]} last={values[-1]}")
+
+    if require_two_samples and comparable_series_count == 0:
+        assessment["details"] = (
+            f"At least two numeric samples are required for monitor groups "
+            f"{list(value_groups)}."
+        )
+        return assessment
+
+    assessment["worst_growth"] = worst_growth
+    assessment["max_rel_variation"] = max_rel_variation
+    assessment["comparable_series_count"] = comparable_series_count
+
+    if worst_growth > args.residual_growth_limit:
+        assessment["status"] = "DIVERGED"
+        assessment["diverged"] = True
+        assessment["details"] = (
+            f"Residual/report growth {worst_growth:.3g} exceeded limit "
+            f"{args.residual_growth_limit:.3g}."
+        )
+    elif max_rel_variation <= args.monitor_rel_tol:
+        assessment["status"] = "STABLE"
+        assessment["stable"] = True
+        assessment["details"] = (
+            f"Last-window relative variation {max_rel_variation:.3g} is within "
+            f"{args.monitor_rel_tol:.3g}."
+        )
+    else:
+        assessment["status"] = "BOUNDED_NOT_CONVERGED"
+        assessment["bounded_not_converged"] = True
+        assessment["details"] = (
+            f"Monitor variation {max_rel_variation:.3g} remains above "
+            f"{args.monitor_rel_tol:.3g}; bounded but not converged."
+        )
+    return assessment
+
+
+def assess_residual_convergence(
+    latest_residuals: dict[str, float],
+    strict_targets: dict[str, float],
+) -> dict[str, Any]:
+    """Compare the latest known residual values against the strict target."""
+    per_equation: dict[str, Any] = {}
+    if not strict_targets:
+        return {
+            "strict_met": False,
+            "data_available": False,
+            "reason": "No residual convergence targets were available (criteria could not be read).",
+            "per_equation": per_equation,
+        }
+
+    strict_met = True
+    data_available = False
+    missing: list[str] = []
+    for name, target in strict_targets.items():
+        value = latest_residuals.get(name)
+        per_equation[name] = {"latest": value, "target": target}
+        if value is None:
+            missing.append(name)
+            strict_met = False
+            continue
+        data_available = True
+        if value > target:
+            strict_met = False
+
+    reason = f"Residual current value unavailable for: {missing}." if missing else ""
+    return {
+        "strict_met": strict_met,
+        "data_available": data_available,
+        "reason": reason,
+        "per_equation": per_equation,
+    }
+
+
+def classify_convergence(
+    monitor_assessment: dict[str, Any],
+    residual_assessment: dict[str, Any],
+    plateau_assessment: dict[str, Any],
+) -> dict[str, Any]:
+    """Combine monitor stability, strict residual match, and plateau detection."""
+    if monitor_assessment.get("diverged"):
+        return {"status": "DIVERGED", "details": monitor_assessment.get("details", "")}
+
+    strict_met = bool(residual_assessment.get("strict_met"))
+
+    if strict_met and monitor_assessment.get("stable"):
+        return {
+            "status": "STRICT_CONVERGED_ATTEMPT",
+            "details": "Residual strict target met and report monitors are stable.",
+        }
+
+    if plateau_assessment.get("detected"):
+        return {
+            "status": "NOT_CONVERGED_RESIDUAL_PLATEAU",
+            "details": plateau_assessment.get("reason", "Residual plateau detected above target."),
+        }
+
+    if monitor_assessment.get("stable"):
+        return {
+            "status": "NOT_CONVERGED_STABLE_MONITORS",
+            "details": "Monitors stable but residuals did not meet the strict target.",
+        }
+
+    if monitor_assessment.get("bounded_not_converged"):
+        return {
+            "status": "NEEDS_TRANSIENT_REVIEW",
+            "details": "Monitors bounded but oscillating, and residual target not met.",
+        }
+
+    return {
+        "status": "COMPLETED_NEEDS_REVIEW",
+        "details": "Monitor stability could not be determined from available data.",
+    }
