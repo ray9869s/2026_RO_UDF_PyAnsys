@@ -374,6 +374,26 @@ stage `SUCCESS`.
 `bulk_reference_mode` containing `center_plane` or `pyfluent_report_csv`, and
 `summary.warn = 0` for the basic four-field contour set.
 
+#### F-21 — `case_status` filters cascade after inventory reclassification (deployment process)
+
+Severity: **Process** (MFBO loop / batch-selection design)
+
+During deployment, the F-01 re-extraction step in `DEPLOY_RUNBOOK.md` initially
+selected **0 cases** because it filtered on `--case-status POSTPROCESSED_BASIC`,
+but the F-02 inventory re-run (step 3, correctly run **before** step 4) had
+reclassified those same 15 coarse-mesh cases to **`NEEDS_SOLVER_RERUN`**
+(`MAX_ITER_REACHED` at the 1000-iteration cap). `06_batch_postprocess_all_cases.py`
+requires the inventory row’s `case_status` (or `convergence_status`) to appear in
+`--case-status`; a single hard-coded label therefore silently excludes cases after
+reclassification.
+
+This confirms that **convergence-status fixes cascade into `case_status`**, and
+downstream selection filters (`06`, future MFBO loop drivers) must not assume a
+stable `POSTPROCESSED_BASIC` label across inventory refreshes. Prefer explicit
+`--geo-name` / `--case-name` lists **plus** a broad `--case-status` union, or
+select from `case_inventory_compact.csv` by path/column predicates rather than one
+nominal status. See updated `DEPLOY_RUNBOOK.md` step 4.
+
 ### Maintainability and reliability
 
 #### F-07 — The suspected `07` duplication is real in infrastructure, but not a safe wholesale extraction
@@ -664,6 +684,31 @@ verification run but had not yet been deployed to the server at inspection time.
 - **Shear status JSONs:** All 45 directories with shear PNGs have
   `shear_contour_status.json` — no `UNKNOWN` wave expected from commit 3 on
   shear after deploy.
+
+### Deployment verification (2026-07-20)
+
+Post-deploy checks on the server after pulling the eight WSL commits and running
+`DEPLOY_RUNBOOK.md` steps 1–6.
+
+- **F-01 RESOLVED on server:** After re-running report extraction for the 15
+  `*__mesh_max100_min006_cpg3_bl3` mesh-qualified cases, all 15
+  `pressure_report.csv` files now show `expected_outlet_gauge_pressure` matching
+  the case name (`p4M` → `4e6`, `p6M` → `6e6`, `p8M` → `8e6`) — no longer a
+  blanket `6e6`.
+- **F-02 RESOLVED on server:** Re-run inventory now uses `max_iter_target=1000`
+  (read from `batch_config`), and all 36 new campaign cases classify correctly —
+  genuinely unconverged `u0p2` / `u0p3` cases are `MAX_ITER_REACHED` /
+  `NEEDS_SOLVER_RERUN`, not `CONVERGED`. **Note:** `u0p1` cases also show
+  `MAX_ITER_REACHED` because they hit the 1000-iteration cap without a formal
+  convergence declaration despite low residuals (~1e-7). The label is
+  conservative-correct; quality is judged from residuals separately.
+- **F-03 RESOLVED on server:** The post-processing batch over all cases now
+  records contour `WARN` (18) and report/shear `FAILED` honestly instead of
+  masking them as `SUCCESS`. All 40 new campaign (`cpg5_bl4`) cases posted
+  cleanly (report / contour / shear = `SUCCESS`). The `FAILED` entries are all
+  legacy / `BAD`-flagged cases (old incompatible meshes with “zone id” report
+  errors, and `*_BAD_HIGH_CONT_OLD` / `*_BAD_UNSTABLE` divergent cases) — no
+  real regressions.
 
 #### F-03 SAFE slice — closed in repo (2026-07-18)
 
