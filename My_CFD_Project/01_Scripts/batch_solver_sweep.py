@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _solver_common import final_case_data_paths
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
 BASE_RUN_CONFIG_PATH = SCRIPT_DIR / "run_config.py"
@@ -163,14 +165,11 @@ def main():
             project_root, "03_Results", geo_name, mesh_case_name,
             f"{geo_name}_{mesh_case_name}.msh.h5",
         )
-        target_case_folder = os.path.join(
-            project_root, "03_Results", geo_name, case_name,
+        target_case_folder, expected_final_case, expected_final_data = final_case_data_paths(
+            project_root,
+            geo_name,
+            case_name,
         )
-        expected_final_case = os.path.join(
-            target_case_folder,
-            f"{geo_name}_{case_name}_final.cas.h5",
-        )
-        expected_final_data = expected_final_case.replace(".cas.h5", ".dat.h5")
 
         print(f"geo_name       : {geo_name}")
         print(f"mesh_case_name : {mesh_case_name}")

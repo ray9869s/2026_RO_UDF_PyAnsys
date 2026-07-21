@@ -10,6 +10,8 @@ import sys
 import importlib.util
 from pathlib import Path
 
+from _solver_common import normalize_path, path_to_fluent_str as as_fluent_path
+
 # ==========================================================
 # ##### [1] Load Run Configuration #####
 # ==========================================================
@@ -181,16 +183,6 @@ if __name__ == "__main__":
 # ==========================================================
 # ##### [2] Helper Functions #####
 # ==========================================================
-
-def as_fluent_path(path):
-    """Convert a path to a Fluent-friendly absolute path."""
-    return os.path.abspath(path).replace("\\", "/")
-
-
-def normalize_path(path):
-    """Normalize a path for comparison."""
-    return os.path.normcase(os.path.abspath(path))
-
 
 def require_items(required_items, available_items, item_type):
     """Raise an error if required items are missing."""

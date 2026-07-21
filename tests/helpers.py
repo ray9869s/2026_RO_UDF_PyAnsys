@@ -31,6 +31,10 @@ def load_batch_solver_sweep() -> ModuleType:
     return load_module("batch_solver_sweep_under_test", SCRIPTS_DIR / "batch_solver_sweep.py")
 
 
+def load_solver_common() -> ModuleType:
+    return load_module("solver_common_under_test", SCRIPTS_DIR / "_solver_common.py")
+
+
 def load_batch_report_extract() -> ModuleType:
     return load_module("batch_report_extract_under_test", POST_DIR / "01_batch_report_extract.py")
 
