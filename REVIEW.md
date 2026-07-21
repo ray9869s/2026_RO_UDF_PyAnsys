@@ -137,20 +137,55 @@ classification has no durable record of that resolved per-case override.
 This is unsafe for future MFBO: nonconverged preliminary points can be admitted
 as trustworthy observations.
 
-#### F-02b — `classify_case` can mark `likely_complete` while convergence is unresolved
+#### F-02b — `classify_case` can mark `likely_complete` while convergence is unresolved — **RESOLVED** (2026-07-21)
 
-Severity: **Medium**
+Severity: **Medium** — **RESOLVED** (Change A only)
 
-`00_case_inventory.py:1423-1427` sets `likely_complete` when a case/data pair
-and `summary_metrics_wide.csv` exist, even if `convergence_status` is
-`POSSIBLY_INCOMPLETE` or `MAX_ITER_REACHED`. A case can therefore show
-`convergence_status = MAX_ITER_REACHED` (or `POSSIBLY_INCOMPLETE`) while still
-carrying `likely_complete = True` and, when contours are present,
-`case_status = POSTPROCESSED_BASIC`.
+Original finding: `classify_case()` set `likely_complete = True` from artifact
+presence (`has_case_data_pair` + `summary_metrics_wide.csv`) or
+`likely_complete_from_logs`, even when `convergence_status` was
+`MAX_ITER_REACHED` or `POSSIBLY_INCOMPLETE`. MFBO could treat unconverged
+cases as solve-complete.
 
-This is separate from the F-02 `parse_logs()` fixes (default `--max-iter` and
-artifact-only `CONVERGED` fallback). Tightening `likely_complete` should be its
-own follow-up commit.
+**Status:** **RESOLVED** — `likely_complete` is now gated on
+`convergence_status == CONVERGED` only. `likely_complete_from_logs` remains
+a diagnostic column but no longer drives `likely_complete`. Cases
+reclassified to `CONVERGED` by `reclassify_postprocessing_crash_logs()` still
+receive `likely_complete = True`.
+
+**Intentionally unchanged (see F-02c):** `case_status` priority and
+`needs_solver_rerun` are unchanged. `MAX_ITER_REACHED` post-processed cases
+keep `POSTPROCESSED_BASIC` and `needs_solver_rerun = False` so the `07`
+rerun queue (`rerun_candidates.csv` → `active_solver_rerun_candidates.csv`)
+is not polluted with usable u0p1 max-iter cases.
+
+**MFBO selection contract:** `POSTPROCESSED_BASIC` means basic post-processing
+artifacts are present; it does **not** mean the solve is convergence-trustworthy.
+Use `convergence_status` + `likely_complete` for solve trust, never
+`case_status` alone. For usable-but-capped cases, filter on `max_iter_only`,
+`has_all_basic_contours`, and report/residual columns.
+
+#### F-02c — Gate `case_status` / `needs_solver_rerun` on solve-trust (deferred)
+
+Severity: **Medium** — **deferred**
+
+Demoting `MAX_ITER_REACHED` post-processed cases from `POSTPROCESSED_BASIC` to
+`NEEDS_SOLVER_RERUN` would make `case_status` MFBO-safe, but
+`needs_solver_rerun` feeds `rerun_candidates.csv`, and `07_batch_solver_rerun.py`
+has no residual/quality gate at selection time — it reruns every listed row.
+Shipping this without a paired rerun-selection policy would risk needlessly
+re-solving ~40 usable u0p1 cases that hit the 1000-iteration cap with low
+residuals (~1e-7).
+
+**Deferred work:** gate `POSTPROCESSED_BASIC` / `needs_solver_rerun` on
+solve-trust **together with** one of:
+
+- a residual or `max_iter_only` filter in `rerun_candidates.csv` generation, or
+- a pre-run quality gate in `07_batch_solver_rerun.py` `select_candidates()`.
+
+See also **F-05** (mesh-qualified names excluded from `07`'s matrix regex today)
+and **F-21** (`case_status` filters cascade after inventory reclassification;
+any future F-02c change must update `06` / runbook status unions).
 
 #### F-03 — Post-processing subprocess success does not mean requested outputs succeeded
 
