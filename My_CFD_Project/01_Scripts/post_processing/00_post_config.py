@@ -1,5 +1,60 @@
 import os
+import types
 from pathlib import Path
+
+# Batch/worker keys not declared as module-level settings in this file.
+POST_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
+    "final_case_file",
+    "final_data_file",
+    "inlet_velocity_value",
+    "outlet_gauge_pressure",
+    "channel_height_m",
+})
+
+
+def _is_blocked_override_target(value):
+    """Return True when an existing module attribute must not be overwritten."""
+    return callable(value) or isinstance(value, types.ModuleType)
+
+
+def post_config_override_keys(cfg_module):
+    """Return override keys allowed for post_config-style modules."""
+    keys = set(POST_CONFIG_OVERRIDE_EXTENSIONS)
+    for name, value in vars(cfg_module).items():
+        if name.startswith("_"):
+            continue
+        if _is_blocked_override_target(value):
+            continue
+        keys.add(name)
+    return frozenset(keys)
+
+
+def apply_post_config_overrides(cfg_module, overrides):
+    """Apply JSON override dict to a loaded post config module.
+
+    Rejects unknown keys and refuses to overwrite callables or imported modules.
+    """
+    if not isinstance(overrides, dict):
+        raise TypeError(
+            "post config overrides must be a dict, "
+            f"got {type(overrides).__name__}"
+        )
+
+    allowed = post_config_override_keys(cfg_module)
+    unknown = sorted(set(overrides) - allowed)
+    if unknown:
+        raise ValueError(
+            "Unknown post config override key(s): "
+            + ", ".join(repr(key) for key in unknown)
+        )
+
+    for key, value in overrides.items():
+        existing = getattr(cfg_module, key, None)
+        if _is_blocked_override_target(existing):
+            raise TypeError(
+                f"Cannot override non-config attribute: {key!r}"
+            )
+        setattr(cfg_module, key, value)
 
 # My_CFD_Project directory, derived from this file's location
 # (C:/PyFluent/My_CFD_Project on the server, the local copy in WSL).

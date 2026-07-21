@@ -8,9 +8,18 @@
 # meshing_code_*.py and solver_code_*.py should read values from this config.
 
 import os
+import types
 from pathlib import Path
 
 REQUIRED = "===== Edit here ====="
+
+# Batch/worker keys not declared as module-level settings in this file.
+RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
+    "mesh_case_name",
+    "run_label",
+    "restart_from_case_file",
+    "restart_from_data_file",
+})
 
 
 # ==========================================================
@@ -162,7 +171,56 @@ m_out_report_name = "m_out"
 
 
 # ==========================================================
-# [5] Config validation helpers
+# [5] Config override application
+# ==========================================================
+
+def _is_blocked_override_target(value):
+    """Return True when an existing module attribute must not be overwritten."""
+    return callable(value) or isinstance(value, types.ModuleType)
+
+
+def run_config_override_keys(cfg_module):
+    """Return override keys allowed for run_config-style modules."""
+    keys = set(RUN_CONFIG_OVERRIDE_EXTENSIONS)
+    for name, value in vars(cfg_module).items():
+        if name.startswith("_"):
+            continue
+        if _is_blocked_override_target(value):
+            continue
+        keys.add(name)
+    return frozenset(keys)
+
+
+def apply_run_config_overrides(cfg_module, overrides):
+    """Apply JSON override dict to a loaded run_config module.
+
+    Rejects unknown keys and refuses to overwrite callables or imported modules.
+    """
+    if not isinstance(overrides, dict):
+        raise TypeError(
+            "run config overrides must be a dict, "
+            f"got {type(overrides).__name__}"
+        )
+
+    allowed = run_config_override_keys(cfg_module)
+    unknown = sorted(set(overrides) - allowed)
+    if unknown:
+        raise ValueError(
+            "Unknown run config override key(s): "
+            + ", ".join(repr(key) for key in unknown)
+        )
+
+    for key, value in overrides.items():
+        existing = getattr(cfg_module, key, None)
+        if _is_blocked_override_target(existing):
+            raise TypeError(
+                f"Cannot override non-config attribute: {key!r}"
+            )
+        setattr(cfg_module, key, value)
+
+
+# ==========================================================
+# [6] Config validation helpers
 # ==========================================================
 
 def _is_unset(value):

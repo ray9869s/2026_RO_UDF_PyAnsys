@@ -43,10 +43,18 @@ def load_case_inventory() -> ModuleType:
     return load_module("case_inventory_under_test", POST_DIR / "00_case_inventory.py")
 
 
+def load_post_config() -> ModuleType:
+    return load_module("post_config_under_test", POST_DIR / "00_post_config.py")
+
+
 def apply_json_overrides(cfg: ModuleType, overrides: dict) -> None:
-    """Mirror worker scripts: setattr every JSON override key onto the config module."""
-    for key, value in overrides.items():
-        setattr(cfg, key, value)
+    """Mirror meshing/solver workers: restricted run_config override application."""
+    cfg.apply_run_config_overrides(cfg, overrides)
+
+
+def apply_post_json_overrides(cfg: ModuleType, overrides: dict) -> None:
+    """Mirror report worker: restricted post_config override application."""
+    cfg.apply_post_config_overrides(cfg, overrides)
 
 
 def populate_valid_common_config(cfg: ModuleType) -> None:

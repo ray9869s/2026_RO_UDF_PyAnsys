@@ -64,8 +64,7 @@ if __name__ == "__main__":
             raise ValueError(f"PYFLUENT_POST_OVERRIDES is not valid JSON: {e}")
         if not isinstance(_overrides, dict):
             raise ValueError("PYFLUENT_POST_OVERRIDES must be a JSON object.")
-        for _key, _value in _overrides.items():
-            setattr(cfg, _key, _value)
+        cfg.apply_post_config_overrides(cfg, _overrides)
         print(f"Applied config overrides: {sorted(_overrides)}")
 
     print("Config loaded from:")
