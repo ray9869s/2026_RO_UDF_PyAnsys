@@ -2687,6 +2687,14 @@ def write_status_json(status_file: Path, payload: Dict[str, Any]) -> None:
     print(f"Status written: {status_file}")
 
 
+def resolve_shear_export_exit_code(final_status: str) -> int:
+    if final_status == STATUS_OK:
+        return 0
+    if final_status == STATUS_WARN:
+        return 1
+    return 2
+
+
 # ---------------------------------------------------------------------------
 # Shear-rate colorbar / range metadata export (JSON + txt + CSV) — written
 # separately so the colorbar can be recreated outside Fluent when
@@ -4070,7 +4078,7 @@ def main() -> int:
     payload["cli_view_preset_arg"] = str(args.view_preset)
     write_status_json(status_file, payload)
 
-    return 0 if final_status in (STATUS_OK, STATUS_WARN) else 2
+    return resolve_shear_export_exit_code(final_status)
 
 
 if __name__ == "__main__":
