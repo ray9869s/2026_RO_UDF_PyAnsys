@@ -35,6 +35,8 @@ if __name__ == "__main__":
 
     # Per-case overrides from the batch drivers (JSON dict). Applied to the
     # config module before validation and parameter binding below.
+    # PYFLUENT_RUN_CONFIG selects the base module; PYFLUENT_SKIP_VALIDATION=1
+    # opts out of validate_for_solver() after overrides are applied.
     _overrides_env = os.environ.get("PYFLUENT_RUN_OVERRIDES")
     if _overrides_env:
         try:
@@ -46,7 +48,9 @@ if __name__ == "__main__":
         cfg.apply_run_config_overrides(cfg, _overrides)
         print(f"Applied config overrides: {sorted(_overrides)}")
 
-    if not _env:
+    if cfg.run_config_validation_skipped():
+        print("WARNING: Skipping run_config validation (PYFLUENT_SKIP_VALIDATION is set).")
+    else:
         cfg.validate_for_solver()
 
     # Project paths

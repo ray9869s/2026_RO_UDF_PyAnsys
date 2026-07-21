@@ -82,6 +82,7 @@ def main():
         env = {**os.environ, "PYFLUENT_RUN_OVERRIDES": json.dumps(overrides)}
         # The worker must load the base run_config.py, not a leftover env config.
         env.pop("PYFLUENT_RUN_CONFIG", None)
+        env.pop("PYFLUENT_SKIP_VALIDATION", None)
 
         print(f"Command: {' '.join(cmd)}")
 

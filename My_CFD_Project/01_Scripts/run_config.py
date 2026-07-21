@@ -6,6 +6,12 @@
 
 # Edit only this file when changing geometry/case/run parameters.
 # meshing_code_*.py and solver_code_*.py should read values from this config.
+#
+# Environment variables used by meshing/solver workers:
+#   PYFLUENT_PROJECT_ROOT      - override project_root path
+#   PYFLUENT_RUN_CONFIG        - path to an alternate Python config module
+#   PYFLUENT_RUN_OVERRIDES     - JSON object of per-run config overrides
+#   PYFLUENT_SKIP_VALIDATION   - set to 1/true/yes to skip validate_for_* after overrides
 
 import os
 import types
@@ -217,6 +223,15 @@ def apply_run_config_overrides(cfg_module, overrides):
                 f"Cannot override non-config attribute: {key!r}"
             )
         setattr(cfg_module, key, value)
+
+
+_SKIP_VALIDATION_TRUTHY = frozenset({"1", "true", "yes"})
+
+
+def run_config_validation_skipped():
+    """Return True when PYFLUENT_SKIP_VALIDATION opts out of validate_for_* calls."""
+    value = os.environ.get("PYFLUENT_SKIP_VALIDATION", "").strip().lower()
+    return value in _SKIP_VALIDATION_TRUTHY
 
 
 # ==========================================================
