@@ -195,8 +195,9 @@ Original finding: requested contour fields and partial shear exports could be
 recorded as `WARN` while the worker process still exited `0`; the batch
 orchestrator could treat the subprocess as successful without reading status JSON.
 
-**Status:** **partially RESOLVED** — items #1 and #2 below are closed; remaining
-F-03 items (inventory/orchestrator contract, `08` integration, etc.) unchanged.
+**Status:** **partially RESOLVED** — items #1, #2, and #6 below are closed;
+remaining F-03 items (inventory/orchestrator contract, `08` integration, etc.)
+unchanged.
 
 ##### F-03 #1 — `03` WARN exits 0 — **RESOLVED** (2026-07-21)
 
@@ -211,13 +212,25 @@ unchanged.
 `SUCCESS` → `0`, `WARN` (partial side success) → `1`, else → `2`. Status JSON
 unchanged.
 
-##### Worker exit-code contract (shared with `08`)
+##### F-03 #6 — solver final-file verification warn-only — **RESOLVED** (2026-07-21)
+
+`solver_code_260616.py` now verifies the final `.cas.h5`/`.dat.h5` pair after
+the Fluent session cleanup (`try`/`except`/`finally`) and exits `2` when either
+artifact is missing or zero-byte. Exit `1` remains the unhandled-exception path.
+The check is convergence-independent: max-iter and ramp cases that wrote real
+final files still pass. `batch_solver_sweep.py` documents the contract and maps
+nonzero worker exits to `FAILED` via `solver_worker_succeeded()`.
+
+`07_batch_solver_rerun.py` promotion post-copy verify remains a separate
+deferred item (staged attempt writes already fail on a missing pair).
+
+##### Worker exit-code contract (post-processing workers + solver)
 
 | Code | Meaning |
 |------|---------|
 | `0` | Full success |
-| `1` | Partial / `WARN` |
-| `2` | Total `FAILED` |
+| `1` | Partial / `WARN` (post-processing); unhandled exception (solver worker) |
+| `2` | Total `FAILED` (post-processing); final artifact missing/empty (solver worker) |
 | `3` | Usage/config error (`03` / `03b` only) |
 
 **06 companion change** (`0b3fdba`): `06_batch_postprocess_all_cases.py` maps
@@ -311,11 +324,10 @@ per-case run manifest records “completed but not converged” using the resolv
 campaign settings. Downstream classification is left to heuristic log parsing,
 which is affected by F-02.
 
-Artifact verification has a separate failure hole:
-`solver_code_260616.py:468-473` only prints a warning when an expected file is
-missing. Its checks after the final write (`:1692-1696`) therefore allow the
-worker to exit zero with a missing final `.cas.h5` or `.dat.h5`, which the
-batch again labels `SUCCESS`.
+Artifact verification (**F-03 #6 RESOLVED** 2026-07-21): the solver worker now
+exits `2` when final `.cas.h5`/`.dat.h5` artifacts are missing or zero-byte
+after write (convergence-independent; max-iter cases with real finals still
+pass). `batch_solver_sweep.py` records nonzero worker exits as `FAILED`.
 
 For MFBO, solver execution success, numerical convergence, acceptance for
 analysis, and post-processing completeness must be separate states.
@@ -737,6 +749,11 @@ F-03 #1 and #2 (**RESOLVED** 2026-07-21): workers emit exit `1` on partial
 `WARN`; `06` (`0b3fdba`) interprets it without promoting to `FAILED` or
 triggering shear retry. Already-posted artifacts are unchanged — only standalone
 `$?` differs for partial exports.
+
+F-03 #6 (**RESOLVED** 2026-07-21): `solver_code_260616.py` exits `2` when final
+case/data artifacts are missing or empty after write; `batch_solver_sweep.py`
+maps that to `FAILED`. Convergence-independent (max-iter finals still pass).
+`07` promotion post-copy verify remains deferred.
 
 See **F-20** (corrected 2026-07-21): `cp_inlet` WARN affects **legacy cases
 only** (no `summary_metrics_wide.csv`); all `cpg5_bl4` campaign cases use
