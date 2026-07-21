@@ -17,6 +17,24 @@ BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
 BASE_RUN_CONFIG_PATH = SCRIPT_DIR / "run_config.py"
 SOLVER_SCRIPT_PATH = SCRIPT_DIR / "solver_code_260616.py"
 
+# Solver worker exit codes (solver_code_260616.py):
+#   0 = success (final .cas.h5/.dat.h5 exist and are non-empty)
+#   1 = unhandled exception / preflight failure
+#   2 = final artifact verification failure after write
+SOLVER_EXIT_SUCCESS = 0
+SOLVER_EXIT_ARTIFACT_FAILURE = 2
+
+
+def solver_worker_succeeded(returncode: int) -> bool:
+    """True only when the solver worker completed with verified final artifacts."""
+    return returncode == SOLVER_EXIT_SUCCESS
+
+
+def describe_solver_worker_failure(returncode: int) -> str:
+    if returncode == SOLVER_EXIT_ARTIFACT_FAILURE:
+        return "final case/data missing or empty"
+    return "worker failed"
+
 
 def _load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -218,11 +236,14 @@ def main():
 
         result = subprocess.run(cmd, env=env, cwd=str(SCRIPT_DIR), check=False)
 
-        if result.returncode == 0:
+        if solver_worker_succeeded(result.returncode):
             print(f"\nSUCCESS: {label} (return code {result.returncode})")
             successes.append(label)
         else:
-            print(f"\nFAILED: {label} (return code {result.returncode})")
+            failure_detail = describe_solver_worker_failure(result.returncode)
+            print(
+                f"\nFAILED: {label} (return code {result.returncode}: {failure_detail})"
+            )
             failures.append(label)
             if not continue_on_failure:
                 print("Stopping batch because continue_on_failure=False.")

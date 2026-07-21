@@ -6,6 +6,7 @@ import os
 import shutil
 import re
 import json
+import sys
 import importlib.util
 from pathlib import Path
 
@@ -474,6 +475,54 @@ def verify_file_exists(path, description):
         print(f"Verified {description}: {path}")
     else:
         print(f"Warning: {description} was not found: {path}")
+
+
+SOLVER_EXIT_SUCCESS = 0
+SOLVER_EXIT_ARTIFACT_FAILURE = 2
+
+
+def collect_solver_final_artifact_failures(
+    final_case_path,
+    final_data_path,
+    *,
+    is_file=os.path.isfile,
+    get_size=os.path.getsize,
+):
+    """Return human-readable failure messages for missing or empty final artifacts."""
+    failures = []
+    for path, description in (
+        (final_case_path, "final case file"),
+        (final_data_path, "final data file"),
+    ):
+        if not is_file(path):
+            failures.append(f"{description} was not found: {path}")
+            continue
+        try:
+            size = get_size(path)
+        except OSError as exc:
+            failures.append(f"{description} size could not be read ({path}): {exc}")
+            continue
+        if size <= 0:
+            failures.append(f"{description} is empty (0 bytes): {path}")
+    return failures
+
+
+def resolve_solver_final_artifact_exit_code(
+    final_case_path,
+    final_data_path,
+    *,
+    is_file=os.path.isfile,
+    get_size=os.path.getsize,
+) -> int:
+    """Return 0 when both final artifacts exist and are non-empty; else 2."""
+    if collect_solver_final_artifact_failures(
+        final_case_path,
+        final_data_path,
+        is_file=is_file,
+        get_size=get_size,
+    ):
+        return SOLVER_EXIT_ARTIFACT_FAILURE
+    return SOLVER_EXIT_SUCCESS
 
 
 def parse_zone_id_from_log(log_path, zone_name):
@@ -1695,9 +1744,6 @@ if __name__ == "__main__":
         solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
         print(f"Final case/data write command completed: {final_case_file}")
 
-        verify_file_exists(final_case_file, "final case file")
-        verify_file_exists(final_data_file, "final data file")
-
 
     except Exception as e:
         print("\n" + "=" * 72)
@@ -1732,3 +1778,22 @@ if __name__ == "__main__":
             print(f"Working directory restored: {original_working_directory}")
         except Exception as cleanup_error:
             print(f"Warning: could not restore working directory during cleanup: {cleanup_error}")
+
+    # Artifact verification runs after try/except/finally so cleanup always
+    # executes. SystemExit is not raised inside the try block (except Exception
+    # would not catch it anyway, but placement keeps failure semantics clear).
+    artifact_failures = collect_solver_final_artifact_failures(
+        final_case_file,
+        final_data_file,
+    )
+    if artifact_failures:
+        print("\n" + "=" * 72)
+        print("ERROR: Final case/data artifacts are missing or empty after write.")
+        print("=" * 72)
+        for message in artifact_failures:
+            print(message)
+        print("=" * 72 + "\n")
+        sys.exit(SOLVER_EXIT_ARTIFACT_FAILURE)
+
+    print(f"Verified final case file: {final_case_file}")
+    print(f"Verified final data file: {final_data_file}")
