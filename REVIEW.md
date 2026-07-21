@@ -189,23 +189,51 @@ any future F-02c change must update `06` / runbook status unions).
 
 #### F-03 — Post-processing subprocess success does not mean requested outputs succeeded
 
-Severity: **High**
+Severity: **High** — **partially RESOLVED** (2026-07-21)
 
-In `03_pyensight_contour_export.py`, missing requested variables or surfaces are
-often recorded as `WARN` (`:3613-3648,3985-3991`), while the process exits
-nonzero only when a record is `FAILED` (`:4861-4865`). In
-`03b_pyfluent_shear_contour_export.py`, partial side success similarly produces
-`WARN` and exit zero (`:3854-3867,4073`). `08_pyensight_extra_figures.py`
-deliberately skips many failed figures and returns zero whenever at least one
-file was exported (`:2447-2459`).
+Original finding: requested contour fields and partial shear exports could be
+recorded as `WARN` while the worker process still exited `0`; the batch
+orchestrator could treat the subprocess as successful without reading status JSON.
 
-`06_batch_postprocess_all_cases.py:417-478` maps return code zero directly to
-stage `SUCCESS`. It detects output files later (`:807-829`) but does not use the
-worker status JSON or requested-output completeness to revise that status.
-Systematic missing fields can therefore look like a successful batch stage.
-The orchestrator also returns zero when its inventory CSV is missing
-(`:1027-1029`), which can make an automated invocation look successful despite
-processing no cases.
+**Status:** **partially RESOLVED** — items #1 and #2 below are closed; remaining
+F-03 items (inventory/orchestrator contract, `08` integration, etc.) unchanged.
+
+##### F-03 #1 — `03` WARN exits 0 — **RESOLVED** (2026-07-21)
+
+`03_pyensight_contour_export.py` now uses `resolve_contour_export_exit_code()`:
+any `FAILED` record → exit `2`; else any `WARN` → exit `1`; else exit `0`.
+Dry-run and skip-existing paths remain exit `0`. Status JSON and PNG names
+unchanged.
+
+##### F-03 #2 — `03b` partial side success exits 0 — **RESOLVED** (2026-07-21)
+
+`03b_pyfluent_shear_contour_export.py` now uses `resolve_shear_export_exit_code()`:
+`SUCCESS` → `0`, `WARN` (partial side success) → `1`, else → `2`. Status JSON
+unchanged.
+
+##### Worker exit-code contract (shared with `08`)
+
+| Code | Meaning |
+|------|---------|
+| `0` | Full success |
+| `1` | Partial / `WARN` |
+| `2` | Total `FAILED` |
+| `3` | Usage/config error (`03` / `03b` only) |
+
+**06 companion change** (`0b3fdba`): `06_batch_postprocess_all_cases.py` maps
+worker exit `1` to stage `WARN` (not `FAILED`), still infers final status from
+status JSON, and gates shear fallback retry on exit `2` only. Already-posted
+cases see **no data change** on re-run through `06` — only standalone `$?`
+changes for partial exports.
+
+Other F-03 items still open: `08_pyensight_extra_figures.py` deliberately
+skips many failed figures and returns zero whenever at least one file was
+exported (`:2447-2459`). `06_batch_postprocess_all_cases.py` previously mapped
+return code zero directly to stage `SUCCESS` before commit `4d4d85a`; it
+detects output files later (`:807-829`) but inventory/orchestrator contract
+gaps remain. The orchestrator also returns zero when its inventory CSV is
+missing (`:1027-1029`), which can make an automated invocation look successful
+despite processing no cases.
 
 Standalone and orchestrated contour expectations also differ:
 `03_pyensight_contour_export.py:87` defaults to `cp_inlet`, `lmh`,
@@ -701,8 +729,14 @@ Post-deploy checks on the server after pulling the eight WSL commits and running
 | `3c14ab7` | `03` `DEFAULT_FIELDS` aligned with inventory basic set |
 | `d49f4fe` | `08` nonzero exit on partial export |
 | `4d4d85a` | `06` JSON stage-status inference + missing-inventory exit 2 |
+| `0b3fdba` | `06` worker exit `1` = partial (`WARN`); shear retry on exit `2` only |
+| `1136994` | `03` `resolve_contour_export_exit_code` — WARN → exit `1` |
+| `e06095b` | `03b` `resolve_shear_export_exit_code` — partial side → exit `1` |
 
-Deferred within F-03: `03` / `03b` WARN → nonzero exit (#1, #2).
+F-03 #1 and #2 (**RESOLVED** 2026-07-21): workers emit exit `1` on partial
+`WARN`; `06` (`0b3fdba`) interprets it without promoting to `FAILED` or
+triggering shear retry. Already-posted artifacts are unchanged — only standalone
+`$?` differs for partial exports.
 
 See **F-20** (corrected 2026-07-21): `cp_inlet` WARN affects **legacy cases
 only** (no `summary_metrics_wide.csv`); all `cpg5_bl4` campaign cases use
