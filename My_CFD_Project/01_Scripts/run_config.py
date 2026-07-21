@@ -283,6 +283,37 @@ def _require_nonnegative_number(name, value):
         )
 
 
+def _require_positive_float(name, value):
+    """Raise when a config value is not a positive float (numeric or numeric string)."""
+    _require_set(name, value)
+
+    if isinstance(value, bool):
+        raise TypeError(
+            f"run_config.py value must be numeric, not bool: {name}={value!r}"
+        )
+
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+    elif isinstance(value, str):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "run_config.py value must be convertible to float: "
+                f"{name}={value!r}"
+            ) from exc
+    else:
+        raise TypeError(
+            "run_config.py value must be numeric or a numeric string: "
+            f"{name}={value!r}"
+        )
+
+    if numeric <= 0:
+        raise ValueError(
+            f"run_config.py value must be positive: {name}={value!r}"
+        )
+
+
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
@@ -299,6 +330,12 @@ def validate_for_meshing():
     _require_positive_number("m_min", m_min)
     _require_positive_number("m_cpg", m_cpg)
     _require_positive_number("bl_layers", bl_layers)
+
+    if m_min > m_max:
+        raise ValueError(
+            "run_config.py m_min must be <= m_max. "
+            f"m_min={m_min!r}, m_max={m_max!r}"
+        )
 
     _require_set("wall_spacer_labels", wall_spacer_labels)
     _require_set("active_membrane_wall_labels", active_membrane_wall_labels)
@@ -322,14 +359,10 @@ def validate_for_solver():
     """Validate settings required by solver automation."""
     validate_common()
 
-    _require_set("inlet_velocity_value", inlet_velocity_value)
-    try:
-        float(inlet_velocity_value)
-    except Exception as exc:
-        raise TypeError(
-            "run_config.py value must be convertible to float: "
-            f"inlet_velocity_value={inlet_velocity_value!r}"
-        ) from exc
+    _require_positive_float("inlet_velocity_value", inlet_velocity_value)
+
+    _require_positive_number("operating_pressure", operating_pressure)
+    _require_nonnegative_number("outlet_gauge_pressure", outlet_gauge_pressure)
 
     _require_set("template_case_file_name", template_case_file_name)
     _require_set("udf_source_file_name", udf_source_file_name)
@@ -339,6 +372,12 @@ def validate_for_solver():
     _require_set("buffer_wall_base_names", buffer_wall_base_names)
 
     _require_set("target_species_name", target_species_name)
+    _require_positive_number("salt_mass_fraction", salt_mass_fraction)
+    if salt_mass_fraction > 1.0:
+        raise ValueError(
+            "run_config.py value must be <= 1.0: "
+            f"salt_mass_fraction={salt_mass_fraction!r}"
+        )
     _require_positive_number("salt_density", salt_density)
     _require_positive_number("salt_viscosity", salt_viscosity)
     _require_positive_number("salt_molecular_weight", salt_molecular_weight)

@@ -83,6 +83,8 @@ def populate_valid_meshing_config(cfg: ModuleType) -> None:
 def populate_valid_solver_config(cfg: ModuleType) -> None:
     populate_valid_common_config(cfg)
     cfg.inlet_velocity_value = 0.1
+    cfg.operating_pressure = 101325.0
+    cfg.outlet_gauge_pressure = 4.0e6
     cfg.template_case_file_name = "template_RO_setup.cas.h5"
     cfg.udf_source_file_name = "260612_RO_UDF.c"
     cfg.udf_library_name = "libudf"

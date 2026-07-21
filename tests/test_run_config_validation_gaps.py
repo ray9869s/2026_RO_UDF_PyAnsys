@@ -46,37 +46,112 @@ class TestNumericHelperGaps:
             cfg._require_nonnegative_number("periodic_shift_x", False)
 
 
-class TestMeshingValidationGaps:
-    def test_m_min_greater_than_m_max_is_accepted(self, cfg):
+class TestMeshingValidation:
+    def test_m_min_greater_than_m_max_is_rejected(self, cfg):
         cfg.m_max = 0.01
         cfg.m_min = 0.10
-        cfg.validate_for_meshing()
+        with pytest.raises(ValueError, match="m_min must be <= m_max"):
+            cfg.validate_for_meshing()
 
     def test_negative_mesh_sizes_are_rejected(self, cfg):
         cfg.m_min = -0.005
         with pytest.raises(ValueError, match="must be positive"):
             cfg.validate_for_meshing()
 
+    @pytest.mark.parametrize(
+        ("m_max", "m_min"),
+        [
+            (0.085, 0.005),
+            (0.1, 0.006),
+        ],
+    )
+    def test_campaign_mesh_size_pairs_are_accepted(self, cfg, m_max, m_min):
+        cfg.m_max = m_max
+        cfg.m_min = m_min
+        cfg.validate_for_meshing()
 
-class TestSolverValidationGaps:
-    def test_negative_inlet_velocity_is_accepted(self, cfg):
+
+class TestSolverValidation:
+    def test_negative_inlet_velocity_is_rejected(self, cfg):
         cfg.inlet_velocity_value = -0.1
-        cfg.validate_for_solver()
+        with pytest.raises(ValueError, match="must be positive"):
+            cfg.validate_for_solver()
 
     def test_string_numeric_inlet_velocity_is_accepted(self, cfg):
         cfg.inlet_velocity_value = "0.15"
         cfg.validate_for_solver()
 
-    def test_outlet_gauge_pressure_is_not_validated(self, cfg):
+    def test_outlet_gauge_pressure_negative_is_rejected(self, cfg):
         cfg.outlet_gauge_pressure = -1.0e6
-        cfg.validate_for_solver()
+        with pytest.raises(ValueError, match="must be non-negative"):
+            cfg.validate_for_solver()
 
-    def test_operating_pressure_is_not_validated(self, cfg):
+    def test_operating_pressure_negative_is_rejected(self, cfg):
         cfg.operating_pressure = -500.0
+        with pytest.raises(ValueError, match="must be positive"):
+            cfg.validate_for_solver()
+
+    def test_salt_mass_fraction_above_one_is_rejected(self, cfg):
+        cfg.salt_mass_fraction = 1.5
+        with pytest.raises(ValueError, match="must be <= 1.0"):
+            cfg.validate_for_solver()
+
+    def test_salt_mass_fraction_zero_is_rejected(self, cfg):
+        cfg.salt_mass_fraction = 0.0
+        with pytest.raises(ValueError, match="must be positive"):
+            cfg.validate_for_solver()
+
+    def test_campaign_salt_mass_fraction_default_is_accepted(self, cfg):
+        assert cfg.salt_mass_fraction == 0.035
         cfg.validate_for_solver()
 
-    def test_salt_mass_fraction_is_not_validated(self, cfg):
-        cfg.salt_mass_fraction = 1.5
+
+def _load_batch_config_module(filename: str):
+    path = SCRIPTS_DIR / filename
+    spec = importlib.util.spec_from_file_location(f"batch_{filename}", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _campaign_solver_operating_cases():
+    """(inlet_velocity, outlet_gauge_pressure, operating_pressure) from batch configs."""
+    cases: list[tuple[float, float, float]] = []
+    seen: set[tuple[float, float, float]] = set()
+
+    for filename in (
+        "batch_config.py",
+        "batch_config_before_sin_3mesh_20260716_231030.py",
+    ):
+        batchcfg = _load_batch_config_module(filename)
+        for entry in getattr(batchcfg, "solver_sweep_cases", []):
+            u = entry["inlet_velocity_value"]
+            p_out = entry["outlet_gauge_pressure"]
+            p_op = entry["operating_pressure"]
+            key = (float(u), float(p_out), float(p_op))
+            if key not in seen:
+                seen.add(key)
+                cases.append(key)
+
+    return cases
+
+
+class TestCampaignSolverOperatingValues:
+    @pytest.mark.parametrize(
+        ("inlet_velocity", "outlet_gauge_pressure", "operating_pressure"),
+        _campaign_solver_operating_cases(),
+    )
+    def test_campaign_u_p_pairs_pass_solver_validation(
+        self,
+        cfg,
+        inlet_velocity,
+        outlet_gauge_pressure,
+        operating_pressure,
+    ):
+        cfg.inlet_velocity_value = inlet_velocity
+        cfg.outlet_gauge_pressure = outlet_gauge_pressure
+        cfg.operating_pressure = operating_pressure
         cfg.validate_for_solver()
 
 
@@ -166,6 +241,7 @@ class TestRunConfigOverrideAllowlist:
             "_require_set": "private function",
             "_require_positive_number": "private function",
             "_require_nonnegative_number": "private function",
+            "_require_positive_float": "private function",
         }
 
         assert extensions == {
