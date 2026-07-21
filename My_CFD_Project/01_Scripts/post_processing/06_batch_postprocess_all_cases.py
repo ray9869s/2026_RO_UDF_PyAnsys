@@ -276,12 +276,34 @@ def int_from_any(value: Any) -> Optional[int]:
         return None
 
 
+WORKER_EXIT_PARTIAL = 1
+WORKER_EXIT_FAILED = 2
+
+
+def is_worker_hard_failure(worker_returncode: Optional[int]) -> bool:
+    """True for total worker failure (exit 2+), not partial/WARN (exit 1)."""
+    return worker_returncode is not None and worker_returncode not in (0, WORKER_EXIT_PARTIAL)
+
+
+def stage_status_from_worker_returncode(worker_returncode: int) -> str:
+    if worker_returncode == 0:
+        return STATUS_SUCCESS
+    if worker_returncode == WORKER_EXIT_PARTIAL:
+        return STATUS_WARN
+    return STATUS_FAILED
+
+
+def shear_stage_eligible_for_fallback_retry(worker_returncode: Optional[int]) -> bool:
+    """Retry only on total worker failure (exit 2), not partial/WARN (exit 1)."""
+    return worker_returncode == WORKER_EXIT_FAILED
+
+
 def infer_contour_stage_status(
     status_path: Path,
     worker_returncode: Optional[int],
     requested_fields: list[str],
 ) -> tuple[str, str]:
-    if worker_returncode is not None and worker_returncode != 0:
+    if is_worker_hard_failure(worker_returncode):
         return STATUS_FAILED, ""
 
     payload, error = safe_read_json(status_path)
@@ -342,7 +364,7 @@ def infer_shear_stage_status(
     status_path: Path,
     worker_returncode: Optional[int],
 ) -> tuple[str, str]:
-    if worker_returncode is not None and worker_returncode != 0:
+    if is_worker_hard_failure(worker_returncode):
         return STATUS_FAILED, ""
 
     payload, error = safe_read_json(status_path)
@@ -383,7 +405,7 @@ def refine_recorded_stage_status(
         return stage_result.status, ""
     if stage_result.status == STATUS_DRY_RUN:
         return STATUS_DRY_RUN, ""
-    if stage_result.returncode != 0:
+    if is_worker_hard_failure(stage_result.returncode):
         return stage_result.status, ""
     return infer_fn(*infer_args)
 
@@ -589,7 +611,7 @@ def run_stage_command(
         env=env,
     )
     runtime = time.monotonic() - start
-    status = STATUS_SUCCESS if proc.returncode == 0 else STATUS_FAILED
+    status = stage_status_from_worker_returncode(proc.returncode)
     stdout_tail = tail_text(proc.stdout or "")
     stderr_tail = tail_text(proc.stderr or "")
     error_summary = ""
@@ -912,7 +934,7 @@ def execute_case(
     shear_retry_result: Optional[StageResult] = None
     if (
         shear_status_planned == STATUS_PLANNED
-        and shear_result.status == STATUS_FAILED
+        and shear_stage_eligible_for_fallback_retry(shear_result.returncode)
         and args.retry_shear_fallback_on_failure
         and effective_shear_export_mode != SHEAR_EXPORT_MODE_FALLBACK
     ):

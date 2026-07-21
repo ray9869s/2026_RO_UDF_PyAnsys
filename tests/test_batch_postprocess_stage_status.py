@@ -114,7 +114,7 @@ class TestInferContourStageStatus:
         assert status == batch_post.STATUS_UNKNOWN
         assert "water_flux" in note
 
-    def test_worker_nonzero_skips_json(self, batch_post, tmp_path: Path):
+    def test_worker_exit_2_skips_json(self, batch_post, tmp_path: Path):
         status_file = tmp_path / "contour_export_status.json"
         write_contour_status(
             status_file,
@@ -123,6 +123,22 @@ class TestInferContourStageStatus:
         )
         status, note = batch_post.infer_contour_stage_status(status_file, 2, ["cp_inlet"])
         assert status == batch_post.STATUS_FAILED
+        assert note == ""
+
+    def test_worker_exit_1_infers_warn_from_json(self, batch_post, tmp_path: Path):
+        status_file = tmp_path / "contour_export_status.json"
+        write_contour_status(
+            status_file,
+            summary={"success": 1, "failed": 0, "warn": 1, "total": 2},
+            records=[
+                {"field_key": "cp_inlet", "status": "WARN"},
+                {"field_key": "water_flux", "status": "SUCCESS"},
+            ],
+        )
+        status, note = batch_post.infer_contour_stage_status(
+            status_file, 1, ["cp_inlet", "water_flux"]
+        )
+        assert status == batch_post.STATUS_WARN
         assert note == ""
 
     def test_missing_json_after_exit_zero_is_unknown(self, batch_post, tmp_path: Path):
@@ -172,11 +188,18 @@ class TestInferShearStageStatus:
         status, _note = batch_post.infer_shear_stage_status(status_file, 0)
         assert status == batch_post.STATUS_FAILED
 
-    def test_worker_nonzero_skips_json(self, batch_post, tmp_path: Path):
+    def test_worker_exit_2_skips_json(self, batch_post, tmp_path: Path):
         status_file = tmp_path / "shear_contour_status.json"
         write_shear_status(status_file, status="SUCCESS")
-        status, note = batch_post.infer_shear_stage_status(status_file, 1)
+        status, note = batch_post.infer_shear_stage_status(status_file, 2)
         assert status == batch_post.STATUS_FAILED
+        assert note == ""
+
+    def test_worker_exit_1_infers_warn_from_json(self, batch_post, tmp_path: Path):
+        status_file = tmp_path / "shear_contour_status.json"
+        write_shear_status(status_file, status="WARN", field_key="shear_rate")
+        status, note = batch_post.infer_shear_stage_status(status_file, 1)
+        assert status == batch_post.STATUS_WARN
         assert note == ""
 
     def test_missing_json_after_exit_zero_is_unknown(self, batch_post, tmp_path: Path):
@@ -224,6 +247,45 @@ class TestRefineRecordedStageStatus:
             ["cp_inlet"],
         )
         assert status == batch_post.STATUS_WARN
+
+    def test_planned_exit_one_is_refined(self, batch_post, tmp_path: Path):
+        status_file = tmp_path / "contour_export_status.json"
+        write_contour_status(
+            status_file,
+            summary={"success": 1, "failed": 0, "warn": 1, "total": 1},
+            records=[{"field_key": "cp_inlet", "status": "WARN"}],
+        )
+        ran = batch_post.StageResult(status=batch_post.STATUS_WARN, returncode=1)
+        status, _note = batch_post.refine_recorded_stage_status(
+            batch_post.STATUS_PLANNED,
+            ran,
+            batch_post.infer_contour_stage_status,
+            status_file,
+            1,
+            ["cp_inlet"],
+        )
+        assert status == batch_post.STATUS_WARN
+
+
+class TestWorkerExitCodeHelpers:
+    def test_stage_status_from_worker_returncode(self, batch_post):
+        assert batch_post.stage_status_from_worker_returncode(0) == batch_post.STATUS_SUCCESS
+        assert batch_post.stage_status_from_worker_returncode(1) == batch_post.STATUS_WARN
+        assert batch_post.stage_status_from_worker_returncode(2) == batch_post.STATUS_FAILED
+        assert batch_post.stage_status_from_worker_returncode(3) == batch_post.STATUS_FAILED
+
+    def test_is_worker_hard_failure(self, batch_post):
+        assert batch_post.is_worker_hard_failure(None) is False
+        assert batch_post.is_worker_hard_failure(0) is False
+        assert batch_post.is_worker_hard_failure(1) is False
+        assert batch_post.is_worker_hard_failure(2) is True
+        assert batch_post.is_worker_hard_failure(3) is True
+
+    def test_shear_retry_only_on_exit_2(self, batch_post):
+        assert batch_post.shear_stage_eligible_for_fallback_retry(0) is False
+        assert batch_post.shear_stage_eligible_for_fallback_retry(1) is False
+        assert batch_post.shear_stage_eligible_for_fallback_retry(2) is True
+        assert batch_post.shear_stage_eligible_for_fallback_retry(None) is False
 
 
 def test_run_returns_2_when_inventory_missing(batch_post, tmp_path: Path, capsys):
