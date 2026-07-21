@@ -11,6 +11,12 @@ import importlib.util
 from pathlib import Path
 
 from _solver_common import normalize_path, path_to_fluent_str as as_fluent_path
+from _solver_common import (
+    SOLVER_EXIT_ARTIFACT_FAILURE,
+    SOLVER_EXIT_SUCCESS,
+    collect_solver_final_artifact_failures,
+    resolve_solver_final_artifact_exit_code,
+)
 
 # ==========================================================
 # ##### [1] Load Run Configuration #####
@@ -467,54 +473,6 @@ def verify_file_exists(path, description):
         print(f"Verified {description}: {path}")
     else:
         print(f"Warning: {description} was not found: {path}")
-
-
-SOLVER_EXIT_SUCCESS = 0
-SOLVER_EXIT_ARTIFACT_FAILURE = 2
-
-
-def collect_solver_final_artifact_failures(
-    final_case_path,
-    final_data_path,
-    *,
-    is_file=os.path.isfile,
-    get_size=os.path.getsize,
-):
-    """Return human-readable failure messages for missing or empty final artifacts."""
-    failures = []
-    for path, description in (
-        (final_case_path, "final case file"),
-        (final_data_path, "final data file"),
-    ):
-        if not is_file(path):
-            failures.append(f"{description} was not found: {path}")
-            continue
-        try:
-            size = get_size(path)
-        except OSError as exc:
-            failures.append(f"{description} size could not be read ({path}): {exc}")
-            continue
-        if size <= 0:
-            failures.append(f"{description} is empty (0 bytes): {path}")
-    return failures
-
-
-def resolve_solver_final_artifact_exit_code(
-    final_case_path,
-    final_data_path,
-    *,
-    is_file=os.path.isfile,
-    get_size=os.path.getsize,
-) -> int:
-    """Return 0 when both final artifacts exist and are non-empty; else 2."""
-    if collect_solver_final_artifact_failures(
-        final_case_path,
-        final_data_path,
-        is_file=is_file,
-        get_size=get_size,
-    ):
-        return SOLVER_EXIT_ARTIFACT_FAILURE
-    return SOLVER_EXIT_SUCCESS
 
 
 def parse_zone_id_from_log(log_path, zone_name):

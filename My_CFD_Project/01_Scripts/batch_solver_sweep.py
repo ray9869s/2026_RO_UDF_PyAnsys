@@ -13,11 +13,14 @@ import sys
 from pathlib import Path
 
 from _solver_common import (
+    describe_solver_worker_failure,
     final_case_data_paths,
     make_base_case_name,
     make_mesh_qualified_case_name,
     pressure_to_case_token,
     resolve_case_names,
+    resolve_input_mode,
+    solver_worker_succeeded,
     velocity_to_case_token,
 )
 
@@ -26,53 +29,12 @@ BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
 BASE_RUN_CONFIG_PATH = SCRIPT_DIR / "run_config.py"
 SOLVER_SCRIPT_PATH = SCRIPT_DIR / "solver_code_260616.py"
 
-# Solver worker exit codes (solver_code_260616.py):
-#   0 = success (final .cas.h5/.dat.h5 exist and are non-empty)
-#   1 = unhandled exception / preflight failure
-#   2 = final artifact verification failure after write
-SOLVER_EXIT_SUCCESS = 0
-SOLVER_EXIT_ARTIFACT_FAILURE = 2
-
-
-def solver_worker_succeeded(returncode: int) -> bool:
-    """True only when the solver worker completed with verified final artifacts."""
-    return returncode == SOLVER_EXIT_SUCCESS
-
-
-def describe_solver_worker_failure(returncode: int) -> str:
-    if returncode == SOLVER_EXIT_ARTIFACT_FAILURE:
-        return "final case/data missing or empty"
-    return "worker failed"
-
 
 def _load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def resolve_input_mode(case_settings):
-    """Return the solver input mode and optional restart source paths."""
-    restart_case = case_settings.get("restart_from_case_file")
-    restart_data = case_settings.get("restart_from_data_file")
-
-    has_restart_case = restart_case is not None
-    has_restart_data = restart_data is not None
-
-    if has_restart_case != has_restart_data:
-        raise ValueError(
-            "restart_from_case_file and restart_from_data_file must be provided together."
-        )
-
-    if has_restart_case:
-        if not str(restart_case).strip() or not str(restart_data).strip():
-            raise ValueError(
-                "restart_from_case_file and restart_from_data_file must be non-empty paths."
-            )
-        return "restart_continuation", restart_case, restart_data
-
-    return "mesh_initialization", None, None
 
 
 def main():

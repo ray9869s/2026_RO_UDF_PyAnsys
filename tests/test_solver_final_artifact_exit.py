@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import types
 
-from helpers import SCRIPTS_DIR, load_batch_solver_sweep, load_module
+from helpers import SCRIPTS_DIR, load_batch_solver_sweep, load_module, load_solver_common
 
 
 def load_solver_code():
@@ -142,3 +142,39 @@ class TestBatchSolverWorkerSucceeded:
     def test_describe_artifact_failure(self):
         batch = load_batch_solver_sweep()
         assert batch.describe_solver_worker_failure(2) == "final case/data missing or empty"
+
+
+class TestSharedModuleArtifactExitContract:
+    """Direct _solver_common coverage; solver/batch re-export the same symbols."""
+
+    def test_exit_constants_unchanged(self):
+        common = load_solver_common()
+        assert common.SOLVER_EXIT_SUCCESS == 0
+        assert common.SOLVER_EXIT_ARTIFACT_FAILURE == 2
+
+    def test_shared_resolve_matches_solver_reexport(self):
+        common = load_solver_common()
+        solver = load_solver_code()
+        is_file, get_size = make_fs()
+        assert (
+            common.resolve_solver_final_artifact_exit_code(
+                "/tmp/final.cas.h5",
+                "/tmp/final.dat.h5",
+                is_file=is_file,
+                get_size=get_size,
+            )
+            == solver.resolve_solver_final_artifact_exit_code(
+                "/tmp/final.cas.h5",
+                "/tmp/final.dat.h5",
+                is_file=is_file,
+                get_size=get_size,
+            )
+            == common.SOLVER_EXIT_SUCCESS
+        )
+
+    def test_batch_worker_helpers_match_shared(self):
+        common = load_solver_common()
+        batch = load_batch_solver_sweep()
+        assert batch.solver_worker_succeeded(0) == common.solver_worker_succeeded(0)
+        assert batch.solver_worker_succeeded(1) == common.solver_worker_succeeded(1)
+        assert batch.describe_solver_worker_failure(2) == common.describe_solver_worker_failure(2)

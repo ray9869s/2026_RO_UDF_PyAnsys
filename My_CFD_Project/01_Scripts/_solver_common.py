@@ -2,6 +2,7 @@
 
 Phase 1 (07 consolidation): path helpers.
 Phase 2: case naming helpers (batch wired; 07 selection unchanged).
+Phase 3: input mode + solver worker artifact exit helpers.
 No PyFluent imports.
 """
 
@@ -151,3 +152,98 @@ def is_matrix_base_case_name(case_name: str) -> bool:
     Staged for F-05; not wired into 07 select_candidates in phase 2.
     """
     return bool(MATRIX_BASE_CASE_RE.match(case_name))
+
+
+# ---------------------------------------------------------------------------
+# input_mode — restart vs mesh initialization (batch_solver_sweep semantics)
+# ---------------------------------------------------------------------------
+
+
+def resolve_input_mode(case_settings: dict[str, Any]) -> tuple[str, Any, Any]:
+    """Return the solver input mode and optional restart source paths."""
+    restart_case = case_settings.get("restart_from_case_file")
+    restart_data = case_settings.get("restart_from_data_file")
+
+    has_restart_case = restart_case is not None
+    has_restart_data = restart_data is not None
+
+    if has_restart_case != has_restart_data:
+        raise ValueError(
+            "restart_from_case_file and restart_from_data_file must be provided together."
+        )
+
+    if has_restart_case:
+        if not str(restart_case).strip() or not str(restart_data).strip():
+            raise ValueError(
+                "restart_from_case_file and restart_from_data_file must be non-empty paths."
+            )
+        return "restart_continuation", restart_case, restart_data
+
+    return "mesh_initialization", None, None
+
+
+# ---------------------------------------------------------------------------
+# artifacts — solver worker final case/data exit contract (F-03 #6)
+# ---------------------------------------------------------------------------
+
+# Solver worker exit codes (solver_code_260616.py / batch_solver_sweep.py):
+#   0 = success (final .cas.h5/.dat.h5 exist and are non-empty)
+#   1 = unhandled exception / preflight failure
+#   2 = final artifact verification failure after write
+SOLVER_EXIT_SUCCESS = 0
+SOLVER_EXIT_ARTIFACT_FAILURE = 2
+
+
+def collect_solver_final_artifact_failures(
+    final_case_path,
+    final_data_path,
+    *,
+    is_file=os.path.isfile,
+    get_size=os.path.getsize,
+):
+    """Return human-readable failure messages for missing or empty final artifacts."""
+    failures = []
+    for path, description in (
+        (final_case_path, "final case file"),
+        (final_data_path, "final data file"),
+    ):
+        if not is_file(path):
+            failures.append(f"{description} was not found: {path}")
+            continue
+        try:
+            size = get_size(path)
+        except OSError as exc:
+            failures.append(f"{description} size could not be read ({path}): {exc}")
+            continue
+        if size <= 0:
+            failures.append(f"{description} is empty (0 bytes): {path}")
+    return failures
+
+
+def resolve_solver_final_artifact_exit_code(
+    final_case_path,
+    final_data_path,
+    *,
+    is_file=os.path.isfile,
+    get_size=os.path.getsize,
+) -> int:
+    """Return 0 when both final artifacts exist and are non-empty; else 2."""
+    if collect_solver_final_artifact_failures(
+        final_case_path,
+        final_data_path,
+        is_file=is_file,
+        get_size=get_size,
+    ):
+        return SOLVER_EXIT_ARTIFACT_FAILURE
+    return SOLVER_EXIT_SUCCESS
+
+
+def solver_worker_succeeded(returncode: int) -> bool:
+    """True only when the solver worker completed with verified final artifacts."""
+    return returncode == SOLVER_EXIT_SUCCESS
+
+
+def describe_solver_worker_failure(returncode: int) -> str:
+    if returncode == SOLVER_EXIT_ARTIFACT_FAILURE:
+        return "final case/data missing or empty"
+    return "worker failed"
