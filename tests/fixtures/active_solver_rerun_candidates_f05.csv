@@ -1,0 +1,5 @@
+geo_name,case_name,max_iteration_detected,convergence_status,hard_solver_failure_detected,max_iter_only,failure_evidence_short,latest_log_file,suggested_next_action
+Sin_ST,u0p2_p4M__mesh_max100_min006_cpg5_bl4,1000,MAX_ITER_REACHED,false,true,,/tmp/fake.log,Rerun solver with continuation strategy
+Sin_ST,u0p2_p6M__mesh_max100_min006_cpg5_bl4,1000,MAX_ITER_REACHED,false,true,,/tmp/fake.log,Rerun solver with continuation strategy
+Sin_SL,u0p3_p8M__mesh_max100_min006_cpg5_bl4,1000,MAX_ITER_REACHED,false,true,,/tmp/fake.log,Rerun solver with continuation strategy
+Sin_ST,u0p2_p4M,1000,MAX_ITER_REACHED,false,true,,/tmp/fake.log,Rerun solver with continuation strategy

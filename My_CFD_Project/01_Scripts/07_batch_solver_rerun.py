@@ -29,11 +29,12 @@ from _solver_common import (
     blending_ramp_values,
     classify_convergence,
     detect_residual_plateau,
+    is_matrix_base_case_name,
     parse_residuals_from_transcript_text,
+    strip_mesh_suffix,
 )
 
 
-MATRIX_CASE_RE = re.compile(r"^u\d+p\d+_p\d+M$")
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -862,7 +863,8 @@ def select_candidates(
             stats["missing_required"] += 1
             continue
 
-        if not MATRIX_CASE_RE.match(case_name):
+        base_case_name, _mesh_suffix = strip_mesh_suffix(case_name)
+        if not is_matrix_base_case_name(base_case_name):
             stats["non_matrix_case_name"] += 1
             continue
 
