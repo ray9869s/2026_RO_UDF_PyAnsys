@@ -1443,11 +1443,7 @@ def classify_case(record: dict[str, Any]) -> None:
     shear_status = str(record.get("shear_export_status") or "").upper()
     if contour_failed_count > 0 or contour_status in {"FAILED", "FAIL"} or shear_status in {"FAILED", "FAIL"}:
         record["has_postprocessing_graphics_errors"] = True
-    likely_complete = bool(
-        convergence_status == CONVERGED
-        or record.get("likely_complete_from_logs")
-        or (has_pair and has_summary and not hard_failure)
-    )
+    likely_complete = convergence_status == CONVERGED
 
     solver_status_needs_rerun = convergence_status in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
     needs_reports = bool(has_pair and not has_summary and not hard_failure)

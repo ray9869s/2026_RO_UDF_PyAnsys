@@ -29,6 +29,26 @@ def solver_analysis(inventory, text: str):
     )
 
 
+def classify_record(inventory, **overrides):
+    """Minimal inventory row for classify_case() characterization tests."""
+    record = {
+        "convergence_status": inventory.MAX_ITER_REACHED,
+        "has_case_data_pair": True,
+        "has_summary_metrics_wide": True,
+        "has_all_basic_contours": True,
+        "has_all_pyensight_contours": True,
+        "has_shear_contour": True,
+        "hard_solver_failure_detected": False,
+        "likely_complete_from_logs": False,
+        "contour_failed_count": 0,
+        "contour_export_overall_status": "",
+        "shear_export_status": "",
+    }
+    record.update(overrides)
+    inventory.classify_case(record)
+    return record
+
+
 class TestInventoryConvergenceClassification:
     def test_explicit_convergence_phrase(self, inventory):
         result = inventory.parse_logs(
@@ -122,3 +142,60 @@ class TestInventoryConvergenceClassification:
         args = inventory.parse_args([])
         assert args.max_iter == inventory._default_max_iter_target()
         assert args.max_iter == 1000
+
+
+class TestClassifyCaseLikelyComplete:
+    def test_inventory_csv_schema_unchanged(self, inventory):
+        fieldnames = inventory.CASE_INVENTORY_FIELDNAMES
+        assert len(fieldnames) == 106
+        assert fieldnames.count("likely_complete") == 1
+        assert fieldnames[fieldnames.index("likely_complete_from_logs") + 1] == "likely_complete"
+        assert fieldnames == list(dict.fromkeys(fieldnames))
+
+    def test_max_iter_with_full_artifacts_not_likely_complete_queue_unchanged(self, inventory):
+        record = classify_record(inventory)
+        assert record["likely_complete"] is False
+        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+        assert record["needs_solver_rerun"] is False
+
+    def test_converged_with_artifacts_is_likely_complete(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.CONVERGED,
+        )
+        assert record["likely_complete"] is True
+        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+
+    def test_possibly_incomplete_with_artifacts_not_likely_complete(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.POSSIBLY_INCOMPLETE,
+        )
+        assert record["likely_complete"] is False
+        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+
+    def test_likely_complete_from_logs_does_not_override_non_converged(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.POSSIBLY_INCOMPLETE,
+            likely_complete_from_logs=True,
+        )
+        assert record["likely_complete"] is False
+
+    def test_failed_or_diverged_with_artifacts_not_likely_complete(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.FAILED_OR_DIVERGED,
+            hard_solver_failure_detected=True,
+        )
+        assert record["likely_complete"] is False
+        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+
+    def test_crash_reclassified_to_converged_is_likely_complete(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.CONVERGED,
+            has_postprocessing_runtime_crash=True,
+        )
+        assert record["likely_complete"] is True
+        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
