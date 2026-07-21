@@ -12,7 +12,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _solver_common import final_case_data_paths
+from _solver_common import (
+    final_case_data_paths,
+    make_base_case_name,
+    make_mesh_qualified_case_name,
+    pressure_to_case_token,
+    resolve_case_names,
+    velocity_to_case_token,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
@@ -43,60 +50,6 @@ def _load_module(name, path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-# ----------------------------------------------------------
-# Case naming helpers
-# ----------------------------------------------------------
-
-def velocity_to_case_token(u):
-    # 0.1 -> "u0p1"
-    return f"u0p{int(round(float(u) * 10))}"
-
-
-def pressure_to_case_token(p):
-    # 4.0e6 -> "p4M"
-    return f"p{int(round(float(p) / 1.0e6))}M"
-
-
-def make_base_case_name(u, p):
-    # (0.1, 4.0e6) -> "u0p1_p4M"
-    return f"{velocity_to_case_token(u)}_{pressure_to_case_token(p)}"
-
-
-def make_mesh_qualified_case_name(base_case_name, mesh_case_name):
-    if mesh_case_name:
-        return f"{base_case_name}__{mesh_case_name}"
-    return base_case_name
-
-
-def resolve_case_names(case_dict):
-    """Return (base_case_name, case_name) for a solver sweep entry.
-
-    Priority:
-      1. Explicit "case_name" is used as-is (legacy behavior).
-      2. Explicit "base_case_name" is mesh-qualified with mesh_case_name.
-      3. inlet_velocity_value + outlet_gauge_pressure + mesh_case_name derive both.
-      4. Otherwise "case_name" is required, as before.
-    """
-    base_case_name = case_dict.get("base_case_name")
-    mesh_case_name = case_dict.get("mesh_case_name")
-    explicit_case_name = case_dict.get("case_name")
-
-    if explicit_case_name:
-        return base_case_name, explicit_case_name
-
-    if base_case_name and mesh_case_name:
-        return base_case_name, make_mesh_qualified_case_name(base_case_name, mesh_case_name)
-
-    u = case_dict.get("inlet_velocity_value")
-    p = case_dict.get("outlet_gauge_pressure")
-    if u is not None and p is not None and mesh_case_name:
-        base_case_name = make_base_case_name(u, p)
-        return base_case_name, make_mesh_qualified_case_name(base_case_name, mesh_case_name)
-
-    # Legacy behavior: an explicit case_name is required when it cannot be derived.
-    return base_case_name, case_dict["case_name"]
 
 
 def resolve_input_mode(case_settings):

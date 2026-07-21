@@ -1,8 +1,8 @@
 """Characterization tests for case-name building and operating-value parsing.
 
-These lock in current naming behavior across batch_solver_sweep,
-01_batch_report_extract, and 06_batch_postprocess_all_cases before shared
-helpers are extracted (plan item 1 / F-01 groundwork).
+Batch naming helpers are re-exported from _solver_common via batch_solver_sweep
+(phase 2). Report (01_batch_report_extract) and post (06) naming are unchanged
+here; a later phase may wire them to the shared module.
 """
 
 from __future__ import annotations
