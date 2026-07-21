@@ -263,116 +263,71 @@ batch again labels `SUCCESS`.
 For MFBO, solver execution success, numerical convergence, acceptance for
 analysis, and post-processing completeness must be separate states.
 
-#### F-20 — Universal `cp_inlet` WARN: EnSight bulk-center-average path fails on every post-processed case
+#### F-20 — `cp_inlet` WARN on legacy cases only (no PyEnSight API bug) — **WON'T-FIX**
 
-Severity: **High** (systematic incorrect CP definition on all contour exports;
-masked as `WARN` + exit 0 under pre-fix orchestration)
+Severity: **Low** (defunct legacy test cases only; real campaign data unaffected)
 
-**Symptom (production):** All 46 post-processed cases with
-`contour_export_status.json` show `summary.warn = 1` and `summary.failed = 0`.
-The single `WARN` record is always `field_key = cp_inlet`. Typical message:
+**Status:** **WON'T-FIX** — no exporter change planned. The earlier “universal
+failure across all post-processed cases” conclusion was a **static-analysis
+generalization** from artifact counts; production diagnosis on current-campaign
+data corrected the scope.
+
+**Original symptom (2026-07-18, pre-deploy artifact review):** 46 cases with
+`contour_export_status.json` showed `summary.warn = 1` and `summary.failed = 0`;
+the single `WARN` was always `field_key = cp_inlet`, often with:
 
 ```text
 WARN: bulk center avg failed (all_candidates_failed: bbox:
  failed_to_get_bounding_box | z=0: clip_failed(clip_cmd=ok,z=0...) | ...)
 ```
 
-**Affected scope:** Every geometry and every case in the post-processed set (46/46
-with status JSON). Not case-specific geometry; indicates a systematic EnSight API /
-part-detection failure rather than sporadic mesh issues.
+That pattern was interpreted as a systematic PyEnSight 0.11.6 bbox/clip API
+failure affecting every geometry. **That interpretation was wrong.**
 
-**Code path (`03_pyensight_contour_export.py`):**
+**Corrected scope (production diagnosis, 2026-07-21):**
 
-1. **Strategy 0 — PyFluent CSV** (`:3664-3699`, `_read_pyfluent_bulk_center_avg`
-   `:3342-3382`): reads `c_bulk_center_area_avg` from
-   `post/reports/summary_metrics_wide.csv`. On production runs this either was
-   unavailable at contour-export time or failed the plausibility gate (`:3672-3695`),
-   because Strategy 1 was reached on every case.
+- **Current campaign (`cpg5_bl4`) — unaffected.** New cases use **Strategy 0**
+  correctly when `summary_metrics_wide.csv` exists. Example:
+  `Sin_ST/u0p1_p6M__mesh_max100_min006_cpg5_bl4` — contour log reports
+  `CP bulk avg from PyFluent CSV: 0.036`; CSV has
+  `c_bulk_center_area_avg = 0.03665` (`mass_fraction`); `cp_inlet` is
+  **SUCCESS**, no WARN.
+- **Legacy test cases (2026-04-27 – 2026-05-08) — expected WARN.** The 18 cases
+  that still WARN are all legacy pre-campaign runs. Spot check
+  `Sin_ST/260506_Test`: **no** `summary_metrics_wide.csv` at all; contour log
+  has **no** PyFluent bulk-avg messages. These are the same legacy cases whose
+  report and shear stages **FAILED** with “zone id” errors on incompatible old
+  meshes — defunct data, not a live pipeline bug.
 
-2. **Strategy 1 — EnSight center-plane average** (`:3701-3706` →
-   `compute_bulk_center_average` `:2875-3038`):
-   - `find_fluid_volume_parts()` (`:2688-2700`) collects 3-D volume parts.
-   - `get_part_bounding_box()` (`:2717-2724`) calls `_accumulate_parts_extents`
-     (`:2703-2714`), which probes each part via `_first_success_for_object` →
-     `attempt_object_bounds` (`:1081-1127`, `BOUNDS_API_ATTEMPTS` `:227-244`).
-     Requires `zmin < zmax` (`:2722-2723`). Production diag
-     `bbox: failed_to_get_bounding_box` means **no fluid part returned usable
-     3-D extents** on this PyEnSight build.
-   - Fallback z candidates `CENTER_PLANE_Z_CANDIDATES = [0.0, 0.000385]` (`:192`)
-     are tried when bbox fails (`:2954-2956`).
-   - For each z, `_try_create_clip_at_z` (`:2784-2830`) issues
-     `session.ensight.clip.*` on selected volume part numbers. Production shows
-     `clip_cmd=ok` followed by `clip_failed(...)` — the command language call
-     succeeds but **no new part is detected** (`:2812-2826`,
-     `no_new_parts_after_clip`), so the center plane is never created.
-   - When every z candidate fails, `final_result = all_candidates_failed`
-     (`:3036-3038`) and the cp_inlet handler records
-     `WARN: bulk center avg failed ({plane_diag})` (`:3737-3744`).
+**Actual root cause:** Legacy cases were never report-extracted, so Strategy 0
+has no CSV to read and the exporter falls through to Strategy 1 (EnSight
+center-plane average) and then inlet-reference fallback. The bbox/clip WARN
+diag on those cases reflects **missing upstream report data**, not a broken
+PyEnSight 0.11.6 API on current meshes.
 
-3. **Fallback 1 — inlet reference** (`:3746-3777`): when `bulk_avg is None`,
-   `create_cp_wall_direct(session, salt_desc, inlet_ref)` builds
-   `CP_WALL_DIRECT = salt / inlet_ref` using `UDF_C_INLET_REF` or inlet mass
-   fraction (`:3748-3758`). Adds a second WARN:
-   `CP using inlet reference (...), center-plane avg unavailable`. **The PNG is
-   still written** (`:4316-4324`): any warnings downgrade the record to
-   `STATUS_WARN`, not `FAILED`; `export.image()` runs with the inlet-reference
-   CP variable (or UDM_9 if that also fails — not observed in the 46-case
-   pattern).
+**Code path (unchanged; for reference only — `03_pyensight_contour_export.py`):**
 
-**What the export still produces:** A `cp_inlet` membrane PNG in the fixed
-`[1.00, 1.15]` palette range, but CP is computed as **wall salt concentration
-divided by the inlet reference**, not by the channel-center bulk average. Colorbar
-metadata notes `bulk_reference_mode=inlet_reference_fallback` when the fallback
-succeeds (`:4346-4350`). Physically this is a mislabeled concentration ratio, not
-true CP; the WARN is diagnostically correct but pre-fix orchestration recorded
-stage `SUCCESS`.
+1. **Strategy 0 — PyFluent CSV** (`_read_pyfluent_bulk_center_avg`, cp_inlet
+   handler): reads `c_bulk_center_area_avg` from
+   `post/reports/summary_metrics_wide.csv`. **Works when the file exists** (all
+   real campaign cases after report extraction).
+2. **Strategy 1 — EnSight center-plane average** (`compute_bulk_center_average`):
+   only reached when Strategy 0 is unavailable; relevant for legacy cases
+   without reports.
+3. **Fallback — inlet reference:** when both strategies fail; produces WARN and
+   `bulk_reference_mode=inlet_reference_fallback` — acceptable for defunct
+   legacy cases, not a campaign blocker.
 
-**Root-cause hypothesis:**
+**Relation to deferred #7 (case-only `load_data` post-check):** **Unrelated.**
+#7 remains open as a separate maintainability item (post-load variable
+verification in `open_case_in_pyensight`). It does not explain F-20; current
+campaign contours succeed on the same load path.
 
-- **Primary:** PyEnSight 0.11.x on the server does not expose part bounds through
-  any of the `BOUNDS_API_ATTEMPTS` attributes/methods on 3-D fluid volume parts,
-  and/or returns degenerate z-extents (`zmin >= zmax`), so `get_part_bounding_box`
-  always returns `None`.
-- **Secondary:** The z-normal clip workflow assumes clip creates a **new** part
-  discoverable by `PARTNUMBER` delta (`:2812-2817`). On this build the clip may
-  modify geometry in place or register parts differently, so `plane_part` stays
-  `None` even when `clip_cmd=ok`.
-- **Universality** across geometries/cases rules out mesh-specific coordinates;
-  points to API/session contract drift, not RO geometry.
-- **Relation to deferred F-08 / #7 (case-only `load_data` fallback):** Possibly
-  related if attempt-2 case-only loading leaves volume parts without full result
-  geometry metadata, but **weak as sole explanation**: the other three contour
-  fields (`water_flux`, `lmh`, `salt_flux`) export `SUCCESS` on the same
-  session, so case/data loading is functional. Bounds and clip are more likely
-  broken independent of load path; still worth verifying whether attempt-1
-  dual-file load vs attempt-2 case-only changes part EXTENTS/clip behavior on
-  the server (add post-load diagnostic logging in a future commit).
-
-**Proposed fix (post-campaign; implement alongside deferred #7 review):**
-
-1. **Prefer Strategy 0:** Ensure report extraction runs before contours in batch
-   order (already typical) and widen/relax plausibility or log why CSV values
-   are rejected; treat a valid `c_bulk_center_area_avg` as authoritative and
-   skip EnSight AMEAN entirely when present.
-2. **Repair Strategy 1 for current PyEnSight:**
-   - Add server-side bounds diagnostic dump (reuse `attempt_object_bounds` on
-     fluid volume parts) to identify which API works on 0.11.6.
-   - Replace clip-by-PARTNUMBER-delta with a named-part lookup or
-     `ensight.utils` clip helper if available on this build.
-   - Consider reusing membrane-view bounds path (`get_membrane_view_bounds`,
-     `:2727-2733`) which does not require `zmin < zmax`, only for z-mid
-     estimation — not for CP itself.
-3. **Tighten success contract (deferred F-03 #1):** Treat inlet-reference CP as
-   `WARN` at orchestrator level (now recorded post commit `4d4d85a`) and
-   eventually fail or flag campaigns that never achieve
-   `bulk_reference_mode=center_plane_area_weighted_average*`.
-4. **Do not change UDF physics or contour filenames**; fix is confined to bulk
-   reference acquisition in `03`.
-
-**Verification after fix:** On server, re-export one case per geometry; expect
-`cp_inlet` record `SUCCESS` (or `WARN` only for genuine physics edge cases),
-`bulk_reference_mode` containing `center_plane` or `pyfluent_report_csv`, and
-`summary.warn = 0` for the basic four-field contour set.
+**Backlog lesson:** Findings based on static analysis of output artifacts (e.g.
+counting `summary.warn` across all directories that happen to have status JSON)
+must be **validated against current-campaign data** before scoping a fix. Legacy
+cases with incomplete post-processing can create **false universal patterns**
+that do not apply to live pipeline behavior.
 
 #### F-21 — `case_status` filters cascade after inventory reclassification (deployment process)
 
@@ -720,8 +675,9 @@ Post-deploy checks on the server after pulling the eight WSL commits and running
 
 Deferred within F-03: `03` / `03b` WARN → nonzero exit (#1, #2).
 
-See **F-20** for the systematic `cp_inlet` bulk-average WARN observed across all
-46 production contour status JSONs.
+See **F-20** (corrected 2026-07-21): `cp_inlet` WARN affects **legacy cases
+only** (no `summary_metrics_wide.csv`); all `cpg5_bl4` campaign cases use
+Strategy 0 successfully — not a PyEnSight API bug.
 
 ## Verification of the six suspected issues
 
