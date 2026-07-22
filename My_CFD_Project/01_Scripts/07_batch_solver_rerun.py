@@ -29,13 +29,14 @@ from _solver_common import (
     blending_ramp_values,
     classify_convergence,
     detect_residual_plateau,
+    final_case_data_paths_under_root,
+    find_windows_drive_paths,
     is_matrix_base_case_name,
     parse_residuals_from_transcript_text,
+    path_to_fluent_str_resolved,
     strip_mesh_suffix,
 )
 
-
-WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -742,7 +743,7 @@ def reject_windows_drive_paths_on_non_windows(
     if os.name == "nt":
         return
 
-    unsafe = [str(path) for path in paths if WINDOWS_DRIVE_RE.match(str(path))]
+    unsafe = find_windows_drive_paths(paths)
     if not unsafe:
         return
 
@@ -769,9 +770,7 @@ def resolve_existing_file(path: Path, label: str) -> Path:
     return resolved
 
 
-def fluent_path(path: Path) -> str:
-    """Convert a path to a Fluent-friendly absolute path."""
-    return str(path.resolve()).replace("\\", "/")
+fluent_path = path_to_fluent_str_resolved
 
 
 @contextmanager
@@ -902,10 +901,12 @@ def final_pair_for_case(
     geo_name: str,
     case_name: str,
 ) -> tuple[Path, Path, Path]:
-    case_dir = results_root / geo_name / case_name
-    final_case_file = case_dir / f"{geo_name}_{case_name}_final.cas.h5"
-    final_data_file = case_dir / f"{geo_name}_{case_name}_final.dat.h5"
-    return case_dir, final_case_file, final_data_file
+    case_dir, final_case_file, final_data_file = final_case_data_paths_under_root(
+        str(results_root),
+        geo_name,
+        case_name,
+    )
+    return Path(case_dir), Path(final_case_file), Path(final_data_file)
 
 
 def attempt_pair_for_case(

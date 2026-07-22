@@ -187,6 +187,10 @@ class TestFluentPathParity:
             assert str(real_dir) in resolved
             assert str(link_dir) in abspath
 
+    def test_rerun07_uses_resolved_helper(self, rerun07, common):
+        sample = RESULTS_ROOT / "Sin_ST" / "u0p2_p4M"
+        assert rerun07.fluent_path(sample) == common.path_to_fluent_str_resolved(sample)
+
 
 class TestRejectWindowsDriveWrapper:
     CLI_PATHS = [
