@@ -217,21 +217,66 @@ class TestFluentPathParity:
 
 
 class TestRejectWindowsDriveWrapper:
-    CLI_PATHS = [
-        RESULTS_ROOT,
-        RESULTS_ROOT / "_inventory" / "active_solver_rerun_candidates.csv",
-        RESULTS_ROOT / "_inventory" / "solver_rerun",
-        RESULTS_ROOT / "_inventory" / "solver_rerun_logs",
-        SCRIPT_DIR / "post_processing" / "01_pyfluent_report_extract.py",
+    # Posix-shaped paths: on any host, only explicit C: entries match the drive regex.
+    POSIX_SHAPED_CLI_PATHS = [
+        "/data/PyFluent/My_CFD_Project/03_Results",
+        "/data/PyFluent/My_CFD_Project/03_Results/_inventory/active_solver_rerun_candidates.csv",
+        "/data/PyFluent/My_CFD_Project/03_Results/_inventory/solver_rerun",
+        "/data/PyFluent/My_CFD_Project/03_Results/_inventory/solver_rerun_logs",
+        "/data/PyFluent/My_CFD_Project/01_Scripts/post_processing/01_pyfluent_report_extract.py",
     ]
 
     @pytest.mark.parametrize(
         "unsafe_path",
         ["C:/temp/case", "C:\\temp\\case"],
     )
-    def test_wrapper_detects_same_unsafe_set_as_shared(self, rerun07, common, unsafe_path):
-        paths = [unsafe_path] + [str(path) for path in self.CLI_PATHS]
+    def test_find_windows_drive_paths_flags_only_explicit_drive_entries(
+        self, common, unsafe_path
+    ):
+        paths = [unsafe_path] + self.POSIX_SHAPED_CLI_PATHS
         assert common.find_windows_drive_paths(paths) == [unsafe_path]
+
+    @pytest.mark.parametrize(
+        "unsafe_path",
+        ["C:/temp/case", "C:\\temp\\case"],
+    )
+    def test_wrapper_detects_same_unsafe_set_as_shared(
+        self, rerun07, common, unsafe_path, monkeypatch
+    ):
+        monkeypatch.setattr(os, "name", "posix")
+        paths = [unsafe_path] + self.POSIX_SHAPED_CLI_PATHS
+        expected = common.find_windows_drive_paths(paths)
+        assert expected == [unsafe_path]
+
+        recorded: list[str] = []
+
+        class RecordingParser(argparse.ArgumentParser):
+            def error(self, message):  # type: ignore[override]
+                recorded.append(message)
+                raise SystemExit(2)
+
+        with pytest.raises(SystemExit):
+            rerun07.reject_windows_drive_paths_on_non_windows(paths, RecordingParser())
+        assert len(recorded) == 1
+        assert f"Unsafe path(s): {expected}" in recorded[0]
+
+    def test_wrapper_noop_on_windows_host(self, rerun07, monkeypatch):
+        monkeypatch.setattr(os, "name", "nt")
+        rerun07.reject_windows_drive_paths_on_non_windows(
+            ["C:/temp/case"],
+            argparse.ArgumentParser(),
+        )
+
+    def test_shared_reject_respects_explicit_host_os_name(self, common):
+        with pytest.raises(ValueError, match="Unsafe path"):
+            common.reject_windows_drive_paths_on_non_windows(
+                ["C:/temp/case"],
+                host_os_name="posix",
+            )
+        common.reject_windows_drive_paths_on_non_windows(
+            ["C:/temp/case"],
+            host_os_name="nt",
+        )
 
     def test_wrapper_uses_parser_error_with_exact_message(self, rerun07, common, monkeypatch):
         monkeypatch.setattr(os, "name", "posix")
