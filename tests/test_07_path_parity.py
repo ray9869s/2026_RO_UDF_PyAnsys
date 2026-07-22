@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -42,17 +42,33 @@ CAMPAIGN_CASES = [
 ]
 
 
+def _can_create_symlinks() -> bool:
+    """True when this host can create a directory symlink for the divergence test."""
+    if not hasattr(os, "symlink"):
+        return False
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            target = base / "target"
+            target.mkdir()
+            link = base / "link"
+            os.symlink(target, link, target_is_directory=True)
+            return link.is_symlink()
+    except (OSError, NotImplementedError, NotADirectoryError):
+        return False
+
+
 def legacy_fluent_path(path) -> str:
     """Inline copy of 07_batch_solver_rerun.fluent_path before phase 5."""
     return str(Path(path).resolve()).replace("\\", "/")
 
 
 def legacy_final_pair_for_case(results_root, geo_name: str, case_name: str) -> tuple[str, str, str]:
-    """Inline copy of 07 final_pair_for_case string forms (str(case_dir) etc.)."""
-    case_dir = Path(results_root) / geo_name / case_name
-    final_case_file = case_dir / f"{geo_name}_{case_name}_final.cas.h5"
-    final_data_file = case_dir / f"{geo_name}_{case_name}_final.dat.h5"
-    return str(case_dir), str(final_case_file), str(final_data_file)
+    """Inline copy of 07 final_pair_for_case string forms (os.path.join semantics)."""
+    case_dir = os.path.join(results_root, geo_name, case_name)
+    final_case_file = os.path.join(case_dir, f"{geo_name}_{case_name}_final.cas.h5")
+    final_data_file = final_case_file.replace(".cas.h5", ".dat.h5")
+    return case_dir, final_case_file, final_data_file
 
 
 def legacy_attempt_pair_for_case(
@@ -124,18 +140,20 @@ def rerun07():
 class TestFinalPairForCaseParity:
     @pytest.mark.parametrize("geo_name,case_name", CAMPAIGN_CASES)
     def test_matches_under_root_default_results_root(self, common, geo_name, case_name):
-        legacy = legacy_final_pair_for_case(RESULTS_ROOT, geo_name, case_name)
-        shared = common.final_case_data_paths_under_root(str(RESULTS_ROOT), geo_name, case_name)
+        results_root = str(RESULTS_ROOT)
+        legacy = legacy_final_pair_for_case(results_root, geo_name, case_name)
+        shared = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
         assert shared == legacy
 
     @pytest.mark.parametrize("geo_name,case_name", FIXTURE_CASES)
     def test_matches_under_root_fixture_cases(self, common, geo_name, case_name):
-        legacy = legacy_final_pair_for_case(RESULTS_ROOT, geo_name, case_name)
-        shared = common.final_case_data_paths_under_root(str(RESULTS_ROOT), geo_name, case_name)
+        results_root = str(RESULTS_ROOT)
+        legacy = legacy_final_pair_for_case(results_root, geo_name, case_name)
+        shared = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
         assert shared == legacy
 
-    def test_custom_results_root(self, common):
-        custom_root = "/data/alternate_results"
+    def test_custom_results_root(self, common, tmp_path):
+        custom_root = str(tmp_path / "alternate_results")
         geo_name = "Sin_ST"
         case_name = "u0p2_p4M__mesh_max100_min006_cpg5_bl4"
         legacy = legacy_final_pair_for_case(custom_root, geo_name, case_name)
@@ -149,7 +167,7 @@ class TestFinalPairForCaseParity:
             geo_name,
             case_name,
         )
-        legacy = legacy_final_pair_for_case(RESULTS_ROOT, geo_name, case_name)
+        legacy = legacy_final_pair_for_case(str(RESULTS_ROOT), geo_name, case_name)
         assert (str(case_dir), str(final_case), str(final_data)) == legacy
 
 
@@ -170,13 +188,17 @@ class TestFluentPathParity:
     def test_resolved_matches_abspath_on_golden_inputs(self, common, label, path_input):
         assert common.path_to_fluent_str_resolved(path_input) == common.path_to_fluent_str(path_input)
 
+    @pytest.mark.skipif(
+        not _can_create_symlinks(),
+        reason="symlink divergence test requires os.symlink support on this host",
+    )
     def test_symlink_matches_resolved_not_abspath(self, common):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             real_dir = base / "real_case"
             real_dir.mkdir()
             link_dir = base / "linked_case"
-            link_dir.symlink_to(real_dir)
+            os.symlink(real_dir, link_dir, target_is_directory=True)
             case_file = link_dir / "case.cas.h5"
             case_file.touch()
 
@@ -184,8 +206,10 @@ class TestFluentPathParity:
             abspath = common.path_to_fluent_str(case_file)
             assert resolved == legacy_fluent_path(case_file)
             assert resolved != abspath
-            assert str(real_dir) in resolved
-            assert str(link_dir) in abspath
+            real_root = PurePosixPath(str(real_dir.resolve())).as_posix()
+            link_root = PurePosixPath(str(link_dir)).as_posix()
+            assert real_root in PurePosixPath(resolved).as_posix()
+            assert link_root in PurePosixPath(abspath).as_posix()
 
     def test_rerun07_uses_resolved_helper(self, rerun07, common):
         sample = RESULTS_ROOT / "Sin_ST" / "u0p2_p4M"
@@ -206,20 +230,20 @@ class TestRejectWindowsDriveWrapper:
         ["C:/temp/case", "C:\\temp\\case"],
     )
     def test_wrapper_detects_same_unsafe_set_as_shared(self, rerun07, common, unsafe_path):
-        paths = [Path(unsafe_path)] + list(self.CLI_PATHS)
+        paths = [unsafe_path] + [str(path) for path in self.CLI_PATHS]
         assert common.find_windows_drive_paths(paths) == [unsafe_path]
 
-    def test_wrapper_uses_parser_error_with_exact_message(self, rerun07, monkeypatch):
+    def test_wrapper_uses_parser_error_with_exact_message(self, rerun07, common, monkeypatch):
         monkeypatch.setattr(os, "name", "posix")
+        unsafe_path = "C:/temp/case"
         parser = argparse.ArgumentParser()
         with pytest.raises(SystemExit) as exc_info:
             rerun07.reject_windows_drive_paths_on_non_windows(
-                [Path("C:/temp/case")],
+                [unsafe_path],
                 parser,
             )
         assert exc_info.value.code == 2
 
-        # Capture message via a fresh parser that records error text.
         recorded: list[str] = []
 
         class RecordingParser(argparse.ArgumentParser):
@@ -229,11 +253,12 @@ class TestRejectWindowsDriveWrapper:
 
         with pytest.raises(SystemExit):
             rerun07.reject_windows_drive_paths_on_non_windows(
-                [Path("C:/temp/case")],
+                [unsafe_path],
                 RecordingParser(),
             )
         assert len(recorded) == 1
-        assert "Unsafe path(s): ['C:/temp/case']" in recorded[0]
+        assert common.find_windows_drive_paths([unsafe_path]) == [unsafe_path]
+        assert f"Unsafe path(s): {[unsafe_path]}" in recorded[0]
         assert "Windows drive paths are not accepted on this non-Windows host" in recorded[0]
 
 
@@ -264,9 +289,7 @@ class TestAttemptPairForCaseRegression:
 
 
 class TestBuildPlanRowsCaseDirUnresolved:
-    def test_plan_emits_unresolved_case_dir_string(self, rerun07, monkeypatch):
-        import argparse
-
+    def test_plan_emits_unresolved_case_dir_string(self, rerun07):
         args = argparse.Namespace(results_root=RESULTS_ROOT)
         candidates = [
             {
@@ -279,7 +302,7 @@ class TestBuildPlanRowsCaseDirUnresolved:
             }
         ]
         plan_rows = rerun07.build_plan_rows(candidates, args)
-        expected_case_dir = str(RESULTS_ROOT / "Sin_ST" / "u0p2_p4M")
+        expected_case_dir = os.path.join(str(RESULTS_ROOT), "Sin_ST", "u0p2_p4M")
         assert plan_rows[0]["case_dir"] == expected_case_dir
         assert plan_rows[0]["case_dir"] == str(
             rerun07.final_pair_for_case(RESULTS_ROOT, "Sin_ST", "u0p2_p4M")[0]
