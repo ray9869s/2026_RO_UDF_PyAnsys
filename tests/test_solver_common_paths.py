@@ -111,6 +111,32 @@ class TestNormalizePathParity:
         assert common.normalize_path(path_input) == legacy_normalize_path(path_input)
 
 
+class TestFinalCaseDataPathsUnderRootParity:
+    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
+    def test_matches_batch_inline_logic(self, common, velocity, pressure, base_name, mesh_name):
+        geo_name = "Sin_ST"
+        case_name = mesh_qualified_case_name(base_name, mesh_name)
+        project_root = str(PROJECT_ROOT)
+        results_root = os.path.join(project_root, "03_Results")
+
+        expected = legacy_batch_final_paths(project_root, geo_name, case_name)
+        actual = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
+        assert actual == expected
+
+    def test_custom_results_root(self, common):
+        custom_root = "/data/alternate_results"
+        geo_name = "Sin_ST"
+        case_name = "u0p2_p4M__mesh_max100_min006_cpg5_bl4"
+        case_dir, final_case, final_data = common.final_case_data_paths_under_root(
+            custom_root,
+            geo_name,
+            case_name,
+        )
+        assert case_dir == os.path.join(custom_root, geo_name, case_name)
+        assert final_case.endswith(f"{geo_name}_{case_name}_final.cas.h5")
+        assert final_data.endswith(f"{geo_name}_{case_name}_final.dat.h5")
+
+
 class TestFinalCaseDataPathsParity:
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
     def test_matches_batch_inline_logic(self, common, velocity, pressure, base_name, mesh_name):
@@ -121,6 +147,17 @@ class TestFinalCaseDataPathsParity:
         expected = legacy_batch_final_paths(project_root, geo_name, case_name)
         actual = common.final_case_data_paths(project_root, geo_name, case_name)
         assert actual == expected
+
+    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
+    def test_delegation_byte_identical_to_under_root(self, common, velocity, pressure, base_name, mesh_name):
+        geo_name = "Sin_ST"
+        case_name = mesh_qualified_case_name(base_name, mesh_name)
+        project_root = str(PROJECT_ROOT)
+        results_root = os.path.join(project_root, "03_Results")
+
+        delegated = common.final_case_data_paths(project_root, geo_name, case_name)
+        direct = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
+        assert delegated == direct
 
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
     def test_matches_07_layout_when_results_root_is_under_project(
