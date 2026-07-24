@@ -185,8 +185,10 @@ solve-trust **together with** one of:
 
 See also **F-21** (`case_status` filters cascade after inventory reclassification;
 any future F-02c change must update `06` / runbook status unions). **F-05**
-(mesh-qualified rerun selection) is **RESOLVED** — regenerate
-`active_solver_rerun_candidates.csv` from current inventory before live reruns.
+(mesh-qualified rerun selection) is **RESOLVED**. **Backlog #4** (stale
+`active_solver_rerun_candidates.csv`) is **RESOLVED** (2026-07-24) — see the
+dated note under F-05; regenerate/promote from current `rerun_candidates.csv`
+before any live `07` rerun.
 
 #### F-03 — Post-processing subprocess success does not mean requested outputs succeeded
 
@@ -377,10 +379,59 @@ report extraction, and skip-existing dedup.
 `tests/fixtures/active_solver_rerun_candidates_f05.csv`; server `--dry-run`
 confirms mesh-qualified campaign rows are selected (`non_matrix_case_name: 0`).
 
-**Operational note:** regenerate `03_Results/_inventory/active_solver_rerun_candidates.csv`
-from current inventory (`rerun_candidates.csv`) before any live rerun. The
-on-server copy may be stale — legacy plain `u0p1` rows from Diamond/Multi_Layer
-geometries, not the Sin campaign mesh-qualified unconverged cases.
+##### Backlog #4 — Stale `active_solver_rerun_candidates.csv` — **RESOLVED** (2026-07-24)
+
+Severity: **Low** (operational queue hygiene) — **RESOLVED** (docs + server file ops;
+no code change). Cross-ref **F-05** (matrix matching) and **F-02c** (rerun gating);
+neither finding’s behavior changed.
+
+**Finding:** Server
+`03_Results/_inventory/active_solver_rerun_candidates.csv` (gitignored under
+`03_Results/`, never tracked) listed legacy plain `u0p1` rows from
+`Diamond_Spacer` / `Multi_Layer_*` — unrelated to the Sin_ST/Sin_SL
+mesh-qualified campaign. The file is a **manual-promote** snapshot: inventory
+(`00_case_inventory.py`) writes only `rerun_candidates.csv`
+(`RERUN_FIELDNAMES`); nothing in the repo writes or refreshes `active_*`. That
+structural split is why the queue went stale.
+
+**Schema drift (verified):** the stale file (dated 2026-07-04) used an older
+column set
+(`geo_name,case_name,convergence_status,max_iter_seen,latest_solver_log,has_final_case,has_final_data,case_status,suggested_next_action`)
+that does **not** match current `RERUN_FIELDNAMES`
+(`geo_name,case_name,max_iteration_detected,convergence_status,hard_solver_failure_detected,max_iter_only,failure_evidence_short,latest_log_file,suggested_next_action`).
+Staleness was schema + content, not content alone — a latent risk if `07` had
+consumed the old header.
+
+**Fresh inventory (2026-07-24, server):** 174 cases; `needs_solver_rerun = 10`,
+all legacy/test/BAD dirs (`Empty/260429_Test_NoRamp`, Multi_Layer
+`*_BAD_HIGH_CONT_OLD`, Sin_ST `260506_Test` / `260508_*` /
+`mesh_max085_min005_cpg5_bl4_u0p2_p6M_BAD_UNSTABLE`). The current Sin campaign
+is fully `POSTPROCESSED_BASIC`, so the **F-02c** gate correctly excludes it —
+there are **no** genuine current-campaign rerun candidates. The one
+BAD_UNSTABLE Sin_ST name considered is non-matrix under `07`
+`is_matrix_base_case_name`; `--dry-run` selected 0 (`non_matrix_case_name: 1`).
+Putting non-matrix names in `active_*` is a no-op for `07` selection.
+
+**Resolution:** regenerated `active_solver_rerun_candidates.csv` on the server
+to **header-only** (empty queue) under the current `RERUN_FIELDNAMES` schema —
+the honest “campaign complete and post-processed; no current rerun candidates”
+state. Prior stale file retained as
+`active_solver_rerun_candidates.csv.bak_20260724`.
+
+**Promote procedure (keep this from going stale again):**
+
+```text
+03_Results/<geo>/<case>/
+  → 00_case_inventory.py
+  → rerun_candidates.csv
+  → manual filtered promote (mesh-qualified, current-matrix only)
+  → active_solver_rerun_candidates.csv
+  → 07 --dry-run  (verify selection / non_matrix counts)
+```
+
+**Deferred (optional SAFE hardening, not implemented):** have `07` warn when
+`active_*` is older than, or schema-mismatched vs, `rerun_candidates.csv`.
+Generator still does not sync `active_*`.
 
 #### F-06 — Completion and convergence have different meanings but share “success” labels
 
