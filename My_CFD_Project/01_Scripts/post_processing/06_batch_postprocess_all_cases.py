@@ -56,6 +56,7 @@ SHEAR_EXPORT_MODE_FALLBACK = "fallback"
 
 DEFAULT_CASE_STATUS = "READY_FOR_POSTPROCESSING"
 POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
+POSTPROCESSED_UNCONVERGED = "POSTPROCESSED_UNCONVERGED"
 NEEDS_SOLVER_RERUN = "NEEDS_SOLVER_RERUN"
 FAILED_OR_DIVERGED = "FAILED_OR_DIVERGED"
 MAX_ITER_REACHED = "MAX_ITER_REACHED"
@@ -132,7 +133,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "Case status filter. Repeat or use comma-separated values. "
-            f"Default: {DEFAULT_CASE_STATUS}."
+            f"Default: {DEFAULT_CASE_STATUS}. Known inventory statuses include "
+            f"{POSTPROCESSED_BASIC}, {POSTPROCESSED_UNCONVERGED}, "
+            f"{NEEDS_SOLVER_RERUN}, READY_FOR_POSTPROCESSING, "
+            "NEEDS_SHEAR_POSTPROCESSING, NEEDS_REPORT_EXTRACTION."
         ),
     )
     parser.add_argument("--fields", type=str, default="cp_inlet,water_flux,lmh,salt_flux")

@@ -1,4 +1,4 @@
-"""Characterization tests for inventory convergence classification (F-02).
+"""Characterization tests for inventory convergence classification (F-02 / F-02c).
 
 parse_logs() is the pure function behind detect_logs_and_convergence() in
 00_case_inventory.py. These tests avoid filesystem scans and Ansys imports.
@@ -152,10 +152,11 @@ class TestClassifyCaseLikelyComplete:
         assert fieldnames[fieldnames.index("likely_complete_from_logs") + 1] == "likely_complete"
         assert fieldnames == list(dict.fromkeys(fieldnames))
 
-    def test_max_iter_with_full_artifacts_not_likely_complete_queue_unchanged(self, inventory):
+    def test_max_iter_with_full_artifacts_is_postprocessed_unconverged(self, inventory):
+        # F-02c: was POSTPROCESSED_BASIC; now honest unconverged completeness.
         record = classify_record(inventory)
         assert record["likely_complete"] is False
-        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+        assert record["case_status"] == inventory.POSTPROCESSED_UNCONVERGED
         assert record["needs_solver_rerun"] is False
 
     def test_converged_with_artifacts_is_likely_complete(self, inventory):
@@ -165,14 +166,17 @@ class TestClassifyCaseLikelyComplete:
         )
         assert record["likely_complete"] is True
         assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+        assert record["needs_solver_rerun"] is False
 
-    def test_possibly_incomplete_with_artifacts_not_likely_complete(self, inventory):
+    def test_possibly_incomplete_with_artifacts_is_unknown_review(self, inventory):
+        # F-02c: was POSTPROCESSED_BASIC; ambiguous solve is not auto-unconverged.
         record = classify_record(
             inventory,
             convergence_status=inventory.POSSIBLY_INCOMPLETE,
         )
         assert record["likely_complete"] is False
-        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+        assert record["case_status"] == inventory.UNKNOWN_REVIEW_REQUIRED
+        assert record["needs_solver_rerun"] is False
 
     def test_likely_complete_from_logs_does_not_override_non_converged(self, inventory):
         record = classify_record(
@@ -182,14 +186,16 @@ class TestClassifyCaseLikelyComplete:
         )
         assert record["likely_complete"] is False
 
-    def test_failed_or_diverged_with_artifacts_not_likely_complete(self, inventory):
+    def test_failed_or_diverged_with_artifacts_needs_solver_rerun(self, inventory):
+        # F-02c: was POSTPROCESSED_BASIC; hard failure enters the queue.
         record = classify_record(
             inventory,
             convergence_status=inventory.FAILED_OR_DIVERGED,
             hard_solver_failure_detected=True,
         )
         assert record["likely_complete"] is False
-        assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+        assert record["case_status"] == inventory.NEEDS_SOLVER_RERUN
+        assert record["needs_solver_rerun"] is True
 
     def test_crash_reclassified_to_converged_is_likely_complete(self, inventory):
         record = classify_record(
@@ -199,3 +205,83 @@ class TestClassifyCaseLikelyComplete:
         )
         assert record["likely_complete"] is True
         assert record["case_status"] == inventory.POSTPROCESSED_BASIC
+        assert record["needs_solver_rerun"] is False
+
+    def test_missing_pair_is_missing_case_or_data(self, inventory):
+        record = classify_record(
+            inventory,
+            has_case_data_pair=False,
+            has_all_basic_contours=False,
+            has_all_pyensight_contours=False,
+            has_shear_contour=False,
+            convergence_status=inventory.UNKNOWN_NO_LOG,
+        )
+        assert record["case_status"] == inventory.MISSING_CASE_OR_DATA
+        assert record["needs_solver_rerun"] is False
+
+
+class TestClassifyCaseSolveTrustTable:
+    """Table-driven F-02c coverage: convergence_status x artifact completeness."""
+
+    @pytest.mark.parametrize(
+        "convergence_status,has_all_basic,hard_failure,expected_status,expected_needs_rerun,expected_likely",
+        [
+            ("CONVERGED", True, False, "POSTPROCESSED_BASIC", False, True),
+            ("MAX_ITER_REACHED", True, False, "POSTPROCESSED_UNCONVERGED", False, False),
+            ("FAILED_OR_DIVERGED", True, True, "NEEDS_SOLVER_RERUN", True, False),
+            ("FAILED_OR_DIVERGED", True, False, "NEEDS_SOLVER_RERUN", True, False),
+            ("POSSIBLY_INCOMPLETE", True, False, "UNKNOWN_REVIEW_REQUIRED", False, False),
+            ("UNKNOWN_NO_LOG", True, False, "UNKNOWN_REVIEW_REQUIRED", False, False),
+            ("UNKNOWN_UNPARSED", True, False, "UNKNOWN_REVIEW_REQUIRED", False, False),
+            # Incomplete artifacts: transitional branches unchanged in spirit.
+            ("MAX_ITER_REACHED", False, False, "NEEDS_SOLVER_RERUN", True, False),
+            ("CONVERGED", False, False, "READY_FOR_POSTPROCESSING", False, True),
+            ("FAILED_OR_DIVERGED", False, True, "NEEDS_SOLVER_RERUN", True, False),
+        ],
+    )
+    def test_classify_matrix(
+        self,
+        inventory,
+        convergence_status,
+        has_all_basic,
+        hard_failure,
+        expected_status,
+        expected_needs_rerun,
+        expected_likely,
+    ):
+        record = classify_record(
+            inventory,
+            convergence_status=getattr(inventory, convergence_status),
+            has_all_basic_contours=has_all_basic,
+            has_all_pyensight_contours=has_all_basic,
+            has_shear_contour=has_all_basic,
+            hard_solver_failure_detected=hard_failure,
+        )
+        assert record["case_status"] == getattr(inventory, expected_status)
+        assert record["needs_solver_rerun"] is expected_needs_rerun
+        assert record["likely_complete"] is expected_likely
+
+    def test_needs_shear_branch_unchanged_for_max_iter(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.MAX_ITER_REACHED,
+            has_all_basic_contours=False,
+            has_all_pyensight_contours=True,
+            has_shear_contour=False,
+        )
+        assert record["case_status"] == inventory.NEEDS_SHEAR_POSTPROCESSING
+        assert record["needs_solver_rerun"] is False
+
+    def test_hard_failure_forces_needs_solver_status_even_if_convergence_says_converged(
+        self, inventory
+    ):
+        # case_status demotion is unconditional on hard_failure; queue membership
+        # still follows the approved formula (solver_status_needs_rerun ∩ exclusions).
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.CONVERGED,
+            hard_solver_failure_detected=True,
+        )
+        assert record["case_status"] == inventory.NEEDS_SOLVER_RERUN
+        assert record["needs_solver_rerun"] is False
+        assert record["likely_complete"] is True

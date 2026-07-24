@@ -34,6 +34,7 @@ UNKNOWN_UNPARSED = "UNKNOWN_UNPARSED"
 
 READY_FOR_POSTPROCESSING = "READY_FOR_POSTPROCESSING"
 POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
+POSTPROCESSED_UNCONVERGED = "POSTPROCESSED_UNCONVERGED"
 NEEDS_SHEAR_POSTPROCESSING = "NEEDS_SHEAR_POSTPROCESSING"
 NEEDS_SOLVER_RERUN = "NEEDS_SOLVER_RERUN"
 NEEDS_REPORT_EXTRACTION = "NEEDS_REPORT_EXTRACTION"
@@ -1349,6 +1350,12 @@ def suggested_action(record: dict[str, Any]) -> str:
         if record.get("has_report_expression_warnings") or record.get("has_postprocessing_graphics_errors"):
             return "Basic post-processing is complete; review warning flags only if outputs look suspect."
         return "Basic post-processing is complete."
+    if record.get("case_status") == POSTPROCESSED_UNCONVERGED:
+        return (
+            "Basic post-processing artifacts are complete, but the solve did not converge "
+            "(max-iter). Treat as usable-but-capped for screening; do not treat as "
+            "MFBO-grade converged. Review residuals before any solver continuation."
+        )
     if record.get("case_status") == NEEDS_SHEAR_POSTPROCESSING:
         if record.get("has_postprocessing_runtime_crash"):
             return (
@@ -1481,8 +1488,23 @@ def classify_case(record: dict[str, Any]) -> None:
 
     if not has_pair:
         case_status = MISSING_CASE_OR_DATA
+    elif hard_failure or convergence_status == FAILED_OR_DIVERGED:
+        # Solve-untrusted hard failure wins over artifact completeness (F-02c).
+        case_status = NEEDS_SOLVER_RERUN
     elif has_all_basic:
-        case_status = POSTPROCESSED_BASIC
+        # Completeness claim is gated by solve-trust (F-02c).
+        if convergence_status == CONVERGED:
+            case_status = POSTPROCESSED_BASIC
+        elif convergence_status == MAX_ITER_REACHED:
+            case_status = POSTPROCESSED_UNCONVERGED
+        elif convergence_status in {
+            POSSIBLY_INCOMPLETE,
+            UNKNOWN_NO_LOG,
+            UNKNOWN_UNPARSED,
+        }:
+            case_status = UNKNOWN_REVIEW_REQUIRED
+        else:
+            case_status = UNKNOWN_REVIEW_REQUIRED
     elif needs_shear_postprocessing:
         case_status = NEEDS_SHEAR_POSTPROCESSING
     elif solver_status_needs_rerun:
@@ -1496,7 +1518,12 @@ def classify_case(record: dict[str, Any]) -> None:
 
     needs_solver = bool(
         solver_status_needs_rerun
-        and case_status not in (POSTPROCESSED_BASIC, NEEDS_SHEAR_POSTPROCESSING)
+        and case_status
+        not in (
+            POSTPROCESSED_BASIC,
+            POSTPROCESSED_UNCONVERGED,
+            NEEDS_SHEAR_POSTPROCESSING,
+        )
     )
     failure_evidence_short = shorten_evidence(combined_failure_evidence(record))
 
@@ -1720,6 +1747,9 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     max_iter_records = [r for r in records if r.get("max_iter_only")]
     ready_records = [r for r in records if r.get("case_status") == READY_FOR_POSTPROCESSING]
     postprocessed_records = [r for r in records if r.get("case_status") == POSTPROCESSED_BASIC]
+    postprocessed_unconverged_records = [
+        r for r in records if r.get("case_status") == POSTPROCESSED_UNCONVERGED
+    ]
     needs_shear_records = [r for r in records if r.get("case_status") == NEEDS_SHEAR_POSTPROCESSING]
     missing_records = [r for r in records if r.get("case_status") == MISSING_CASE_OR_DATA]
     report_extraction_records = [r for r in records if r.get("case_status") == NEEDS_REPORT_EXTRACTION]
@@ -1760,6 +1790,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     for status in [
         READY_FOR_POSTPROCESSING,
         POSTPROCESSED_BASIC,
+        POSTPROCESSED_UNCONVERGED,
         NEEDS_SHEAR_POSTPROCESSING,
         NEEDS_SOLVER_RERUN,
         NEEDS_REPORT_EXTRACTION,
@@ -1780,6 +1811,11 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     append_case_list(lines, "Max-iter-only candidates:", max_iter_records)
     append_case_list(lines, "READY_FOR_POSTPROCESSING cases:", ready_records)
     append_case_list(lines, "Already postprocessed cases:", postprocessed_records)
+    append_case_list(
+        lines,
+        "POSTPROCESSED_UNCONVERGED cases (posted, max-iter):",
+        postprocessed_unconverged_records,
+    )
     append_case_list(lines, "NEEDS_SHEAR_POSTPROCESSING cases:", needs_shear_records)
     append_case_list(lines, "Report extraction candidates:", report_extraction_records)
     append_case_list(lines, "MISSING_CASE_OR_DATA cases:", missing_records)
@@ -1822,6 +1858,7 @@ def print_console_summary(
     print(f"Max-iter reached: {by_convergence.get(MAX_ITER_REACHED, 0)}")
     print(f"Failed/diverged: {by_convergence.get(FAILED_OR_DIVERGED, 0)}")
     print(f"Postprocessed basic: {by_case_status.get(POSTPROCESSED_BASIC, 0)}")
+    print(f"Postprocessed unconverged: {by_case_status.get(POSTPROCESSED_UNCONVERGED, 0)}")
     print(f"Needs shear postprocessing: {by_case_status.get(NEEDS_SHEAR_POSTPROCESSING, 0)}")
     print(f"Needs solver rerun: {needs_rerun}")
     print(f"Ready for postprocessing: {by_case_status.get(READY_FOR_POSTPROCESSING, 0)}")
@@ -1882,7 +1919,8 @@ def run_inventory(args: argparse.Namespace) -> int:
     postprocess_candidates = [
         r for r in records
         if r.get("has_case_data_pair")
-        and r.get("case_status") != POSTPROCESSED_BASIC
+        and r.get("case_status")
+        not in (POSTPROCESSED_BASIC, POSTPROCESSED_UNCONVERGED)
         and not r.get("needs_solver_rerun")
     ]
 
