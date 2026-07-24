@@ -153,42 +153,60 @@ a diagnostic column but no longer drives `likely_complete`. Cases
 reclassified to `CONVERGED` by `reclassify_postprocessing_crash_logs()` still
 receive `likely_complete = True`.
 
-**Intentionally unchanged (see F-02c):** `case_status` priority and
-`needs_solver_rerun` are unchanged. `MAX_ITER_REACHED` post-processed cases
-keep `POSTPROCESSED_BASIC` and `needs_solver_rerun = False` so the `07`
-rerun queue (`rerun_candidates.csv` → `active_solver_rerun_candidates.csv`)
-is not polluted with usable u0p1 max-iter cases.
+**Intentionally unchanged at F-02b time:** `case_status` / `needs_solver_rerun`
+were left alone so max-iter posted cases stayed out of the `07` queue. That
+gap is now closed by **F-02c** (new `POSTPROCESSED_UNCONVERGED` token + queue
+exclusion) without demoting usable capped cases into `needs_solver_rerun`.
 
-**MFBO selection contract:** `POSTPROCESSED_BASIC` means basic post-processing
-artifacts are present; it does **not** mean the solve is convergence-trustworthy.
-Use `convergence_status` + `likely_complete` for solve trust, never
-`case_status` alone. For usable-but-capped cases, filter on `max_iter_only`,
-`has_all_basic_contours`, and report/residual columns.
+**MFBO selection contract (updated by F-02c):** `POSTPROCESSED_BASIC` means
+basic post-processing **and** a solve-trusted (`CONVERGED`) result.
+`POSTPROCESSED_UNCONVERGED` means artifacts are complete but the solve hit
+max-iter (usable-but-capped). Still prefer `convergence_status` +
+`likely_complete` for solve trust; never treat `case_status` alone as
+convergence proof.
 
-#### F-02c — Gate `case_status` / `needs_solver_rerun` on solve-trust (deferred)
+#### F-02c — Gate `case_status` by solve-trust; add `POSTPROCESSED_UNCONVERGED` — **RESOLVED** (2026-07-24)
 
-Severity: **Medium** — **deferred**
+Severity: **Medium** — **RESOLVED** (SAFE inventory core only)
 
-Demoting `MAX_ITER_REACHED` post-processed cases from `POSTPROCESSED_BASIC` to
-`NEEDS_SOLVER_RERUN` would make `case_status` MFBO-safe, but
-`needs_solver_rerun` feeds `rerun_candidates.csv`, and `07_batch_solver_rerun.py`
-has no residual/quality gate at selection time — it reruns every listed row.
-Shipping this without a paired rerun-selection policy would risk needlessly
-re-solving ~40 usable u0p1 cases that hit the 1000-iteration cap with low
-residuals (~1e-7).
+**Status:** **RESOLVED** in `00_case_inventory.py` `classify_case()` (commit
+`f579b53`). Cross-ref **F-02b** (`likely_complete` ≡ `CONVERGED`) and
+**backlog #4** (empty `active_*` queue; inventory never auto-syncs `active_*`).
 
-**Deferred work:** gate `POSTPROCESSED_BASIC` / `needs_solver_rerun` on
-solve-trust **together with** one of:
+**Rule (`solve_trusted` ⇔ `convergence_status == CONVERGED`):**
 
-- a residual or `max_iter_only` filter in `rerun_candidates.csv` generation, or
-- a pre-run quality gate in `07_batch_solver_rerun.py` `select_candidates()`.
+| Condition | `case_status` |
+|-----------|---------------|
+| `has_all_basic` + `CONVERGED` | `POSTPROCESSED_BASIC` (unchanged) |
+| `has_all_basic` + `MAX_ITER_REACHED` | **`POSTPROCESSED_UNCONVERGED`** (new) |
+| `FAILED_OR_DIVERGED` or `hard_solver_failure` (any artifacts) | `NEEDS_SOLVER_RERUN` |
+| `has_all_basic` + `POSSIBLY_INCOMPLETE` / `UNKNOWN_*` | `UNKNOWN_REVIEW_REQUIRED` |
+| Shear / ready / report / missing branches | unchanged transitional spirit |
 
-See also **F-21** (`case_status` filters cascade after inventory reclassification;
-any future F-02c change must update `06` / runbook status unions). **F-05**
-(mesh-qualified rerun selection) is **RESOLVED**. **Backlog #4** (stale
-`active_solver_rerun_candidates.csv`) is **RESOLVED** (2026-07-24) — see the
-dated note under F-05; regenerate/promote from current `rerun_candidates.csv`
-before any live `07` rerun.
+**Queue companion (inventory only):** `needs_solver_rerun` excludes
+`{POSTPROCESSED_BASIC, POSTPROCESSED_UNCONVERGED, NEEDS_SHEAR_POSTPROCESSING}`.
+Max-iter posted cases get an honest status but stay **out** of
+`rerun_candidates.csv`; `FAILED_OR_DIVERGED` → `NEEDS_SOLVER_RERUN` stays **in**
+the queue. No contradictory “needs rerun but filtered out” carve-out.
+
+**Blast radius (server inventory 2026-07-24, 174 cases):**
+
+| Transition | Count |
+|------------|------:|
+| `POSTPROCESSED_BASIC` → `POSTPROCESSED_UNCONVERGED` (`MAX_ITER`) | 61 |
+| → `NEEDS_SOLVER_RERUN` (`FAILED`, enters queue) | 1 |
+| → `UNKNOWN_REVIEW_REQUIRED` | 2 |
+| `CONVERGED` + posted stays `POSTPROCESSED_BASIC` | 52 |
+
+**Deferred (RISKY — no live Fluent verification now):** all `07_batch_solver_rerun.py`
+selection/execution changes (residual / quality gate in `select_candidates()`,
+launch/iterate/promote). Do not implement until a live rerun campaign is
+available.
+
+**Consumer note (F-21):** `06 --case-status` is free-form and accepts the new
+token; default remains `READY_FOR_POSTPROCESSING`. Runbook status unions that
+list `POSTPROCESSED_BASIC` must also list `POSTPROCESSED_UNCONVERGED` so
+copy-paste does not miss the 61 max-iter posted cases.
 
 #### F-03 — Post-processing subprocess success does not mean requested outputs succeeded
 

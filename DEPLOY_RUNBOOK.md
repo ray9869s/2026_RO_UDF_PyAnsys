@@ -127,17 +127,18 @@ Note the **`Ready for postprocessing:`** count printed at the end — use it to 
 
 ### `--case-status` — do not hard-code one label
 
-Run **step 3 (inventory) before step 4**. The F-02 fix reclassifies many solved
-cases to **`NEEDS_SOLVER_RERUN`** when they hit the 1000-iteration cap. Cases
-that were **`POSTPROCESSED_BASIC`** on pre-fix inventory will **not** match that
-filter after re-inventory — the original runbook’s `POSTPROCESSED_BASIC`-only
-filter selected **0 cases** on deploy.
+Run **step 3 (inventory) before step 4**. Inventory reclassification can move
+cases between `case_status` labels (historically F-02 → `NEEDS_SOLVER_RERUN` at
+the 1000-iter cap; **F-02c** → `POSTPROCESSED_UNCONVERGED` for max-iter cases
+that already have full basic post artifacts). A single-label
+`POSTPROCESSED_BASIC`-only filter can select **0 cases** after re-inventory
+(F-21).
 
-Pass a **union** of statuses that covers post-processed coarse-mesh cases after
-a fresh inventory, for example:
+Pass a **union** of statuses that covers post-processed cases after a fresh
+inventory, for example:
 
 ```text
-POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING
+POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING
 ```
 
 When in doubt, check the row in `case_inventory_compact.csv` before running `06`.
@@ -156,7 +157,7 @@ cd /c/PyFluent
 source .venv/Scripts/activate
 
 MESH_SUFFIX='__mesh_max100_min006_cpg3_bl3'
-CASE_STATUSES='POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING'
+CASE_STATUSES='POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING'
 for GEO in Sin_ST Sin_SL; do
   for BASE in u0p1_p4M u0p1_p6M u0p1_p8M u0p2_p4M u0p2_p6M u0p2_p8M u0p3_p4M u0p3_p6M u0p3_p8M; do
     CASE="${BASE}${MESH_SUFFIX}"
@@ -186,15 +187,15 @@ If you prefer one line per case, run only the lines whose `pressure_report.csv` 
 **Sin_ST**
 
 ```bash
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p1_p4M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p1_p6M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p1_p8M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p2_p4M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p2_p6M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p2_p8M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p3_p4M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p3_p6M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
-cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p3_p8M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p1_p4M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p1_p6M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p1_p8M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p2_p4M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p2_p6M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p2_p8M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p3_p4M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p3_p6M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
+cd /c/PyFluent && python My_CFD_Project/01_Scripts/post_processing/06_batch_postprocess_all_cases.py --geo-name Sin_ST --case-name u0p3_p8M__mesh_max100_min006_cpg3_bl3 --case-status POSTPROCESSED_BASIC,POSTPROCESSED_UNCONVERGED,NEEDS_SOLVER_RERUN,NEEDS_SHEAR_POSTPROCESSING --force --run-reports --no-run-pyensight-contours --no-run-shear
 ```
 
 **Sin_SL** — same nine `case_name` values with `--geo-name Sin_SL`.
@@ -231,8 +232,10 @@ Expect **`4000000.0`** and **`8000000.0`** respectively.
 
 Default `--case-status` is **`READY_FOR_POSTPROCESSING` only**. That **excludes**:
 
-- The **15 `POSTPROCESSED_BASIC`** cases (step 4 handled reports; contours already exist — good)
-- **`NEEDS_SOLVER_RERUN`** max-iter preliminary cases unless you add that status explicitly
+- Already-posted cases (`POSTPROCESSED_BASIC` and, after F-02c,
+  `POSTPROCESSED_UNCONVERGED`) — contours already exist; good for step 5 skip
+- **`NEEDS_SOLVER_RERUN`** hard-failure / incomplete-artifact cases unless you
+  add that status explicitly
 
 For the full **36-case deadline campaign** (including `MAX_ITER_REACHED` preliminary runs you still want contoured), use:
 
@@ -321,12 +324,12 @@ Step 5 without `--force` should not re-skip reports on the 15 fixed cases. Re-ru
 |-------|----------|
 | **Order** | **1 → 2 → 3 → 4 → 5 → 6** is correct. Run **step 4 before step 5** so `pressure_report.csv` / report metadata is fixed before any new contour run reads PyFluent CSV for cp_inlet Strategy 0. |
 | **Step 4 vs 5 overlap** | Step 4 targets coarse-mesh cases by path + broad `--case-status`; step 5 uses a different status union — avoid `--force` on step 5 unless re-exporting everything. |
-| **Step 4 case-status** | After step 3 inventory, do **not** rely on `POSTPROCESSED_BASIC` alone — see F-21 in `REVIEW.md`. |
-| **Max-iter cases** | Including `NEEDS_SOLVER_RERUN` exports preliminary non-converged fields — intentional for deadline screening, but **do not** treat as MFBO-grade converged data. |
+| **Step 4 case-status** | After step 3 inventory, do **not** rely on `POSTPROCESSED_BASIC` alone — include `POSTPROCESSED_UNCONVERGED` (F-02c) and see F-21 in `REVIEW.md`. |
+| **Max-iter cases** | Posted max-iter cases are `POSTPROCESSED_UNCONVERGED` (usable-but-capped, not a `07` queue target). Including `NEEDS_SOLVER_RERUN` still exports hard-failure / incomplete-artifact fields — **do not** treat either as MFBO-grade converged data. |
 | **`--force` on step 5** | **Risky** — re-exports all stages for every selected case (hours of extra EnSight/Fluent). Omit unless debugging. |
 | **Re-inventory after post** | After step 5 completes, re-run **step 3** once so `case_inventory` reflects new `post/` artifacts. |
 | **F-20** | Universal `cp_inlet` WARN is **known**; fix is post-campaign (see REVIEW.md F-20). |
-| **F-02b** | `likely_complete=True` with `MAX_ITER_REACHED` may still appear — inventory classification quirk, not fixed in this deploy. |
+| **F-02b / F-02c** | `likely_complete` requires `CONVERGED` (F-02b). Posted max-iter → `POSTPROCESSED_UNCONVERGED` with `needs_solver_rerun=False` (F-02c). |
 
 ### Long-running steps (plan overnight time)
 
