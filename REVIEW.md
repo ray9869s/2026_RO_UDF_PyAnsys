@@ -196,7 +196,7 @@ Original finding: requested contour fields and partial shear exports could be
 recorded as `WARN` while the worker process still exited `0`; the batch
 orchestrator could treat the subprocess as successful without reading status JSON.
 
-**Status:** **partially RESOLVED** — items #1, #2, and #6 below are closed;
+**Status:** **partially RESOLVED** — items #1, #2, #6, and #8 below are closed;
 remaining F-03 items (inventory/orchestrator contract, `08` integration, etc.)
 unchanged.
 
@@ -224,6 +224,57 @@ nonzero worker exits to `FAILED` via `solver_worker_succeeded()`.
 
 `07_batch_solver_rerun.py` promotion post-copy verify remains a separate
 deferred item (staged attempt writes already fail on a missing pair).
+
+##### F-03 #8 — Native CFF viscosity bypass in `03b` shear export — **RECLASSIFIED** (2026-07-24)
+
+Severity: **Low** (latent footgun; no campaign data corruption) — **RECLASSIFIED**
+
+**Finding:** `03b_pyfluent_shear_contour_export.py` `prepare_native_cff()`
+(`:790-799`) returns immediately on CFF file-load `SUCCESS` without verifying
+that the loaded `.scm` divisor matches configured `mu`. Config `mu` is used only
+in later paths (settings API, TUI define, field-data fallback). The batch
+orchestrator (`06_batch_postprocess_all_cases.py`) always passes
+`--cff-file` pointing at `01_Templates/cff_wall_shear_rate.scm`, whose
+expression hard-codes `wall-shear / 0.000893`. See also **F-10** (broader
+physical-constants drift surface; solve-time material viscosity is a separate
+issue).
+
+**Server verification (2026-07-24):** Cases
+`Sin_ST/u0p1_p4M__mesh_max100_min006_cpg5_bl4` and
+`Sin_ST/u0p3_p8M__mesh_max100_min006_cpg5_bl4` (cpg5_bl4, shear `SUCCESS`):
+
+- Native path actually ran: `cff_file_load_status=SUCCESS`,
+  `shear_export_mode_used=native`,
+  `derived_variable_mode=pyfluent_native_cff_wall_shear_over_mu`,
+  `fallback_status=SKIPPED`.
+- Three viscosity literals all equal `0.000893` today: `00_post_config.mu`,
+  `run_config.salt_viscosity`, `run_config.mixture_viscosity`, and the `.scm`
+  divisor(s). `abs(mu_post - scm) / mu_post = 0`.
+- `mu` cross-check (report `mu` vs status `mu_used`) `= 0`; report consistency
+  (`wall_shear_rate_avg` vs `wall_shear_avg / mu`) `rel_err = 0` for both
+  operating points.
+
+**Epistemic note:** The report self-consistency check is tautological (the report
+worker divides by `mu` itself). The decisive evidence is divisor equality
+(Step A) plus `mu_used == report mu`, which together guarantee the native
+contour's effective `mu` equals config `mu` on current campaign data.
+
+**Campaign premise:** This project holds physical properties (`mu`, `rho`,
+concentration) **fixed** across all cases, varying only geometry, mesh, and
+operating conditions (inlet velocity, outlet pressure). The config-vs-`.scm`
+desync can only trigger if someone changes config `mu` without updating the
+`.scm` — which does not occur in the current campaign.
+
+**Disposition:** Reclassified from active-fix to **latent hardening**. Shear/WSS
+contour values are correct on verified campaign data. Optional **SAFE** guard
+(warn on `.scm`-vs-config `mu` mismatch without changing exit codes or control
+flow) tracked as a future task. Do not modify `.scm`, UDF, geometry, or mesh;
+no schema/filename/env-var changes without explicit approval.
+
+**F-10 remains open separately:** solve-time `wall-shear` [Pa] in the case file
+is governed by template case material viscosity, not config
+(`solver_code_260616.py:1232-1233` prints but does not apply configured
+viscosity). This diagnosis does **not** resolve F-10.
 
 ##### Worker exit-code contract (post-processing workers + solver)
 
@@ -546,9 +597,12 @@ Scheme file hard-codes viscosity.
 
 `03b_pyfluent_shear_contour_export.py:790-799` prefers loading the Scheme CFF
 and returns success without proving its embedded divisor matches the configured
-`mu`; the config-derived expression is used only by later fallbacks. A future
-viscosity edit could therefore make native shear contours disagree with report
-and field-data calculations. Likewise, `00_post_config.py` does not declare
+`mu`; the config-derived expression is used only by later fallbacks. **F-03 #8
+RECLASSIFIED (2026-07-24):** diagnosed on real campaign data — latent footgun
+only; divisors match today and shear values are correct. See F-03 #8 for server
+evidence and disposition. A future viscosity edit without updating the `.scm`
+could still make native shear contours disagree with report and field-data
+calculations. Likewise, `00_post_config.py` does not declare
 `operating_pressure`, so `03` falls back to 101325 Pa independently of the
 solver config.
 
