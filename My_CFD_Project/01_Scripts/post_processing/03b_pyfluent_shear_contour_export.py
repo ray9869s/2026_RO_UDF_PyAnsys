@@ -68,6 +68,17 @@ PROJECT_ROOT_DEFAULT = SCRIPT_DIR.parents[1]
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
+# Sibling guard module (importlib: filename is loadable regardless of cwd/sys.path)
+_guard_spec = importlib.util.spec_from_file_location(
+    "_shear_cff_mu_guard",
+    str(SCRIPT_DIR / "_shear_cff_mu_guard.py"),
+)
+if _guard_spec is None or _guard_spec.loader is None:
+    raise ImportError(f"Could not load _shear_cff_mu_guard from {SCRIPT_DIR}")
+_shear_cff_mu_guard = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(_shear_cff_mu_guard)
+emit_scm_mu_guard_message = _shear_cff_mu_guard.emit_scm_mu_guard_message
+
 # Fluent CFF and contour object names
 DEFAULT_CFF_NAME = "cff_wall_shear_rate"
 CONTOUR_NAME = "pp_shear_rate"
@@ -758,6 +769,8 @@ def prepare_native_cff(
     cff_name: str,
     cff_file: Optional[Path],
     mu: float,
+    *,
+    case_label: str = "",
 ) -> Dict[str, Any]:
     """Load or create a CFF whose value is wall shear rate [1/s]."""
     result: Dict[str, Any] = {
@@ -796,6 +809,8 @@ def prepare_native_cff(
             result["selected_cff_cell_function"] = "from_cff_file"
             result["cff_creation_method_used"] = f"cff_file:{method}"
             result["ready"] = True
+            # Observe-only: warn if .scm divisor != config mu (F-03 #8 Phase 3).
+            emit_scm_mu_guard_message(cff_file, mu, case_label=case_label)
             return result
         result["cff_file_load_status"] = "FAILED"
         result["cff_file_load_error"] = err or "CFF file load failed"
@@ -3645,6 +3660,7 @@ def main() -> int:
                 cff_name=args.cff_name,
                 cff_file=cff_file,
                 mu=mu,
+                case_label=f"{geo_name}/{case_name}",
             )
             native_variable_used = cff_prep["native_variable_used"] or None
             selected_cff_cell_function = str(cff_prep["selected_cff_cell_function"])
