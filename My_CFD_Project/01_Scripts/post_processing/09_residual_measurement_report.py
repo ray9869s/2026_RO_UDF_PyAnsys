@@ -143,7 +143,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--window",
         type=int,
         default=200,
-        help="Last N parsed iterations for window stats (default: 200).",
+        help=(
+            "ENDPOINT window: last N parsed iterations used for trend labels and "
+            "window_* / acf1 / shortfall metrics (default: 200; intended range "
+            "100-200). Large values (>=500) mix descent history into the endpoint "
+            "and make trend labels meaningless. Full-series history columns are "
+            "always computed separately and do not feed the labels."
+        ),
     )
     parser.add_argument(
         "--residual-target",

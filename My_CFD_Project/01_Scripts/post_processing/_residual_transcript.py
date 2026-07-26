@@ -35,12 +35,13 @@ TRANSCRIPT_SUFFIXES = {".txt", ".trn", ".log", ".out"}
 CLOCK_TOKEN_RE = re.compile(r"^\d+:\d{2}(:\d{2})?$")
 
 SLOPE_MAG = 2.3e-4
+DOMINANT_DECADES = 0.5
 REL_SPREAD_FLAT = 0.05
 ACF1_COHERENT = 0.5
 SIGN_FLIP_COHERENT_MAX = 0.15
-SIGN_FLIP_NOISY_MIN = 0.35
 MIN_USABLE_POINTS = 20
 MIN_POSITIVE_FOR_LOG = 10
+MIN_MEAN_CROSSINGS_COHERENT = 4
 
 PARSE_OK = "ok"
 PARSE_NO_TRANSCRIPT = "no_transcript"
@@ -50,9 +51,22 @@ PARSE_MALFORMED = "malformed_table"
 
 TREND_UNKNOWN = "unknown"
 TREND_STILL_DESCENDING = "still_descending"
+TREND_RISING = "rising"
 TREND_OSCILLATING_COHERENT = "oscillating_coherent"
 TREND_NOISY_PLATEAU = "noisy_plateau"
 TREND_FLAT_PLATEAU = "flat_plateau"
+
+REASON_INSUFFICIENT_POINTS = "insufficient_points"
+REASON_INSUFFICIENT_POSITIVE = "insufficient_positive"
+REASON_NONPOSITIVE_MEAN = "nonpositive_mean"
+REASON_UNDEFINED_METRICS = "undefined_metrics"
+REASON_DOMINANT_DESCENT = "dominant_descent"
+REASON_DOMINANT_RISE = "dominant_rise"
+REASON_COHERENT_OSCILLATION = "coherent_oscillation"
+REASON_SLOPE_DESCENDING = "slope_descending"
+REASON_SLOPE_RISING = "slope_rising"
+REASON_NOISY_RESIDUAL_MOTION = "noisy_residual_motion"
+REASON_FLAT_ENDPOINT = "flat_endpoint"
 
 
 def read_text_replace(path: Path) -> tuple[Optional[str], Optional[str]]:
@@ -235,7 +249,21 @@ def relative_peak_to_peak(values: list[float]) -> Optional[float]:
 
 def log10_slope(iters: list[int], values: list[float]) -> Optional[float]:
     """OLS slope of log10(r) vs iteration for positive samples."""
-    pts = [(float(i), math.log10(v)) for i, v in zip(iters, values) if v > 0.0]
+    fit = fit_log10_line(iters, values)
+    if fit is None:
+        return None
+    return fit[1]
+
+
+def fit_log10_line(
+    iters: list[int], values: list[float]
+) -> Optional[tuple[float, float, list[float], list[int], list[float]]]:
+    """Fit log10(r) = a + b*iter on positive samples.
+
+    Returns (a, b, residual_e, used_iters, used_values) where
+    e_i = log10(r_i) - (a + b*iter_i). None if too few positive samples.
+    """
+    pts = [(float(i), math.log10(v), int(i), float(v)) for i, v in zip(iters, values) if v > 0.0]
     if len(pts) < MIN_POSITIVE_FOR_LOG:
         return None
     n = len(pts)
@@ -243,9 +271,15 @@ def log10_slope(iters: list[int], values: list[float]) -> Optional[float]:
     mean_y = sum(p[1] for p in pts) / n
     var_x = sum((p[0] - mean_x) ** 2 for p in pts)
     if var_x == 0.0:
-        return 0.0
-    cov = sum((p[0] - mean_x) * (p[1] - mean_y) for p in pts)
-    return cov / var_x
+        slope = 0.0
+    else:
+        cov = sum((p[0] - mean_x) * (p[1] - mean_y) for p in pts)
+        slope = cov / var_x
+    intercept = mean_y - slope * mean_x
+    residuals = [p[1] - (intercept + slope * p[0]) for p in pts]
+    used_iters = [p[2] for p in pts]
+    used_values = [p[3] for p in pts]
+    return intercept, slope, residuals, used_iters, used_values
 
 
 def sign_flip_fraction(values: list[float]) -> Optional[float]:
@@ -263,14 +297,18 @@ def sign_flip_fraction(values: list[float]) -> Optional[float]:
 
 
 def lag1_acf(values: list[float]) -> Optional[float]:
-    """Lag-1 autocorrelation of the mean-detrended series."""
+    """Lag-1 autocorrelation of the mean-detrended series.
+
+    Zero residual variance (e.g. pure log-linear after linear detrend) -> 0.0,
+    meaning no oscillatory structure — not perfect correlation.
+    """
     if len(values) < 2:
         return None
     mean = sum(values) / len(values)
     detrended = [v - mean for v in values]
     denom = sum(v * v for v in detrended)
     if denom == 0.0:
-        return 1.0
+        return 0.0
     num = sum(detrended[i] * detrended[i + 1] for i in range(len(detrended) - 1))
     return num / denom
 
@@ -287,67 +325,127 @@ def mean_crossing_count(values: list[float]) -> int:
 def classify_residual_trend(
     iters: list[int],
     values: list[float],
+    *,
+    window_iters_used: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Classify residual window trend. Diagnostics only — not a status rewrite."""
+    """Classify endpoint-window residual trend. Diagnostics only."""
+    n_window = int(window_iters_used) if window_iters_used is not None else len(values)
     result: dict[str, Any] = {
         "trend": TREND_UNKNOWN,
+        "trend_reason": REASON_INSUFFICIENT_POINTS,
         "rel_spread": None,
         "log10_slope": None,
         "sign_flip_frac": None,
         "acf1": None,
+        "mean_crossings": None,
     }
     if len(values) < MIN_USABLE_POINTS:
+        result["trend_reason"] = REASON_INSUFFICIENT_POINTS
         return result
     mean = _mean(values)
     if mean is None or mean <= 0.0:
+        result["trend_reason"] = REASON_NONPOSITIVE_MEAN
         return result
     positive = [v for v in values if v > 0.0]
     if len(positive) < MIN_POSITIVE_FOR_LOG:
+        result["trend_reason"] = REASON_INSUFFICIENT_POSITIVE
         return result
 
     rel = relative_spread(values)
-    slope = log10_slope(iters, values)
-    flips = sign_flip_fraction(values)
-    acf1 = lag1_acf(values)
-    crossings = mean_crossing_count(values)
+    fit = fit_log10_line(iters, values)
+    if fit is None or rel is None:
+        result["trend_reason"] = REASON_UNDEFINED_METRICS
+        return result
+    _intercept, slope, detrended_e, _used_iters, _used_vals = fit
+    flips = sign_flip_fraction(detrended_e)
+    acf1 = lag1_acf(detrended_e)
+    crossings = mean_crossing_count(detrended_e)
     result.update(
         {
             "rel_spread": rel,
             "log10_slope": slope,
             "sign_flip_frac": flips,
             "acf1": acf1,
+            "mean_crossings": crossings,
         }
     )
-    if slope is None or rel is None or flips is None or acf1 is None:
+    if flips is None or acf1 is None:
+        result["trend_reason"] = REASON_UNDEFINED_METRICS
         return result
 
-    # Coherent oscillation needs repeated mean crossings. Smooth monotonic
-    # descent also has high acf1 and low sign_flip_frac, so crossings separate
-    # limit cycles from still_descending. OLS log10 slope alone is not enough:
-    # a sinusoid is not orthogonal to a linear trend over a finite window.
+    decades = abs(slope) * float(n_window)
     coherent_osc_evidence = (
         rel > REL_SPREAD_FLAT
         and acf1 > ACF1_COHERENT
         and flips < SIGN_FLIP_COHERENT_MAX
-        and crossings >= 4
+        and crossings >= MIN_MEAN_CROSSINGS_COHERENT
     )
 
-    # First match wins (approved order).
-    if slope <= -SLOPE_MAG and not coherent_osc_evidence:
+    # Approved order: dominant trend, then oscillating, then weak slope, then plateaus.
+    if decades >= DOMINANT_DECADES and slope < 0.0:
         result["trend"] = TREND_STILL_DESCENDING
+        result["trend_reason"] = REASON_DOMINANT_DESCENT
+    elif decades >= DOMINANT_DECADES and slope > 0.0:
+        result["trend"] = TREND_RISING
+        result["trend_reason"] = REASON_DOMINANT_RISE
     elif coherent_osc_evidence:
         result["trend"] = TREND_OSCILLATING_COHERENT
-    elif (
-        rel > REL_SPREAD_FLAT
-        and (flips >= SIGN_FLIP_NOISY_MIN or acf1 <= ACF1_COHERENT)
-        and abs(slope) <= SLOPE_MAG
-    ):
+        result["trend_reason"] = REASON_COHERENT_OSCILLATION
+    elif slope <= -SLOPE_MAG:
+        result["trend"] = TREND_STILL_DESCENDING
+        result["trend_reason"] = REASON_SLOPE_DESCENDING
+    elif slope >= SLOPE_MAG:
+        result["trend"] = TREND_RISING
+        result["trend_reason"] = REASON_SLOPE_RISING
+    elif rel > REL_SPREAD_FLAT:
         result["trend"] = TREND_NOISY_PLATEAU
-    elif rel <= REL_SPREAD_FLAT and abs(slope) <= SLOPE_MAG:
-        result["trend"] = TREND_FLAT_PLATEAU
+        result["trend_reason"] = REASON_NOISY_RESIDUAL_MOTION
     else:
-        result["trend"] = TREND_UNKNOWN
+        result["trend"] = TREND_FLAT_PLATEAU
+        result["trend_reason"] = REASON_FLAT_ENDPOINT
     return result
+
+
+def history_residual_metrics(
+    iters: list[int],
+    values: list[float],
+) -> dict[str, Any]:
+    """Full-series history diagnostics (do not feed trend labels)."""
+    out: dict[str, Any] = {
+        "decades_dropped_total": None,
+        "log10_slope_last_half": None,
+        "iter_of_min": None,
+        "min_value": None,
+    }
+    if not iters or not values or len(iters) != len(values):
+        return out
+
+    # First positive residual after iteration 1; final positive (or final value).
+    first_after_iter1: Optional[float] = None
+    for it, val in zip(iters, values):
+        if int(it) > 1 and val > 0.0:
+            first_after_iter1 = float(val)
+            break
+    final_val = float(values[-1])
+    if first_after_iter1 is not None and final_val > 0.0:
+        out["decades_dropped_total"] = math.log10(first_after_iter1 / final_val)
+
+    half_start = len(values) // 2
+    half_iters = iters[half_start:]
+    half_vals = values[half_start:]
+    out["log10_slope_last_half"] = log10_slope(half_iters, half_vals)
+
+    min_iter: Optional[int] = None
+    min_val: Optional[float] = None
+    for it, val in zip(iters, values):
+        if val <= 0.0:
+            continue
+        if min_val is None or val < min_val:
+            min_val = float(val)
+            min_iter = int(it)
+    out["iter_of_min"] = min_iter
+    out["min_value"] = min_val
+    return out
 
 
 def window_rows(rows: list[dict[str, Any]], window_n: int) -> list[dict[str, Any]]:
@@ -383,12 +481,14 @@ def measure_case_from_rows(
     )
     win = window_rows(rows, window_n)
     out["window_iters_used"] = len(win)
-    iters = [int(r["iter"]) for r in win]
+    win_iters = [int(r["iter"]) for r in win]
+    full_iters = [int(r["iter"]) for r in rows]
 
     detail_notes: list[str] = []
 
     for eq, key in zip(RESIDUAL_EQS, RESIDUAL_EQ_KEYS):
         series = [float(r[eq]) for r in win]
+        full_series = [float(r[eq]) for r in rows]
         final_val = float(final[eq])
         mean = _mean(series)
         wmax = max(series) if series else None
@@ -397,7 +497,12 @@ def measure_case_from_rows(
         if residual_target > 0.0 and final_val is not None:
             shortfall = final_val / residual_target
         target_met = bool(final_val > 0.0 and residual_target > 0.0 and final_val <= residual_target)
-        trend = classify_residual_trend(iters, series)
+        trend = classify_residual_trend(
+            win_iters,
+            series,
+            window_iters_used=int(out["window_iters_used"]),
+        )
+        hist = history_residual_metrics(full_iters, full_series)
         out[f"{key}_final"] = final_val
         out[f"{key}_window_max"] = wmax
         out[f"{key}_window_mean"] = mean
@@ -405,10 +510,16 @@ def measure_case_from_rows(
         out[f"{key}_shortfall_factor"] = shortfall
         out[f"{key}_target_met"] = target_met
         out[f"{key}_trend"] = trend["trend"]
+        out[f"{key}_trend_reason"] = trend["trend_reason"]
         out[f"{key}_log10_slope"] = trend["log10_slope"]
         out[f"{key}_sign_flip_frac"] = trend["sign_flip_frac"]
         out[f"{key}_acf1"] = trend["acf1"]
+        out[f"{key}_mean_crossings"] = trend["mean_crossings"]
         out[f"{key}_rel_spread"] = trend["rel_spread"]
+        out[f"{key}_decades_dropped_total"] = hist["decades_dropped_total"]
+        out[f"{key}_log10_slope_last_half"] = hist["log10_slope_last_half"]
+        out[f"{key}_iter_of_min"] = hist["iter_of_min"]
+        out[f"{key}_min_value"] = hist["min_value"]
         if eq == "nacl" and series and all(v == 0.0 for v in series):
             detail_notes.append(
                 "nacl residual is 0.0 for the entire measurement window "
@@ -498,10 +609,16 @@ def null_measurement_record(
             "shortfall_factor",
             "target_met",
             "trend",
+            "trend_reason",
             "log10_slope",
             "sign_flip_frac",
             "acf1",
+            "mean_crossings",
             "rel_spread",
+            "decades_dropped_total",
+            "log10_slope_last_half",
+            "iter_of_min",
+            "min_value",
         ):
             record[f"{key}_{suffix}"] = None
     for name in QOI_MONITORS:
@@ -623,10 +740,16 @@ def report_fieldnames() -> list[str]:
                 f"{key}_shortfall_factor",
                 f"{key}_target_met",
                 f"{key}_trend",
+                f"{key}_trend_reason",
                 f"{key}_log10_slope",
                 f"{key}_sign_flip_frac",
                 f"{key}_acf1",
+                f"{key}_mean_crossings",
                 f"{key}_rel_spread",
+                f"{key}_decades_dropped_total",
+                f"{key}_log10_slope_last_half",
+                f"{key}_iter_of_min",
+                f"{key}_min_value",
             ]
         )
     for name in QOI_MONITORS:
@@ -679,6 +802,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
     lines = [
         "Residual measurement report (diagnostics only).",
         "Does NOT update convergence_status or case_status.",
+        "Trend labels describe the ENDPOINT window (--window); history columns use the full series.",
         "Trend labels are report diagnostics only, not classification inputs.",
         "oscillating_coherent is a CANDIDATE for unsteady physics requiring separate confirmation, not a conclusion.",
         "m_in_final / m_out_final are raw monitor values; mass balance is carried from summary_metrics_wide.csv when present.",

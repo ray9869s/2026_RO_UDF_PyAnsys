@@ -156,13 +156,42 @@ class TestTrendClassification:
         iters = list(range(1, 201))
         trend = residual_mod.classify_residual_trend(iters, values)
         assert trend["trend"] == residual_mod.TREND_FLAT_PLATEAU
+        assert trend["trend_reason"] == residual_mod.REASON_FLAT_ENDPOINT
 
     def test_still_descending(self, residual_mod):
-        # ~1 decade drop over 200 iters => slope ~ -0.005 << -2.3e-4
+        # Exact log-linear in float log-space; after detrend acf1 << old ~0.99.
         values = [10 ** (-5 - 0.005 * i) for i in range(200)]
         iters = list(range(1, 201))
-        trend = residual_mod.classify_residual_trend(iters, values)
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
         assert trend["trend"] == residual_mod.TREND_STILL_DESCENDING
+        assert trend["trend_reason"] == residual_mod.REASON_DOMINANT_DESCENT
+        assert abs(trend["acf1"]) < 0.35
+
+    def test_pure_log_linear_detrended_acf1_near_zero(self, residual_mod):
+        values = [10 ** (-4 - 0.002 * i) for i in range(200)]
+        iters = list(range(1, 201))
+        fit = residual_mod.fit_log10_line(iters, values)
+        assert fit is not None
+        _a, _b, e, _ui, _uv = fit
+        # Contrast with pre-fix mean-detrended raw series (~0.99).
+        raw_acf = residual_mod.lag1_acf([math.log10(v) for v in values])
+        assert raw_acf is not None and raw_acf > 0.9
+        assert abs(residual_mod.lag1_acf(e)) < 0.35
+        assert residual_mod.lag1_acf([0.0] * 200) == pytest.approx(0.0, abs=1e-12)
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
+        assert abs(trend["acf1"]) < 0.35
+        assert trend["trend"] == residual_mod.TREND_STILL_DESCENDING
+
+    def test_dominant_descent_not_oscillating_despite_raw_crossings(self, residual_mod):
+        # Large descent (|slope|*n >> 0.5) must win even if raw series crosses mean often.
+        values = [10 ** (-3 - 0.008 * i) for i in range(200)]
+        iters = list(range(1, 201))
+        assert residual_mod.mean_crossing_count(values) >= 1
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
+        decades = abs(trend["log10_slope"]) * 200
+        assert decades >= 0.5
+        assert trend["trend"] == residual_mod.TREND_STILL_DESCENDING
+        assert trend["trend_reason"] == residual_mod.REASON_DOMINANT_DESCENT
 
     def test_oscillating_coherent_sinusoid(self, residual_mod):
         period = 40
@@ -172,11 +201,26 @@ class TestTrendClassification:
             base + amp * math.sin(2 * math.pi * i / period) for i in range(200)
         ]
         iters = list(range(1, 201))
-        trend = residual_mod.classify_residual_trend(iters, values)
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
         assert trend["trend"] == residual_mod.TREND_OSCILLATING_COHERENT
+        assert trend["trend_reason"] == residual_mod.REASON_COHERENT_OSCILLATION
         assert trend["acf1"] > 0.5
         assert trend["sign_flip_frac"] < 0.15
         assert trend["rel_spread"] > 0.05
+        assert trend["mean_crossings"] >= 4
+
+    def test_oscillating_precedes_weak_spurious_slope(self, residual_mod):
+        # Non-integer periods can yield |slope| > 2.3e-4 but << dominant; osc must win.
+        period = 37
+        base = 3e-7
+        amp = 1.2e-7
+        values = [
+            base + amp * math.sin(2 * math.pi * i / period) for i in range(200)
+        ]
+        iters = list(range(1, 201))
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
+        assert abs(trend["log10_slope"]) * 200 < 0.5
+        assert trend["trend"] == residual_mod.TREND_OSCILLATING_COHERENT
 
     def test_noisy_plateau_shuffled_sinusoid(self, residual_mod):
         period = 40
@@ -185,24 +229,87 @@ class TestTrendClassification:
         values = [
             base + amp * math.sin(2 * math.pi * i / period) for i in range(200)
         ]
-        # Deterministic shuffle that destroys lag-1 coherence.
         shuffled = [values[(i * 47) % 200] for i in range(200)]
         iters = list(range(1, 201))
-        trend = residual_mod.classify_residual_trend(iters, shuffled)
+        trend = residual_mod.classify_residual_trend(iters, shuffled, window_iters_used=200)
         assert trend["trend"] == residual_mod.TREND_NOISY_PLATEAU
         assert trend["rel_spread"] > 0.05
 
     def test_small_amplitude_jitter_is_flat(self, residual_mod):
-        # rel_spread << 0.05
         values = [3.15e-7 * (1.0 + 1e-4 * ((-1) ** i)) for i in range(200)]
         iters = list(range(1, 201))
-        trend = residual_mod.classify_residual_trend(iters, values)
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
         assert trend["trend"] == residual_mod.TREND_FLAT_PLATEAU
         assert trend["rel_spread"] <= 0.05
+
+    def test_weak_rising(self, residual_mod):
+        # ~0.06 decades over 200 iters: above SLOPE_MAG, below dominant.
+        values = [10 ** (-6 + 0.0003 * i) for i in range(200)]
+        iters = list(range(1, 201))
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
+        assert trend["log10_slope"] >= residual_mod.SLOPE_MAG
+        assert abs(trend["log10_slope"]) * 200 < 0.5
+        assert trend["trend"] == residual_mod.TREND_RISING
+        assert trend["trend_reason"] == residual_mod.REASON_SLOPE_RISING
+
+    def test_dead_zone_not_unknown(self, residual_mod):
+        # Mild spread / mid flip / weak slope must not fall through to unknown.
+        values = [
+            3.15e-7 * (1.0 + 0.04 * math.sin(2 * math.pi * i / 17.0) + 0.02 * ((-1) ** i))
+            for i in range(200)
+        ]
+        iters = list(range(1, 201))
+        trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
+        assert trend["trend"] != residual_mod.TREND_UNKNOWN
+        assert trend["trend"] in {
+            residual_mod.TREND_NOISY_PLATEAU,
+            residual_mod.TREND_FLAT_PLATEAU,
+            residual_mod.TREND_OSCILLATING_COHERENT,
+            residual_mod.TREND_RISING,
+            residual_mod.TREND_STILL_DESCENDING,
+        }
 
     def test_short_series_unknown(self, residual_mod):
         trend = residual_mod.classify_residual_trend(list(range(10)), [1e-6] * 10)
         assert trend["trend"] == residual_mod.TREND_UNKNOWN
+        assert trend["trend_reason"] == residual_mod.REASON_INSUFFICIENT_POINTS
+
+    def test_history_bottom_then_rise(self, residual_mod):
+        # Descend for iters 1..100, then rise — min at iter 100; endpoint rising.
+        values = []
+        for i in range(200):
+            if i < 100:
+                values.append(10 ** (-4 - 0.02 * i))
+            else:
+                values.append(10 ** (-4 - 0.02 * 99 + 0.01 * (i - 99)))
+        rows = []
+        for i, v in enumerate(values, start=1):
+            rows.append(
+                {
+                    "iter": i,
+                    "continuity": v,
+                    "x-velocity": 1e-10,
+                    "y-velocity": 1e-10,
+                    "z-velocity": 1e-10,
+                    "nacl": v,
+                    "lmh": 50.0,
+                    "m_out": -1e-4,
+                    "m_in": 2e-4,
+                    "area_mem": 6e-5,
+                }
+            )
+        measured = residual_mod.measure_case_from_rows(
+            rows, window_n=50, residual_target=1e-7, iteration_cap=1000
+        )
+        assert measured["continuity_iter_of_min"] == 100
+        assert measured["continuity_min_value"] == pytest.approx(values[99])
+        assert measured["continuity_decades_dropped_total"] is not None
+        assert measured["continuity_trend"] == residual_mod.TREND_RISING
+        assert measured["continuity_mean_crossings"] is not None
+        assert measured["continuity_trend_reason"] in {
+            residual_mod.REASON_SLOPE_RISING,
+            residual_mod.REASON_DOMINANT_RISE,
+        }
 
 
 class TestSelectionAndRobustness:
@@ -408,5 +515,12 @@ class TestCliEndToEnd:
         assert "Does NOT update convergence_status" in text
         content = csv_path.read_text(encoding="utf-8")
         assert "continuity_shortfall_factor" in content
+        assert "continuity_trend_reason" in content
+        assert "continuity_mean_crossings" in content
+        assert "continuity_decades_dropped_total" in content
+        assert "continuity_iter_of_min" in content
         assert "mass_imbalance" not in content
         assert "m_in_is_constant_monitor" in content
+        cli_src = (POST_DIR / "09_residual_measurement_report.py").read_text(encoding="utf-8")
+        assert "ENDPOINT window" in cli_src
+        assert ">=500" in cli_src
