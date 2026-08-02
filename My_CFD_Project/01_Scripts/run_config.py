@@ -175,6 +175,10 @@ area_mem_report_name = "area_mem"
 lmh_report_name = "lmh"
 m_in_report_name = "m_in"
 m_out_report_name = "m_out"
+enable_solve_time_qoi_reports = True
+domain_x_min_m = 0.0
+domain_length_m = 0.017325
+buffer_length_m = 0.003465
 
 
 # ==========================================================
@@ -340,6 +344,24 @@ def _require_choice(name, value, choices):
         )
 
 
+def _require_bool(name, value):
+    """Raise when a config value is not a bool."""
+    _require_set(name, value)
+    if not isinstance(value, bool):
+        raise TypeError(
+            f"run_config.py value must be bool: {name}={value!r}"
+        )
+
+
+def _require_number(name, value):
+    """Raise when a config value is not numeric."""
+    _require_set(name, value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            f"run_config.py value must be numeric: {name}={value!r}"
+        )
+
+
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
@@ -419,3 +441,17 @@ def validate_for_solver():
         relaxation_profile,
         {"baseline", "conservative", "strong"},
     )
+    _require_bool(
+        "enable_solve_time_qoi_reports",
+        enable_solve_time_qoi_reports,
+    )
+    if enable_solve_time_qoi_reports:
+        _require_number("domain_x_min_m", domain_x_min_m)
+        _require_positive_number("domain_length_m", domain_length_m)
+        _require_nonnegative_number("buffer_length_m", buffer_length_m)
+        if domain_length_m - 2.0 * buffer_length_m <= 0.0:
+            raise ValueError(
+                "run_config.py spacer length must be positive: "
+                f"domain_length_m={domain_length_m!r}, "
+                f"buffer_length_m={buffer_length_m!r}"
+            )

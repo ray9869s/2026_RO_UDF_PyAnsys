@@ -17,6 +17,7 @@ from _solver_common import (
     collect_solver_final_artifact_failures,
     resolve_solver_final_artifact_exit_code,
 )
+from _fluent_report_helpers import create_x_normal_plane
 
 # ==========================================================
 # ##### [1] Load Run Configuration #####
@@ -186,6 +187,10 @@ if __name__ == "__main__":
     lmh_report_name = cfg.lmh_report_name
     m_in_report_name = cfg.m_in_report_name
     m_out_report_name = cfg.m_out_report_name
+    enable_solve_time_qoi_reports = cfg.enable_solve_time_qoi_reports
+    domain_x_min_m = cfg.domain_x_min_m
+    domain_length_m = cfg.domain_length_m
+    buffer_length_m = cfg.buffer_length_m
 
 # ==========================================================
 # ##### [2] Helper Functions #####
@@ -751,6 +756,159 @@ def create_or_update_single_valued_expression_report(
         print(f"Could not read post-update state for {report_name}: {e}")
 
     return report_definition
+
+
+def configure_report_definition_for_transcript(report_definition):
+    """Enable transcript printing without creating report files or plots."""
+    for attr_name, value in (
+        ("create_report_file", False),
+        ("create_report_plot", False),
+        ("print", True),
+    ):
+        try:
+            setattr(report_definition, attr_name, value)
+        except Exception:
+            pass
+    return report_definition
+
+
+def create_or_update_surface_field_report(
+    surface_report_definitions,
+    report_name,
+    report_type,
+    field_name,
+    surface_names,
+):
+    """Create/update one printed surface-field report definition."""
+    if not surface_names:
+        raise ValueError(
+            f"Cannot create/update {report_name} without surface names."
+        )
+    existing_reports = list_named_object_names(
+        named_object=surface_report_definitions,
+        object_label="solution.report_definitions.surface",
+    )
+    if report_name in existing_reports:
+        report_definition = surface_report_definitions[report_name]
+        print(f"Surface field report already exists. Updating: {report_name}")
+    else:
+        report_definition = surface_report_definitions.create(report_name)
+        print(f"Surface field report created: {report_name}")
+
+    report_definition.report_type = report_type
+    report_definition.field = field_name
+    report_definition.surface_names = list(surface_names)
+    report_definition.per_surface = False
+    configure_report_definition_for_transcript(report_definition)
+    return report_definition
+
+
+def update_solve_time_qoi_report_definitions(
+    solver,
+    solution,
+    membrane_wall_zones,
+    domain_x_min_m,
+    domain_length_m,
+    buffer_length_m,
+):
+    """Create solve-time pressure, membrane-transport, and shear monitors."""
+    spacer_length_m = domain_length_m - 2.0 * buffer_length_m
+    if spacer_length_m <= 0.0:
+        raise ValueError(
+            "Cannot create solve-time QoI reports with non-positive "
+            f"spacer length: {spacer_length_m}."
+        )
+    if not membrane_wall_zones:
+        raise ValueError(
+            "Cannot create solve-time QoI reports without membrane walls."
+        )
+
+    spacer_x_in_m = domain_x_min_m + buffer_length_m
+    spacer_x_out_m = domain_x_min_m + domain_length_m - buffer_length_m
+    plane_in_name = "plane_spacer_in"
+    plane_out_name = "plane_spacer_out"
+    create_x_normal_plane(solver, plane_in_name, spacer_x_in_m)
+    create_x_normal_plane(solver, plane_out_name, spacer_x_out_m)
+
+    surface_reports = solution.report_definitions.surface
+    expression_reports = (
+        solution.report_definitions.single_valued_expression
+    )
+    surface_specs = [
+        (
+            "pressure_spacer_in_avg",
+            "surface-areaavg",
+            "pressure",
+            [plane_in_name],
+        ),
+        (
+            "pressure_spacer_out_avg",
+            "surface-areaavg",
+            "pressure",
+            [plane_out_name],
+        ),
+        (
+            "cm_membrane_avg",
+            "surface-areaavg",
+            "udm-7",
+            membrane_wall_zones,
+        ),
+        (
+            "cm_membrane_max",
+            "surface-facetmax",
+            "udm-7",
+            membrane_wall_zones,
+        ),
+        (
+            "cp_membrane_avg",
+            "surface-areaavg",
+            "udm-9",
+            membrane_wall_zones,
+        ),
+        (
+            "cp_membrane_max",
+            "surface-facetmax",
+            "udm-9",
+            membrane_wall_zones,
+        ),
+        (
+            "wall_shear_membrane_avg",
+            "surface-areaavg",
+            "wall-shear",
+            membrane_wall_zones,
+        ),
+        (
+            "lmh_udm_avg",
+            "surface-areaavg",
+            "udm-8",
+            membrane_wall_zones,
+        ),
+    ]
+
+    report_names = []
+    for report_name, report_type, field_name, surfaces in surface_specs:
+        create_or_update_surface_field_report(
+            surface_report_definitions=surface_reports,
+            report_name=report_name,
+            report_type=report_type,
+            field_name=field_name,
+            surface_names=surfaces,
+        )
+        report_names.append(report_name)
+
+    pressure_drop_report = create_or_update_single_valued_expression_report(
+        single_expression_report_definitions=expression_reports,
+        report_name="pressure_drop_spacer",
+        definition=(
+            "pressure_spacer_in_avg - pressure_spacer_out_avg"
+        ),
+    )
+    configure_report_definition_for_transcript(pressure_drop_report)
+    report_names.append("pressure_drop_spacer")
+
+    print("\nSolve-time QoI report definitions updated:")
+    print(report_names)
+    return report_names
 
 
 def update_transport_report_definitions_for_current_zones(
@@ -1792,6 +1950,18 @@ if __name__ == "__main__":
 
             print(f"\nFull fluid zone sources state after hooking for fluid zone '{fluid_zone_name}':")
             print(fluid_zone_object.sources.get_state())
+
+        if enable_solve_time_qoi_reports:
+            update_solve_time_qoi_report_definitions(
+                solver=solver,
+                solution=solution,
+                membrane_wall_zones=membrane_wall_zone_names,
+                domain_x_min_m=domain_x_min_m,
+                domain_length_m=domain_length_m,
+                buffer_length_m=buffer_length_m,
+            )
+        else:
+            print("Skipping solve-time QoI report definition update.")
 
 
         # ======================================================

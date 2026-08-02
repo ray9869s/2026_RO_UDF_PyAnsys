@@ -240,6 +240,10 @@ class TestRunConfigOverrideAllowlist:
             "lmh_report_name",
             "m_in_report_name",
             "m_out_report_name",
+            "enable_solve_time_qoi_reports",
+            "domain_x_min_m",
+            "domain_length_m",
+            "buffer_length_m",
         }
 
         excluded = {
@@ -257,6 +261,8 @@ class TestRunConfigOverrideAllowlist:
             "_require_nonnegative_number": "private function",
             "_require_positive_float": "private function",
             "_require_choice": "private function",
+            "_require_bool": "private function",
+            "_require_number": "private function",
         }
 
         assert extensions == {
