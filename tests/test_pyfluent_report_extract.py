@@ -13,6 +13,8 @@ from _fluent_report_helpers import (
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
+    mass_fraction_to_molar_concentration,
+    segmented_membrane_cp_metrics,
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
@@ -23,6 +25,7 @@ from _fluent_report_helpers import (
     udm_area_sum_report_spec,
     validate_concentration_thresholds,
     validate_unit_cell_layout,
+    wall_zone_reduction_locations,
 )
 from helpers import load_post_config
 
@@ -294,6 +297,87 @@ def test_fluid_zone_names_resolve_to_reduction_settings_objects():
     assert all(not isinstance(location, str) for location in locations)
 
 
+def test_wall_zone_names_resolve_to_reduction_settings_objects():
+    wall_top = SimpleNamespace(obj_name="wall_top_mem")
+    wall_bottom = SimpleNamespace(obj_name="wall_bottom_mem")
+    setup = SimpleNamespace(
+        boundary_conditions=SimpleNamespace(
+            wall={
+                "wall_top_mem": wall_top,
+                "wall_bottom_mem": wall_bottom,
+            }
+        )
+    )
+    assert wall_zone_reduction_locations(
+        setup,
+        ["wall_top_mem", "wall_bottom_mem"],
+    ) == [wall_top, wall_bottom]
+
+
+class FakeSegmentReduction:
+    def __init__(self):
+        self.calls = []
+
+    def sum_if(self, *, expression, condition, locations, weight):
+        self.calls.append((expression, condition, locations, weight))
+        if expression == "1":
+            return 2.0
+        if expression == "udm-7":
+            return 1200.0
+        if expression == "udm-6":
+            return 2.0e-5
+        if expression == "udm-9":
+            return 2.1
+        if expression.startswith("((("):
+            return 2.2
+        return 1.0
+
+
+def test_segmented_membrane_cp_uses_facewise_gu_reduction():
+    reduction = FakeSegmentReduction()
+    wall = SimpleNamespace(obj_name="wall_top_mem")
+    metrics = segmented_membrane_cp_metrics(
+        reduction=reduction,
+        wall_locations=[wall],
+        unit_cell_boundary_x_m=[
+            0.0,
+            0.003465,
+            0.00693,
+            0.010395,
+            0.01386,
+            0.017325,
+        ],
+        spacer_cells=[2],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+    )
+
+    bulk_mol = mass_fraction_to_molar_concentration(
+        0.035,
+        998.2,
+        0.05844,
+    )
+    assert metrics == pytest.approx({
+        "pp_membrane_area_cell_2_m2": 2.0,
+        "pp_cm_mol_m3_cell_2": 600.0,
+        "pp_jw_m_per_s_cell_2": 1.0e-5,
+        "pp_cp_inlet_unit_cell_boundary_2": 1.05,
+        "pp_cp_bulk_unit_cell_boundary_2": 600.0 / bulk_mol,
+        "pp_cp_perm_mol_m3_cell_2": 0.5,
+        "pp_cp_gu_unit_cell_boundary_2": 1.1,
+    })
+    assert all(call[2] == [wall] for call in reduction.calls)
+    assert all(call[3] == "Area" for call in reduction.calls)
+    assert all(
+        call[1] == "AND(x >= 0.003465 [m], x <= 0.00693 [m])"
+        for call in reduction.calls
+    )
+    assert any(call[0].startswith("(((") for call in reduction.calls)
+
+
 def test_concentration_diagnostics_reject_zone_name_strings():
     with pytest.raises(TypeError, match="settings objects"):
         concentration_range_diagnostics(
@@ -371,5 +455,7 @@ def test_invalid_concentration_thresholds_are_rejected(
 def test_default_concentration_thresholds():
     cfg = load_post_config()
     assert cfg.n_inlet_spacer_cells_excluded == 1
+    assert cfg.salt_molecular_weight_kg_per_mol == 0.05844
+    assert cfg.salt_permeability_m_per_s == 2.50e-8
     assert cfg.salt_mass_fraction_upper_threshold == 0.99
     assert cfg.salt_mass_fraction_lower_threshold == 1.0e-6

@@ -72,6 +72,8 @@ case_name = REQUIRED
 rho = 998.2
 mu = 8.93e-4
 c_inlet_ref = 597.8268309
+salt_molecular_weight_kg_per_mol = 0.05844
+salt_permeability_m_per_s = 2.50e-8
 
 active_membrane_base_names = ["wall_top_mem", "wall_bottom_mem"]
 buffer_wall_base_names = ["wall_top_buffer", "wall_bottom_buffer"]

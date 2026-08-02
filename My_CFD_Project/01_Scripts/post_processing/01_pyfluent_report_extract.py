@@ -45,6 +45,7 @@ from _fluent_report_helpers import (  # noqa: E402
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
+    segmented_membrane_cp_metrics,
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
@@ -55,6 +56,7 @@ from _fluent_report_helpers import (  # noqa: E402
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
     validate_unit_cell_layout,
+    wall_zone_reduction_locations,
 )
 
 
@@ -610,6 +612,16 @@ if __name__ == "__main__":
 
         rho = cfg.rho
         mu = cfg.mu
+        salt_molecular_weight_kg_per_mol = getattr(
+            cfg,
+            "salt_molecular_weight_kg_per_mol",
+            0.05844,
+        )
+        salt_permeability_m_per_s = getattr(
+            cfg,
+            "salt_permeability_m_per_s",
+            2.50e-8,
+        )
 
         # Basic field names.
         FIELD_PRESSURE = "pressure"
@@ -1040,6 +1052,49 @@ if __name__ == "__main__":
         print("\nSalt mass-fraction range diagnostics:")
         pprint(concentration_diagnostics)
 
+        segmented_cp_values = {}
+        segmented_cp_diagnostic_error = ""
+        segmented_cp_diagnostic_error_type = ""
+        segmented_cp_diagnostic_error_message = ""
+        try:
+            membrane_wall_locations = wall_zone_reduction_locations(
+                setup,
+                active_membrane_zones,
+            )
+            mixing_cup_mass_fraction_by_boundary = {
+                boundary_index: computed_values.get(
+                    unit_cell_mixing_cup_report_name(boundary_index)
+                )
+                for boundary_index in range(n_unit_cells + 1)
+            }
+            segmented_cp_values = segmented_membrane_cp_metrics(
+                reduction=solver.fields.reduction,
+                wall_locations=membrane_wall_locations,
+                unit_cell_boundary_x_m=unit_cell_boundary_x_m,
+                spacer_cells=spacer_cells,
+                mixing_cup_mass_fraction_by_boundary=(
+                    mixing_cup_mass_fraction_by_boundary
+                ),
+                density_kg_per_m3=rho,
+                molecular_weight_kg_per_mol=(
+                    salt_molecular_weight_kg_per_mol
+                ),
+                c_inlet_ref_mol_per_m3=cfg.c_inlet_ref,
+                salt_permeability_m_per_s=salt_permeability_m_per_s,
+            )
+        except Exception as exc:
+            error = exception_details(exc)
+            segmented_cp_diagnostic_error_type = error["type"]
+            segmented_cp_diagnostic_error_message = error["message"]
+            segmented_cp_diagnostic_error = error["combined"]
+            print(
+                "WARNING: segmented membrane CP diagnostics failed: "
+                f"{segmented_cp_diagnostic_error}"
+            )
+
+        print("\nSegmented membrane CP diagnostics:")
+        pprint(segmented_cp_values)
+
         # ==========================================================
         # Cell 8.5. Center-plane bulk salt average for CP denominator
         # ==========================================================
@@ -1348,6 +1403,20 @@ if __name__ == "__main__":
         unit_cell_pressure_rows.extend(
             row.copy() for row in periodic_pressure_rows
         )
+        for metric_name, metric_value in segmented_cp_values.items():
+            if metric_name.endswith("_m2"):
+                metric_unit = "m2"
+            elif "_mol_m3_" in metric_name:
+                metric_unit = "mol/m3"
+            elif "_m_per_s_" in metric_name:
+                metric_unit = "m/s"
+            else:
+                metric_unit = "-"
+            unit_cell_summary_rows.append({
+                "metric": metric_name,
+                "value": metric_value,
+                "unit": metric_unit,
+            })
 
         # ----------------------------------------------------------
         # LMH consistency check
@@ -1466,6 +1535,9 @@ if __name__ == "__main__":
                 ),
                 "unit": "-",
             },
+            {"metric": "segmented_cp_diagnostic_error", "value": segmented_cp_diagnostic_error, "unit": "-"},
+            {"metric": "segmented_cp_diagnostic_error_type", "value": segmented_cp_diagnostic_error_type, "unit": "-"},
+            {"metric": "segmented_cp_diagnostic_error_message", "value": segmented_cp_diagnostic_error_message, "unit": "-"},
         ]
         summary_rows.extend(unit_cell_summary_rows)
 
@@ -1634,6 +1706,10 @@ if __name__ == "__main__":
                 "concentration_diagnostic_error": concentration_diagnostic_error,
                 "concentration_diagnostic_error_type": concentration_diagnostic_error_type,
                 "concentration_diagnostic_error_message": concentration_diagnostic_error_message,
+                "segmented_cp_values": segmented_cp_values,
+                "segmented_cp_diagnostic_error": segmented_cp_diagnostic_error,
+                "segmented_cp_diagnostic_error_type": segmented_cp_diagnostic_error_type,
+                "segmented_cp_diagnostic_error_message": segmented_cp_diagnostic_error_message,
             },
             "raw_results": raw_results,
         }

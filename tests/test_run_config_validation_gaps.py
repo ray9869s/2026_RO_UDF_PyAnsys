@@ -364,6 +364,8 @@ class TestPostConfigOverrideAllowlist:
             "rho",
             "mu",
             "c_inlet_ref",
+            "salt_molecular_weight_kg_per_mol",
+            "salt_permeability_m_per_s",
             "active_membrane_base_names",
             "buffer_wall_base_names",
             "udm_indices",

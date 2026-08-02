@@ -245,6 +245,122 @@ def fluid_zone_reduction_locations(setup, fluid_zone_names):
     return locations
 
 
+def wall_zone_reduction_locations(setup, wall_zone_names):
+    """Resolve wall-zone names to settings objects accepted by reductions."""
+    if not wall_zone_names:
+        raise ValueError("At least one wall zone is required.")
+    wall_group = setup.boundary_conditions.wall
+    locations = []
+    for zone_name in wall_zone_names:
+        try:
+            locations.append(wall_group[zone_name])
+        except Exception as exc:
+            raise ValueError(
+                f"Could not resolve wall zone {zone_name!r} "
+                "to a settings object."
+            ) from exc
+    return locations
+
+
+def mass_fraction_to_molar_concentration(
+    mass_fraction,
+    density_kg_per_m3,
+    molecular_weight_kg_per_mol,
+):
+    """Convert salt mass fraction to molar concentration [mol/m3]."""
+    if mass_fraction is None:
+        return None
+    if density_kg_per_m3 <= 0.0 or molecular_weight_kg_per_mol <= 0.0:
+        raise ValueError("Density and molecular weight must be positive.")
+    return (
+        float(mass_fraction)
+        * float(density_kg_per_m3)
+        / float(molecular_weight_kg_per_mol)
+    )
+
+
+def segmented_membrane_cp_metrics(
+    reduction,
+    wall_locations,
+    unit_cell_boundary_x_m,
+    spacer_cells,
+    mixing_cup_mass_fraction_by_boundary,
+    density_kg_per_m3,
+    molecular_weight_kg_per_mol,
+    c_inlet_ref_mol_per_m3,
+    salt_permeability_m_per_s,
+):
+    """Compute x-segmented membrane CP metrics with facewise Gu CP."""
+    if not wall_locations:
+        raise ValueError("At least one membrane wall location is required.")
+    b_perm = float(salt_permeability_m_per_s)
+    c0 = float(c_inlet_ref_mol_per_m3)
+    if b_perm <= 0.0 or c0 <= 0.0:
+        raise ValueError("Salt permeability and inlet concentration must be positive.")
+
+    cm_field = "udm-7"
+    jw_field = "udm-6"
+    cp_perm_expression = (
+        f"({b_perm!r} * ({cm_field}) / (({jw_field}) + {b_perm!r}))"
+    )
+    cp_gu_expression = (
+        f"((({cm_field}) - ({cp_perm_expression})) / "
+        f"({c0!r} - ({cp_perm_expression})))"
+    )
+
+    metrics = {}
+    for cell_number in spacer_cells:
+        x_min_m = unit_cell_boundary_x_m[cell_number - 1]
+        x_max_m = unit_cell_boundary_x_m[cell_number]
+        condition = (
+            f"AND(x >= {float(x_min_m)!r} [m], "
+            f"x <= {float(x_max_m)!r} [m])"
+        )
+
+        def area_sum(expression):
+            return reduction.sum_if(
+                expression=expression,
+                condition=condition,
+                locations=list(wall_locations),
+                weight="Area",
+            )
+
+        area_m2 = area_sum("1")
+        if area_m2 is None or area_m2 <= 0.0:
+            raise ValueError(
+                f"Membrane segment for cell {cell_number} has no positive area."
+            )
+
+        cm_avg = area_sum(cm_field) / area_m2
+        jw_avg = area_sum(jw_field) / area_m2
+        cp_inlet_avg = area_sum("udm-9") / area_m2
+        cp_perm_avg = area_sum(cp_perm_expression) / area_m2
+        cp_gu_avg = area_sum(cp_gu_expression) / area_m2
+
+        bulk_mol_per_m3 = mass_fraction_to_molar_concentration(
+            mixing_cup_mass_fraction_by_boundary.get(cell_number),
+            density_kg_per_m3,
+            molecular_weight_kg_per_mol,
+        )
+        cp_bulk = (
+            None
+            if bulk_mol_per_m3 in (None, 0.0)
+            else cm_avg / bulk_mol_per_m3
+        )
+
+        metrics.update({
+            f"pp_membrane_area_cell_{cell_number}_m2": area_m2,
+            f"pp_cm_mol_m3_cell_{cell_number}": cm_avg,
+            f"pp_jw_m_per_s_cell_{cell_number}": jw_avg,
+            f"pp_cp_inlet_unit_cell_boundary_{cell_number}": cp_inlet_avg,
+            f"pp_cp_bulk_unit_cell_boundary_{cell_number}": cp_bulk,
+            f"pp_cp_perm_mol_m3_cell_{cell_number}": cp_perm_avg,
+            f"pp_cp_gu_unit_cell_boundary_{cell_number}": cp_gu_avg,
+        })
+
+    return metrics
+
+
 def exception_details(exc):
     """Return stable exception fields for JSON and CSV diagnostics."""
     error_type = type(exc).__name__
