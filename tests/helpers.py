@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 from types import ModuleType
 
@@ -33,6 +34,28 @@ def load_batch_solver_sweep() -> ModuleType:
 
 def load_solver_common() -> ModuleType:
     return load_module("solver_common_under_test", SCRIPTS_DIR / "_solver_common.py")
+
+
+def load_solver_code(module_name: str = "solver_code_under_test") -> ModuleType:
+    """Load the fresh-solve worker without requiring PyFluent in the test host."""
+    stubs = {
+        "ansys": types.ModuleType("ansys"),
+        "ansys.fluent": types.ModuleType("ansys.fluent"),
+        "ansys.fluent.core": types.ModuleType("ansys.fluent.core"),
+    }
+    saved = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    try:
+        return load_module(
+            module_name,
+            SCRIPTS_DIR / "solver_code_260616.py",
+        )
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 def load_batch_report_extract() -> ModuleType:

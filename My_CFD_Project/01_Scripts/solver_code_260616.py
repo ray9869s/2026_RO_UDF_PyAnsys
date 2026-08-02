@@ -164,6 +164,7 @@ if __name__ == "__main__":
     residual_target = cfg.residual_target
     max_iterations = cfg.max_iterations
     run_calculation_enabled = cfg.run_calculation_enabled
+    relaxation_profile = cfg.relaxation_profile
 
     # Ramp/convergence safety.
     use_ramp_convergence_safety = cfg.use_ramp_convergence_safety
@@ -838,6 +839,292 @@ def set_residual_convergence_check(solution, species_name, enable):
         res_eq.check_convergence = enable
 
     print(f"Residual convergence check set to: {enable}")
+
+
+RELAXATION_PROFILES = {
+    "conservative": {
+        "explicit_pressure_under_relaxation": 0.2,
+        "explicit_momentum_under_relaxation": 0.3,
+        "species_pseudo_relaxation": 0.5,
+    },
+    "strong": {
+        "explicit_pressure_under_relaxation": 0.1,
+        "explicit_momentum_under_relaxation": 0.2,
+        "species_pseudo_relaxation": 0.3,
+    },
+}
+
+
+def set_and_verify_leaf(parent, attr_name, value, label):
+    """Set a scalar settings-API leaf and confirm it via readback."""
+    outcome = {
+        "label": label,
+        "requested": value,
+        "status": "WARN_APPLY_URF_FAILED",
+    }
+    try:
+        before_state = parent.get_state()
+    except Exception as exc:
+        outcome["error"] = (
+            f"could not read parent state: {type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    before = before_state.get(attr_name) if isinstance(before_state, dict) else None
+    outcome["before"] = before
+    print(f"URF before {label}: {before}")
+
+    if isinstance(before_state, dict) and attr_name not in before_state:
+        outcome["error"] = (
+            f"{attr_name} not present in state keys "
+            f"{list(before_state.keys())}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    try:
+        setattr(parent, attr_name, value)
+    except Exception as exc:
+        outcome["error"] = f"set failed: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    try:
+        after_state = parent.get_state()
+        after = after_state.get(attr_name) if isinstance(after_state, dict) else None
+    except Exception as exc:
+        outcome["error"] = f"readback failed: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    outcome["after"] = after
+    print(f"URF after {label}: {after}")
+    confirmed = (
+        isinstance(after, (int, float))
+        and not isinstance(after, bool)
+        and abs(float(after) - float(value)) < 1.0e-9
+    )
+    outcome["status"] = (
+        "APPLIED_CONFIRMED"
+        if confirmed
+        else "WARN_APPLY_URF_FAILED"
+    )
+    if not confirmed:
+        print(
+            f"WARN_APPLY_URF_FAILED ({label}): readback {after} "
+            f"does not confirm requested {value}"
+        )
+    return outcome
+
+
+def set_and_verify_dict_entry(container, key, value, label):
+    """Set one dict-like settings entry and confirm it via readback."""
+    full_label = f"{label}[{key}]"
+    outcome = {
+        "label": full_label,
+        "requested": value,
+        "status": "WARN_APPLY_URF_FAILED",
+    }
+    try:
+        before_state = container.get_state()
+    except Exception as exc:
+        outcome["error"] = (
+            f"could not read container state: {type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): {outcome['error']}")
+        return outcome
+
+    before = before_state.get(key) if isinstance(before_state, dict) else None
+    outcome["before"] = before
+    print(f"URF before {full_label}: {before}")
+
+    set_ok = False
+    set_error = ""
+    try:
+        container[key] = value
+        set_ok = True
+    except Exception as exc_item:
+        set_error = (
+            "container[key]=value failed: "
+            f"{type(exc_item).__name__}: {exc_item}"
+        )
+        try:
+            container.set_state({key: value})
+            set_ok = True
+        except Exception as exc_state:
+            set_error += (
+                f"; set_state failed: {type(exc_state).__name__}: {exc_state}"
+            )
+
+    if not set_ok:
+        outcome["error"] = set_error
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): {set_error}")
+        return outcome
+
+    try:
+        after_state = container.get_state()
+        after = after_state.get(key) if isinstance(after_state, dict) else None
+    except Exception as exc:
+        outcome["error"] = f"readback failed: {type(exc).__name__}: {exc}"
+        print(f"WARN_APPLY_URF_FAILED ({full_label}): {outcome['error']}")
+        return outcome
+
+    outcome["after"] = after
+    print(f"URF after {full_label}: {after}")
+    confirmed = (
+        isinstance(after, (int, float))
+        and not isinstance(after, bool)
+        and abs(float(after) - float(value)) < 1.0e-9
+    )
+    outcome["status"] = (
+        "APPLIED_CONFIRMED"
+        if confirmed
+        else "WARN_APPLY_URF_FAILED"
+    )
+    if not confirmed:
+        print(
+            f"WARN_APPLY_URF_FAILED ({full_label}): readback {after} "
+            f"does not confirm requested {value}"
+        )
+    return outcome
+
+
+def apply_pseudo_time_species_relaxation(solution, species_name, value):
+    """Best-effort species pseudo-time relaxation update with readback."""
+    label = "pseudo_time_species_relaxation"
+    outcome = {
+        "label": label,
+        "requested": value,
+        "status": "SKIPPED_SPECIES_UNAVAILABLE",
+    }
+    try:
+        container = (
+            solution.controls
+            .pseudo_time_explicit_relaxation_factor
+            .global_dt_pseudo_relax
+        )
+    except Exception as exc:
+        outcome["error"] = (
+            f"container not found: {type(exc).__name__}: {exc}"
+        )
+        outcome["status"] = "WARN_APPLY_URF_FAILED"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    candidate_keys = []
+    for key in (species_name, "species-0"):
+        if key and key not in candidate_keys:
+            candidate_keys.append(key)
+
+    try:
+        state = container.get_state()
+        available_keys = list(state) if isinstance(state, dict) else []
+    except Exception:
+        available_keys = list_named_object_names(
+            container,
+            "global_dt_pseudo_relax",
+        )
+
+    print(f"Pseudo-time species relaxation available keys: {available_keys}")
+    matched_key = next(
+        (key for key in candidate_keys if key in available_keys),
+        None,
+    )
+    if matched_key is None:
+        outcome["error"] = (
+            f"none of {candidate_keys} present in {available_keys}"
+        )
+        print(f"SKIPPED_SPECIES_UNAVAILABLE ({label}): {outcome['error']}")
+        return outcome
+
+    return set_and_verify_dict_entry(
+        container,
+        matched_key,
+        value,
+        label,
+    )
+
+
+def apply_real_under_relaxation(solver, profile, species_name):
+    """Apply a named under-relaxation profile with readback verification."""
+    result = {"profile": profile, "applied": []}
+    if profile == "baseline":
+        print(
+            "\nRelaxation profile baseline: leaving under-relaxation "
+            "controls unchanged."
+        )
+        return result
+
+    values = RELAXATION_PROFILES.get(profile)
+    if values is None:
+        print(
+            f"Unknown relaxation profile {profile!r}; "
+            "leaving controls unchanged."
+        )
+        return result
+
+    print(f"\nApplying real under-relaxation profile: {profile}")
+    solution = solver.settings.solution
+    try:
+        p_v_controls = solution.controls.p_v_controls
+    except Exception as exc:
+        print(
+            "WARN_APPLY_URF_FAILED (p_v_controls): "
+            f"could not access p_v_controls: {exc}"
+        )
+        p_v_controls = None
+
+    if p_v_controls is not None:
+        result["applied"].append(
+            set_and_verify_leaf(
+                p_v_controls,
+                "explicit_pressure_under_relaxation",
+                values["explicit_pressure_under_relaxation"],
+                "explicit_pressure_under_relaxation",
+            )
+        )
+        result["applied"].append(
+            set_and_verify_leaf(
+                p_v_controls,
+                "explicit_momentum_under_relaxation",
+                values["explicit_momentum_under_relaxation"],
+                "explicit_momentum_under_relaxation",
+            )
+        )
+    else:
+        result["applied"].extend([
+            {
+                "label": "explicit_pressure_under_relaxation",
+                "status": "WARN_APPLY_URF_FAILED",
+                "error": "p_v_controls unavailable",
+            },
+            {
+                "label": "explicit_momentum_under_relaxation",
+                "status": "WARN_APPLY_URF_FAILED",
+                "error": "p_v_controls unavailable",
+            },
+        ])
+
+    result["applied"].append(
+        apply_pseudo_time_species_relaxation(
+            solution,
+            species_name,
+            values["species_pseudo_relaxation"],
+        )
+    )
+
+    for entry in result["applied"]:
+        if entry.get("status") not in {
+            "APPLIED_CONFIRMED",
+            "SKIPPED_SPECIES_UNAVAILABLE",
+        }:
+            print(
+                f"WARN_APPLY_URF_FAILED summary: {entry.get('label')}: "
+                f"{entry.get('error', 'readback mismatch')}"
+            )
+
+    return result
 
 
 # ==========================================================
@@ -1560,6 +1847,14 @@ if __name__ == "__main__":
 
         print("\nResidual equations state after setting:")
         print(solution.monitor.residual.equations.get_state())
+
+        relaxation_result = apply_real_under_relaxation(
+            solver=solver,
+            profile=relaxation_profile,
+            species_name=species_name,
+        )
+        print("Relaxation profile application result:")
+        print(relaxation_result)
 
 
         # ======================================================

@@ -105,6 +105,19 @@ class TestSolverValidation:
         assert cfg.salt_mass_fraction == 0.035
         cfg.validate_for_solver()
 
+    @pytest.mark.parametrize(
+        "profile",
+        ["baseline", "conservative", "strong"],
+    )
+    def test_relaxation_profiles_are_accepted(self, cfg, profile):
+        cfg.relaxation_profile = profile
+        cfg.validate_for_solver()
+
+    def test_unknown_relaxation_profile_is_rejected(self, cfg):
+        cfg.relaxation_profile = "aggressive"
+        with pytest.raises(ValueError, match="must be one of"):
+            cfg.validate_for_solver()
+
 
 def _load_batch_config_module(filename: str):
     path = SCRIPTS_DIR / filename
@@ -216,6 +229,7 @@ class TestRunConfigOverrideAllowlist:
             "residual_target",
             "max_iterations",
             "run_calculation_enabled",
+            "relaxation_profile",
             "use_ramp_convergence_safety",
             "ramp_full_iteration",
             "post_ramp_buffer_iterations",
@@ -242,6 +256,7 @@ class TestRunConfigOverrideAllowlist:
             "_require_positive_number": "private function",
             "_require_nonnegative_number": "private function",
             "_require_positive_float": "private function",
+            "_require_choice": "private function",
         }
 
         assert extensions == {

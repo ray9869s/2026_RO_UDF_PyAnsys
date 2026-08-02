@@ -159,6 +159,7 @@ udm_count = 13
 residual_target = 1e-7
 max_iterations = 2000
 run_calculation_enabled = True
+relaxation_profile = "baseline"
 
 # Ramp/convergence safety.
 # 260612_RO_UDF.c uses a source ramp that reaches full strength after 150 iterations.
@@ -329,6 +330,16 @@ def _require_positive_float(name, value):
         )
 
 
+def _require_choice(name, value, choices):
+    """Raise when a config value is not one of the allowed strings."""
+    _require_set(name, value)
+    if value not in choices:
+        raise ValueError(
+            f"run_config.py value must be one of {sorted(choices)}: "
+            f"{name}={value!r}"
+        )
+
+
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
@@ -403,3 +414,8 @@ def validate_for_solver():
     _require_positive_number("udm_count", udm_count)
     _require_positive_number("residual_target", residual_target)
     _require_positive_number("max_iterations", max_iterations)
+    _require_choice(
+        "relaxation_profile",
+        relaxation_profile,
+        {"baseline", "conservative", "strong"},
+    )
