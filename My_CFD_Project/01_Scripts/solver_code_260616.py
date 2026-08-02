@@ -167,6 +167,7 @@ if __name__ == "__main__":
     run_calculation_enabled = cfg.run_calculation_enabled
     relaxation_profile = cfg.relaxation_profile
     species_implicit_under_relaxation = cfg.species_implicit_under_relaxation
+    pseudo_time_verbosity = cfg.pseudo_time_verbosity
 
     # Ramp/convergence safety.
     use_ramp_convergence_safety = cfg.use_ramp_convergence_safety
@@ -1408,6 +1409,56 @@ def apply_species_implicit_under_relaxation(solution, species_name, value):
     return leaf_outcome
 
 
+def apply_pseudo_time_verbosity(solution, value):
+    """Optionally raise run_calculation.pseudo_time_settings.verbosity.
+
+    Default preserve leaves Fluent unchanged. Verbosity 1 is documented to
+    print the pseudo time step size; 2 prints additional calculation details.
+    No transcript parser is wired here — capture the live line shape first.
+    """
+    label = "pseudo_time_verbosity"
+    outcome = {
+        "label": label,
+        "requested": value,
+        "status": "WARN_APPLY_URF_FAILED",
+    }
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        print(
+            "\nPseudo-time verbosity preserve: "
+            "leaving run_calculation.pseudo_time_settings.verbosity unchanged."
+        )
+        outcome["status"] = "PRESERVED"
+        return outcome
+
+    try:
+        requested = int(value)
+    except (TypeError, ValueError) as exc:
+        outcome["error"] = (
+            f"value must be 'preserve' or an integer 0/1/2: {value!r} "
+            f"({type(exc).__name__}: {exc})"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+    if float(value) != float(requested) or requested not in {0, 1, 2}:
+        outcome["error"] = (
+            f"value must be 'preserve' or an integer in {{0, 1, 2}}: {value!r}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    try:
+        parent = solution.run_calculation.pseudo_time_settings
+    except Exception as exc:
+        outcome["error"] = (
+            "pseudo_time_settings not found: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    return set_and_verify_leaf(parent, "verbosity", float(requested), label)
+
+
 def apply_real_under_relaxation(solver, profile, species_name):
     """Apply a named under-relaxation profile with readback verification."""
     result = {"profile": profile, "applied": []}
@@ -2294,8 +2345,14 @@ if __name__ == "__main__":
                 value=species_implicit_under_relaxation,
             )
         )
+        verbosity_result = apply_pseudo_time_verbosity(
+            solution=solution,
+            value=pseudo_time_verbosity,
+        )
         print("Relaxation profile application result:")
         print(relaxation_result)
+        print("Pseudo-time verbosity application result:")
+        print(verbosity_result)
 
 
         # ======================================================

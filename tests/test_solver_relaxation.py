@@ -246,3 +246,25 @@ def test_species_implicit_falls_back_to_configured_species_name():
     )
     assert outcome["matched_key"] == "nacl"
     assert outcome["status"] == "APPLIED_CONFIRMED"
+
+
+def test_pseudo_time_verbosity_preserve_does_not_touch_leaf():
+    solver_code = load_solver_code("solver_verbosity_preserve")
+    settings = StateLeaf(verbosity=0.0)
+    solution = SimpleNamespace(
+        run_calculation=SimpleNamespace(pseudo_time_settings=settings)
+    )
+    outcome = solver_code.apply_pseudo_time_verbosity(solution, "preserve")
+    assert outcome["status"] == "PRESERVED"
+    assert settings.get_state()["verbosity"] == 0.0
+
+
+def test_pseudo_time_verbosity_applies_and_confirms():
+    solver_code = load_solver_code("solver_verbosity_apply")
+    settings = StateLeaf(verbosity=0.0)
+    solution = SimpleNamespace(
+        run_calculation=SimpleNamespace(pseudo_time_settings=settings)
+    )
+    outcome = solver_code.apply_pseudo_time_verbosity(solution, 1)
+    assert outcome["status"] == "APPLIED_CONFIRMED"
+    assert settings.get_state()["verbosity"] == 1.0

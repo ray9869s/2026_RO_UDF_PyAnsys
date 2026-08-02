@@ -130,6 +130,18 @@ class TestSolverValidation:
         with pytest.raises(ValueError, match="species_implicit_under_relaxation"):
             cfg.validate_for_solver()
 
+    def test_pseudo_time_verbosity_preserve_and_levels_are_accepted(self, cfg):
+        cfg.pseudo_time_verbosity = "preserve"
+        cfg.validate_for_solver()
+        for level in (0, 1, 2):
+            cfg.pseudo_time_verbosity = level
+            cfg.validate_for_solver()
+
+    def test_pseudo_time_verbosity_rejects_out_of_range(self, cfg):
+        cfg.pseudo_time_verbosity = 3
+        with pytest.raises(ValueError, match="pseudo_time_verbosity"):
+            cfg.validate_for_solver()
+
 
 def _load_batch_config_module(filename: str):
     path = SCRIPTS_DIR / filename
@@ -244,6 +256,7 @@ class TestRunConfigOverrideAllowlist:
             "run_calculation_enabled",
             "relaxation_profile",
             "species_implicit_under_relaxation",
+            "pseudo_time_verbosity",
             "use_ramp_convergence_safety",
             "ramp_full_iteration",
             "post_ramp_buffer_iterations",
@@ -277,6 +290,7 @@ class TestRunConfigOverrideAllowlist:
             "_require_positive_float": "private function",
             "_require_choice": "private function",
             "_require_preserve_or_positive_number": "private function",
+            "_require_preserve_or_verbosity": "private function",
             "_require_bool": "private function",
             "_require_number": "private function",
         }

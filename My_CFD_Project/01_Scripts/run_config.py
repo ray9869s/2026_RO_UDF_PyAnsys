@@ -168,6 +168,9 @@ relaxation_profile = "baseline"
 # Orthogonal to relaxation_profile: do not redefine conservative/strong.
 # "preserve" leaves the expert implicit species URF untouched.
 species_implicit_under_relaxation = "preserve"
+# Orthogonal observability control. "preserve" leaves Fluent's verbosity
+# unchanged (typically 0). Values 1/2 print pseudo-time step details per UG.
+pseudo_time_verbosity = "preserve"
 
 # Ramp/convergence safety.
 # 260612_RO_UDF.c uses a source ramp that reaches full strength after 150 iterations.
@@ -361,6 +364,30 @@ def _require_preserve_or_positive_number(name, value):
     _require_positive_number(name, value)
 
 
+def _require_preserve_or_verbosity(name, value):
+    """Raise unless value is 'preserve' or an integer verbosity in {0, 1, 2}."""
+    _require_set(name, value)
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise TypeError(
+            "run_config.py value must be 'preserve' or an integer 0/1/2: "
+            f"{name}={value!r}"
+        )
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            "run_config.py value must be 'preserve' or an integer 0/1/2: "
+            f"{name}={value!r}"
+        ) from exc
+    if float(value) != float(parsed) or parsed not in {0, 1, 2}:
+        raise ValueError(
+            "run_config.py value must be 'preserve' or an integer in "
+            f"{{0, 1, 2}}: {name}={value!r}"
+        )
+
+
 def _require_bool(name, value):
     """Raise when a config value is not a bool."""
     _require_set(name, value)
@@ -474,6 +501,10 @@ def validate_for_solver():
     _require_preserve_or_positive_number(
         "species_implicit_under_relaxation",
         species_implicit_under_relaxation,
+    )
+    _require_preserve_or_verbosity(
+        "pseudo_time_verbosity",
+        pseudo_time_verbosity,
     )
     _require_bool(
         "enable_solve_time_qoi_reports",

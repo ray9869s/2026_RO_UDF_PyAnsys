@@ -303,6 +303,28 @@ def residual_target_type(value: str) -> str | float:
     return parsed
 
 
+def pseudo_time_verbosity_type(value: str) -> str | int:
+    """Parse --pseudo-time-verbosity as 'preserve' or an integer in {0, 1, 2}."""
+    text = value.strip()
+    if text.lower() == "preserve":
+        return "preserve"
+    if any(ch in text.lower() for ch in (".", "e")):
+        raise argparse.ArgumentTypeError(
+            "value must be 'preserve' or an integer 0/1/2"
+        )
+    try:
+        parsed = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "value must be 'preserve' or an integer 0/1/2"
+        ) from exc
+    if parsed not in {0, 1, 2}:
+        raise argparse.ArgumentTypeError(
+            "value must be 'preserve' or an integer 0/1/2"
+        )
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -613,6 +635,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "global_dt[<species>].implicit_under_relaxation_factor. "
             "'preserve' (default) leaves the leaf unchanged. Independent of "
             "--relaxation-profile."
+        ),
+    )
+    parser.add_argument(
+        "--pseudo-time-verbosity",
+        type=pseudo_time_verbosity_type,
+        default="preserve",
+        help=(
+            "Orthogonal run_calculation.pseudo_time_settings.verbosity control. "
+            "'preserve' (default) leaves Fluent unchanged. 1 prints the pseudo "
+            "time step size per Fluent UG; 2 prints additional details. No "
+            "transcript dt parser is enabled yet."
         ),
     )
     parser.add_argument(
@@ -1589,6 +1622,58 @@ def apply_species_implicit_under_relaxation(
     return leaf_outcome
 
 
+def apply_pseudo_time_verbosity(
+    solution: Any,
+    value: str | int,
+) -> dict[str, Any]:
+    """Optionally raise run_calculation.pseudo_time_settings.verbosity.
+
+    Default preserve leaves Fluent unchanged. Verbosity 1 is documented to
+    print the pseudo time step size; no transcript parser is wired yet.
+    """
+    label = "pseudo_time_verbosity"
+    outcome: dict[str, Any] = {
+        "label": label,
+        "requested": value,
+        "status": "WARN_APPLY_URF_FAILED",
+    }
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        print(
+            "\nPseudo-time verbosity preserve: "
+            "leaving run_calculation.pseudo_time_settings.verbosity unchanged."
+        )
+        outcome["status"] = "PRESERVED"
+        return outcome
+
+    try:
+        requested = int(value)
+    except (TypeError, ValueError) as exc:
+        outcome["error"] = (
+            f"value must be 'preserve' or an integer 0/1/2: {value!r} "
+            f"({type(exc).__name__}: {exc})"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+    if float(value) != float(requested) or requested not in {0, 1, 2}:
+        outcome["error"] = (
+            f"value must be 'preserve' or an integer in {{0, 1, 2}}: {value!r}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    try:
+        parent = solution.run_calculation.pseudo_time_settings
+    except Exception as exc:
+        outcome["error"] = (
+            "pseudo_time_settings not found: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    return set_and_verify_leaf(parent, "verbosity", float(requested), label)
+
+
 def apply_real_under_relaxation(solver: Any, profile: str, species_name: str) -> dict[str, Any]:
     """Apply the Coupled-solver under-relaxation profile via the settings API.
 
@@ -1742,6 +1827,11 @@ def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> tuple[
             value=args.species_implicit_under_relaxation,
         )
     )
+    verbosity_result = apply_pseudo_time_verbosity(
+        solution=solution,
+        value=args.pseudo_time_verbosity,
+    )
+    relaxation_result["pseudo_time_verbosity"] = verbosity_result
     return residual_targets, relaxation_result
 
 
@@ -5771,6 +5861,7 @@ def write_summary(
         f"  relaxation_profile: {args.relaxation_profile}",
         f"  species_implicit_under_relaxation: "
         f"{args.species_implicit_under_relaxation}",
+        f"  pseudo_time_verbosity: {args.pseudo_time_verbosity}",
         f"  write_transcript: {args.write_transcript}",
         f"  launcher_profile: {args.launcher_profile}",
         f"  launch_mode: {args.launch_mode}",
