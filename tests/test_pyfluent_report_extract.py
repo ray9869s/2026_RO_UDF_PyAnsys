@@ -7,12 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from _fluent_report_helpers import (
+    concentration_range_diagnostics,
     create_x_normal_plane,
     derive_spacer_cell_metrics,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
+    validate_concentration_thresholds,
     validate_unit_cell_layout,
 )
 from helpers import load_post_config
@@ -160,3 +162,83 @@ def test_udm_area_uses_unweighted_volume_sum_report():
         "volume-sum",
         "udm-11",
     )
+
+
+class FakeReduction:
+    def __init__(self):
+        self.calls = []
+
+    def count_if(self, *, condition, locations):
+        self.calls.append(("count_if", condition, locations))
+        return 7 if ">" in condition else 3
+
+    def maximum(self, *, expression, locations):
+        self.calls.append(("maximum", expression, locations))
+        return 1.0
+
+    def minimum(self, *, expression, locations):
+        self.calls.append(("minimum", expression, locations))
+        return 0.0
+
+
+def test_concentration_range_diagnostics_use_conditional_cell_counts():
+    reduction = FakeReduction()
+    diagnostics = concentration_range_diagnostics(
+        reduction,
+        ["fluid", "fluid.1"],
+        "nacl",
+        1.0e-6,
+        0.99,
+    )
+
+    assert diagnostics == {
+        "pp_salt_mass_fraction_cells_above_threshold": 7,
+        "pp_salt_mass_fraction_cells_below_threshold": 3,
+        "pp_salt_mass_fraction_max": 1.0,
+        "pp_salt_mass_fraction_min": 0.0,
+    }
+    assert reduction.calls == [
+        (
+            "count_if",
+            'MassFraction(species="nacl") > 0.99',
+            ["fluid", "fluid.1"],
+        ),
+        (
+            "count_if",
+            'MassFraction(species="nacl") < 1e-06',
+            ["fluid", "fluid.1"],
+        ),
+        (
+            "maximum",
+            'MassFraction(species="nacl")',
+            ["fluid", "fluid.1"],
+        ),
+        (
+            "minimum",
+            'MassFraction(species="nacl")',
+            ["fluid", "fluid.1"],
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("lower_threshold", "upper_threshold"),
+    [
+        (-1.0e-6, 0.99),
+        (0.99, 0.99),
+        (0.5, 0.1),
+        (0.0, 1.01),
+    ],
+)
+def test_invalid_concentration_thresholds_are_rejected(
+    lower_threshold,
+    upper_threshold,
+):
+    with pytest.raises(ValueError, match="0 <= lower < upper <= 1"):
+        validate_concentration_thresholds(lower_threshold, upper_threshold)
+
+
+def test_default_concentration_thresholds():
+    cfg = load_post_config()
+    assert cfg.salt_mass_fraction_upper_threshold == 0.99
+    assert cfg.salt_mass_fraction_lower_threshold == 1.0e-6

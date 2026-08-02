@@ -191,6 +191,63 @@ def udm_area_sum_report_spec(field_name="udm-11"):
     return ("pp_udm_area_sum", "volume-sum", field_name)
 
 
+def validate_concentration_thresholds(lower_threshold, upper_threshold):
+    """Return validated salt mass-fraction diagnostic thresholds."""
+    for name, value in (
+        ("lower_threshold", lower_threshold),
+        ("upper_threshold", upper_threshold),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be numeric, got {value!r}.")
+    if not 0.0 <= lower_threshold < upper_threshold <= 1.0:
+        raise ValueError(
+            "Concentration thresholds must satisfy "
+            "0 <= lower < upper <= 1: "
+            f"lower={lower_threshold!r}, upper={upper_threshold!r}."
+        )
+    return float(lower_threshold), float(upper_threshold)
+
+
+def concentration_range_diagnostics(
+    reduction,
+    fluid_zones,
+    species_name,
+    lower_threshold,
+    upper_threshold,
+):
+    """Compute conditional cell counts and extrema for one species mass fraction."""
+    if not fluid_zones:
+        raise ValueError("At least one fluid zone is required.")
+    if not isinstance(species_name, str) or not species_name.strip():
+        raise ValueError("species_name must be a non-empty string.")
+
+    lower_threshold, upper_threshold = validate_concentration_thresholds(
+        lower_threshold,
+        upper_threshold,
+    )
+    expression = f'MassFraction(species="{species_name}")'
+    locations = list(fluid_zones)
+
+    return {
+        "pp_salt_mass_fraction_cells_above_threshold": reduction.count_if(
+            condition=f"{expression} > {upper_threshold!r}",
+            locations=locations,
+        ),
+        "pp_salt_mass_fraction_cells_below_threshold": reduction.count_if(
+            condition=f"{expression} < {lower_threshold!r}",
+            locations=locations,
+        ),
+        "pp_salt_mass_fraction_max": reduction.maximum(
+            expression=expression,
+            locations=locations,
+        ),
+        "pp_salt_mass_fraction_min": reduction.minimum(
+            expression=expression,
+            locations=locations,
+        ),
+    }
+
+
 def derive_spacer_cell_metrics(
     computed_values,
     n_unit_cells,

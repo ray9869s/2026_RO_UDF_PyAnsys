@@ -39,6 +39,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _fluent_report_helpers import (  # noqa: E402
+    concentration_range_diagnostics,
     create_x_normal_plane as _create_x_normal_plane,
     derive_spacer_cell_metrics,
     unit_cell_boundary_positions,
@@ -949,6 +950,47 @@ if __name__ == "__main__":
         pprint(computed_values)
 
         # ==========================================================
+        # Cell 8.25. Salt mass-fraction range diagnostics
+        # ==========================================================
+
+        salt_mass_fraction_upper_threshold = getattr(
+            cfg,
+            "salt_mass_fraction_upper_threshold",
+            0.99,
+        )
+        salt_mass_fraction_lower_threshold = getattr(
+            cfg,
+            "salt_mass_fraction_lower_threshold",
+            1.0e-6,
+        )
+        concentration_diagnostics = {
+            "pp_salt_mass_fraction_cells_above_threshold": None,
+            "pp_salt_mass_fraction_cells_below_threshold": None,
+            "pp_salt_mass_fraction_max": None,
+            "pp_salt_mass_fraction_min": None,
+        }
+        concentration_diagnostic_error = ""
+        try:
+            concentration_diagnostics.update(
+                concentration_range_diagnostics(
+                    reduction=solver.fields.reduction,
+                    fluid_zones=fluid_zones,
+                    species_name=FIELD_SALT_MASS_FRACTION,
+                    lower_threshold=salt_mass_fraction_lower_threshold,
+                    upper_threshold=salt_mass_fraction_upper_threshold,
+                )
+            )
+        except Exception as exc:
+            concentration_diagnostic_error = f"{type(exc).__name__}: {exc}"
+            print(
+                "WARNING: salt mass-fraction range diagnostics failed: "
+                f"{concentration_diagnostic_error}"
+            )
+
+        print("\nSalt mass-fraction range diagnostics:")
+        pprint(concentration_diagnostics)
+
+        # ==========================================================
         # Cell 8.5. Center-plane bulk salt average for CP denominator
         # ==========================================================
 
@@ -1299,6 +1341,11 @@ if __name__ == "__main__":
             {"metric": "c_bulk_center_area_avg_source",        "value": c_bulk_center_area_avg_source or "",              "unit": "-"},
             {"metric": "c_bulk_center_area_avg_units_or_type", "value": c_bulk_center_area_avg_units_or_type or "",       "unit": "-"},
             {"metric": "c_bulk_center_plane_name",             "value": c_bulk_center_plane_name or "",                   "unit": "-"},
+
+            {"metric": "pp_salt_mass_fraction_cells_above_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_above_threshold"], "unit": "cells"},
+            {"metric": "pp_salt_mass_fraction_cells_below_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_below_threshold"], "unit": "cells"},
+            {"metric": "pp_salt_mass_fraction_max", "value": concentration_diagnostics["pp_salt_mass_fraction_max"], "unit": "-"},
+            {"metric": "pp_salt_mass_fraction_min", "value": concentration_diagnostics["pp_salt_mass_fraction_min"], "unit": "-"},
         ]
         summary_rows.extend(unit_cell_summary_rows)
 
@@ -1459,6 +1506,10 @@ if __name__ == "__main__":
                 "c_bulk_center_area_avg_units_or_type": c_bulk_center_area_avg_units_or_type,
                 "c_bulk_center_plane_name": c_bulk_center_plane_name,
                 "c_bulk_center_diag": _c_bulk_center_diag,
+                "salt_mass_fraction_upper_threshold": salt_mass_fraction_upper_threshold,
+                "salt_mass_fraction_lower_threshold": salt_mass_fraction_lower_threshold,
+                "concentration_range_diagnostics": concentration_diagnostics,
+                "concentration_diagnostic_error": concentration_diagnostic_error,
             },
             "raw_results": raw_results,
         }
