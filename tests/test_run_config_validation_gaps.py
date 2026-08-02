@@ -240,6 +240,7 @@ class TestRunConfigOverrideAllowlist:
             "rho_avg_report_field",
             "area_mem_report_name",
             "lmh_report_name",
+            "lmh_signed_report_name",
             "m_in_report_name",
             "m_out_report_name",
             "enable_solve_time_qoi_reports",

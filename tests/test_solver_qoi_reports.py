@@ -61,6 +61,36 @@ def make_solver_and_solution():
     return solver, solution, iso_surfaces, surface_reports, expression_reports
 
 
+def test_transport_reports_keep_magnitude_lmh_and_add_signed_companion():
+    solver_code = load_solver_code("solver_signed_lmh")
+    solution = SimpleNamespace(
+        report_definitions=SimpleNamespace(
+            flux=NamedGroup(),
+            surface=NamedGroup(),
+            single_valued_expression=NamedGroup(),
+        )
+    )
+
+    solver_code.update_transport_report_definitions_for_current_zones(
+        solution=solution,
+        inlet_zones=["inlet"],
+        outlet_zones=["outlet"],
+        membrane_wall_zones=["wall_top_mem", "wall_bottom_mem"],
+        density_value=998.2,
+        lmh_name="lmh",
+        lmh_signed_name="lmh_signed",
+    )
+
+    expressions = solution.report_definitions.single_valued_expression
+    assert expressions["lmh"].definition == (
+        "abs(m_in + m_out) / (998.2 * area_mem) * 3.6e6"
+    )
+    assert expressions["lmh_signed"].definition == (
+        "(m_in + m_out) / (998.2 * area_mem) * 3.6e6"
+    )
+    assert getattr(expressions["lmh_signed"], "print") is True
+
+
 def test_solve_time_qoi_reports_are_split_across_initialization_boundary():
     solver_code = load_solver_code("solver_qoi_reports")
     (
@@ -236,6 +266,7 @@ def test_solve_time_qoi_config_defaults_and_validation():
     cfg = load_run_config()
     populate_valid_solver_config(cfg)
     assert cfg.enable_solve_time_qoi_reports is True
+    assert cfg.lmh_signed_report_name == "lmh_signed"
     assert cfg.domain_x_min_m == 0.0
     assert cfg.domain_length_m == 0.017325
     assert cfg.buffer_length_m == 0.003465

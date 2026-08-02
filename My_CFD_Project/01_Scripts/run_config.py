@@ -178,6 +178,7 @@ rho_avg_report_name = "rho_avg"
 rho_avg_report_field = "density"
 area_mem_report_name = "area_mem"
 lmh_report_name = "lmh"
+lmh_signed_report_name = "lmh_signed"
 m_in_report_name = "m_in"
 m_out_report_name = "m_out"
 enable_solve_time_qoi_reports = True

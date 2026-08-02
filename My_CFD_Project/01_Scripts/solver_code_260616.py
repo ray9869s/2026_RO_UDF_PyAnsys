@@ -185,6 +185,7 @@ if __name__ == "__main__":
     rho_avg_report_field = cfg.rho_avg_report_field
     area_mem_report_name = cfg.area_mem_report_name
     lmh_report_name = cfg.lmh_report_name
+    lmh_signed_report_name = cfg.lmh_signed_report_name
     m_in_report_name = cfg.m_in_report_name
     m_out_report_name = cfg.m_out_report_name
     enable_solve_time_qoi_reports = cfg.enable_solve_time_qoi_reports
@@ -1010,6 +1011,7 @@ def update_transport_report_definitions_for_current_zones(
     m_out_name="m_out",
     area_mem_name="area_mem",
     lmh_name="lmh",
+    lmh_signed_name="lmh_signed",
 ):
     """Rebuild report definitions that depend on current boundary zone names."""
     print("\nUpdating transport report definitions for current zones...")
@@ -1055,12 +1057,26 @@ def update_transport_report_definitions_for_current_zones(
         report_name=lmh_name,
         definition=lmh_definition,
     )
+    lmh_signed_definition = (
+        f"({m_in_name} + {m_out_name}) / "
+        f"({density_value} * {area_mem_name}) * 3.6e6"
+    )
+    lmh_signed_report = create_or_update_single_valued_expression_report(
+        single_expression_report_definitions=single_expression_report_definitions,
+        report_name=lmh_signed_name,
+        definition=lmh_signed_definition,
+    )
+    configure_report_definition_for_transcript(lmh_signed_report)
 
     print("\nTransport report definitions after update:")
     print(f"{m_in_name}:", flux_report_definitions[m_in_name].get_state())
     print(f"{m_out_name}:", flux_report_definitions[m_out_name].get_state())
     print(f"{area_mem_name}:", surface_report_definitions[area_mem_name].get_state())
     print(f"{lmh_name}:", single_expression_report_definitions[lmh_name].get_state())
+    print(
+        f"{lmh_signed_name}:",
+        single_expression_report_definitions[lmh_signed_name].get_state(),
+    )
 
 
 def set_residual_convergence_check(solution, species_name, enable):
@@ -1901,6 +1917,7 @@ if __name__ == "__main__":
             m_out_name=m_out_report_name,
             area_mem_name=area_mem_report_name,
             lmh_name=lmh_report_name,
+            lmh_signed_name=lmh_signed_report_name,
         )
 
 

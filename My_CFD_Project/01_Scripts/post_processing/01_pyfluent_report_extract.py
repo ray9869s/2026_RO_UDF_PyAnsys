@@ -769,6 +769,16 @@ if __name__ == "__main__":
                 lmh_definition,
             )
         )
+        lmh_signed_definition = (
+            f"(pp_m_in + pp_m_out) / ({rho} * pp_area_mem) * 3.6e6"
+        )
+        report_names.append(
+            create_or_update_single_expression_report(
+                solution,
+                "pp_lmh_mass_balance_signed",
+                lmh_signed_definition,
+            )
+        )
 
         # Pressure reports.
         report_names.append(
@@ -1229,6 +1239,9 @@ if __name__ == "__main__":
         area_mem = get_value("pp_area_mem")
         udm_area_sum = get_value("pp_udm_area_sum")
         lmh_mass_balance = get_value("pp_lmh_mass_balance")
+        lmh_mass_balance_signed = get_value(
+            "pp_lmh_mass_balance_signed"
+        )
 
         p_in_avg = get_value("pp_p_in_avg")
         p_out_avg = get_value("pp_p_out_avg")
@@ -1450,6 +1463,7 @@ if __name__ == "__main__":
             {"metric": "pp_udm_area_sum", "value": udm_area_sum, "unit": "m2"},
 
             {"metric": "lmh_mass_balance", "value": lmh_mass_balance, "unit": "LMH"},
+            {"metric": "lmh_mass_balance_signed", "value": lmh_mass_balance_signed, "unit": "LMH"},
             {"metric": "lmh_udm_avg", "value": lmh_udm_avg, "unit": "LMH"},
             {"metric": "lmh_difference_mass_balance_minus_udm", "value": lmh_difference, "unit": "LMH"},
             {"metric": "lmh_relative_difference", "value": lmh_relative_difference, "unit": "-"},
