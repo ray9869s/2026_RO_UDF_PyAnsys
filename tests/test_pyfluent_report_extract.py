@@ -12,6 +12,7 @@ from _fluent_report_helpers import (
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
     unit_cell_pressure_report_name,
+    udm_area_sum_report_spec,
     validate_unit_cell_layout,
 )
 from helpers import load_post_config
@@ -151,3 +152,11 @@ def test_missing_boundary_value_produces_missing_delta():
     derived = derive_spacer_cell_metrics(values, 3, 1)
     assert derived["pp_pressure_drop_cell_2"] is None
     assert derived["pp_salt_mass_fraction_rise_cell_2"] is None
+
+
+def test_udm_area_uses_unweighted_volume_sum_report():
+    assert udm_area_sum_report_spec("udm-11") == (
+        "pp_udm_area_sum",
+        "volume-sum",
+        "udm-11",
+    )

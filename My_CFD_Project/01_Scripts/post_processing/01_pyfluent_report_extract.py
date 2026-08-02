@@ -45,6 +45,7 @@ from _fluent_report_helpers import (  # noqa: E402
     unit_cell_concentration_report_name,
     unit_cell_plane_name,
     unit_cell_pressure_report_name,
+    udm_area_sum_report_spec,
     validate_unit_cell_layout,
 )
 
@@ -897,6 +898,7 @@ if __name__ == "__main__":
             ("pp_volint_water_mass_source", "volume-integral", FIELD_UDM_SM),
             ("pp_volint_salt_mass_source", "volume-integral", FIELD_UDM_SI),
             ("pp_volint_total_mass_source", "volume-integral", FIELD_UDM_TOTAL_S),
+            udm_area_sum_report_spec(FIELD_UDM_MEMBRANE_AREA_ACC),
         ]
 
         for report_name, report_type, field_name in volume_report_specs:
@@ -1078,6 +1080,7 @@ if __name__ == "__main__":
         m_in = get_value("pp_m_in")
         m_out = get_value("pp_m_out")
         area_mem = get_value("pp_area_mem")
+        udm_area_sum = get_value("pp_udm_area_sum")
         lmh_mass_balance = get_value("pp_lmh_mass_balance")
 
         p_in_avg = get_value("pp_p_in_avg")
@@ -1239,6 +1242,7 @@ if __name__ == "__main__":
             {"metric": "boundary_permeate_mass_flow", "value": boundary_permeate_mass_flow, "unit": "kg/s"},
 
             {"metric": "area_mem", "value": area_mem, "unit": "m2"},
+            {"metric": "pp_udm_area_sum", "value": udm_area_sum, "unit": "m2"},
 
             {"metric": "lmh_mass_balance", "value": lmh_mass_balance, "unit": "LMH"},
             {"metric": "lmh_udm_avg", "value": lmh_udm_avg, "unit": "LMH"},

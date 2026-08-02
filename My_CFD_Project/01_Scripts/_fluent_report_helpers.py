@@ -186,6 +186,11 @@ def unit_cell_concentration_report_name(boundary_index):
     return f"pp_salt_mass_fraction_unit_cell_boundary_{boundary_index}_avg"
 
 
+def udm_area_sum_report_spec(field_name="udm-11"):
+    """Return the Fluent report spec for the unweighted membrane-area UDM sum."""
+    return ("pp_udm_area_sum", "volume-sum", field_name)
+
+
 def derive_spacer_cell_metrics(
     computed_values,
     n_unit_cells,
