@@ -49,6 +49,67 @@ MESH_METRIC_NAMES = (
     "max_aspect_ratio",
     "max_skewness",
     "cell_count",
+    "domain_extent_x_m",
+    "domain_extent_y_m",
+    "domain_extent_z_m",
+    "min_cell_volume_m3",
+    "max_cell_volume_m3",
+    "total_fluid_volume_m3",
+    "bounding_box_volume_m3",
+    "porosity",
+)
+
+# Geometry is imported with LengthUnit="mm"; /mesh/check prints mm and mm^3.
+_MESH_CHECK_LENGTH_TO_M = 1.0e-3
+_MESH_CHECK_VOLUME_TO_M3 = 1.0e-9
+_POROSITY_CLAMP_TOLERANCE = 1.0e-6
+
+_FLOAT_TOKEN = r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+_SURFACE_SKEWNESS_HEADER = re.compile(
+    r"^[ \t]*name[ \t]+skewed-cells[ \t]+\("
+    r">[ \t]*0\.80\)[ \t]+averaged-skewness[ \t]+"
+    r"maximum-skewness[ \t]+face[ \t]+count[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SURFACE_SKEWNESS_ROW = re.compile(
+    rf"^[ \t]*(?P<name>\S+)[ \t]+"
+    rf"(?P<skewed_cells>[\d,]+)[ \t]+"
+    rf"(?P<average>{_FLOAT_TOKEN})[ \t]+"
+    rf"(?P<maximum>{_FLOAT_TOKEN})[ \t]+"
+    rf"(?P<face_count>[\d,]+)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SURFACE_SKEWNESS_SUMMARY = re.compile(
+    rf"^[ \t-]*Surface[ \t]+Meshing[^\r\n]*?"
+    rf"maximum[ \t]+skewness[ \t]+of[ \t]+"
+    rf"(?P<maximum>{_FLOAT_TOKEN})[ \t]*\.?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_CREATED_CELL_COUNT = re.compile(
+    rf"^[ \t]*-+[ \t]*(?P<count>[\d,]+)[ \t]+"
+    rf"cells[ \t]+were[ \t]+created[ \t]+in[ \t]*:[ \t]*"
+    rf"{_FLOAT_TOKEN}[ \t]+minutes?[ \t]*\.?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DOMAIN_EXTENTS = re.compile(
+    rf"^[ \t]*Domain[ \t]+extents\.[ \t]*\r?\n"
+    rf"^[ \t]*x-coordinate[ \t]*:[ \t]*min[ \t]*=[ \t]*(?P<x_min>{_FLOAT_TOKEN})"
+    rf"[ \t]*,[ \t]*max[ \t]*=[ \t]*(?P<x_max>{_FLOAT_TOKEN})[ \t]*\.?[ \t]*\r?\n"
+    rf"^[ \t]*y-coordinate[ \t]*:[ \t]*min[ \t]*=[ \t]*(?P<y_min>{_FLOAT_TOKEN})"
+    rf"[ \t]*,[ \t]*max[ \t]*=[ \t]*(?P<y_max>{_FLOAT_TOKEN})[ \t]*\.?[ \t]*\r?\n"
+    rf"^[ \t]*z-coordinate[ \t]*:[ \t]*min[ \t]*=[ \t]*(?P<z_min>{_FLOAT_TOKEN})"
+    rf"[ \t]*,[ \t]*max[ \t]*=[ \t]*(?P<z_max>{_FLOAT_TOKEN})[ \t]*\.?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_VOLUME_STATISTICS = re.compile(
+    rf"^[ \t]*Volume[ \t]+statistics\.[ \t]*\r?\n"
+    rf"^[ \t]*minimum[ \t]+volume[ \t]*:[ \t]*(?P<minimum>{_FLOAT_TOKEN})"
+    rf"[ \t]*\.?[ \t]*\r?\n"
+    rf"^[ \t]*maximum[ \t]+volume[ \t]*:[ \t]*(?P<maximum>{_FLOAT_TOKEN})"
+    rf"[ \t]*\.?[ \t]*\r?\n"
+    rf"^[ \t]*total[ \t]+volume[ \t]*:[ \t]*(?P<total>{_FLOAT_TOKEN})"
+    rf"[ \t]*\.?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 MESH_LEDGER_FIELDNAMES = (
@@ -164,6 +225,96 @@ def _parse_last_int(pattern, text, flags=0):
     return int(str(value).replace(",", ""))
 
 
+def _parse_surface_table_max_skewness(text):
+    """Return full-precision max skewness from surface skewness tables."""
+    headers = list(_SURFACE_SKEWNESS_HEADER.finditer(text))
+    if not headers:
+        return None
+
+    unique_rows = {}
+    for index, header in enumerate(headers):
+        start = header.end()
+        end = (
+            headers[index + 1].start()
+            if index + 1 < len(headers)
+            else len(text)
+        )
+        block = text[start:end]
+        for match in _SURFACE_SKEWNESS_ROW.finditer(block):
+            key = (
+                match.group("skewed_cells"),
+                match.group("average"),
+                match.group("maximum"),
+                match.group("face_count"),
+            )
+            unique_rows[key] = float(match.group("maximum"))
+    if not unique_rows:
+        return None
+    return max(unique_rows.values())
+
+
+def _parse_surface_summary_max_skewness(text):
+    matches = list(_SURFACE_SKEWNESS_SUMMARY.finditer(text))
+    if not matches:
+        return None
+    return float(matches[-1].group("maximum"))
+
+
+def _parse_created_cell_count(text):
+    matches = list(_CREATED_CELL_COUNT.finditer(text))
+    if not matches:
+        return None
+    return int(matches[-1].group("count").replace(",", ""))
+
+
+def _parse_domain_extents_m(text):
+    matches = list(_DOMAIN_EXTENTS.finditer(text))
+    if not matches:
+        return None, None, None
+    match = matches[-1]
+    return (
+        (float(match.group("x_max")) - float(match.group("x_min")))
+        * _MESH_CHECK_LENGTH_TO_M,
+        (float(match.group("y_max")) - float(match.group("y_min")))
+        * _MESH_CHECK_LENGTH_TO_M,
+        (float(match.group("z_max")) - float(match.group("z_min")))
+        * _MESH_CHECK_LENGTH_TO_M,
+    )
+
+
+def _parse_volume_statistics_m3(text):
+    matches = list(_VOLUME_STATISTICS.finditer(text))
+    if not matches:
+        return None, None, None
+    match = matches[-1]
+    return (
+        float(match.group("minimum")) * _MESH_CHECK_VOLUME_TO_M3,
+        float(match.group("maximum")) * _MESH_CHECK_VOLUME_TO_M3,
+        float(match.group("total")) * _MESH_CHECK_VOLUME_TO_M3,
+    )
+
+
+def _derive_bounding_box_and_porosity(
+    extent_x_m,
+    extent_y_m,
+    extent_z_m,
+    total_fluid_volume_m3,
+):
+    if None in (extent_x_m, extent_y_m, extent_z_m):
+        return None, None
+    if min(extent_x_m, extent_y_m, extent_z_m) <= 0.0:
+        return None, None
+    bounding_box_volume_m3 = extent_x_m * extent_y_m * extent_z_m
+    if total_fluid_volume_m3 is None or bounding_box_volume_m3 <= 0.0:
+        return bounding_box_volume_m3, None
+    porosity = total_fluid_volume_m3 / bounding_box_volume_m3
+    if abs(porosity) <= _POROSITY_CLAMP_TOLERANCE:
+        porosity = 0.0
+    elif abs(porosity - 1.0) <= _POROSITY_CLAMP_TOLERANCE:
+        porosity = 1.0
+    return bounding_box_volume_m3, porosity
+
+
 def parse_mesh_metrics_text(text):
     """Parse final volume-mesh quality metrics from a Fluent transcript."""
     min_orthogonal_quality = parse_last_float(
@@ -183,29 +334,67 @@ def parse_mesh_metrics_text(text):
         text,
         re.IGNORECASE,
     )
-    max_skewness = parse_last_float(
-        rf"Maximum(?:\s+Cell)?\s+Skewness\s*(?:=|:)\s*{_FLOAT_PATTERN}",
-        text,
-        re.IGNORECASE,
-    )
 
-    cell_count = None
-    cell_count_patterns = (
-        r"Total\s+Number\s+of\s+Cells\s*(?:=|:)\s*([\d,]+)",
-        r"Number\s+of\s+Cells\s*(?:=|:)\s*([\d,]+)",
-        r"^\s*([\d,]+)\s+cells\b",
+    max_skewness = _parse_surface_table_max_skewness(text)
+    if max_skewness is None:
+        max_skewness = _parse_surface_summary_max_skewness(text)
+    if max_skewness is None:
+        max_skewness = parse_last_float(
+            rf"Maximum(?:\s+Cell)?\s+Skewness\s*(?:=|:)\s*{_FLOAT_PATTERN}",
+            text,
+            re.IGNORECASE,
+        )
+
+    cell_count = _parse_created_cell_count(text)
+    if cell_count is None:
+        cell_count_patterns = (
+            r"Total\s+Number\s+of\s+Cells\s*(?:=|:)\s*([\d,]+)",
+            r"Number\s+of\s+Cells\s*(?:=|:)\s*([\d,]+)",
+            r"^\s*([\d,]+)\s+cells\b",
+        )
+        for pattern in cell_count_patterns:
+            parsed = _parse_last_int(
+                pattern,
+                text,
+                re.IGNORECASE | re.MULTILINE,
+            )
+            if parsed is not None:
+                cell_count = parsed
+                break
+
+    (
+        domain_extent_x_m,
+        domain_extent_y_m,
+        domain_extent_z_m,
+    ) = _parse_domain_extents_m(text)
+    (
+        min_cell_volume_m3,
+        max_cell_volume_m3,
+        total_fluid_volume_m3,
+    ) = _parse_volume_statistics_m3(text)
+    (
+        bounding_box_volume_m3,
+        porosity,
+    ) = _derive_bounding_box_and_porosity(
+        domain_extent_x_m,
+        domain_extent_y_m,
+        domain_extent_z_m,
+        total_fluid_volume_m3,
     )
-    for pattern in cell_count_patterns:
-        parsed = _parse_last_int(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if parsed is not None:
-            cell_count = parsed
-            break
 
     return {
         "min_orthogonal_quality": min_orthogonal_quality,
         "max_aspect_ratio": max_aspect_ratio,
         "max_skewness": max_skewness,
         "cell_count": cell_count,
+        "domain_extent_x_m": domain_extent_x_m,
+        "domain_extent_y_m": domain_extent_y_m,
+        "domain_extent_z_m": domain_extent_z_m,
+        "min_cell_volume_m3": min_cell_volume_m3,
+        "max_cell_volume_m3": max_cell_volume_m3,
+        "total_fluid_volume_m3": total_fluid_volume_m3,
+        "bounding_box_volume_m3": bounding_box_volume_m3,
+        "porosity": porosity,
     }
 
 
