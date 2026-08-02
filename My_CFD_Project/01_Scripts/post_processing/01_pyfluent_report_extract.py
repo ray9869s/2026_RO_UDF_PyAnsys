@@ -7,6 +7,7 @@ import re
 import json
 import math
 import importlib.util
+import sys
 from pathlib import Path
 from pprint import pprint
 
@@ -33,6 +34,19 @@ except Exception:
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
+SCRIPTS_DIR = SCRIPT_DIR.parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from _fluent_report_helpers import (  # noqa: E402
+    create_x_normal_plane as _create_x_normal_plane,
+    derive_spacer_cell_metrics,
+    unit_cell_boundary_positions,
+    unit_cell_concentration_report_name,
+    unit_cell_plane_name,
+    unit_cell_pressure_report_name,
+    validate_unit_cell_layout,
+)
 
 
 def load_python_config(config_path):
@@ -409,43 +423,7 @@ def compute_one_report(solution, report_name, verbose=True):
 
 def create_x_normal_plane(solver_obj, surface_name, x_value_m):
     """Create an x-normal iso-surface at x_value_m (meters). Overwrites if it exists."""
-    # Try settings API first.
-    e_settings = None
-    try:
-        iso_group = solver_obj.settings.results.surfaces.iso_surface
-        existing = list_named_object_names(iso_group, "results.surfaces.iso_surface")
-        if surface_name in existing:
-            try:
-                iso_group.delete(surface_name)
-                print(f"Deleted existing iso-surface: {surface_name}")
-            except Exception as del_e:
-                print(f"Could not delete iso-surface {surface_name}: {del_e}")
-
-        iso_group.create(surface_name)
-        iso_group[surface_name].field = "x-coordinate"
-        iso_group[surface_name].iso_values = [x_value_m]
-        print(f"Created iso-surface '{surface_name}' at x = {x_value_m:.6e} m (settings API)")
-        return
-    except Exception as exc:
-        e_settings = exc
-        print(f"Settings API failed for iso-surface '{surface_name}': {exc}")
-
-    # Fallback: TUI iso-surface command.
-    try:
-        solver_obj.tui.surface.iso_surface(
-            "x-coordinate",
-            surface_name,
-            "()",
-            "()",
-            str(x_value_m),
-            "0",
-        )
-        print(f"Created iso-surface '{surface_name}' at x = {x_value_m:.6e} m (TUI fallback)")
-    except Exception as e_tui:
-        raise RuntimeError(
-            f"Could not create iso-surface '{surface_name}'. "
-            f"Settings error: {e_settings}. TUI error: {e_tui}"
-        )
+    return _create_x_normal_plane(solver_obj, surface_name, x_value_m)
 
 
 def create_z_normal_plane(solver_obj, surface_name, z_value_m):
@@ -628,6 +606,7 @@ if __name__ == "__main__":
         FIELD_PRESSURE = "pressure"
         FIELD_ABSOLUTE_PRESSURE = "absolute-pressure"
         FIELD_VELOCITY_MAG = "velocity-magnitude"
+        FIELD_SALT_MASS_FRACTION = "nacl"
 
         # UDM field names from Fluent field list.
         FIELD_UDM_SM = "udm-1"          # water mass source
@@ -651,6 +630,7 @@ if __name__ == "__main__":
             "FIELD_PRESSURE": FIELD_PRESSURE,
             "FIELD_ABSOLUTE_PRESSURE": FIELD_ABSOLUTE_PRESSURE,
             "FIELD_VELOCITY_MAG": FIELD_VELOCITY_MAG,
+            "FIELD_SALT_MASS_FRACTION": FIELD_SALT_MASS_FRACTION,
             "FIELD_UDM_SM": FIELD_UDM_SM,
             "FIELD_UDM_SI": FIELD_UDM_SI,
             "FIELD_UDM_TOTAL_S": FIELD_UDM_TOTAL_S,
@@ -672,6 +652,24 @@ if __name__ == "__main__":
         domain_x_min_m = getattr(cfg, "domain_x_min_m", 0.0)
         domain_length_m = getattr(cfg, "domain_length_m", 0.017325)
         buffer_length_m = getattr(cfg, "buffer_length_m", 0.003465)
+        n_unit_cells = getattr(cfg, "n_unit_cells", 5)
+        n_buffer_cells_each_end = getattr(
+            cfg,
+            "n_buffer_cells_each_end",
+            1,
+        )
+
+        unit_cell_boundary_x_m = unit_cell_boundary_positions(
+            domain_x_min_m,
+            domain_length_m,
+            n_unit_cells,
+        )
+        spacer_cells = validate_unit_cell_layout(
+            domain_length_m,
+            buffer_length_m,
+            n_unit_cells,
+            n_buffer_cells_each_end,
+        )
 
         domain_x_max_m = domain_x_min_m + domain_length_m
         spacer_x_in_m = domain_x_min_m + buffer_length_m
@@ -688,6 +686,8 @@ if __name__ == "__main__":
         print(f"  spacer_x_in_m   = {spacer_x_in_m:.6e} m")
         print(f"  spacer_x_out_m  = {spacer_x_out_m:.6e} m")
         print(f"  spacer_length_m = {spacer_length_m:.6e} m")
+        print(f"  unit-cell boundaries = {unit_cell_boundary_x_m}")
+        print(f"  spacer cell numbers  = {spacer_cells}")
 
         # ==========================================================
         # Cell 7. Create report definitions
@@ -812,6 +812,39 @@ if __name__ == "__main__":
                 pressure_drop_spacer_definition,
             )
         )
+
+        # ----------------------------------------------------------
+        # Every unit-cell boundary: pressure and salt mass fraction.
+        # Existing spacer-edge plane/report names above stay unchanged.
+        # ----------------------------------------------------------
+
+        print("\nCreating unit-cell boundary plane surfaces and reports...")
+        for boundary_index, boundary_x_m in enumerate(unit_cell_boundary_x_m):
+            plane_name = unit_cell_plane_name(boundary_index)
+            pressure_report_name = unit_cell_pressure_report_name(boundary_index)
+            concentration_report_name = unit_cell_concentration_report_name(
+                boundary_index
+            )
+
+            create_x_normal_plane(solver, plane_name, boundary_x_m)
+            report_names.append(
+                create_or_update_surface_report(
+                    solution,
+                    pressure_report_name,
+                    SURFACE_AREA_WEIGHTED_AVG,
+                    FIELD_PRESSURE,
+                    [plane_name],
+                )
+            )
+            report_names.append(
+                create_or_update_surface_report(
+                    solution,
+                    concentration_report_name,
+                    SURFACE_AREA_WEIGHTED_AVG,
+                    FIELD_SALT_MASS_FRACTION,
+                    [plane_name],
+                )
+            )
 
         # Membrane UDM and wall shear reports.
         # These are evaluated on active membrane zones only.
@@ -1123,6 +1156,60 @@ if __name__ == "__main__":
 
         pressure_drop_spacer_per_m = safe_divide(pressure_drop_spacer, spacer_length_m)
 
+        unit_cell_derived_metrics = derive_spacer_cell_metrics(
+            computed_values,
+            n_unit_cells,
+            n_buffer_cells_each_end,
+        )
+
+        unit_cell_summary_rows = []
+        unit_cell_pressure_rows = []
+        for boundary_index, boundary_x_m in enumerate(unit_cell_boundary_x_m):
+            pressure_report_name = unit_cell_pressure_report_name(boundary_index)
+            concentration_report_name = unit_cell_concentration_report_name(
+                boundary_index
+            )
+            unit_cell_summary_rows.extend([
+                {
+                    "metric": f"pp_unit_cell_boundary_{boundary_index}_x_m",
+                    "value": boundary_x_m,
+                    "unit": "m",
+                },
+                {
+                    "metric": pressure_report_name,
+                    "value": get_value(pressure_report_name),
+                    "unit": "Pa",
+                },
+                {
+                    "metric": concentration_report_name,
+                    "value": get_value(concentration_report_name),
+                    "unit": "-",
+                },
+            ])
+            unit_cell_pressure_rows.extend([
+                {
+                    "metric": f"pp_unit_cell_boundary_{boundary_index}_x_m",
+                    "value": boundary_x_m,
+                    "unit": "m",
+                },
+                {
+                    "metric": pressure_report_name,
+                    "value": get_value(pressure_report_name),
+                    "unit": "Pa",
+                },
+            ])
+
+        for metric_name, metric_value in unit_cell_derived_metrics.items():
+            metric_unit = "Pa" if "pressure_drop" in metric_name else "-"
+            row = {
+                "metric": metric_name,
+                "value": metric_value,
+                "unit": metric_unit,
+            }
+            unit_cell_summary_rows.append(row)
+            if metric_unit == "Pa":
+                unit_cell_pressure_rows.append(row.copy())
+
         # ----------------------------------------------------------
         # LMH consistency check
         # ----------------------------------------------------------
@@ -1209,6 +1296,7 @@ if __name__ == "__main__":
             {"metric": "c_bulk_center_area_avg_units_or_type", "value": c_bulk_center_area_avg_units_or_type or "",       "unit": "-"},
             {"metric": "c_bulk_center_plane_name",             "value": c_bulk_center_plane_name or "",                   "unit": "-"},
         ]
+        summary_rows.extend(unit_cell_summary_rows)
 
         # ----------------------------------------------------------
         # Mass balance table
@@ -1242,6 +1330,7 @@ if __name__ == "__main__":
             {"metric": "pressure_drop_spacer_per_m", "value": pressure_drop_spacer_per_m, "unit": "Pa/m"},
             {"metric": "expected_outlet_gauge_pressure", "value": expected_outlet_pressure, "unit": "Pa"},
         ]
+        pressure_rows.extend(unit_cell_pressure_rows)
 
         # ----------------------------------------------------------
         # Shear table
@@ -1355,6 +1444,9 @@ if __name__ == "__main__":
                 "spacer_x_out_m": spacer_x_out_m,
                 "spacer_length_m": spacer_length_m,
                 "pressure_drop_spacer_per_m": pressure_drop_spacer_per_m,
+                "unit_cell_boundary_x_m": unit_cell_boundary_x_m,
+                "spacer_cell_numbers": spacer_cells,
+                "unit_cell_metrics": unit_cell_derived_metrics,
                 "wall_shear_rate_avg": wall_shear_rate_avg,
                 "wall_shear_rate_max": wall_shear_rate_max,
                 "wall_shear_rate_min": wall_shear_rate_min,

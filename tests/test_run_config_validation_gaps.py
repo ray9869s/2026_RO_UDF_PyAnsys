@@ -352,6 +352,8 @@ class TestPostConfigOverrideAllowlist:
             "domain_x_min_m",
             "domain_length_m",
             "buffer_length_m",
+            "n_unit_cells",
+            "n_buffer_cells_each_end",
         }
 
         excluded = {

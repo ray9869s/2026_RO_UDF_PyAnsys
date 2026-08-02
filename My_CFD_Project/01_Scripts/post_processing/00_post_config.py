@@ -99,3 +99,5 @@ fluent_health_timeout = 300
 domain_x_min_m = 0.0
 domain_length_m = 0.017325
 buffer_length_m = 0.003465
+n_unit_cells = 5
+n_buffer_cells_each_end = 1
