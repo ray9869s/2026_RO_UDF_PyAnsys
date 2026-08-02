@@ -6,7 +6,17 @@ import os
 import re
 import json
 import importlib.util
+import time
 from pathlib import Path
+
+from _mesh_common import (
+    MESH_METRIC_NAMES,
+    build_mesh_ledger_record,
+    mesh_parameters_from_mapping,
+    parse_last_float as _parse_last_float,
+    parse_mesh_metrics_from_log,
+    write_mesh_run_record,
+)
 
 # ==========================================================
 # ##### [1] Load Run Configuration #####
@@ -233,6 +243,7 @@ if __name__ == "__main__":
 
     mesh_log_path = os.path.join(case_path, f"mesh_log_{case_name}.txt")
     mesh_file_path = os.path.join(case_path, f"{geo_name}_{case_name}.msh.h5")
+    mesh_run_record_path = os.path.join(case_path, "mesh_run_record.json")
     surface_mesh_checkpoint_path = os.path.join(
         case_path,
         f"{geo_name}_{case_name}_surface_checkpoint.msh.h5",
@@ -383,40 +394,18 @@ def ensure_periodic_boundary_task(workflow_object):
 
 def parse_last_float(pattern, text):
     """Parse the last floating-point value matching a regular expression."""
-    matches = re.findall(pattern, text, flags=re.IGNORECASE)
-
-    if not matches:
-        return None
-
-    return float(matches[-1])
+    return _parse_last_float(pattern, text, flags=re.IGNORECASE)
 
 
 def parse_mesh_quality_from_log(log_path):
     """Parse mesh quality values from the Fluent transcript."""
+    metrics = parse_mesh_metrics_from_log(log_path)
     if not os.path.isfile(log_path):
         print(f"Quality log file not found: {log_path}")
-        return None, None
-
-    with open(log_path, "r", encoding="utf-8", errors="ignore") as file:
-        text = file.read()
-
-    min_orthogonal_quality = parse_last_float(
-        r"Minimum\s+Orthogonal\s+Quality\s*=\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)",
-        text,
+    return (
+        metrics["min_orthogonal_quality"],
+        metrics["max_aspect_ratio"],
     )
-
-    if min_orthogonal_quality is None:
-        min_orthogonal_quality = parse_last_float(
-            r"minimum\s+Orthogonal\s+Quality\s+of:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)",
-            text,
-        )
-
-    max_aspect_ratio = parse_last_float(
-        r"Maximum\s+Aspect\s+Ratio\s*=\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)",
-        text,
-    )
-
-    return min_orthogonal_quality, max_aspect_ratio
 
 
 def apply_mesh_quality_gate(
@@ -426,10 +415,14 @@ def apply_mesh_quality_gate(
     fail_if_not_parsed,
 ):
     """Apply mesh quality pass/fail criteria using the Fluent transcript."""
-    min_orthogonal_quality, max_aspect_ratio = parse_mesh_quality_from_log(log_path)
+    metrics = parse_mesh_metrics_from_log(log_path)
+    min_orthogonal_quality = metrics["min_orthogonal_quality"]
+    max_aspect_ratio = metrics["max_aspect_ratio"]
 
     print(f"Parsed minimum orthogonal quality: {min_orthogonal_quality}")
     print(f"Parsed maximum aspect ratio: {max_aspect_ratio}")
+    print(f"Parsed maximum skewness: {metrics['max_skewness']}")
+    print(f"Parsed cell count: {metrics['cell_count']}")
 
     if min_orthogonal_quality is None:
         message = (
@@ -469,6 +462,7 @@ def apply_mesh_quality_gate(
                 )
 
     print("Mesh quality gate passed.")
+    return metrics
 
 
 # ==========================================================
@@ -480,6 +474,10 @@ if __name__ == "__main__":
     workflow = None
     transcript_is_running = False
     original_working_directory = os.getcwd()
+    run_started = time.monotonic()
+    run_status = "FAILED"
+    run_error = ""
+    mesh_metrics = {name: None for name in MESH_METRIC_NAMES}
 
     try:
         os.chdir(case_path)
@@ -699,7 +697,7 @@ if __name__ == "__main__":
         meshing.transcript.stop()
         transcript_is_running = False
 
-        apply_mesh_quality_gate(
+        mesh_metrics = apply_mesh_quality_gate(
             log_path=mesh_log_path,
             min_orthogonal_quality_limit=min_orthogonal_quality_threshold,
             max_aspect_ratio_limit=max_aspect_ratio_threshold,
@@ -716,6 +714,11 @@ if __name__ == "__main__":
             output_path=mesh_file_path,
             description="Final volume mesh",
         )
+        run_status = "SUCCESS"
+
+    except Exception as exc:
+        run_error = f"{type(exc).__name__}: {exc}"
+        raise
 
     finally:
         if meshing is not None and transcript_is_running:
@@ -725,6 +728,27 @@ if __name__ == "__main__":
                 transcript_is_running = False
             except Exception:
                 pass
+
+        try:
+            if not any(value is not None for value in mesh_metrics.values()):
+                mesh_metrics = parse_mesh_metrics_from_log(mesh_log_path)
+            mesh_parameters = mesh_parameters_from_mapping(globals())
+            record = build_mesh_ledger_record(
+                geo_name=geo_name,
+                mesh_case_name=case_name,
+                mesh_parameters=mesh_parameters,
+                status=run_status,
+                exit_code=0 if run_status == "SUCCESS" else 1,
+                wall_time_seconds=time.monotonic() - run_started,
+                metrics=mesh_metrics,
+                mesh_log_path=mesh_log_path,
+                mesh_file_path=mesh_file_path,
+                error_summary=run_error,
+            )
+            write_mesh_run_record(mesh_run_record_path, record)
+            print(f"Mesh run record written: {mesh_run_record_path}")
+        except Exception as record_error:
+            print(f"Warning: could not write mesh run record: {record_error}")
 
         if meshing is not None:
             try:

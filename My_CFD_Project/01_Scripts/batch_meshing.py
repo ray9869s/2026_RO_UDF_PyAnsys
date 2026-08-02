@@ -10,7 +10,19 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+from _mesh_common import (
+    MESH_METRIC_NAMES,
+    MESH_PARAMETER_NAMES,
+    build_mesh_ledger_record,
+    load_mesh_run_record,
+    mesh_parameters_from_mapping,
+    parse_mesh_metrics_from_log,
+    parse_meshing_input_summary,
+    upsert_mesh_ledger_csv,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
@@ -33,17 +45,95 @@ def _build_overrides(case_dict, common_settings):
     return overrides
 
 
+def _continue_on_failure(batchcfg):
+    return getattr(batchcfg, "continue_on_failure", True)
+
+
+def _resolved_mesh_parameters(base_cfg, overrides):
+    values = {
+        name: getattr(base_cfg, name, None)
+        for name in MESH_PARAMETER_NAMES
+    }
+    values.update(overrides)
+    return mesh_parameters_from_mapping(values)
+
+
+def _write_case_ledger(
+    *,
+    ledger_path,
+    geo_name,
+    mesh_case_name,
+    mesh_parameters,
+    status,
+    exit_code,
+    wall_time_seconds,
+    mesh_log_path,
+    mesh_file_path,
+    error_summary="",
+):
+    """Merge worker/log details and upsert one aggregate ledger row."""
+    mesh_log_path = Path(mesh_log_path)
+    worker_record_path = mesh_log_path.parent / "mesh_run_record.json"
+    worker_record = load_mesh_run_record(worker_record_path)
+
+    actual_parameters = dict(mesh_parameters)
+    metrics = parse_mesh_metrics_from_log(mesh_log_path)
+    if mesh_log_path.is_file():
+        text = mesh_log_path.read_text(encoding="utf-8", errors="ignore")
+        parsed_parameters = parse_meshing_input_summary(text)
+        actual_parameters.update({
+            key: value
+            for key, value in parsed_parameters.items()
+            if value is not None
+        })
+
+    if worker_record:
+        actual_parameters.update({
+            name: worker_record.get(name)
+            for name in MESH_PARAMETER_NAMES
+            if worker_record.get(name) is not None
+        })
+        metrics.update({
+            name: worker_record.get(name)
+            for name in MESH_METRIC_NAMES
+            if worker_record.get(name) is not None
+        })
+        if not error_summary:
+            error_summary = worker_record.get("error_summary", "")
+
+    record = build_mesh_ledger_record(
+        geo_name=geo_name,
+        mesh_case_name=mesh_case_name,
+        mesh_parameters=actual_parameters,
+        status=status,
+        exit_code=exit_code,
+        wall_time_seconds=wall_time_seconds,
+        metrics=metrics,
+        mesh_log_path=mesh_log_path,
+        mesh_file_path=mesh_file_path,
+        error_summary=error_summary,
+    )
+    upsert_mesh_ledger_csv(ledger_path, [record])
+    return record
+
+
 def main():
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
     dry_run = getattr(batchcfg, "dry_run", False)
-    continue_on_failure = getattr(batchcfg, "continue_on_failure", False)
+    continue_on_failure = _continue_on_failure(batchcfg)
     skip_existing_mesh = getattr(batchcfg, "skip_existing_mesh", True)
     common_mesh_settings = getattr(batchcfg, "common_mesh_settings", {})
     mesh_batch_cases = getattr(batchcfg, "mesh_batch_cases", [])
 
     base_cfg = _load_module("_base_cfg", BASE_RUN_CONFIG_PATH)
     project_root = base_cfg.project_root
+    ledger_path = (
+        Path(project_root)
+        / "03_Results"
+        / "_inventory"
+        / "mesh_ledger.csv"
+    )
 
     successes = []
     failures = []
@@ -59,6 +149,8 @@ def main():
         geo_name = case_dict["geo_name"]
         mesh_case_name = case_dict["mesh_case_name"]
         label = f"{geo_name}/{mesh_case_name}"
+        overrides = _build_overrides(case_dict, common_mesh_settings)
+        mesh_parameters = _resolved_mesh_parameters(base_cfg, overrides)
 
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")
@@ -68,14 +160,28 @@ def main():
             project_root, "03_Results", geo_name, mesh_case_name,
             f"{geo_name}_{mesh_case_name}.msh.h5",
         )
+        mesh_log_path = (
+            Path(expected_mesh).parent
+            / f"mesh_log_{mesh_case_name}.txt"
+        )
         print(f"Expected mesh output: {expected_mesh}")
 
         if skip_existing_mesh and os.path.isfile(expected_mesh):
             print(f"SKIP: Mesh already exists: {expected_mesh}")
             skipped.append(label)
+            _write_case_ledger(
+                ledger_path=ledger_path,
+                geo_name=geo_name,
+                mesh_case_name=mesh_case_name,
+                mesh_parameters=mesh_parameters,
+                status="SKIPPED_EXISTING",
+                exit_code=None,
+                wall_time_seconds=0.0,
+                mesh_log_path=mesh_log_path,
+                mesh_file_path=expected_mesh,
+            )
             continue
 
-        overrides = _build_overrides(case_dict, common_mesh_settings)
         print(f"Overrides: {json.dumps(overrides, indent=2)}")
 
         cmd = [sys.executable, str(MESHING_SCRIPT_PATH)]
@@ -91,14 +197,37 @@ def main():
             skipped.append(label)
             continue
 
+        started = time.monotonic()
         result = subprocess.run(cmd, env=env, cwd=str(SCRIPT_DIR), check=False)
+        wall_time_seconds = time.monotonic() - started
 
         if result.returncode == 0:
             print(f"\nSUCCESS: {label} (return code {result.returncode})")
             successes.append(label)
+            status = "SUCCESS"
         else:
             print(f"\nFAILED: {label} (return code {result.returncode})")
             failures.append(label)
+            status = "FAILED"
+
+        _write_case_ledger(
+            ledger_path=ledger_path,
+            geo_name=geo_name,
+            mesh_case_name=mesh_case_name,
+            mesh_parameters=mesh_parameters,
+            status=status,
+            exit_code=result.returncode,
+            wall_time_seconds=wall_time_seconds,
+            mesh_log_path=mesh_log_path,
+            mesh_file_path=expected_mesh,
+            error_summary=(
+                ""
+                if result.returncode == 0
+                else f"meshing worker exited with code {result.returncode}"
+            ),
+        )
+
+        if result.returncode != 0:
             if not continue_on_failure:
                 print("Stopping batch because continue_on_failure=False.")
                 break
