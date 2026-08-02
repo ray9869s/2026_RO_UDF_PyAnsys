@@ -101,5 +101,6 @@ domain_length_m = 0.017325
 buffer_length_m = 0.003465
 n_unit_cells = 5
 n_buffer_cells_each_end = 1
+n_inlet_spacer_cells_excluded = 1
 salt_mass_fraction_upper_threshold = 0.99
 salt_mass_fraction_lower_threshold = 1.0e-6

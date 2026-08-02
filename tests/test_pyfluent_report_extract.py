@@ -9,6 +9,7 @@ import pytest
 from _fluent_report_helpers import (
     concentration_range_diagnostics,
     create_x_normal_plane,
+    derive_periodic_spacer_pressure_metrics,
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
@@ -157,6 +158,40 @@ def test_missing_boundary_value_produces_missing_delta():
     derived = derive_spacer_cell_metrics(values, 3, 1)
     assert derived["pp_pressure_drop_cell_2"] is None
     assert derived["pp_salt_mass_fraction_rise_cell_2"] is None
+
+
+def test_periodic_pressure_gradient_excludes_first_spacer_cell():
+    metrics = {
+        "pp_pressure_drop_cell_2": 225.54,
+        "pp_pressure_drop_cell_3": 159.92,
+        "pp_pressure_drop_cell_4": 158.15,
+    }
+
+    derived = derive_periodic_spacer_pressure_metrics(
+        metrics,
+        domain_length_m=0.017325,
+        n_unit_cells=5,
+        n_buffer_cells_each_end=1,
+        n_inlet_spacer_cells_excluded=1,
+    )
+
+    assert derived["pp_pressure_drop_periodic_per_m"] == pytest.approx(
+        (159.92 + 158.15) / (2 * 0.003465)
+    )
+    assert derived["pp_pressure_drop_cell2_over_cell3"] == pytest.approx(
+        225.54 / 159.92
+    )
+
+
+def test_periodic_pressure_exclusion_must_leave_one_cell():
+    with pytest.raises(ValueError, match="At least one spacer cell"):
+        derive_periodic_spacer_pressure_metrics(
+            {},
+            domain_length_m=0.017325,
+            n_unit_cells=5,
+            n_buffer_cells_each_end=1,
+            n_inlet_spacer_cells_excluded=3,
+        )
 
 
 def test_udm_area_uses_unweighted_volume_sum_report():
@@ -320,5 +355,6 @@ def test_invalid_concentration_thresholds_are_rejected(
 
 def test_default_concentration_thresholds():
     cfg = load_post_config()
+    assert cfg.n_inlet_spacer_cells_excluded == 1
     assert cfg.salt_mass_fraction_upper_threshold == 0.99
     assert cfg.salt_mass_fraction_lower_threshold == 1.0e-6

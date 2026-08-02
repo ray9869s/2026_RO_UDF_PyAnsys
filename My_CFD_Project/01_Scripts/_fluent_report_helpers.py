@@ -329,3 +329,58 @@ def derive_spacer_cell_metrics(
         )
 
     return derived
+
+
+def derive_periodic_spacer_pressure_metrics(
+    unit_cell_metrics,
+    domain_length_m,
+    n_unit_cells,
+    n_buffer_cells_each_end,
+    n_inlet_spacer_cells_excluded,
+):
+    """Derive periodic-cell pressure gradient and entrance contamination."""
+    if (
+        isinstance(n_inlet_spacer_cells_excluded, bool)
+        or not isinstance(n_inlet_spacer_cells_excluded, int)
+    ):
+        raise TypeError(
+            "n_inlet_spacer_cells_excluded must be an integer."
+        )
+    if n_inlet_spacer_cells_excluded < 0:
+        raise ValueError(
+            "n_inlet_spacer_cells_excluded must be non-negative."
+        )
+
+    all_spacer_cells = spacer_cell_numbers(
+        n_unit_cells,
+        n_buffer_cells_each_end,
+    )
+    periodic_cells = all_spacer_cells[n_inlet_spacer_cells_excluded:]
+    if not periodic_cells:
+        raise ValueError(
+            "At least one spacer cell must remain for the periodic average."
+        )
+
+    periodic_pressure_drops = [
+        unit_cell_metrics.get(f"pp_pressure_drop_cell_{cell_number}")
+        for cell_number in periodic_cells
+    ]
+    if any(value is None for value in periodic_pressure_drops):
+        periodic_per_m = None
+    else:
+        cell_length_m = float(domain_length_m) / n_unit_cells
+        periodic_length_m = len(periodic_cells) * cell_length_m
+        periodic_per_m = sum(periodic_pressure_drops) / periodic_length_m
+
+    cell2_drop = unit_cell_metrics.get("pp_pressure_drop_cell_2")
+    cell3_drop = unit_cell_metrics.get("pp_pressure_drop_cell_3")
+    cell2_over_cell3 = (
+        None
+        if cell2_drop is None or cell3_drop in (None, 0.0)
+        else cell2_drop / cell3_drop
+    )
+
+    return {
+        "pp_pressure_drop_periodic_per_m": periodic_per_m,
+        "pp_pressure_drop_cell2_over_cell3": cell2_over_cell3,
+    }

@@ -41,6 +41,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 from _fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
     create_x_normal_plane as _create_x_normal_plane,
+    derive_periodic_spacer_pressure_metrics,
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
@@ -663,6 +664,11 @@ if __name__ == "__main__":
             "n_buffer_cells_each_end",
             1,
         )
+        n_inlet_spacer_cells_excluded = getattr(
+            cfg,
+            "n_inlet_spacer_cells_excluded",
+            1,
+        )
 
         unit_cell_boundary_x_m = unit_cell_boundary_positions(
             domain_x_min_m,
@@ -1218,6 +1224,13 @@ if __name__ == "__main__":
             n_unit_cells,
             n_buffer_cells_each_end,
         )
+        periodic_pressure_metrics = derive_periodic_spacer_pressure_metrics(
+            unit_cell_derived_metrics,
+            domain_length_m,
+            n_unit_cells,
+            n_buffer_cells_each_end,
+            n_inlet_spacer_cells_excluded,
+        )
 
         unit_cell_summary_rows = []
         unit_cell_pressure_rows = []
@@ -1266,6 +1279,27 @@ if __name__ == "__main__":
             unit_cell_summary_rows.append(row)
             if metric_unit == "Pa":
                 unit_cell_pressure_rows.append(row.copy())
+
+        periodic_pressure_rows = [
+            {
+                "metric": "pp_pressure_drop_periodic_per_m",
+                "value": periodic_pressure_metrics[
+                    "pp_pressure_drop_periodic_per_m"
+                ],
+                "unit": "Pa/m",
+            },
+            {
+                "metric": "pp_pressure_drop_cell2_over_cell3",
+                "value": periodic_pressure_metrics[
+                    "pp_pressure_drop_cell2_over_cell3"
+                ],
+                "unit": "-",
+            },
+        ]
+        unit_cell_summary_rows.extend(periodic_pressure_rows)
+        unit_cell_pressure_rows.extend(
+            row.copy() for row in periodic_pressure_rows
+        )
 
         # ----------------------------------------------------------
         # LMH consistency check
@@ -1536,6 +1570,8 @@ if __name__ == "__main__":
                 "unit_cell_boundary_x_m": unit_cell_boundary_x_m,
                 "spacer_cell_numbers": spacer_cells,
                 "unit_cell_metrics": unit_cell_derived_metrics,
+                "n_inlet_spacer_cells_excluded": n_inlet_spacer_cells_excluded,
+                "periodic_pressure_metrics": periodic_pressure_metrics,
                 "wall_shear_rate_avg": wall_shear_rate_avg,
                 "wall_shear_rate_max": wall_shear_rate_max,
                 "wall_shear_rate_min": wall_shear_rate_min,

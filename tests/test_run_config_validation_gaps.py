@@ -377,6 +377,7 @@ class TestPostConfigOverrideAllowlist:
             "buffer_length_m",
             "n_unit_cells",
             "n_buffer_cells_each_end",
+            "n_inlet_spacer_cells_excluded",
             "salt_mass_fraction_upper_threshold",
             "salt_mass_fraction_lower_threshold",
         }
