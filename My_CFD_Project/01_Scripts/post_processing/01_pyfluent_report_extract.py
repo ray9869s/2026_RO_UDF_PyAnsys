@@ -48,7 +48,10 @@ from _fluent_report_helpers import (  # noqa: E402
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
+    unit_cell_mixing_cup_report_name,
+    unit_cell_mixing_cup_report_spec,
     unit_cell_plane_name,
+    unit_cell_plane_area_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
     validate_unit_cell_layout,
@@ -836,6 +839,17 @@ if __name__ == "__main__":
             concentration_report_name = unit_cell_concentration_report_name(
                 boundary_index
             )
+            (
+                mixing_cup_report_name,
+                mixing_cup_report_type,
+                mixing_cup_field_name,
+            ) = unit_cell_mixing_cup_report_spec(
+                boundary_index,
+                FIELD_SALT_MASS_FRACTION,
+            )
+            plane_area_report_name = unit_cell_plane_area_report_name(
+                boundary_index
+            )
 
             create_x_normal_plane(solver, plane_name, boundary_x_m)
             report_names.append(
@@ -844,6 +858,24 @@ if __name__ == "__main__":
                     pressure_report_name,
                     SURFACE_AREA_WEIGHTED_AVG,
                     FIELD_PRESSURE,
+                    [plane_name],
+                )
+            )
+            report_names.append(
+                create_or_update_surface_report(
+                    solution,
+                    mixing_cup_report_name,
+                    mixing_cup_report_type,
+                    mixing_cup_field_name,
+                    [plane_name],
+                )
+            )
+            report_names.append(
+                create_or_update_surface_report(
+                    solution,
+                    plane_area_report_name,
+                    SURFACE_AREA,
+                    None,
                     [plane_name],
                 )
             )
@@ -1239,6 +1271,12 @@ if __name__ == "__main__":
             concentration_report_name = unit_cell_concentration_report_name(
                 boundary_index
             )
+            mixing_cup_report_name = unit_cell_mixing_cup_report_name(
+                boundary_index
+            )
+            plane_area_report_name = unit_cell_plane_area_report_name(
+                boundary_index
+            )
             unit_cell_summary_rows.extend([
                 {
                     "metric": f"pp_unit_cell_boundary_{boundary_index}_x_m",
@@ -1253,7 +1291,17 @@ if __name__ == "__main__":
                 {
                     "metric": concentration_report_name,
                     "value": get_value(concentration_report_name),
-                    "unit": "-",
+                    "unit": "mass_fraction",
+                },
+                {
+                    "metric": mixing_cup_report_name,
+                    "value": get_value(mixing_cup_report_name),
+                    "unit": "mass_fraction",
+                },
+                {
+                    "metric": plane_area_report_name,
+                    "value": get_value(plane_area_report_name),
+                    "unit": "m2",
                 },
             ])
             unit_cell_pressure_rows.extend([

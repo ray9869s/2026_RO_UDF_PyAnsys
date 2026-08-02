@@ -186,6 +186,26 @@ def unit_cell_concentration_report_name(boundary_index):
     return f"pp_salt_mass_fraction_unit_cell_boundary_{boundary_index}_avg"
 
 
+def unit_cell_mixing_cup_report_name(boundary_index):
+    return (
+        "pp_salt_mass_fraction_unit_cell_boundary_"
+        f"{boundary_index}_massavg"
+    )
+
+
+def unit_cell_plane_area_report_name(boundary_index):
+    return f"pp_area_unit_cell_boundary_{boundary_index}"
+
+
+def unit_cell_mixing_cup_report_spec(boundary_index, field_name="nacl"):
+    """Return the Fluent mass-weighted plane concentration report spec."""
+    return (
+        unit_cell_mixing_cup_report_name(boundary_index),
+        "surface-massavg",
+        field_name,
+    )
+
+
 def udm_area_sum_report_spec(field_name="udm-11"):
     """Return the Fluent report spec for the unweighted membrane-area UDM sum."""
     return ("pp_udm_area_sum", "volume-sum", field_name)

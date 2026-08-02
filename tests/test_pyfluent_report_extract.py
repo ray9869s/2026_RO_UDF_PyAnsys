@@ -16,6 +16,9 @@ from _fluent_report_helpers import (
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
+    unit_cell_mixing_cup_report_name,
+    unit_cell_mixing_cup_report_spec,
+    unit_cell_plane_area_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
     validate_concentration_thresholds,
@@ -192,6 +195,18 @@ def test_periodic_pressure_exclusion_must_leave_one_cell():
             n_buffer_cells_each_end=1,
             n_inlet_spacer_cells_excluded=3,
         )
+
+
+def test_mixing_cup_and_plane_area_report_names():
+    assert unit_cell_mixing_cup_report_spec(3, "nacl") == (
+        "pp_salt_mass_fraction_unit_cell_boundary_3_massavg",
+        "surface-massavg",
+        "nacl",
+    )
+    assert unit_cell_mixing_cup_report_name(3).endswith("_3_massavg")
+    assert unit_cell_plane_area_report_name(3) == (
+        "pp_area_unit_cell_boundary_3"
+    )
 
 
 def test_udm_area_uses_unweighted_volume_sum_report():
