@@ -40,16 +40,21 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from _fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
+    concentration_metric_unit,
     create_x_normal_plane as _create_x_normal_plane,
     derive_periodic_spacer_pressure_metrics,
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
+    mass_fraction_to_molar_concentration,
     segmented_membrane_cp_metrics,
+    molar_concentration_to_mass_fraction,
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
+    unit_cell_areaavg_molar_concentration_name,
     unit_cell_concentration_report_name,
     unit_cell_mixing_cup_report_name,
+    unit_cell_mixing_cup_molar_concentration_name,
     unit_cell_mixing_cup_report_spec,
     unit_cell_plane_name,
     unit_cell_plane_area_report_name,
@@ -1187,6 +1192,25 @@ if __name__ == "__main__":
             _c_bulk_center_diag = f"exception:{_e_center}"
             print(f"WARNING: center-plane bulk salt average failed: {_e_center}")
 
+        c_bulk_center_mass_fraction_avg = None
+        c_bulk_center_mol_m3_avg = None
+        if c_bulk_center_area_avg_units_or_type == "mass_fraction":
+            c_bulk_center_mass_fraction_avg = c_bulk_center_area_avg
+            c_bulk_center_mol_m3_avg = mass_fraction_to_molar_concentration(
+                c_bulk_center_area_avg,
+                rho,
+                salt_molecular_weight_kg_per_mol,
+            )
+        elif c_bulk_center_area_avg_units_or_type == "molar_mol_m3":
+            c_bulk_center_mol_m3_avg = c_bulk_center_area_avg
+            c_bulk_center_mass_fraction_avg = (
+                molar_concentration_to_mass_fraction(
+                    c_bulk_center_area_avg,
+                    rho,
+                    salt_molecular_weight_kg_per_mol,
+                )
+            )
+
         print(
             f"\nCenter-plane bulk salt average: {c_bulk_center_area_avg} "
             f"({c_bulk_center_area_avg_units_or_type})"
@@ -1342,9 +1366,19 @@ if __name__ == "__main__":
             mixing_cup_report_name = unit_cell_mixing_cup_report_name(
                 boundary_index
             )
+            areaavg_molar_name = unit_cell_areaavg_molar_concentration_name(
+                boundary_index
+            )
+            mixing_cup_molar_name = (
+                unit_cell_mixing_cup_molar_concentration_name(
+                    boundary_index
+                )
+            )
             plane_area_report_name = unit_cell_plane_area_report_name(
                 boundary_index
             )
+            areaavg_mass_fraction = get_value(concentration_report_name)
+            mixing_cup_mass_fraction = get_value(mixing_cup_report_name)
             unit_cell_summary_rows.extend([
                 {
                     "metric": f"pp_unit_cell_boundary_{boundary_index}_x_m",
@@ -1358,13 +1392,31 @@ if __name__ == "__main__":
                 },
                 {
                     "metric": concentration_report_name,
-                    "value": get_value(concentration_report_name),
+                    "value": areaavg_mass_fraction,
                     "unit": "mass_fraction",
                 },
                 {
                     "metric": mixing_cup_report_name,
-                    "value": get_value(mixing_cup_report_name),
+                    "value": mixing_cup_mass_fraction,
                     "unit": "mass_fraction",
+                },
+                {
+                    "metric": areaavg_molar_name,
+                    "value": mass_fraction_to_molar_concentration(
+                        areaavg_mass_fraction,
+                        rho,
+                        salt_molecular_weight_kg_per_mol,
+                    ),
+                    "unit": "mol/m3",
+                },
+                {
+                    "metric": mixing_cup_molar_name,
+                    "value": mass_fraction_to_molar_concentration(
+                        mixing_cup_mass_fraction,
+                        rho,
+                        salt_molecular_weight_kg_per_mol,
+                    ),
+                    "unit": "mol/m3",
                 },
                 {
                     "metric": plane_area_report_name,
@@ -1386,7 +1438,11 @@ if __name__ == "__main__":
             ])
 
         for metric_name, metric_value in unit_cell_derived_metrics.items():
-            metric_unit = "Pa" if "pressure_drop" in metric_name else "-"
+            metric_unit = (
+                "Pa"
+                if "pressure_drop" in metric_name
+                else concentration_metric_unit(metric_name) or "-"
+            )
             row = {
                 "metric": metric_name,
                 "value": metric_value,
@@ -1419,12 +1475,10 @@ if __name__ == "__main__":
         for metric_name, metric_value in segmented_cp_values.items():
             if metric_name.endswith("_m2"):
                 metric_unit = "m2"
-            elif "_mol_m3_" in metric_name:
-                metric_unit = "mol/m3"
             elif "_m_per_s_" in metric_name:
                 metric_unit = "m/s"
             else:
-                metric_unit = "-"
+                metric_unit = concentration_metric_unit(metric_name) or "-"
             unit_cell_summary_rows.append({
                 "metric": metric_name,
                 "value": metric_value,
@@ -1488,6 +1542,9 @@ if __name__ == "__main__":
             {"metric": "cm_avg", "value": cm_avg, "unit": "mol/m3"},
             {"metric": "cm_max", "value": cm_max, "unit": "mol/m3"},
             {"metric": "cm_min", "value": cm_min, "unit": "mol/m3"},
+            {"metric": "cm_mol_m3_avg", "value": cm_avg, "unit": "mol/m3"},
+            {"metric": "cm_mol_m3_max", "value": cm_max, "unit": "mol/m3"},
+            {"metric": "cm_mol_m3_min", "value": cm_min, "unit": "mol/m3"},
 
             {"metric": "lmh_udm_max", "value": lmh_udm_max, "unit": "LMH"},
             {"metric": "lmh_udm_min", "value": lmh_udm_min, "unit": "LMH"},
@@ -1518,11 +1575,13 @@ if __name__ == "__main__":
             {"metric": "c_bulk_center_area_avg_source",        "value": c_bulk_center_area_avg_source or "",              "unit": "-"},
             {"metric": "c_bulk_center_area_avg_units_or_type", "value": c_bulk_center_area_avg_units_or_type or "",       "unit": "-"},
             {"metric": "c_bulk_center_plane_name",             "value": c_bulk_center_plane_name or "",                   "unit": "-"},
+            {"metric": "c_bulk_center_mass_fraction_avg", "value": c_bulk_center_mass_fraction_avg, "unit": "mass_fraction"},
+            {"metric": "c_bulk_center_mol_m3_avg", "value": c_bulk_center_mol_m3_avg, "unit": "mol/m3"},
 
             {"metric": "pp_salt_mass_fraction_cells_above_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_above_threshold"], "unit": "cells"},
             {"metric": "pp_salt_mass_fraction_cells_below_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_below_threshold"], "unit": "cells"},
-            {"metric": "pp_salt_mass_fraction_max", "value": concentration_diagnostics["pp_salt_mass_fraction_max"], "unit": "-"},
-            {"metric": "pp_salt_mass_fraction_min", "value": concentration_diagnostics["pp_salt_mass_fraction_min"], "unit": "-"},
+            {"metric": "pp_salt_mass_fraction_max", "value": concentration_diagnostics["pp_salt_mass_fraction_max"], "unit": "mass_fraction"},
+            {"metric": "pp_salt_mass_fraction_min", "value": concentration_diagnostics["pp_salt_mass_fraction_min"], "unit": "mass_fraction"},
             {"metric": "concentration_diagnostic_error", "value": concentration_diagnostic_error, "unit": "-"},
             {"metric": "concentration_diagnostic_error_type", "value": concentration_diagnostic_error_type, "unit": "-"},
             {"metric": "concentration_diagnostic_error_message", "value": concentration_diagnostic_error_message, "unit": "-"},
@@ -1712,6 +1771,8 @@ if __name__ == "__main__":
                 "c_bulk_center_area_avg": c_bulk_center_area_avg,
                 "c_bulk_center_area_avg_source": c_bulk_center_area_avg_source,
                 "c_bulk_center_area_avg_units_or_type": c_bulk_center_area_avg_units_or_type,
+                "c_bulk_center_mass_fraction_avg": c_bulk_center_mass_fraction_avg,
+                "c_bulk_center_mol_m3_avg": c_bulk_center_mol_m3_avg,
                 "c_bulk_center_plane_name": c_bulk_center_plane_name,
                 "c_bulk_center_diag": _c_bulk_center_diag,
                 "salt_mass_fraction_upper_threshold": salt_mass_fraction_upper_threshold,

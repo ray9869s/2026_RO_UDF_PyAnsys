@@ -8,18 +8,22 @@ import pytest
 
 from _fluent_report_helpers import (
     concentration_range_diagnostics,
+    concentration_metric_unit,
     create_x_normal_plane,
     derive_periodic_spacer_pressure_metrics,
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
     mass_fraction_to_molar_concentration,
+    molar_concentration_to_mass_fraction,
     segmented_membrane_cp_metrics,
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
+    unit_cell_areaavg_molar_concentration_name,
     unit_cell_concentration_report_name,
     unit_cell_mixing_cup_report_name,
     unit_cell_mixing_cup_report_spec,
+    unit_cell_mixing_cup_molar_concentration_name,
     unit_cell_plane_area_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
@@ -27,7 +31,7 @@ from _fluent_report_helpers import (
     validate_unit_cell_layout,
     wall_zone_reduction_locations,
 )
-from helpers import load_post_config
+from helpers import POST_DIR, load_module, load_post_config
 
 
 def legacy_create_x_normal_plane(solver_obj, surface_name, x_value_m):
@@ -210,6 +214,66 @@ def test_mixing_cup_and_plane_area_report_names():
     assert unit_cell_plane_area_report_name(3) == (
         "pp_area_unit_cell_boundary_3"
     )
+    assert unit_cell_areaavg_molar_concentration_name(3).endswith(
+        "_3_areaavg_mol_m3"
+    )
+    assert unit_cell_mixing_cup_molar_concentration_name(3).endswith(
+        "_3_massavg_mol_m3"
+    )
+
+
+def test_concentration_units_are_explicit_and_convert_consistently():
+    mass_fraction = 0.035
+    molar = mass_fraction_to_molar_concentration(
+        mass_fraction,
+        998.2,
+        0.05844,
+    )
+    assert molar == pytest.approx(597.8268309)
+    assert molar_concentration_to_mass_fraction(
+        molar,
+        998.2,
+        0.05844,
+    ) == pytest.approx(mass_fraction)
+
+    expected_units = {
+        "cm_avg": "mol/m3",
+        "cm_mol_m3_avg": "mol/m3",
+        "c_bulk_center_mass_fraction_avg": "mass_fraction",
+        "c_bulk_center_mol_m3_avg": "mol/m3",
+        "pp_salt_mass_fraction_unit_cell_boundary_2_massavg": (
+            "mass_fraction"
+        ),
+        "pp_salt_mass_fraction_rise_cell_2": "mass_fraction",
+        "pp_cp_gu_unit_cell_boundary_2": "-",
+    }
+    assert {
+        name: concentration_metric_unit(name)
+        for name in expected_units
+    } == expected_units
+
+
+def test_contour_reader_prefers_explicit_bulk_concentration_units(tmp_path):
+    reports = tmp_path / "post" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "summary_metrics_wide.csv").write_text(
+        "c_bulk_center_area_avg,c_bulk_center_area_avg_units_or_type,"
+        "c_bulk_center_mass_fraction_avg,c_bulk_center_mol_m3_avg\n"
+        "999.0,molar_mol_m3,0.035,597.8268309\n",
+        encoding="utf-8",
+    )
+    contour = load_module(
+        "contour_explicit_bulk_units",
+        POST_DIR / "03_pyensight_contour_export.py",
+    )
+
+    value, units, diagnostic = contour._read_pyfluent_bulk_center_avg(
+        {"case_path": str(tmp_path)}
+    )
+
+    assert value == pytest.approx(0.035)
+    assert units == "mass_fraction"
+    assert "c_bulk_center_mass_fraction_avg" in diagnostic
 
 
 def test_udm_area_uses_unweighted_volume_sum_report():

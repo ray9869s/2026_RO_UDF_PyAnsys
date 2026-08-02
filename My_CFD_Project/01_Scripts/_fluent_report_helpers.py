@@ -197,6 +197,20 @@ def unit_cell_plane_area_report_name(boundary_index):
     return f"pp_area_unit_cell_boundary_{boundary_index}"
 
 
+def unit_cell_areaavg_molar_concentration_name(boundary_index):
+    return (
+        "pp_salt_molar_concentration_unit_cell_boundary_"
+        f"{boundary_index}_areaavg_mol_m3"
+    )
+
+
+def unit_cell_mixing_cup_molar_concentration_name(boundary_index):
+    return (
+        "pp_salt_molar_concentration_unit_cell_boundary_"
+        f"{boundary_index}_massavg_mol_m3"
+    )
+
+
 def unit_cell_mixing_cup_report_spec(boundary_index, field_name="nacl"):
     """Return the Fluent mass-weighted plane concentration report spec."""
     return (
@@ -277,6 +291,40 @@ def mass_fraction_to_molar_concentration(
         * float(density_kg_per_m3)
         / float(molecular_weight_kg_per_mol)
     )
+
+
+def molar_concentration_to_mass_fraction(
+    molar_concentration,
+    density_kg_per_m3,
+    molecular_weight_kg_per_mol,
+):
+    """Convert molar concentration [mol/m3] to salt mass fraction."""
+    if molar_concentration is None:
+        return None
+    if density_kg_per_m3 <= 0.0 or molecular_weight_kg_per_mol <= 0.0:
+        raise ValueError("Density and molecular weight must be positive.")
+    return (
+        float(molar_concentration)
+        * float(molecular_weight_kg_per_mol)
+        / float(density_kg_per_m3)
+    )
+
+
+def concentration_metric_unit(metric_name):
+    """Return the expected explicit unit for concentration-like metrics."""
+    if "cells_above" in metric_name or "cells_below" in metric_name:
+        return "cells"
+    if "mass_fraction" in metric_name:
+        return "mass_fraction"
+    if "mol_m3" in metric_name or metric_name in {
+        "cm_avg",
+        "cm_max",
+        "cm_min",
+    }:
+        return "mol/m3"
+    if "cp_" in metric_name:
+        return "-"
+    return None
 
 
 def segmented_membrane_cp_metrics(

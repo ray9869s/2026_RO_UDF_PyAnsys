@@ -3368,9 +3368,26 @@ def _read_pyfluent_bulk_center_avg(
         return None, "", "csv_empty"
 
     row = rows[0]
+    explicit_candidates = [
+        ("c_bulk_center_mass_fraction_avg", "mass_fraction"),
+        ("c_bulk_center_mol_m3_avg", "molar_mol_m3"),
+    ]
+    for column_name, units_str in explicit_candidates:
+        val_str = (row.get(column_name) or "").strip()
+        if not val_str or val_str.lower() in ("none", "nan", ""):
+            continue
+        try:
+            value = float(val_str)
+        except ValueError:
+            return None, units_str, f"{column_name}_not_numeric:{val_str!r}"
+        return (
+            value,
+            units_str,
+            f"read_ok,column={column_name},val={value:.6g},units={units_str}",
+        )
+
     val_str = (row.get("c_bulk_center_area_avg") or "").strip()
     units_str = (row.get("c_bulk_center_area_avg_units_or_type") or "").strip()
-
     if not val_str or val_str.lower() in ("none", "nan", ""):
         return None, units_str, f"c_bulk_center_area_avg_missing_in_csv"
 
