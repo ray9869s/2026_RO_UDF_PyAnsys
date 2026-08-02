@@ -24,6 +24,7 @@ def cfg():
     module = load_run_config()
     populate_valid_meshing_config(module)
     populate_valid_solver_config(module)
+    module.allow_legacy_mesh_case_name_mismatch = True
     return module
 
 
@@ -206,6 +207,7 @@ class TestRunConfigOverrideAllowlist:
             "max_aspect_ratio_threshold",
             "fail_if_quality_not_parsed",
             "save_surface_mesh_checkpoint",
+            "allow_legacy_mesh_case_name_mismatch",
             "inlet_velocity_value",
             "operating_pressure",
             "outlet_gauge_pressure",

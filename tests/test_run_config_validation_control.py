@@ -19,6 +19,7 @@ def cfg():
     module = load_run_config()
     populate_valid_meshing_config(module)
     populate_valid_solver_config(module)
+    module.allow_legacy_mesh_case_name_mismatch = True
     return module
 
 

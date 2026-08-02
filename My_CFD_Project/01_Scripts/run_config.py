@@ -17,6 +17,10 @@ import os
 import types
 from pathlib import Path
 
+from _mesh_common import (
+    assert_mesh_case_name_matches as _assert_mesh_case_name_matches,
+)
+
 REQUIRED = "===== Edit here ====="
 
 # Batch/worker keys not declared as module-level settings in this file.
@@ -109,6 +113,7 @@ fail_if_quality_not_parsed = False
 
 # Checkpoint option
 save_surface_mesh_checkpoint = True
+allow_legacy_mesh_case_name_mismatch = False
 
 
 # ==========================================================
@@ -384,6 +389,19 @@ def validate_for_meshing():
             "run_config.py m_min must be <= m_max. "
             f"m_min={m_min!r}, m_max={m_max!r}"
         )
+
+    _require_bool(
+        "allow_legacy_mesh_case_name_mismatch",
+        allow_legacy_mesh_case_name_mismatch,
+    )
+    _assert_mesh_case_name_matches(
+        case_name,
+        m_max,
+        m_min,
+        m_cpg,
+        bl_layers,
+        allow_legacy=allow_legacy_mesh_case_name_mismatch,
+    )
 
     _require_set("wall_spacer_labels", wall_spacer_labels)
     _require_set("active_membrane_wall_labels", active_membrane_wall_labels)

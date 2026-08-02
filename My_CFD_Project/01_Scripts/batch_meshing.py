@@ -16,6 +16,7 @@ from pathlib import Path
 from _mesh_common import (
     MESH_METRIC_NAMES,
     MESH_PARAMETER_NAMES,
+    assert_mesh_case_name_matches,
     build_mesh_ledger_record,
     load_mesh_run_record,
     mesh_parameters_from_mapping,
@@ -151,6 +152,16 @@ def main():
         label = f"{geo_name}/{mesh_case_name}"
         overrides = _build_overrides(case_dict, common_mesh_settings)
         mesh_parameters = _resolved_mesh_parameters(base_cfg, overrides)
+        assert_mesh_case_name_matches(
+            mesh_case_name,
+            mesh_parameters["m_max"],
+            mesh_parameters["m_min"],
+            mesh_parameters["m_cpg"],
+            mesh_parameters["bl_layers"],
+            allow_legacy=mesh_parameters[
+                "allow_legacy_mesh_case_name_mismatch"
+            ],
+        )
 
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")

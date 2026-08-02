@@ -93,6 +93,7 @@ def populate_valid_common_config(cfg: ModuleType) -> None:
 
 def populate_valid_meshing_config(cfg: ModuleType) -> None:
     populate_valid_common_config(cfg)
+    cfg.case_name = "mesh_max085_min005_cpg5_bl4"
     cfg.m_max = 0.085
     cfg.m_min = 0.005
     cfg.m_cpg = 5

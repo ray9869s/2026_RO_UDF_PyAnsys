@@ -41,6 +41,7 @@ MESH_PARAMETER_NAMES = (
     "max_aspect_ratio_threshold",
     "fail_if_quality_not_parsed",
     "save_surface_mesh_checkpoint",
+    "allow_legacy_mesh_case_name_mismatch",
 )
 
 MESH_METRIC_NAMES = (
@@ -53,6 +54,8 @@ MESH_METRIC_NAMES = (
 MESH_LEDGER_FIELDNAMES = (
     "geo_name",
     "mesh_case_name",
+    "canonical_mesh_case_name",
+    "mesh_case_name_validation",
     *MESH_PARAMETER_NAMES,
     "status",
     "exit_code",
@@ -66,6 +69,78 @@ MESH_LEDGER_FIELDNAMES = (
 )
 
 _FLOAT_PATTERN = r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+
+
+def _integer_token(name, value, *, scale=1.0, width=0):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be numeric, got {value!r}.")
+    scaled = float(value) * scale
+    rounded = round(scaled)
+    if scaled <= 0.0 or abs(scaled - rounded) > 1.0e-9:
+        raise ValueError(
+            f"{name} cannot be represented by the canonical integer token: "
+            f"{value!r}."
+        )
+    return f"{int(rounded):0{width}d}"
+
+
+def make_canonical_mesh_case_name(m_max, m_min, m_cpg, bl_layers):
+    """Construct the canonical mesh folder name from encoded parameters."""
+    return (
+        "mesh_"
+        f"max{_integer_token('m_max', m_max, scale=1000.0, width=3)}_"
+        f"min{_integer_token('m_min', m_min, scale=1000.0, width=3)}_"
+        f"cpg{_integer_token('m_cpg', m_cpg)}_"
+        f"bl{_integer_token('bl_layers', bl_layers)}"
+    )
+
+
+def assert_mesh_case_name_matches(
+    mesh_case_name,
+    m_max,
+    m_min,
+    m_cpg,
+    bl_layers,
+    *,
+    allow_legacy=False,
+):
+    """Raise when a supplied mesh name disagrees with its encoded parameters."""
+    if not isinstance(allow_legacy, bool):
+        raise TypeError(
+            f"allow_legacy must be bool, got {allow_legacy!r}."
+        )
+    expected = make_canonical_mesh_case_name(
+        m_max,
+        m_min,
+        m_cpg,
+        bl_layers,
+    )
+    if mesh_case_name != expected and not allow_legacy:
+        raise AssertionError(
+            "mesh_case_name does not match the supplied mesh parameters: "
+            f"supplied={mesh_case_name!r}, canonical={expected!r}. "
+            "Set allow_legacy_mesh_case_name_mismatch=True only for "
+            "known legacy cases."
+        )
+    return expected
+
+
+def mesh_case_name_provenance(mesh_case_name, mesh_parameters):
+    """Return canonical name and validation status for a ledger record."""
+    required = ("m_max", "m_min", "m_cpg", "bl_layers")
+    if any(mesh_parameters.get(name) is None for name in required):
+        return None, "UNAVAILABLE"
+    try:
+        canonical = make_canonical_mesh_case_name(
+            *(mesh_parameters[name] for name in required)
+        )
+    except (TypeError, ValueError):
+        return None, "UNAVAILABLE"
+    if mesh_case_name == canonical:
+        return canonical, "MATCH"
+    if mesh_parameters.get("allow_legacy_mesh_case_name_mismatch"):
+        return canonical, "LEGACY_OPT_OUT"
+    return canonical, "MISMATCH"
 
 
 def parse_last_float(pattern, text, flags=0):
@@ -330,6 +405,10 @@ def build_mesh_ledger_record(
         mesh_parameters,
         metrics,
     )
+    (
+        record["canonical_mesh_case_name"],
+        record["mesh_case_name_validation"],
+    ) = mesh_case_name_provenance(mesh_case_name, mesh_parameters)
     return record
 
 
