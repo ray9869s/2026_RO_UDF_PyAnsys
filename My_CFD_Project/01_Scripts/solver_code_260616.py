@@ -166,6 +166,7 @@ if __name__ == "__main__":
     max_iterations = cfg.max_iterations
     run_calculation_enabled = cfg.run_calculation_enabled
     relaxation_profile = cfg.relaxation_profile
+    species_implicit_under_relaxation = cfg.species_implicit_under_relaxation
 
     # Ramp/convergence safety.
     use_ramp_convergence_safety = cfg.use_ramp_convergence_safety
@@ -1309,6 +1310,104 @@ def apply_pseudo_time_species_relaxation(solution, species_name, value):
     )
 
 
+def apply_species_implicit_under_relaxation(solution, species_name, value):
+    """Apply orthogonal species-0 implicit URF via the expert path.
+
+    Independent of RELAXATION_PROFILES. value=="preserve" leaves the leaf
+    untouched. Candidate keys prefer "species-0", then the configured species
+    name, matching the probe-confirmed naming of the expert subtree.
+    """
+    label = "species_implicit_under_relaxation"
+    outcome = {
+        "label": label,
+        "requested": value,
+        "status": "WARN_APPLY_URF_FAILED",
+    }
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        print(
+            "\nSpecies implicit under-relaxation preserve: "
+            "leaving expert leaf unchanged."
+        )
+        outcome["status"] = "PRESERVED"
+        return outcome
+
+    try:
+        requested = float(value)
+    except (TypeError, ValueError) as exc:
+        outcome["error"] = (
+            f"value must be 'preserve' or a positive float: {value!r} "
+            f"({type(exc).__name__}: {exc})"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+    if requested <= 0.0:
+        outcome["error"] = f"value must be positive: {value!r}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    try:
+        global_dt = (
+            solution.controls.advanced.expert
+            .pseudo_time_method_usage.global_dt
+        )
+    except Exception as exc:
+        outcome["error"] = (
+            f"global_dt container not found: {type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    candidate_keys = []
+    for key in ("species-0", species_name):
+        if key and key not in candidate_keys:
+            candidate_keys.append(key)
+
+    try:
+        state = global_dt.get_state()
+        available_keys = list(state) if isinstance(state, dict) else []
+    except Exception:
+        available_keys = list_named_object_names(global_dt, "global_dt")
+
+    print(
+        "Species implicit under-relaxation available keys: "
+        f"{available_keys}"
+    )
+    matched_key = next(
+        (key for key in candidate_keys if key in available_keys),
+        None,
+    )
+    if matched_key is None:
+        outcome["error"] = (
+            f"none of {candidate_keys} present in {available_keys}"
+        )
+        outcome["status"] = "SKIPPED_SPECIES_UNAVAILABLE"
+        print(f"SKIPPED_SPECIES_UNAVAILABLE ({label}): {outcome['error']}")
+        return outcome
+
+    print(f"Species implicit under-relaxation using key: {matched_key!r}")
+    outcome["matched_key"] = matched_key
+    try:
+        parent = global_dt[matched_key]
+    except Exception as exc:
+        outcome["error"] = (
+            f"could not resolve global_dt[{matched_key!r}]: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    leaf_outcome = set_and_verify_leaf(
+        parent,
+        "implicit_under_relaxation_factor",
+        requested,
+        f"{label}[{matched_key}]",
+    )
+    leaf_outcome["matched_key"] = matched_key
+    # Keep a stable top-level label for CSV flattening.
+    leaf_outcome["label"] = label
+    return leaf_outcome
+
+
 def apply_real_under_relaxation(solver, profile, species_name):
     """Apply a named under-relaxation profile with readback verification."""
     result = {"profile": profile, "applied": []}
@@ -2187,6 +2286,13 @@ if __name__ == "__main__":
             solver=solver,
             profile=relaxation_profile,
             species_name=species_name,
+        )
+        relaxation_result.setdefault("applied", []).append(
+            apply_species_implicit_under_relaxation(
+                solution=solution,
+                species_name=species_name,
+                value=species_implicit_under_relaxation,
+            )
         )
         print("Relaxation profile application result:")
         print(relaxation_result)

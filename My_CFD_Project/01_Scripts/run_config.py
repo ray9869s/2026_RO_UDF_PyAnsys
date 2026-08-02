@@ -165,6 +165,9 @@ residual_target = 1e-7
 max_iterations = 2000
 run_calculation_enabled = True
 relaxation_profile = "baseline"
+# Orthogonal to relaxation_profile: do not redefine conservative/strong.
+# "preserve" leaves the expert implicit species URF untouched.
+species_implicit_under_relaxation = "preserve"
 
 # Ramp/convergence safety.
 # 260612_RO_UDF.c uses a source ramp that reaches full strength after 150 iterations.
@@ -350,6 +353,14 @@ def _require_choice(name, value, choices):
         )
 
 
+def _require_preserve_or_positive_number(name, value):
+    """Raise unless value is the literal 'preserve' or a positive number."""
+    _require_set(name, value)
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        return
+    _require_positive_number(name, value)
+
+
 def _require_bool(name, value):
     """Raise when a config value is not a bool."""
     _require_set(name, value)
@@ -459,6 +470,10 @@ def validate_for_solver():
         "relaxation_profile",
         relaxation_profile,
         {"baseline", "conservative", "strong"},
+    )
+    _require_preserve_or_positive_number(
+        "species_implicit_under_relaxation",
+        species_implicit_under_relaxation,
     )
     _require_bool(
         "enable_solve_time_qoi_reports",

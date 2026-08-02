@@ -604,6 +604,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--species-implicit-under-relaxation",
+        type=residual_target_type,
+        default="preserve",
+        help=(
+            "Orthogonal species implicit under-relaxation factor on "
+            "solution.controls.advanced.expert.pseudo_time_method_usage."
+            "global_dt[<species>].implicit_under_relaxation_factor. "
+            "'preserve' (default) leaves the leaf unchanged. Independent of "
+            "--relaxation-profile."
+        ),
+    )
+    parser.add_argument(
         "--write-transcript",
         dest="write_transcript",
         action=argparse.BooleanOptionalAction,
@@ -1475,6 +1487,108 @@ def apply_pseudo_time_species_relaxation(solution: Any, species_name: str, value
     return set_and_verify_dict_entry(container, matched_key, value, label)
 
 
+def apply_species_implicit_under_relaxation(
+    solution: Any,
+    species_name: str,
+    value: str | float,
+) -> dict[str, Any]:
+    """Apply orthogonal species implicit URF via the expert path.
+
+    Independent of RELAXATION_PROFILES. value=="preserve" leaves the leaf
+    untouched. Candidate keys prefer "species-0", then the configured species
+    residual name.
+    """
+    label = "species_implicit_under_relaxation"
+    outcome: dict[str, Any] = {
+        "label": label,
+        "requested": value,
+        "status": "WARN_APPLY_URF_FAILED",
+    }
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        print(
+            "\nSpecies implicit under-relaxation preserve: "
+            "leaving expert leaf unchanged."
+        )
+        outcome["status"] = "PRESERVED"
+        return outcome
+
+    try:
+        requested = float(value)
+    except (TypeError, ValueError) as exc:
+        outcome["error"] = (
+            f"value must be 'preserve' or a positive float: {value!r} "
+            f"({type(exc).__name__}: {exc})"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+    if requested <= 0.0:
+        outcome["error"] = f"value must be positive: {value!r}"
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    try:
+        global_dt = (
+            solution.controls.advanced.expert
+            .pseudo_time_method_usage.global_dt
+        )
+    except Exception as exc:
+        outcome["error"] = (
+            f"global_dt container not found: {type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    candidate_keys: list[str] = []
+    for key in ("species-0", species_name):
+        if key and key not in candidate_keys:
+            candidate_keys.append(key)
+
+    available_keys: list[str] = []
+    try:
+        state = global_dt.get_state()
+        if isinstance(state, dict):
+            available_keys = list(state.keys())
+    except Exception:
+        available_keys = list_object_names(global_dt)
+
+    print(
+        "Species implicit under-relaxation available keys: "
+        f"{available_keys}"
+    )
+    matched_key = next(
+        (key for key in candidate_keys if key in available_keys),
+        None,
+    )
+    if matched_key is None:
+        outcome["error"] = (
+            f"none of {candidate_keys} present in {available_keys}"
+        )
+        outcome["status"] = "SKIPPED_SPECIES_UNAVAILABLE"
+        print(f"SKIPPED_SPECIES_UNAVAILABLE ({label}): {outcome['error']}")
+        return outcome
+
+    print(f"Species implicit under-relaxation using key: {matched_key!r}")
+    try:
+        parent = global_dt[matched_key]
+    except Exception as exc:
+        outcome["error"] = (
+            f"could not resolve global_dt[{matched_key!r}]: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        print(f"WARN_APPLY_URF_FAILED ({label}): {outcome['error']}")
+        return outcome
+
+    leaf_outcome = set_and_verify_leaf(
+        parent,
+        "implicit_under_relaxation_factor",
+        requested,
+        f"{label}[{matched_key}]",
+    )
+    leaf_outcome["matched_key"] = matched_key
+    leaf_outcome["label"] = label
+    return leaf_outcome
+
+
 def apply_real_under_relaxation(solver: Any, profile: str, species_name: str) -> dict[str, Any]:
     """Apply the Coupled-solver under-relaxation profile via the settings API.
 
@@ -1620,6 +1734,13 @@ def apply_continuation_settings(solver: Any, args: argparse.Namespace) -> tuple[
         solver=solver,
         profile=args.relaxation_profile,
         species_name=args.species_residual_name,
+    )
+    relaxation_result.setdefault("applied", []).append(
+        apply_species_implicit_under_relaxation(
+            solution=solution,
+            species_name=args.species_residual_name,
+            value=args.species_implicit_under_relaxation,
+        )
     )
     return residual_targets, relaxation_result
 
@@ -3093,15 +3214,26 @@ def summarize_relaxation_result(relaxation_result: dict[str, Any]) -> dict[str, 
     profile = relaxation_result.get("profile", "")
     applied = relaxation_result.get("applied", [])
 
-    if profile == "baseline":
+    if profile == "baseline" and not applied:
         return {"apply_status": "BASELINE_NO_CHANGE", "before": "{}", "after": "{}"}
     if not applied:
         return {"apply_status": "NOT_ATTEMPTED", "before": "{}", "after": "{}"}
 
+    ok_statuses = {
+        "APPLIED_CONFIRMED",
+        "SKIPPED_SPECIES_UNAVAILABLE",
+        "PRESERVED",
+    }
     statuses = {entry.get("status") for entry in applied}
-    confirmed_or_skipped = statuses <= {"APPLIED_CONFIRMED", "SKIPPED_SPECIES_UNAVAILABLE"}
-    if confirmed_or_skipped and "APPLIED_CONFIRMED" in statuses:
+    confirmed_or_ok = statuses <= ok_statuses
+    if confirmed_or_ok and "APPLIED_CONFIRMED" in statuses:
         apply_status = "ALL_CONFIRMED"
+    elif confirmed_or_ok:
+        apply_status = (
+            "BASELINE_NO_CHANGE"
+            if profile == "baseline"
+            else "PRESERVED_OR_SKIPPED"
+        )
     elif "APPLIED_CONFIRMED" in statuses:
         apply_status = "PARTIAL_WARN"
     else:
@@ -5637,6 +5769,8 @@ def write_summary(
         f"  blending_hold_iterations: {args.blending_hold_iterations}",
         f"  pressure_velocity_coupling: {args.pressure_velocity_coupling}",
         f"  relaxation_profile: {args.relaxation_profile}",
+        f"  species_implicit_under_relaxation: "
+        f"{args.species_implicit_under_relaxation}",
         f"  write_transcript: {args.write_transcript}",
         f"  launcher_profile: {args.launcher_profile}",
         f"  launch_mode: {args.launch_mode}",

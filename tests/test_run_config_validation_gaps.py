@@ -119,6 +119,17 @@ class TestSolverValidation:
         with pytest.raises(ValueError, match="must be one of"):
             cfg.validate_for_solver()
 
+    def test_species_implicit_preserve_and_float_are_accepted(self, cfg):
+        cfg.species_implicit_under_relaxation = "preserve"
+        cfg.validate_for_solver()
+        cfg.species_implicit_under_relaxation = 0.5
+        cfg.validate_for_solver()
+
+    def test_species_implicit_rejects_non_positive(self, cfg):
+        cfg.species_implicit_under_relaxation = 0.0
+        with pytest.raises(ValueError, match="species_implicit_under_relaxation"):
+            cfg.validate_for_solver()
+
 
 def _load_batch_config_module(filename: str):
     path = SCRIPTS_DIR / filename
@@ -232,6 +243,7 @@ class TestRunConfigOverrideAllowlist:
             "max_iterations",
             "run_calculation_enabled",
             "relaxation_profile",
+            "species_implicit_under_relaxation",
             "use_ramp_convergence_safety",
             "ramp_full_iteration",
             "post_ramp_buffer_iterations",
@@ -264,6 +276,7 @@ class TestRunConfigOverrideAllowlist:
             "_require_nonnegative_number": "private function",
             "_require_positive_float": "private function",
             "_require_choice": "private function",
+            "_require_preserve_or_positive_number": "private function",
             "_require_bool": "private function",
             "_require_number": "private function",
         }
