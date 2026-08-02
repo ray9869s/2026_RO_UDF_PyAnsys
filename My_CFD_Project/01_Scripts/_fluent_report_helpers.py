@@ -208,16 +208,48 @@ def validate_concentration_thresholds(lower_threshold, upper_threshold):
     return float(lower_threshold), float(upper_threshold)
 
 
+def fluid_zone_reduction_locations(setup, fluid_zone_names):
+    """Resolve fluid-zone names to settings objects accepted by reductions."""
+    if not fluid_zone_names:
+        raise ValueError("At least one fluid zone is required.")
+    fluid_group = setup.cell_zone_conditions.fluid
+    locations = []
+    for zone_name in fluid_zone_names:
+        try:
+            locations.append(fluid_group[zone_name])
+        except Exception as exc:
+            raise ValueError(
+                f"Could not resolve fluid zone {zone_name!r} "
+                "to a settings object."
+            ) from exc
+    return locations
+
+
+def exception_details(exc):
+    """Return stable exception fields for JSON and CSV diagnostics."""
+    error_type = type(exc).__name__
+    message = str(exc)
+    return {
+        "type": error_type,
+        "message": message,
+        "combined": f"{error_type}: {message}",
+    }
+
+
 def concentration_range_diagnostics(
     reduction,
-    fluid_zones,
+    fluid_zone_locations,
     species_name,
     lower_threshold,
     upper_threshold,
 ):
     """Compute conditional cell counts and extrema for one species mass fraction."""
-    if not fluid_zones:
+    if not fluid_zone_locations:
         raise ValueError("At least one fluid zone is required.")
+    if any(isinstance(location, str) for location in fluid_zone_locations):
+        raise TypeError(
+            "Reduction locations must be Fluent settings objects, not names."
+        )
     if not isinstance(species_name, str) or not species_name.strip():
         raise ValueError("species_name must be a non-empty string.")
 
@@ -226,7 +258,7 @@ def concentration_range_diagnostics(
         upper_threshold,
     )
     expression = f'MassFraction(species="{species_name}")'
-    locations = list(fluid_zones)
+    locations = list(fluid_zone_locations)
 
     return {
         "pp_salt_mass_fraction_cells_above_threshold": reduction.count_if(

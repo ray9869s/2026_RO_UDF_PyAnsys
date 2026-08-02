@@ -10,6 +10,8 @@ from _fluent_report_helpers import (
     concentration_range_diagnostics,
     create_x_normal_plane,
     derive_spacer_cell_metrics,
+    exception_details,
+    fluid_zone_reduction_locations,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
     unit_cell_pressure_report_name,
@@ -183,9 +185,11 @@ class FakeReduction:
 
 def test_concentration_range_diagnostics_use_conditional_cell_counts():
     reduction = FakeReduction()
+    fluid = SimpleNamespace(obj_name="solid")
+    fluid_1 = SimpleNamespace(obj_name="solid.1")
     diagnostics = concentration_range_diagnostics(
         reduction,
-        ["fluid", "fluid.1"],
+        [fluid, fluid_1],
         "nacl",
         1.0e-6,
         0.99,
@@ -201,24 +205,62 @@ def test_concentration_range_diagnostics_use_conditional_cell_counts():
         (
             "count_if",
             'MassFraction(species="nacl") > 0.99',
-            ["fluid", "fluid.1"],
+            [fluid, fluid_1],
         ),
         (
             "count_if",
             'MassFraction(species="nacl") < 1e-06',
-            ["fluid", "fluid.1"],
+            [fluid, fluid_1],
         ),
         (
             "maximum",
             'MassFraction(species="nacl")',
-            ["fluid", "fluid.1"],
+            [fluid, fluid_1],
         ),
         (
             "minimum",
             'MassFraction(species="nacl")',
-            ["fluid", "fluid.1"],
+            [fluid, fluid_1],
         ),
     ]
+
+
+def test_fluid_zone_names_resolve_to_reduction_settings_objects():
+    solid = SimpleNamespace(obj_name="solid")
+    solid_1 = SimpleNamespace(obj_name="solid.1")
+    setup = SimpleNamespace(
+        cell_zone_conditions=SimpleNamespace(
+            fluid={"solid": solid, "solid.1": solid_1}
+        )
+    )
+
+    locations = fluid_zone_reduction_locations(
+        setup,
+        ["solid", "solid.1"],
+    )
+
+    assert locations == [solid, solid_1]
+    assert all(not isinstance(location, str) for location in locations)
+
+
+def test_concentration_diagnostics_reject_zone_name_strings():
+    with pytest.raises(TypeError, match="settings objects"):
+        concentration_range_diagnostics(
+            FakeReduction(),
+            ["solid"],
+            "nacl",
+            1.0e-6,
+            0.99,
+        )
+
+
+def test_exception_details_preserve_type_and_message():
+    details = exception_details(ValueError("Invalid location input: 'solid'"))
+    assert details == {
+        "type": "ValueError",
+        "message": "Invalid location input: 'solid'",
+        "combined": "ValueError: Invalid location input: 'solid'",
+    }
 
 
 @pytest.mark.parametrize(

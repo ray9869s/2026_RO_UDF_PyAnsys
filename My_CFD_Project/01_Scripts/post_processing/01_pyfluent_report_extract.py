@@ -42,6 +42,8 @@ from _fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
     create_x_normal_plane as _create_x_normal_plane,
     derive_spacer_cell_metrics,
+    exception_details,
+    fluid_zone_reduction_locations,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
     unit_cell_plane_name,
@@ -970,18 +972,27 @@ if __name__ == "__main__":
             "pp_salt_mass_fraction_min": None,
         }
         concentration_diagnostic_error = ""
+        concentration_diagnostic_error_type = ""
+        concentration_diagnostic_error_message = ""
         try:
+            reduction_locations = fluid_zone_reduction_locations(
+                setup,
+                fluid_zones,
+            )
             concentration_diagnostics.update(
                 concentration_range_diagnostics(
                     reduction=solver.fields.reduction,
-                    fluid_zones=fluid_zones,
+                    fluid_zone_locations=reduction_locations,
                     species_name=FIELD_SALT_MASS_FRACTION,
                     lower_threshold=salt_mass_fraction_lower_threshold,
                     upper_threshold=salt_mass_fraction_upper_threshold,
                 )
             )
         except Exception as exc:
-            concentration_diagnostic_error = f"{type(exc).__name__}: {exc}"
+            error = exception_details(exc)
+            concentration_diagnostic_error_type = error["type"]
+            concentration_diagnostic_error_message = error["message"]
+            concentration_diagnostic_error = error["combined"]
             print(
                 "WARNING: salt mass-fraction range diagnostics failed: "
                 f"{concentration_diagnostic_error}"
@@ -1510,6 +1521,8 @@ if __name__ == "__main__":
                 "salt_mass_fraction_lower_threshold": salt_mass_fraction_lower_threshold,
                 "concentration_range_diagnostics": concentration_diagnostics,
                 "concentration_diagnostic_error": concentration_diagnostic_error,
+                "concentration_diagnostic_error_type": concentration_diagnostic_error_type,
+                "concentration_diagnostic_error_message": concentration_diagnostic_error_message,
             },
             "raw_results": raw_results,
         }
