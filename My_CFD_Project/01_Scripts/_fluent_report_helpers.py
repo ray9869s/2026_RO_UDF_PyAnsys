@@ -236,6 +236,17 @@ def exception_details(exc):
     }
 
 
+def summary_rows_to_wide_record(summary_rows):
+    """Build one wide record without dropping metrics whose values are missing."""
+    record = {}
+    for row in summary_rows:
+        metric = row["metric"]
+        if metric in record:
+            raise ValueError(f"Duplicate summary metric: {metric!r}.")
+        record[metric] = row.get("value")
+    return record
+
+
 def concentration_range_diagnostics(
     reduction,
     fluid_zone_locations,

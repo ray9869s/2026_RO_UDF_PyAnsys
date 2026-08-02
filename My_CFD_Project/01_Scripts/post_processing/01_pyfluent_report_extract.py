@@ -44,6 +44,7 @@ from _fluent_report_helpers import (  # noqa: E402
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
+    summary_rows_to_wide_record,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
     unit_cell_plane_name,
@@ -1357,6 +1358,32 @@ if __name__ == "__main__":
             {"metric": "pp_salt_mass_fraction_cells_below_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_below_threshold"], "unit": "cells"},
             {"metric": "pp_salt_mass_fraction_max", "value": concentration_diagnostics["pp_salt_mass_fraction_max"], "unit": "-"},
             {"metric": "pp_salt_mass_fraction_min", "value": concentration_diagnostics["pp_salt_mass_fraction_min"], "unit": "-"},
+            {"metric": "concentration_diagnostic_error", "value": concentration_diagnostic_error, "unit": "-"},
+            {"metric": "concentration_diagnostic_error_type", "value": concentration_diagnostic_error_type, "unit": "-"},
+            {"metric": "concentration_diagnostic_error_message", "value": concentration_diagnostic_error_message, "unit": "-"},
+            {"metric": "c_bulk_center_diagnostic", "value": _c_bulk_center_diag, "unit": "-"},
+            {
+                "metric": "report_definition_errors_json",
+                "value": (
+                    json.dumps(failed_report_specs, ensure_ascii=False)
+                    if failed_report_specs
+                    else ""
+                ),
+                "unit": "-",
+            },
+            {
+                "metric": "report_compute_errors_json",
+                "value": json.dumps(
+                    {
+                        name: result["error"]
+                        for name, result in raw_results.items()
+                        if isinstance(result, dict) and "error" in result
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "unit": "-",
+            },
         ]
         summary_rows.extend(unit_cell_summary_rows)
 
@@ -1465,17 +1492,17 @@ if __name__ == "__main__":
         # Each metric becomes one column.
         # ----------------------------------------------------------
 
-        summary_wide_df = summary_df.pivot_table(
-            index=None,
-            columns="metric",
-            values="value",
-            aggfunc="first",
-        ).reset_index(drop=True)
+        summary_wide_df = pd.DataFrame([
+            summary_rows_to_wide_record(summary_rows)
+        ])
 
         # Keep geometry/case columns near the front if they exist.
         front_columns = ["geo_name", "case_name"]
         existing_front_columns = [col for col in front_columns if col in summary_wide_df.columns]
-        other_columns = [col for col in summary_wide_df.columns if col not in existing_front_columns]
+        other_columns = sorted(
+            col for col in summary_wide_df.columns
+            if col not in existing_front_columns
+        )
         summary_wide_df = summary_wide_df[existing_front_columns + other_columns]
 
         summary_wide_df.to_csv(summary_wide_csv_path, index=False, encoding="utf-8-sig")

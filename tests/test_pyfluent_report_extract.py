@@ -12,6 +12,7 @@ from _fluent_report_helpers import (
     derive_spacer_cell_metrics,
     exception_details,
     fluid_zone_reduction_locations,
+    summary_rows_to_wide_record,
     unit_cell_boundary_positions,
     unit_cell_concentration_report_name,
     unit_cell_pressure_report_name,
@@ -261,6 +262,43 @@ def test_exception_details_preserve_type_and_message():
         "message": "Invalid location input: 'solid'",
         "combined": "ValueError: Invalid location input: 'solid'",
     }
+
+
+def test_every_long_metric_is_preserved_as_a_wide_column():
+    summary_rows = [
+        {"metric": "geo_name", "value": "Sin_ST", "unit": "-"},
+        {
+            "metric": "pp_salt_mass_fraction_cells_above_threshold",
+            "value": None,
+            "unit": "cells",
+        },
+        {
+            "metric": "pp_salt_mass_fraction_min",
+            "value": None,
+            "unit": "-",
+        },
+        {
+            "metric": "concentration_diagnostic_error",
+            "value": "ValueError: invalid location",
+            "unit": "-",
+        },
+    ]
+
+    wide_record = summary_rows_to_wide_record(summary_rows)
+
+    assert set(wide_record) == {
+        row["metric"] for row in summary_rows
+    }
+    assert "pp_salt_mass_fraction_min" in wide_record
+    assert wide_record["pp_salt_mass_fraction_min"] is None
+
+
+def test_duplicate_long_metrics_are_rejected_before_wide_export():
+    with pytest.raises(ValueError, match="Duplicate summary metric"):
+        summary_rows_to_wide_record([
+            {"metric": "duplicate", "value": 1},
+            {"metric": "duplicate", "value": 2},
+        ])
 
 
 @pytest.mark.parametrize(
