@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from helpers import load_run_config, load_solver_code, populate_valid_solver_config
+from helpers import (
+    SCRIPTS_DIR,
+    load_run_config,
+    load_solver_code,
+    populate_valid_solver_config,
+)
 
 
 class SettingsObject:
@@ -15,13 +20,16 @@ class SettingsObject:
 
 
 class NamedGroup:
-    def __init__(self):
+    def __init__(self, fail_create=False):
         self.objects = {}
+        self.fail_create = fail_create
 
     def get_object_names(self):
         return list(self.objects)
 
     def create(self, name):
+        if self.fail_create:
+            raise RuntimeError("object is not active")
         obj = SettingsObject()
         self.objects[name] = obj
         return obj
@@ -53,7 +61,7 @@ def make_solver_and_solution():
     return solver, solution, iso_surfaces, surface_reports, expression_reports
 
 
-def test_solve_time_qoi_reports_cover_requested_fields_and_pressure_drop():
+def test_solve_time_qoi_reports_are_split_across_initialization_boundary():
     solver_code = load_solver_code("solver_qoi_reports")
     (
         solver,
@@ -63,24 +71,37 @@ def test_solve_time_qoi_reports_cover_requested_fields_and_pressure_drop():
         expression_reports,
     ) = make_solver_and_solution()
 
-    names = solver_code.update_solve_time_qoi_report_definitions(
-        solver=solver,
-        solution=solution,
-        membrane_wall_zones=["wall_top_mem", "wall_bottom_mem"],
-        domain_x_min_m=0.0,
-        domain_length_m=0.017325,
-        buffer_length_m=0.003465,
+    wall_names, deferred = (
+        solver_code.update_solve_time_wall_qoi_report_definitions(
+            solution=solution,
+            membrane_wall_zones=["wall_top_mem", "wall_bottom_mem"],
+        )
     )
 
-    assert names == [
-        "pressure_spacer_in_avg",
-        "pressure_spacer_out_avg",
+    assert wall_names == [
         "cm_membrane_avg",
         "cm_membrane_max",
         "cp_membrane_avg",
         "cp_membrane_max",
         "wall_shear_membrane_avg",
         "lmh_udm_avg",
+    ]
+    assert deferred == []
+    assert iso_surfaces.get_object_names() == []
+
+    pressure_names = (
+        solver_code.update_solve_time_pressure_qoi_report_definitions(
+            solver=solver,
+            solution=solution,
+            domain_x_min_m=0.0,
+            domain_length_m=0.017325,
+            buffer_length_m=0.003465,
+        )
+    )
+
+    assert pressure_names == [
+        "pressure_spacer_in_avg",
+        "pressure_spacer_out_avg",
         "pressure_drop_spacer",
     ]
     assert iso_surfaces["plane_spacer_in"].iso_values == [0.003465]
@@ -112,17 +133,102 @@ def test_solve_time_qoi_reports_cover_requested_fields_and_pressure_drop():
     assert getattr(expression_reports["pressure_drop_spacer"], "print") is True
 
 
+def test_phase_a_failures_are_retried_after_initialization():
+    solver_code = load_solver_code("solver_qoi_deferred")
+    surface_reports = NamedGroup(fail_create=True)
+    solution = SimpleNamespace(
+        report_definitions=SimpleNamespace(surface=surface_reports)
+    )
+
+    created, deferred = (
+        solver_code.update_solve_time_wall_qoi_report_definitions(
+            solution,
+            ["wall_top_mem"],
+        )
+    )
+    assert created == []
+    assert [spec[0] for spec in deferred] == [
+        "cm_membrane_avg",
+        "cm_membrane_max",
+        "cp_membrane_avg",
+        "cp_membrane_max",
+        "wall_shear_membrane_avg",
+        "lmh_udm_avg",
+    ]
+
+    surface_reports.fail_create = False
+    retried = (
+        solver_code.retry_deferred_solve_time_qoi_report_definitions(
+            solution,
+            deferred,
+        )
+    )
+    assert retried == [spec[0] for spec in deferred]
+
+
+def test_plane_failure_warns_and_does_not_abort(capsys):
+    solver_code = load_solver_code("solver_qoi_inactive_planes")
+    solution = SimpleNamespace(
+        report_definitions=SimpleNamespace(
+            surface=NamedGroup(),
+            single_valued_expression=NamedGroup(),
+        )
+    )
+    inactive_solver = SimpleNamespace(
+        settings=SimpleNamespace(results=SimpleNamespace())
+    )
+
+    created = (
+        solver_code.update_solve_time_pressure_qoi_report_definitions(
+            solver=inactive_solver,
+            solution=solution,
+            domain_x_min_m=0.0,
+            domain_length_m=0.017325,
+            buffer_length_m=0.003465,
+        )
+    )
+
+    assert created == []
+    warning = capsys.readouterr().out
+    assert "continuing solver run" in warning
+    assert "pressure_spacer_in_avg" in warning
+    assert "pressure_spacer_out_avg" in warning
+    assert "pressure_drop_spacer" in warning
+
+
+def test_runtime_orders_phase_b_after_initialization_before_residuals():
+    source = (
+        SCRIPTS_DIR / "solver_code_260616.py"
+    ).read_text(encoding="utf-8")
+    workflow = source[
+        source.index("deferred_solve_time_qoi_report_specs = []"):
+    ]
+
+    phase_a = workflow.index(
+        "update_solve_time_wall_qoi_report_definitions("
+    )
+    initialize = workflow.index(
+        "solution.initialization.hybrid_initialize()"
+    )
+    phase_b = workflow.index(
+        "update_solve_time_pressure_qoi_report_definitions("
+    )
+    residuals = workflow.index("##### [15] Residual Settings #####")
+    iterate = workflow.index("solution.run_calculation.iterate(")
+
+    assert phase_a < initialize < phase_b < residuals < iterate
+
+
 def test_solve_time_qoi_reports_require_positive_spacer_length():
     solver_code = load_solver_code("solver_qoi_invalid_geometry")
     solver, solution, *_ = make_solver_and_solution()
     with pytest.raises(ValueError, match="non-positive spacer length"):
-        solver_code.update_solve_time_qoi_report_definitions(
-            solver,
-            solution,
-            ["wall_top_mem"],
-            0.0,
-            0.006,
-            0.003,
+        solver_code.update_solve_time_pressure_qoi_report_definitions(
+            solver=solver,
+            solution=solution,
+            domain_x_min_m=0.0,
+            domain_length_m=0.006,
+            buffer_length_m=0.003,
         )
 
 

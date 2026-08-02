@@ -803,50 +803,13 @@ def create_or_update_surface_field_report(
     return report_definition
 
 
-def update_solve_time_qoi_report_definitions(
-    solver,
-    solution,
-    membrane_wall_zones,
-    domain_x_min_m,
-    domain_length_m,
-    buffer_length_m,
-):
-    """Create solve-time pressure, membrane-transport, and shear monitors."""
-    spacer_length_m = domain_length_m - 2.0 * buffer_length_m
-    if spacer_length_m <= 0.0:
-        raise ValueError(
-            "Cannot create solve-time QoI reports with non-positive "
-            f"spacer length: {spacer_length_m}."
-        )
+def solve_time_wall_qoi_report_specs(membrane_wall_zones):
+    """Return the data-independent wall report specifications for Phase A."""
     if not membrane_wall_zones:
         raise ValueError(
             "Cannot create solve-time QoI reports without membrane walls."
         )
-
-    spacer_x_in_m = domain_x_min_m + buffer_length_m
-    spacer_x_out_m = domain_x_min_m + domain_length_m - buffer_length_m
-    plane_in_name = "plane_spacer_in"
-    plane_out_name = "plane_spacer_out"
-    create_x_normal_plane(solver, plane_in_name, spacer_x_in_m)
-    create_x_normal_plane(solver, plane_out_name, spacer_x_out_m)
-
-    surface_reports = solution.report_definitions.surface
-    expression_reports = (
-        solution.report_definitions.single_valued_expression
-    )
-    surface_specs = [
-        (
-            "pressure_spacer_in_avg",
-            "surface-areaavg",
-            "pressure",
-            [plane_in_name],
-        ),
-        (
-            "pressure_spacer_out_avg",
-            "surface-areaavg",
-            "pressure",
-            [plane_out_name],
-        ),
+    return [
         (
             "cm_membrane_avg",
             "surface-areaavg",
@@ -885,30 +848,156 @@ def update_solve_time_qoi_report_definitions(
         ),
     ]
 
-    report_names = []
-    for report_name, report_type, field_name, surfaces in surface_specs:
+
+def create_solve_time_surface_reports(
+    solution,
+    report_specs,
+    *,
+    defer_failures,
+):
+    """Create surface reports, optionally deferring failures until data exists."""
+    surface_reports = solution.report_definitions.surface
+    created = []
+    deferred = []
+    for spec in report_specs:
+        report_name, report_type, field_name, surfaces = spec
+        try:
+            create_or_update_surface_field_report(
+                surface_report_definitions=surface_reports,
+                report_name=report_name,
+                report_type=report_type,
+                field_name=field_name,
+                surface_names=surfaces,
+            )
+            created.append(report_name)
+        except Exception as exc:
+            if not defer_failures:
+                raise RuntimeError(
+                    "Solve-time QoI report still failed after initialization: "
+                    f"{report_name}: {type(exc).__name__}: {exc}"
+                ) from exc
+            print(
+                "WARNING: deferring solve-time QoI report until after "
+                f"initialization: {report_name}: {type(exc).__name__}: {exc}"
+            )
+            deferred.append(spec)
+    return created, deferred
+
+
+def update_solve_time_wall_qoi_report_definitions(
+    solution,
+    membrane_wall_zones,
+):
+    """Phase A: create reports on existing membrane wall zones."""
+    created, deferred = create_solve_time_surface_reports(
+        solution,
+        solve_time_wall_qoi_report_specs(membrane_wall_zones),
+        defer_failures=True,
+    )
+    print("\nSolve-time wall QoI Phase A report definitions updated:")
+    print(created)
+    if deferred:
+        print(
+            "Solve-time wall QoI reports deferred to Phase B: "
+            f"{[spec[0] for spec in deferred]}"
+        )
+    return created, deferred
+
+
+def retry_deferred_solve_time_qoi_report_definitions(
+    solution,
+    deferred_report_specs,
+):
+    """Phase B: retry wall reports that required initialized solution data."""
+    if not deferred_report_specs:
+        return []
+    created, _ = create_solve_time_surface_reports(
+        solution,
+        deferred_report_specs,
+        defer_failures=False,
+    )
+    print("\nDeferred solve-time QoI report definitions updated:")
+    print(created)
+    return created
+
+
+def update_solve_time_pressure_qoi_report_definitions(
+    solver,
+    solution,
+    domain_x_min_m,
+    domain_length_m,
+    buffer_length_m,
+):
+    """Phase B: create initialized-data planes and spacer pressure reports."""
+    spacer_length_m = domain_length_m - 2.0 * buffer_length_m
+    if spacer_length_m <= 0.0:
+        raise ValueError(
+            "Cannot create solve-time QoI reports with non-positive "
+            f"spacer length: {spacer_length_m}."
+        )
+
+    pressure_report_names = [
+        "pressure_spacer_in_avg",
+        "pressure_spacer_out_avg",
+        "pressure_drop_spacer",
+    ]
+    plane_names = ["plane_spacer_in", "plane_spacer_out"]
+    created = []
+    try:
+        spacer_x_in_m = domain_x_min_m + buffer_length_m
+        spacer_x_out_m = (
+            domain_x_min_m + domain_length_m - buffer_length_m
+        )
+        create_x_normal_plane(solver, plane_names[0], spacer_x_in_m)
+        create_x_normal_plane(solver, plane_names[1], spacer_x_out_m)
+
+        surface_reports = solution.report_definitions.surface
         create_or_update_surface_field_report(
             surface_report_definitions=surface_reports,
-            report_name=report_name,
-            report_type=report_type,
-            field_name=field_name,
-            surface_names=surfaces,
+            report_name=pressure_report_names[0],
+            report_type="surface-areaavg",
+            field_name="pressure",
+            surface_names=[plane_names[0]],
         )
-        report_names.append(report_name)
+        created.append(pressure_report_names[0])
+        create_or_update_surface_field_report(
+            surface_report_definitions=surface_reports,
+            report_name=pressure_report_names[1],
+            report_type="surface-areaavg",
+            field_name="pressure",
+            surface_names=[plane_names[1]],
+        )
+        created.append(pressure_report_names[1])
 
-    pressure_drop_report = create_or_update_single_valued_expression_report(
-        single_expression_report_definitions=expression_reports,
-        report_name="pressure_drop_spacer",
-        definition=(
-            "pressure_spacer_in_avg - pressure_spacer_out_avg"
-        ),
-    )
-    configure_report_definition_for_transcript(pressure_drop_report)
-    report_names.append("pressure_drop_spacer")
+        pressure_drop_report = (
+            create_or_update_single_valued_expression_report(
+                single_expression_report_definitions=(
+                    solution.report_definitions.single_valued_expression
+                ),
+                report_name=pressure_report_names[2],
+                definition=(
+                    "pressure_spacer_in_avg - pressure_spacer_out_avg"
+                ),
+            )
+        )
+        configure_report_definition_for_transcript(pressure_drop_report)
+        created.append(pressure_report_names[2])
+    except Exception as exc:
+        missing = [
+            name for name in pressure_report_names
+            if name not in created
+        ]
+        print(
+            "WARNING: solve-time spacer pressure monitors are unavailable; "
+            f"missing reports={missing}; required planes={plane_names}; "
+            "continuing solver run. "
+            f"Error: {type(exc).__name__}: {exc}"
+        )
+        return created
 
-    print("\nSolve-time QoI report definitions updated:")
-    print(report_names)
-    return report_names
+    print("\nSolve-time spacer pressure Phase B reports updated:")
+    print(created)
+    return created
 
 
 def update_transport_report_definitions_for_current_zones(
@@ -1951,21 +2040,80 @@ if __name__ == "__main__":
             print(f"\nFull fluid zone sources state after hooking for fluid zone '{fluid_zone_name}':")
             print(fluid_zone_object.sources.get_state())
 
+        deferred_solve_time_qoi_report_specs = []
         if enable_solve_time_qoi_reports:
-            update_solve_time_qoi_report_definitions(
-                solver=solver,
+            (
+                _created_wall_qoi_reports,
+                deferred_solve_time_qoi_report_specs,
+            ) = update_solve_time_wall_qoi_report_definitions(
                 solution=solution,
                 membrane_wall_zones=membrane_wall_zone_names,
-                domain_x_min_m=domain_x_min_m,
-                domain_length_m=domain_length_m,
-                buffer_length_m=buffer_length_m,
             )
         else:
             print("Skipping solve-time QoI report definition update.")
 
+        # ======================================================
+        # ##### [14] Initialization and Species Patch #####
+        # ======================================================
+
+        if input_mode == "restart_continuation":
+            print(
+                "Restart continuation mode: skipping hybrid initialization and species patch "
+                "so the loaded restart data remains the initial solution."
+            )
+            print("Initialization state from restart data:")
+            print(solution.initialization.get_state())
+        else:
+            print("Initialization state before hybrid initialization:")
+            print(solution.initialization.get_state())
+
+            solution.initialization.initialization_type = "hybrid"
+
+            solution.initialization.hybrid_initialize()
+
+            print("\nHybrid initialization completed.")
+
+            species_patch_variable = f"species-{salt_yi_index}"
+
+            patch_command = solution.initialization.patch.calculate_patch
+
+            patch_command(
+                domain="mixture",
+                cell_zones=target_fluid_zones,
+                registers=[],
+                variable=species_patch_variable,
+                reference_frame="Relative to Cell Zone",
+                use_custom_field_function=False,
+                custom_field_function_name="",
+                value=salt_mass_fraction,
+            )
+
+            print(
+                f"Patched fluid zones {target_fluid_zones}: "
+                f"{species_patch_variable} ({species_name}) = {salt_mass_fraction}"
+            )
+
+            print("\nInitialization state after hybrid initialization and patch:")
+            print(solution.initialization.get_state())
+
+        if enable_solve_time_qoi_reports:
+            retry_deferred_solve_time_qoi_report_definitions(
+                solution=solution,
+                deferred_report_specs=(
+                    deferred_solve_time_qoi_report_specs
+                ),
+            )
+            update_solve_time_pressure_qoi_report_definitions(
+                solver=solver,
+                solution=solution,
+                domain_x_min_m=domain_x_min_m,
+                domain_length_m=domain_length_m,
+                buffer_length_m=buffer_length_m,
+            )
+
 
         # ======================================================
-        # ##### [14] Residual Settings #####
+        # ##### [15] Residual Settings #####
         # ======================================================
 
         residual_equations_state = solution.monitor.residual.equations.get_state()
@@ -2025,51 +2173,6 @@ if __name__ == "__main__":
         )
         print("Relaxation profile application result:")
         print(relaxation_result)
-
-
-        # ======================================================
-        # ##### [15] Initialization and Species Patch #####
-        # ======================================================
-
-        if input_mode == "restart_continuation":
-            print(
-                "Restart continuation mode: skipping hybrid initialization and species patch "
-                "so the loaded restart data remains the initial solution."
-            )
-            print("Initialization state from restart data:")
-            print(solution.initialization.get_state())
-        else:
-            print("Initialization state before hybrid initialization:")
-            print(solution.initialization.get_state())
-
-            solution.initialization.initialization_type = "hybrid"
-
-            solution.initialization.hybrid_initialize()
-
-            print("\nHybrid initialization completed.")
-
-            species_patch_variable = f"species-{salt_yi_index}"
-
-            patch_command = solution.initialization.patch.calculate_patch
-
-            patch_command(
-                domain="mixture",
-                cell_zones=target_fluid_zones,
-                registers=[],
-                variable=species_patch_variable,
-                reference_frame="Relative to Cell Zone",
-                use_custom_field_function=False,
-                custom_field_function_name="",
-                value=salt_mass_fraction,
-            )
-
-            print(
-                f"Patched fluid zones {target_fluid_zones}: "
-                f"{species_patch_variable} ({species_name}) = {salt_mass_fraction}"
-            )
-
-            print("\nInitialization state after hybrid initialization and patch:")
-            print(solution.initialization.get_state())
 
 
         # ======================================================
