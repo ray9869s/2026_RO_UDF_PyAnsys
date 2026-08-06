@@ -127,6 +127,7 @@ if __name__ == "__main__":
 
     # [Checkpoint options]
     save_surface_mesh_checkpoint = cfg.save_surface_mesh_checkpoint
+    periodic_after_surface_mesh = bool(cfg.periodic_after_surface_mesh)
 
     # ==========================================================
     # ##### [2] Basic Parameter Checks #####
@@ -376,20 +377,28 @@ def workflow_task_exists(workflow_object, task_name):
 
 def ensure_periodic_boundary_task(workflow_object):
     """Insert the periodic boundary task only when it is not already present."""
+    ensure_periodic_boundary_task_after(workflow_object, "Add Local Sizing")
+
+
+def ensure_periodic_boundary_task_after(workflow_object, insert_after_task_name):
+    """Insert Set Up Periodic Boundaries after a chosen existing task."""
     periodic_task_name = "Set Up Periodic Boundaries"
 
     if workflow_task_exists(workflow_object, periodic_task_name):
         print(f"Workflow task already exists: {periodic_task_name}")
         return
 
-    workflow_object.TaskObject["Add Local Sizing"].InsertNextTask(
+    workflow_object.TaskObject[insert_after_task_name].InsertNextTask(
         CommandName=r"SetUpPeriodicBoundaries"
     )
 
     if not workflow_task_exists(workflow_object, periodic_task_name):
         raise RuntimeError(f"Failed to insert workflow task: {periodic_task_name}")
 
-    print(f"Inserted workflow task: {periodic_task_name}")
+    print(
+        f"Inserted workflow task: {periodic_task_name} "
+        f"(after {insert_after_task_name})"
+    )
 
 
 def parse_last_float(pattern, text):
@@ -561,23 +570,24 @@ if __name__ == "__main__":
         )
 
         # ======================================================
-        # ##### [8] Setup Periodic Boundaries #####
+        # ##### [8] Setup Periodic Boundaries (default: before surface mesh) #####
         # ======================================================
 
-        ensure_periodic_boundary_task(workflow)
+        if not periodic_after_surface_mesh:
+            ensure_periodic_boundary_task(workflow)
 
-        workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
-            r"LabelList": [periodic_reference_label],
-            r"Method": r"Manual - pick reference side",
-            r"TransShift": {
-                r"ShiftX": periodic_shift_x,
-                r"ShiftY": periodic_shift_y,
-                r"ShiftZ": periodic_shift_z,
-            },
-            r"Type": r"Translational",
-        })
+            workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
+                r"LabelList": [periodic_reference_label],
+                r"Method": r"Manual - pick reference side",
+                r"TransShift": {
+                    r"ShiftX": periodic_shift_x,
+                    r"ShiftY": periodic_shift_y,
+                    r"ShiftZ": periodic_shift_z,
+                },
+                r"Type": r"Translational",
+            })
 
-        workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
+            workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
 
         # ======================================================
         # ##### [9] Generate Surface Mesh #####
@@ -600,6 +610,38 @@ if __name__ == "__main__":
                 output_path=surface_mesh_checkpoint_path,
                 description="Surface mesh checkpoint",
             )
+
+        # ======================================================
+        # ##### [9b] Setup Periodic Boundaries (optional: after surface mesh) #####
+        # ======================================================
+
+        if periodic_after_surface_mesh:
+            ensure_periodic_boundary_task_after(
+                workflow, "Generate the Surface Mesh"
+            )
+
+            # Probe showed dangerous defaults after insert (Rotational, null
+            # LabelList, TransShift z=1). Override Type/TransShift/LabelList
+            # explicitly; RemeshBoundariesOption default is "auto".
+            after_surface_periodic_labels = [periodic_reference_label] + [
+                label
+                for label in periodic_labels
+                if label != periodic_reference_label
+            ]
+
+            workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
+                r"LabelList": after_surface_periodic_labels,
+                r"Method": r"Automatic - pick both sides",
+                r"RemeshBoundariesOption": r"auto",
+                r"TransShift": {
+                    r"ShiftX": periodic_shift_x,
+                    r"ShiftY": periodic_shift_y,
+                    r"ShiftZ": periodic_shift_z,
+                },
+                r"Type": r"Translational",
+            })
+
+            workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
 
         # ======================================================
         # ##### [10] Describe Geometry, Boundaries, and Regions #####

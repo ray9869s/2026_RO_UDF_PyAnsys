@@ -111,6 +111,11 @@ min_orthogonal_quality_threshold = 0.05
 max_aspect_ratio_threshold = 100.0
 fail_if_quality_not_parsed = False
 
+# When True: surface mesh first (no shadow-copy constraint), then
+# Set Up Periodic Boundaries with Automatic + both labels.
+# Default False preserves current Manual-before-surface behavior.
+periodic_after_surface_mesh = False
+
 # Checkpoint option
 save_surface_mesh_checkpoint = True
 allow_legacy_mesh_case_name_mismatch = False

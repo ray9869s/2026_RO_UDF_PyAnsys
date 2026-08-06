@@ -40,6 +40,7 @@ MESH_PARAMETER_NAMES = (
     "min_orthogonal_quality_threshold",
     "max_aspect_ratio_threshold",
     "fail_if_quality_not_parsed",
+    "periodic_after_surface_mesh",
     "save_surface_mesh_checkpoint",
     "allow_legacy_mesh_case_name_mismatch",
 )
