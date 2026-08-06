@@ -95,6 +95,10 @@ boi_growth_rate = 1.2
 bl_height_factor = 0.4
 bl_layers = REQUIRED
 
+# When False, spacer walls keep local proximity sizing but do not receive
+# boundary layers. Default True preserves current BL face-label composition.
+include_spacer_in_boundary_layers = True
+
 # Fluent Meshing boundary-layer offset method.
 # Common options:
 #   "smooth-transition"

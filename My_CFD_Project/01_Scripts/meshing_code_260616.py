@@ -92,11 +92,16 @@ if __name__ == "__main__":
     periodic_labels = list(cfg.periodic_labels)
     periodic_reference_label = cfg.periodic_reference_label
 
-    # Boundary layers are applied to active membrane walls, buffer walls, and spacer walls.
+    include_spacer_in_boundary_layers = bool(
+        cfg.include_spacer_in_boundary_layers
+    )
+
+    # Boundary layers: membrane + buffer always; spacer optional (local sizing
+    # still uses wall_spacer_labels independently).
     boundary_layer_labels = (
         active_membrane_wall_labels
         + buffer_wall_labels
-        + wall_spacer_labels
+        + (wall_spacer_labels if include_spacer_in_boundary_layers else [])
     )
 
     # [Periodic condition]

@@ -28,6 +28,7 @@ MESH_PARAMETER_NAMES = (
     "periodic_shift_z",
     "boi_curvature_normal_angle",
     "boi_growth_rate",
+    "include_spacer_in_boundary_layers",
     "boundary_layer_labels",
     "bl_height_factor",
     "bl_height",
@@ -519,9 +520,11 @@ def mesh_parameters_from_mapping(values):
         for key in (
             "active_membrane_wall_labels",
             "buffer_wall_labels",
-            "wall_spacer_labels",
         ):
             labels.extend(parameters.get(key) or [])
+        include_spacer = parameters.get("include_spacer_in_boundary_layers")
+        if include_spacer is None or include_spacer:
+            labels.extend(parameters.get("wall_spacer_labels") or [])
         parameters["boundary_layer_labels"] = labels or None
     if parameters["bl_height"] is None:
         m_min = parameters.get("m_min")
