@@ -53,11 +53,11 @@ CURRENT_BUFFER_WALL_BASE_NAMES = (
 
 _MATRIX_BASE_TAIL_RE = re.compile(r"^(?P<mesh>.+)_(?P<base>u\d+p\d+_p\d+M)$")
 _MATRIX_BASE_ONLY_RE = re.compile(r"^u\d+p\d+_p\d+M$")
-# Fluent may wrap the quoted path across lines with leading indent on the
-# continuation; collapse whitespace after the match. Accept optional space
-# after HOST: and either slash style.
-_READING_MSH_RE = re.compile(
-    r'Reading\s+from\s+HOST:\s*"(?P<path>[^"]+\.msh\.h5)"',
+# Mesh identity comes from .msh.h5 paths only (.cas.h5 / .dat.h5 are ignored).
+# Real Fluent mesh-replace logs always read the template .cas.h5 first, then the
+# mesh; quoted paths may wrap across lines with indented continuations.
+_MSH_H5_QUOTED_PATH_RE = re.compile(
+    r'"(?P<path>[^"]+\.msh\.h5)"',
     re.IGNORECASE,
 )
 # Trailing case-dir noise that is never part of a mesh_case_name.
@@ -420,8 +420,20 @@ def _normalize_msh_path(raw_path: str) -> str:
     return "".join(raw_path.split())
 
 
+def _mesh_case_name_from_msh_h5_path(raw_path: str) -> Optional[str]:
+    """Return the parent directory name of a .msh.h5 path, or None."""
+    normalized = _normalize_msh_path(raw_path).replace("\\", "/")
+    parent_name = PurePosixPath(normalized).parent.name.strip()
+    return parent_name or None
+
+
 def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
-    """Read mesh_case_name from solver_mesh_replace_log_*.txt under case_dir."""
+    """Read mesh_case_name from solver_mesh_replace_log_*.txt under case_dir.
+
+    Scans every quoted ``*.msh.h5`` path in the log and uses the **last** match
+    (a later mesh replacement wins). ``.cas.h5`` / ``.dat.h5`` reads are
+    ignored so the initial template-case load cannot suppress the mesh path.
+    """
     case_dir = Path(case_dir)
     if not case_dir.is_dir():
         return None
@@ -433,12 +445,10 @@ def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        matches = list(_READING_MSH_RE.finditer(text))
+        matches = list(_MSH_H5_QUOTED_PATH_RE.finditer(text))
         if not matches:
             continue
-        raw_path = _normalize_msh_path(matches[-1].group("path"))
-        parent_name = PurePosixPath(raw_path.replace("\\", "/")).parent.name
-        parent_name = parent_name.strip()
+        parent_name = _mesh_case_name_from_msh_h5_path(matches[-1].group("path"))
         if parent_name:
             return parent_name
     return None

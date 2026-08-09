@@ -72,6 +72,24 @@ FIXTURE_REPLACE_LOG = (
     "trailing noise\n"
 )
 
+# Real Fluent mesh-replace logs always read the template .cas.h5 first.
+FIXTURE_REPLACE_LOG_WITH_TEMPLATE = """\
+Reading from HOST:"C:/PyFluent/My_CFD_Project/01_Templates/
+      template_RO_setup.cas.h5" in NODE0 mode ...
+Reading from HOST:"C:/PyFluent/My_CFD_Project/03_Results/Pillar/
+      mesh_max085_min005_cpg5_bl4/Pillar_mesh_max085_min005_cpg5_bl4.msh.h5"
+      in NODE0 mode
+"""
+
+FIXTURE_REPLACE_LOG_TWO_MSH = """\
+Reading from HOST:"C:/PyFluent/My_CFD_Project/03_Results/Pillar/
+      mesh_max085_min006_cpg5_bl4/Pillar_mesh_max085_min006_cpg5_bl4.msh.h5"
+      in NODE0 mode
+Reading from HOST:"C:/PyFluent/My_CFD_Project/03_Results/Pillar/
+      mesh_max085_min005_cpg5_bl4/Pillar_mesh_max085_min005_cpg5_bl4.msh.h5"
+      in NODE0 mode
+"""
+
 
 def _assert_close_sequence(actual, expected, *, rel_tol=1.0e-12):
     assert len(actual) == len(expected)
@@ -237,6 +255,31 @@ class TestResolveMeshCaseName:
         case_dir.mkdir(parents=True)
         (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
             FIXTURE_REPLACE_LOG, encoding="utf-8"
+        )
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "log"
+
+    def test_log_with_template_cas_then_msh_uses_msh_parent(
+        self, tmp_path: Path
+    ):
+        # Real logs always read template .cas.h5 before the .msh.h5 mesh.
+        case_dir = tmp_path / "Pillar" / "u0p2_p6M"
+        case_dir.mkdir(parents=True)
+        (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
+            FIXTURE_REPLACE_LOG_WITH_TEMPLATE, encoding="utf-8"
+        )
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "log"
+        assert mesh_name != "01_Templates"
+        assert "template" not in mesh_name.lower()
+
+    def test_log_with_two_msh_reads_uses_last(self, tmp_path: Path):
+        case_dir = tmp_path / "Pillar" / "u0p2_p6M"
+        case_dir.mkdir(parents=True)
+        (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
+            FIXTURE_REPLACE_LOG_TWO_MSH, encoding="utf-8"
         )
         mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
         assert mesh_name == "mesh_max085_min005_cpg5_bl4"
