@@ -9,6 +9,9 @@ import pytest
 
 from helpers import load_batch_postprocess, load_batch_report_extract
 
+CURRENT_MESH = "mesh_max085_min006_cpg5_bl4"
+LEGACY_MESH = "mesh_max100_min006_cpg3_bl3"
+
 
 @pytest.fixture
 def batch_post():
@@ -24,11 +27,11 @@ class TestWriteReportConfigLayoutKeys:
     def test_registered_current_geometry_writes_layout_and_buffer_names(
         self, batch_post, tmp_path: Path
     ):
-        case_dir = tmp_path / "D2450_a45_7c_brg110" / "u0p2_p6M"
+        case_dir = tmp_path / "D2450_a45_7c_brg110" / f"u0p2_p6M__{CURRENT_MESH}"
         case_dir.mkdir(parents=True)
         config_path = tmp_path / "report_config.py"
         layout_settings, error = batch_post.try_resolve_post_layout_settings(
-            "D2450_a45_7c_brg110"
+            "D2450_a45_7c_brg110", CURRENT_MESH
         )
         assert error is None
         assert layout_settings is not None
@@ -37,7 +40,7 @@ class TestWriteReportConfigLayoutKeys:
             config_path,
             tmp_path,
             "D2450_a45_7c_brg110",
-            "u0p2_p6M",
+            f"u0p2_p6M__{CURRENT_MESH}",
             {"case_dir": case_dir},
             layout_settings,
         )
@@ -59,16 +62,18 @@ class TestWriteReportConfigLayoutKeys:
     def test_registered_legacy_geometry_writes_legacy_buffer_names(
         self, batch_post, tmp_path: Path
     ):
-        case_dir = tmp_path / "Sin_ST" / "u0p1_p4M"
+        case_dir = tmp_path / "Sin_ST" / f"u0p1_p4M__{LEGACY_MESH}"
         case_dir.mkdir(parents=True)
         config_path = tmp_path / "report_config.py"
-        layout_settings, error = batch_post.try_resolve_post_layout_settings("Sin_ST")
+        layout_settings, error = batch_post.try_resolve_post_layout_settings(
+            "Sin_ST", LEGACY_MESH
+        )
         assert error is None
         batch_post.write_report_config(
             config_path,
             tmp_path,
             "Sin_ST",
-            "u0p1_p4M",
+            f"u0p1_p4M__{LEGACY_MESH}",
             {"case_dir": case_dir},
             layout_settings,
         )
@@ -113,7 +118,8 @@ class TestBatchPostLayoutUnknown:
         self, batch_post, tmp_path: Path
     ):
         results_root = tmp_path / "03_Results"
-        case_dir = results_root / "Empty" / "u0p1_p4M"
+        # Plain name, no replace log → mesh unresolved → LAYOUT_UNKNOWN.
+        case_dir = results_root / "UnknownGeo" / "u0p1_p4M"
         case_dir.mkdir(parents=True)
         batch_dir = tmp_path / "batch"
         log_dir = tmp_path / "logs"
@@ -123,7 +129,7 @@ class TestBatchPostLayoutUnknown:
         args = self._minimal_args(batch_post, results_root, dry_run=True)
         plan, result = batch_post.execute_case(
             row={
-                "geo_name": "Empty",
+                "geo_name": "UnknownGeo",
                 "case_name": "u0p1_p4M",
                 "case_status": "READY_FOR_POSTPROCESSING",
                 "convergence_status": "MAX_ITER_REACHED",
@@ -139,8 +145,8 @@ class TestBatchPostLayoutUnknown:
         assert result["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         assert result["pyensight_contour_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         assert result["shear_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert "Unknown geometry" in result["error_summary"]
-        assert "Empty" in result["error_summary"]
+        assert "mesh_case_name" in result["error_summary"]
+        assert "UnknownGeo" in result["error_summary"]
         # Must not count as STATUS_FAILED (continue_on_error only stops on FAILED).
         assert result["report_stage_status"] != batch_post.STATUS_FAILED
 
@@ -148,7 +154,8 @@ class TestBatchPostLayoutUnknown:
         self, batch_post, tmp_path: Path
     ):
         results_root = tmp_path / "03_Results"
-        case_dir = results_root / "Sin_ST" / "u0p1_p4M"
+        case_name = f"u0p1_p4M__{LEGACY_MESH}"
+        case_dir = results_root / "Sin_ST" / case_name
         case_dir.mkdir(parents=True)
         batch_dir = tmp_path / "batch"
         log_dir = tmp_path / "logs"
@@ -159,7 +166,7 @@ class TestBatchPostLayoutUnknown:
         _plan, result = batch_post.execute_case(
             row={
                 "geo_name": "Sin_ST",
-                "case_name": "u0p1_p4M",
+                "case_name": case_name,
                 "case_status": "READY_FOR_POSTPROCESSING",
                 "convergence_status": "MAX_ITER_REACHED",
             },
@@ -178,11 +185,12 @@ class TestBatchReportOverridesLayoutKeys:
     def test_registered_overrides_include_layout_keys(self, batch_report):
         overrides, error = batch_report.build_post_case_overrides(
             geo_name="D2450_a45_7c_brg110",
-            case_name="u0p2_p6M",
+            case_name=f"u0p2_p6M__{CURRENT_MESH}",
             final_case_file="final.cas.h5",
             final_data_file="final.dat.h5",
             inlet_velocity_value=0.2,
             outlet_gauge_pressure=6.0e6,
+            mesh_case_name=CURRENT_MESH,
         )
         assert error is None
         assert overrides["n_buffer_in"] == 1
@@ -202,12 +210,12 @@ class TestBatchReportOverridesLayoutKeys:
 
     def test_unregistered_overrides_are_layout_unknown(self, batch_report):
         overrides, error = batch_report.build_post_case_overrides(
-            geo_name="Empty",
+            geo_name="UnknownGeo",
             case_name="u0p1_p4M",
             final_case_file="final.cas.h5",
             final_data_file="final.dat.h5",
         )
         assert overrides is None
         assert error is not None
-        assert "Unknown geometry" in error
-        assert "Empty" in error
+        assert "mesh_case_name" in error
+        assert "UnknownGeo" in error

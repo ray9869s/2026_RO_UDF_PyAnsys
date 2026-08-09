@@ -9,6 +9,9 @@ symmetric production triple
 ``(domain_length_m, n_unit_cells, n_buffer_cells_each_end)``, which cannot
 express the current 1+7+2 generation.
 
+``cell_length_x_m = 0.003465`` is constant across every geometry family in
+``mesh_ledger.csv`` (all measured x extents are exact multiples of that cell).
+
 There is deliberately **no** ``cell_length_y`` here. The spanwise period lives
 in the meshing config as ``periodic_shift_y`` in **millimetres** (nominal
 3.465 mm). Post-processing does not need that quantity, and it must not be
@@ -20,16 +23,23 @@ wrong.
 ``EvaluationWindow`` uses lead/trail exclusions rather than
 ``(n_sacrificial, n_evaluation)`` so the same window remains valid when
 ``n_active`` changes; a fixed evaluation count would become invalid.
+
+The registry is keyed by ``(geo_name, mesh_case_name)``. Geo alone is
+insufficient: every legacy family has both 3-cell (x extent 0.010395 m) and
+5-cell (0.017325 m) meshes. Only 5-cell and 10-cell generations with a known
+buffer/active split are registered; 3-cell meshes stay LAYOUT_UNKNOWN.
 """
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
-from typing import Mapping
+from pathlib import Path, PurePosixPath
+from typing import Mapping, Optional
 
-
-# Constants harvested from _tmp_cell_profile.py / _tmp_probe_reduction.py
-# (CURRENT generation) and from legacy 1+3+1 configs / mesh-check fixtures.
+# Constants harvested from mesh_ledger.csv (all families share this cell length)
+# and from CURRENT / LEGACY buffer-active splits.
 CELL_LENGTH_X_M = 0.003465
 
 MEMBRANE_WALL_BASE_NAMES = ("wall_top_mem", "wall_bottom_mem")
@@ -40,6 +50,35 @@ CURRENT_BUFFER_WALL_BASE_NAMES = (
     "wall_bottom_buffer_in",
     "wall_bottom_buffer_out",
 )
+
+_MATRIX_BASE_TAIL_RE = re.compile(r"^(?P<mesh>.+)_(?P<base>u\d+p\d+_p\d+M)$")
+_MATRIX_BASE_ONLY_RE = re.compile(r"^u\d+p\d+_p\d+M$")
+_READING_MSH_RE = re.compile(
+    r'Reading from HOST:"(?P<path>[^"]+\.msh\.h5)"',
+    re.IGNORECASE,
+)
+_FLOAT_TOKEN = r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+# Solver mesh-replace / transcript block: header "Domain Extents:" and each
+# axis line MUST carry an explicit "(m)" unit marker. Values are already metres.
+# Do NOT reuse _mesh_common._parse_domain_extents_m (meshing log, mm → *1e-3).
+_SOLVER_DOMAIN_EXTENTS_RE = re.compile(
+    rf"^[ \t]*Domain[ \t]+Extents:[ \t]*\r?\n"
+    rf"^[ \t]*x-coordinate:[ \t]*min[ \t]*\(m\)[ \t]*=[ \t]*(?P<x_min>{_FLOAT_TOKEN})"
+    rf"[ \t]*,[ \t]*max[ \t]*\(m\)[ \t]*=[ \t]*(?P<x_max>{_FLOAT_TOKEN})[ \t]*\r?\n"
+    rf"^[ \t]*y-coordinate:[ \t]*min[ \t]*\(m\)[ \t]*=[ \t]*(?P<y_min>{_FLOAT_TOKEN})"
+    rf"[ \t]*,[ \t]*max[ \t]*\(m\)[ \t]*=[ \t]*(?P<y_max>{_FLOAT_TOKEN})[ \t]*\r?\n"
+    rf"^[ \t]*z-coordinate:[ \t]*min[ \t]*\(m\)[ \t]*=[ \t]*(?P<z_min>{_FLOAT_TOKEN})"
+    rf"[ \t]*,[ \t]*max[ \t]*\(m\)[ \t]*=[ \t]*(?P<z_max>{_FLOAT_TOKEN})[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DOMAIN_EXTENTS_HEADER_RE = re.compile(
+    r"^[ \t]*Domain[ \t]+[Ee]xtents\.?:?[ \t]*$",
+    re.MULTILINE,
+)
+
+# Relative tolerance for mesh-coordinate length checks. Diamond_ov020 measures
+# 0.017324968 against nominal 5 * 0.003465 (= 0.017325), ~1.8e-6 relative.
+DEFAULT_EXTENT_REL_TOL = 1.0e-5
 
 
 @dataclass(frozen=True)
@@ -182,11 +221,22 @@ class EvaluationWindow:
 
 @dataclass(frozen=True)
 class GeometryLayoutRecord:
-    """Layout plus wall base names for one named geometry."""
+    """Layout plus wall base names for one (geo, mesh) pair."""
 
     layout: DomainLayout
     membrane_wall_base_names: tuple[str, ...]
     buffer_wall_base_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LayoutExtentValidation:
+    """Structured result of comparing a layout's nominal length to a measured x span."""
+
+    ok: bool
+    expected_length_m: float
+    measured_length_m: float
+    relative_error: float
+    message: str
 
 
 LEGACY_LAYOUT = DomainLayout(
@@ -213,40 +263,81 @@ _CURRENT_RECORD = GeometryLayoutRecord(
     buffer_wall_base_names=CURRENT_BUFFER_WALL_BASE_NAMES,
 )
 
-# Seeded only for names verified in-repo (mesh-check fixtures / batch_config).
-# See module tests for the deliberate omissions.
-GEOMETRY_LAYOUT_REGISTRY: Mapping[str, GeometryLayoutRecord] = {
-    "D2450_a45_7c_brg110": _CURRENT_RECORD,
-    # PROVISIONAL: Sin_ST / Pillar are LEGACY 1+3+1 on total mesh x-extent
-    # 0.017325 m alone. Extent does not fix period count — 0.017325 is
-    # 5 x 0.003465 but equally 3 x 0.005775 — and neither family's true
-    # streamwise period is recorded in this repo. Confirm against the
-    # measured membrane wall x-range before trusting these entries.
-    "Sin_ST": _LEGACY_RECORD,
-    "Pillar": _LEGACY_RECORD,
-}
+# 5-cell generation (1 + 3 + 1), extent 0.017325 m — from mesh_ledger.csv.
+# 3-cell meshes (extent 0.010395 m) are intentionally NOT registered: their
+# buffer/active split is recorded nowhere, and no 3-cell case has ever been
+# successfully post-processed. They remain LAYOUT_UNKNOWN.
+_LEGACY_5CELL_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Diamond_Spacer", "260615_u0p2_p6M"),
+    ("Diamond_Spacer", "mesh_max085_min005_cpg5_bl4"),
+    ("Diamond_Spacer", "mesh_max085_min006_cpg5_bl4"),
+    ("Empty", "260616_u0p2_p6M"),
+    ("Empty", "mesh_max085_min005_cpg5_bl4"),
+    ("Empty", "mesh_max085_min006_cpg5_bl4"),
+    ("Hole_Pillar", "mesh_max085_min005_cpg5_bl4"),
+    ("Hole_Pillar", "mesh_max085_min006_cpg5_bl4"),
+    ("Multi_Layer_diff", "mesh_max085_min005_cpg5_bl3"),
+    ("Multi_Layer_equal", "mesh_max085_min005_cpg5_bl3"),
+    ("Multi_Layer_equal", "mesh_max085_min005_cpg5_bl4"),
+    ("Pillar", "mesh_max085_min005_cpg5_bl4"),
+    ("Pillar", "mesh_max085_min006_cpg5_bl4"),
+    ("Sin_SL", "mesh_max085_min005_cpg5_bl4"),
+    ("Sin_SL", "mesh_max085_min006_cpg5_bl4"),
+    ("Sin_SL", "mesh_max100_min006_cpg3_bl3"),
+    ("Sin_SL", "mesh_max100_min006_cpg5_bl4"),
+    ("Sin_ST", "mesh_max085_min005_cpg5_bl4"),
+    ("Sin_ST", "mesh_max085_min006_cpg5_bl4"),
+    ("Sin_ST", "mesh_max100_min006_cpg3_bl3"),
+    ("Sin_ST", "mesh_max100_min006_cpg5_bl4"),
+    ("Diamond_ov020", "mesh_max085_min006_cpg5_bl4"),
+    ("Diamond_ov020", "mesh_max085_min006_cpg7_bl4"),
+)
+
+# 10-cell generation (1 + 7 + 2), extent 0.03465 m.
+_CURRENT_10CELL_PAIRS: tuple[tuple[str, str], ...] = (
+    ("D2450_a45_7c_brg110", "mesh_max085_min006_cpg5_bl4"),
+    ("D2450_a45_ov060", "mesh_max085_min006_cpg5_bl4"),
+)
 
 
-def resolve_layout(geo_name: str) -> GeometryLayoutRecord:
-    """Return the layout record for ``geo_name``, or raise KeyError."""
+def _build_geometry_layout_registry() -> dict[tuple[str, str], GeometryLayoutRecord]:
+    registry: dict[tuple[str, str], GeometryLayoutRecord] = {}
+    for geo_name, mesh_case_name in _LEGACY_5CELL_PAIRS:
+        registry[(geo_name, mesh_case_name)] = _LEGACY_RECORD
+    for geo_name, mesh_case_name in _CURRENT_10CELL_PAIRS:
+        registry[(geo_name, mesh_case_name)] = _CURRENT_RECORD
+    return registry
+
+
+GEOMETRY_LAYOUT_REGISTRY: Mapping[tuple[str, str], GeometryLayoutRecord] = (
+    _build_geometry_layout_registry()
+)
+
+
+def resolve_layout(geo_name: str, mesh_case_name: str) -> GeometryLayoutRecord:
+    """Return the layout record for ``(geo_name, mesh_case_name)``, or raise KeyError."""
+    key = (geo_name, mesh_case_name)
     try:
-        return GEOMETRY_LAYOUT_REGISTRY[geo_name]
+        return GEOMETRY_LAYOUT_REGISTRY[key]
     except KeyError as exc:
-        known = ", ".join(sorted(GEOMETRY_LAYOUT_REGISTRY))
+        known = ", ".join(
+            f"{g!r}/{m!r}" for g, m in sorted(GEOMETRY_LAYOUT_REGISTRY)
+        )
         raise KeyError(
-            f"Unknown geometry {geo_name!r} for domain layout. "
-            f"Known names: {known}."
+            f"Unknown geometry/mesh pair geo_name={geo_name!r}, "
+            f"mesh_case_name={mesh_case_name!r} for domain layout. "
+            f"Known pairs: {known}."
         ) from exc
 
 
-def layout_post_config_values(geo_name: str) -> dict[str, object]:
-    """Return additive post-config keys for ``geo_name``.
+def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, object]:
+    """Return additive post-config keys for ``(geo_name, mesh_case_name)``.
 
-    Raises KeyError via :func:`resolve_layout` when the geometry is unknown.
+    Raises KeyError via :func:`resolve_layout` when the pair is unknown.
     Keys use the existing post-config names ``active_membrane_base_names`` and
     ``buffer_wall_base_names`` (not a new membrane_wall_base_names alias).
     """
-    record = resolve_layout(geo_name)
+    record = resolve_layout(geo_name, mesh_case_name)
     layout = record.layout
     return {
         "n_buffer_in": layout.n_buffer_in,
@@ -256,3 +347,117 @@ def layout_post_config_values(geo_name: str) -> dict[str, object]:
         "active_membrane_base_names": list(record.membrane_wall_base_names),
         "buffer_wall_base_names": list(record.buffer_wall_base_names),
     }
+
+
+def mesh_case_name_from_case_dirname(case_name: str) -> Optional[str]:
+    """Parse mesh_case_name from a case directory name, or None if plain."""
+    if "__" in case_name:
+        _base, mesh = case_name.split("__", 1)
+        return mesh or None
+    prefix_match = _MATRIX_BASE_TAIL_RE.match(case_name)
+    if prefix_match is not None:
+        return prefix_match.group("mesh")
+    if _MATRIX_BASE_ONLY_RE.match(case_name):
+        return None
+    return None
+
+
+def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
+    """Read mesh_case_name from solver_mesh_replace_log_*.txt under case_dir."""
+    case_dir = Path(case_dir)
+    if not case_dir.is_dir():
+        return None
+    log_paths = sorted(case_dir.glob("solver_mesh_replace_log_*.txt"))
+    if not log_paths:
+        return None
+    for log_path in log_paths:
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        matches = list(_READING_MSH_RE.finditer(text))
+        if not matches:
+            continue
+        raw_path = matches[-1].group("path")
+        parent_name = PurePosixPath(raw_path.replace("\\", "/")).parent.name
+        if parent_name:
+            return parent_name
+    return None
+
+
+def resolve_mesh_case_name(case_dir: Path) -> Optional[str]:
+    """Resolve mesh_case_name from the case directory name, then the replace log.
+
+    Returns None (never a guess) when neither the directory name nor a
+    ``solver_mesh_replace_log_*.txt`` yields a mesh identity.
+    """
+    case_dir = Path(case_dir)
+    from_name = mesh_case_name_from_case_dirname(case_dir.name)
+    if from_name is not None:
+        return from_name
+    return mesh_case_name_from_solver_replace_log(case_dir)
+
+
+def parse_solver_log_domain_extents_m(
+    text: str,
+) -> tuple[float, float, float, float, float, float]:
+    """Parse solver-log ``Domain Extents:`` mins/maxes in metres.
+
+    Requires an explicit ``(m)`` marker on every axis line. Raises ValueError
+    if a Domain Extents / Domain extents header is present without those
+    markers (so meshing-log mm blocks cannot be silently mis-scaled).
+    """
+    matches = list(_SOLVER_DOMAIN_EXTENTS_RE.finditer(text))
+    if matches:
+        match = matches[-1]
+        return (
+            float(match.group("x_min")),
+            float(match.group("x_max")),
+            float(match.group("y_min")),
+            float(match.group("y_max")),
+            float(match.group("z_min")),
+            float(match.group("z_max")),
+        )
+    if _DOMAIN_EXTENTS_HEADER_RE.search(text):
+        raise ValueError(
+            "Found a Domain Extents / Domain extents header but no axis lines "
+            "with explicit '(m)' markers. Refusing to parse meshing-log style "
+            "(mm) extents as metres."
+        )
+    raise ValueError(
+        "No solver-log Domain Extents: block with '(m)' markers found."
+    )
+
+
+def validate_layout_against_x_extent(
+    layout: DomainLayout,
+    x_min: float,
+    x_max: float,
+    *,
+    rel_tol: float = DEFAULT_EXTENT_REL_TOL,
+) -> LayoutExtentValidation:
+    """Check layout nominal length against measured (x_min, x_max); never raises."""
+    expected = float(layout.total_length_m)
+    measured = float(x_max) - float(x_min)
+    if expected == 0.0:
+        rel_err = float("inf") if measured != 0.0 else 0.0
+    else:
+        rel_err = abs(measured - expected) / abs(expected)
+    ok = math.isclose(measured, expected, rel_tol=rel_tol, abs_tol=0.0)
+    if ok:
+        message = (
+            f"measured x extent {measured!r} matches layout nominal "
+            f"{expected!r} (rel_err={rel_err:.3e}, rel_tol={rel_tol})."
+        )
+    else:
+        message = (
+            f"measured x extent {measured!r} does not match layout nominal "
+            f"{expected!r} (rel_err={rel_err:.3e}, rel_tol={rel_tol})."
+        )
+    return LayoutExtentValidation(
+        ok=ok,
+        expected_length_m=expected,
+        measured_length_m=measured,
+        relative_error=rel_err,
+        message=message,
+    )

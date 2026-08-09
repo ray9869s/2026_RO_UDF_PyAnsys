@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,10 @@ from _domain_layout import (
     DomainLayout,
     EvaluationWindow,
     LEGACY_LAYOUT,
+    parse_solver_log_domain_extents_m,
     resolve_layout,
+    resolve_mesh_case_name,
+    validate_layout_against_x_extent,
 )
 from _fluent_report_helpers import (
     spacer_cell_numbers,
@@ -46,6 +50,27 @@ CURRENT_SPAN_LABELS = [
     "buffer_out_1",
     "buffer_out_2",
 ]
+
+SOLVER_EXTENTS_SNIPPET = """\
+   Domain Extents:
+     x-coordinate: min (m) = -8.673617e-18, max (m) = 1.732500e-02
+     y-coordinate: min (m) = -1.732500e-03, max (m) = 1.732500e-03
+     z-coordinate: min (m) = 0.000000e+00, max (m) = 7.700000e-04
+"""
+
+MESHING_EXTENTS_SNIPPET = """\
+Domain extents.
+x-coordinate: min = -8.673617e-15, max = 1.732500e+01.
+y-coordinate: min = -1.732500e+00, max = 1.732500e+00.
+z-coordinate: min = 0.000000e+00, max = 7.700000e-01.
+"""
+
+FIXTURE_REPLACE_LOG = (
+    'Some preamble\n'
+    'Reading from HOST:"C:/PyFluent/My_CFD_Project/03_Results/Pillar/'
+    'mesh_max085_min005_cpg5_bl4/Pillar_mesh_max085_min005_cpg5_bl4.msh.h5"\n'
+    "trailing noise\n"
+)
 
 
 def _assert_close_sequence(actual, expected, *, rel_tol=1.0e-12):
@@ -174,8 +199,10 @@ class TestEvaluationWindow:
 
 
 class TestGeometryRegistry:
-    def test_resolve_current_geometry(self):
-        record = resolve_layout("D2450_a45_7c_brg110")
+    def test_resolve_registered_geo_mesh_pair(self):
+        record = resolve_layout(
+            "D2450_a45_7c_brg110", "mesh_max085_min006_cpg5_bl4"
+        )
         assert record.layout == CURRENT_LAYOUT
         assert record.buffer_wall_base_names == (
             "wall_top_buffer_in",
@@ -188,8 +215,78 @@ class TestGeometryRegistry:
             "wall_bottom_mem",
         )
 
-    def test_resolve_unknown_geometry_raises(self):
-        with pytest.raises(KeyError, match="Unknown geometry"):
-            resolve_layout("not_a_real_geometry")
-        with pytest.raises(KeyError, match="D2450_a45_7c_brg110"):
-            resolve_layout("Empty")
+    def test_same_geo_with_3cell_mesh_raises_naming_both(self):
+        # 3-cell meshes are deliberately unregistered (LAYOUT_UNKNOWN).
+        with pytest.raises(KeyError, match="geo_name='Sin_ST'") as exc_info:
+            resolve_layout("Sin_ST", "mesh_max100_min006_cpg3_bl3_3cell_fake")
+        message = str(exc_info.value)
+        assert "mesh_case_name=" in message
+        assert "Sin_ST" in message
+        assert "mesh_max100_min006_cpg3_bl3_3cell_fake" in message
+
+    def test_registered_5cell_sin_st(self):
+        record = resolve_layout("Sin_ST", "mesh_max100_min006_cpg3_bl3")
+        assert record.layout == LEGACY_LAYOUT
+
+
+class TestResolveMeshCaseName:
+    def test_suffix_shape(self, tmp_path: Path):
+        case_dir = tmp_path / "u0p1_p4M__mesh_max085_min006_cpg5_bl4"
+        case_dir.mkdir()
+        assert (
+            resolve_mesh_case_name(case_dir)
+            == "mesh_max085_min006_cpg5_bl4"
+        )
+
+    def test_prefix_shape(self, tmp_path: Path):
+        case_dir = tmp_path / "mesh_max085_min005_cpg5_bl4_u0p1_p4M"
+        case_dir.mkdir()
+        assert (
+            resolve_mesh_case_name(case_dir)
+            == "mesh_max085_min005_cpg5_bl4"
+        )
+
+    def test_plain_shape_uses_replace_log(self, tmp_path: Path):
+        case_dir = tmp_path / "u0p2_p6M"
+        case_dir.mkdir()
+        log_path = case_dir / "solver_mesh_replace_log_u0p2_p6M.txt"
+        log_path.write_text(FIXTURE_REPLACE_LOG, encoding="utf-8")
+        assert resolve_mesh_case_name(case_dir) == "mesh_max085_min005_cpg5_bl4"
+
+    def test_plain_shape_without_log_returns_none(self, tmp_path: Path):
+        case_dir = tmp_path / "u0p2_p6M"
+        case_dir.mkdir()
+        assert resolve_mesh_case_name(case_dir) is None
+
+
+class TestSolverLogDomainExtents:
+    def test_returns_metres_without_1e3_scale(self):
+        x_min, x_max, y_min, y_max, z_min, z_max = parse_solver_log_domain_extents_m(
+            SOLVER_EXTENTS_SNIPPET
+        )
+        assert x_max == 1.7325e-02
+        assert math.isclose(x_min, -8.673617e-18, rel_tol=0.0, abs_tol=1e-30)
+        assert math.isclose(y_min, -1.7325e-03, rel_tol=1e-12)
+        assert math.isclose(y_max, 1.7325e-03, rel_tol=1e-12)
+        assert math.isclose(z_min, 0.0, abs_tol=0.0)
+        assert math.isclose(z_max, 7.7e-04, rel_tol=1e-12)
+
+    def test_raises_on_meshing_log_block_without_m_marker(self):
+        with pytest.raises(ValueError, match=r"\(m\)"):
+            parse_solver_log_domain_extents_m(MESHING_EXTENTS_SNIPPET)
+
+
+class TestValidateLayoutAgainstXExtent:
+    def test_diamond_ov020_measured_extent_passes(self):
+        result = validate_layout_against_x_extent(
+            LEGACY_LAYOUT, 0.0, 0.017324968
+        )
+        assert result.ok is True
+        assert math.isclose(result.expected_length_m, 5 * CELL_LENGTH_X_M, rel_tol=1e-12)
+
+    def test_3cell_extent_fails_against_5cell_layout(self):
+        result = validate_layout_against_x_extent(
+            LEGACY_LAYOUT, 0.0, 0.010395
+        )
+        assert result.ok is False
+        assert result.measured_length_m == 0.010395

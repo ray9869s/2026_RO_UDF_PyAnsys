@@ -30,7 +30,10 @@ SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _domain_layout import layout_post_config_values  # noqa: E402
+from _domain_layout import (  # noqa: E402
+    layout_post_config_values,
+    resolve_mesh_case_name,
+)
 
 PROJECT_ROOT_DEFAULT = Path("My_CFD_Project")
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT_DEFAULT / "03_Results"
@@ -684,15 +687,24 @@ def parse_case_operating_values(case_name: str) -> tuple[Optional[float], Option
     return inlet_velocity, outlet_pressure
 
 
-def try_resolve_post_layout_settings(geo_name: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """Resolve additive layout keys for a geometry without aborting the batch.
+def try_resolve_post_layout_settings(
+    geo_name: str,
+    mesh_case_name: Optional[str],
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Resolve additive layout keys for a (geo, mesh) pair without aborting.
 
-    Returns (settings, None) on success, or (None, error_summary) when the
-    geometry is not in the domain-layout registry. Never substitutes a default
-    layout.
+    Returns (settings, None) on success, or (None, error_summary) when the mesh
+    cannot be resolved or the pair is not in the domain-layout registry. Never
+    substitutes a default layout.
     """
+    if not mesh_case_name:
+        return None, (
+            f"Could not resolve mesh_case_name for geo_name={geo_name!r}; "
+            "case directory name has no mesh part and no solver_mesh_replace_log "
+            "was found. 3-cell (and other unregistered) meshes stay LAYOUT_UNKNOWN."
+        )
     try:
-        return layout_post_config_values(geo_name), None
+        return layout_post_config_values(geo_name, mesh_case_name), None
     except KeyError as exc:
         return None, str(exc)
 
@@ -871,7 +883,10 @@ def execute_case(
     cff_file, cff_source = resolve_cff_file(args, paths)
 
     # Resolve layout for every case (including --dry-run) before any Fluent work.
-    layout_settings, layout_error = try_resolve_post_layout_settings(geo_name)
+    mesh_case_name = resolve_mesh_case_name(case_dir)
+    layout_settings, layout_error = try_resolve_post_layout_settings(
+        geo_name, mesh_case_name
+    )
     if layout_error is not None:
         print(f"[{selected_index}] {geo_name}/{case_name}")
         print(f"  layout: {STATUS_LAYOUT_UNKNOWN} :: {layout_error}")
@@ -914,8 +929,10 @@ def execute_case(
             "error_summary": layout_error,
             "runtime_seconds_total": 0.0,
             "suggested_next_action": (
-                "Register this geometry in _domain_layout.GEOMETRY_LAYOUT_REGISTRY "
-                "or pass a supported geo_name, then rerun."
+                "Register this (geo_name, mesh_case_name) in "
+                "_domain_layout.GEOMETRY_LAYOUT_REGISTRY, or ensure the case "
+                "directory name / solver_mesh_replace_log identifies the mesh, "
+                "then rerun."
             ),
             "stage_details": {
                 "report": None,

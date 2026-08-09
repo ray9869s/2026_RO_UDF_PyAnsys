@@ -12,7 +12,10 @@ _SCRIPTS_DIR = _SCRIPT_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from _domain_layout import layout_post_config_values  # noqa: E402
+from _domain_layout import (  # noqa: E402
+    layout_post_config_values,
+    resolve_mesh_case_name,
+)
 
 
 # ============================================================
@@ -31,10 +34,16 @@ CRITICAL_SUMMARY_COLUMNS = [
 ]
 
 
-def try_resolve_post_layout_overrides(geo_name):
-    """Return (layout_overrides, None) or (None, error_summary) for unknown geos."""
+def try_resolve_post_layout_overrides(geo_name, mesh_case_name):
+    """Return (layout_overrides, None) or (None, error_summary) for unknown pairs."""
+    if not mesh_case_name:
+        return None, (
+            f"Could not resolve mesh_case_name for geo_name={geo_name!r}; "
+            "case directory name has no mesh part and no solver_mesh_replace_log "
+            "was found. 3-cell (and other unregistered) meshes stay LAYOUT_UNKNOWN."
+        )
     try:
-        return layout_post_config_values(geo_name), None
+        return layout_post_config_values(geo_name, mesh_case_name), None
     except KeyError as exc:
         return None, str(exc)
 
@@ -46,11 +55,17 @@ def build_post_case_overrides(
     final_data_file,
     inlet_velocity_value=None,
     outlet_gauge_pressure=None,
+    mesh_case_name=None,
+    case_dir=None,
 ):
     """Build PYFLUENT_POST_OVERRIDES including additive layout keys.
 
     Returns (overrides, None) on success, or (None, error_summary) when the
-    geometry is not registered. Never substitutes a default layout.
+    (geo, mesh) pair is not registered. Never substitutes a default layout.
+
+    ``mesh_case_name`` may be supplied explicitly; otherwise it is resolved from
+    ``case_dir`` (or from ``case_name`` as a directory name when ``case_dir`` is
+    omitted).
     """
     overrides = {
         "geo_name": geo_name,
@@ -63,7 +78,16 @@ def build_post_case_overrides(
     if outlet_gauge_pressure is not None:
         overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
 
-    layout_overrides, layout_error = try_resolve_post_layout_overrides(geo_name)
+    resolved_mesh = mesh_case_name
+    if not resolved_mesh:
+        if case_dir is not None:
+            resolved_mesh = resolve_mesh_case_name(Path(case_dir))
+        else:
+            resolved_mesh = resolve_mesh_case_name(Path(case_name))
+
+    layout_overrides, layout_error = try_resolve_post_layout_overrides(
+        geo_name, resolved_mesh
+    )
     if layout_error is not None:
         return None, layout_error
     overrides.update(layout_overrides)
@@ -302,6 +326,8 @@ if __name__ == "__main__":
             final_data_file=final_data_file,
             inlet_velocity_value=inlet_velocity_value,
             outlet_gauge_pressure=outlet_gauge_pressure,
+            mesh_case_name=mesh_case_name,
+            case_dir=case_result_dir,
         )
         if layout_error is not None:
             print(f"  LAYOUT_UNKNOWN: {layout_error}")
