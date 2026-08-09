@@ -7,6 +7,13 @@ from pathlib import Path
 
 import pandas as pd
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_SCRIPTS_DIR = _SCRIPT_DIR.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from _domain_layout import layout_post_config_values  # noqa: E402
+
 
 # ============================================================
 # Critical columns required to be present and non-NaN/empty
@@ -22,6 +29,45 @@ CRITICAL_SUMMARY_COLUMNS = [
     "wall_shear_rate_avg",
     "mass_balance_relative_error",
 ]
+
+
+def try_resolve_post_layout_overrides(geo_name):
+    """Return (layout_overrides, None) or (None, error_summary) for unknown geos."""
+    try:
+        return layout_post_config_values(geo_name), None
+    except KeyError as exc:
+        return None, str(exc)
+
+
+def build_post_case_overrides(
+    geo_name,
+    case_name,
+    final_case_file,
+    final_data_file,
+    inlet_velocity_value=None,
+    outlet_gauge_pressure=None,
+):
+    """Build PYFLUENT_POST_OVERRIDES including additive layout keys.
+
+    Returns (overrides, None) on success, or (None, error_summary) when the
+    geometry is not registered. Never substitutes a default layout.
+    """
+    overrides = {
+        "geo_name": geo_name,
+        "case_name": case_name,
+        "final_case_file": str(final_case_file),
+        "final_data_file": str(final_data_file),
+    }
+    if inlet_velocity_value is not None:
+        overrides["inlet_velocity_value"] = inlet_velocity_value
+    if outlet_gauge_pressure is not None:
+        overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
+
+    layout_overrides, layout_error = try_resolve_post_layout_overrides(geo_name)
+    if layout_error is not None:
+        return None, layout_error
+    overrides.update(layout_overrides)
+    return overrides, None
 
 
 # ============================================================
@@ -249,16 +295,20 @@ if __name__ == "__main__":
             "message":               "",
         }
 
-        overrides = {
-            "geo_name": geo_name,
-            "case_name": case_name,
-            "final_case_file": str(final_case_file),
-            "final_data_file": str(final_data_file),
-        }
-        if inlet_velocity_value is not None:
-            overrides["inlet_velocity_value"] = inlet_velocity_value
-        if outlet_gauge_pressure is not None:
-            overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
+        overrides, layout_error = build_post_case_overrides(
+            geo_name=geo_name,
+            case_name=case_name,
+            final_case_file=final_case_file,
+            final_data_file=final_data_file,
+            inlet_velocity_value=inlet_velocity_value,
+            outlet_gauge_pressure=outlet_gauge_pressure,
+        )
+        if layout_error is not None:
+            print(f"  LAYOUT_UNKNOWN: {layout_error}")
+            record["status"] = "LAYOUT_UNKNOWN"
+            record["message"] = layout_error
+            status_records.append(record)
+            continue
 
         # --- Gate 1: DRY_RUN ---
         if bcfg.DRY_RUN:

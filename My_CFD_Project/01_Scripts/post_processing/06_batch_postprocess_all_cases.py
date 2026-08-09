@@ -26,6 +26,12 @@ from typing import Any, Optional
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = SCRIPT_DIR.parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from _domain_layout import layout_post_config_values  # noqa: E402
+
 PROJECT_ROOT_DEFAULT = Path("My_CFD_Project")
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT_DEFAULT / "03_Results"
 DEFAULT_INVENTORY_CSV = DEFAULT_RESULTS_ROOT / "_inventory" / "case_inventory_compact.csv"
@@ -49,6 +55,7 @@ STATUS_FAILED = "FAILED"
 STATUS_WARN = "WARN"
 STATUS_UNKNOWN = "UNKNOWN"
 STATUS_DRY_RUN = "DRY_RUN"
+STATUS_LAYOUT_UNKNOWN = "LAYOUT_UNKNOWN"
 
 SHEAR_EXPORT_MODE_AUTO = "auto"
 SHEAR_EXPORT_MODE_NATIVE = "native"
@@ -677,12 +684,26 @@ def parse_case_operating_values(case_name: str) -> tuple[Optional[float], Option
     return inlet_velocity, outlet_pressure
 
 
+def try_resolve_post_layout_settings(geo_name: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Resolve additive layout keys for a geometry without aborting the batch.
+
+    Returns (settings, None) on success, or (None, error_summary) when the
+    geometry is not in the domain-layout registry. Never substitutes a default
+    layout.
+    """
+    try:
+        return layout_post_config_values(geo_name), None
+    except KeyError as exc:
+        return None, str(exc)
+
+
 def write_report_config(
     config_path: Path,
     results_root: Path,
     geo_name: str,
     case_name: str,
     paths: dict[str, Path],
+    layout_settings: dict[str, Any],
 ) -> None:
     base_cfg = load_base_config()
     inlet_velocity, outlet_pressure = parse_case_operating_values(case_name)
@@ -702,8 +723,8 @@ def write_report_config(
         f"final_case_file = {str(paths['case_dir'] / f'{geo_name}_{case_name}_final.cas.h5')!r}",
         f"final_data_file = {str(paths['case_dir'] / f'{geo_name}_{case_name}_final.dat.h5')!r}",
         "",
-        f"active_membrane_base_names = {cfg_get('active_membrane_base_names', ['wall_top_mem', 'wall_bottom_mem'])!r}",
-        f"buffer_wall_base_names = {cfg_get('buffer_wall_base_names', ['wall_top_buffer', 'wall_bottom_buffer'])!r}",
+        f"active_membrane_base_names = {layout_settings['active_membrane_base_names']!r}",
+        f"buffer_wall_base_names = {layout_settings['buffer_wall_base_names']!r}",
         "",
         f"rho = {cfg_get('rho', 998.2)!r}",
         f"mu = {cfg_get('mu', 8.93e-4)!r}",
@@ -719,6 +740,11 @@ def write_report_config(
         f"domain_length_m = {cfg_get('domain_length_m', 0.017325)!r}",
         f"buffer_length_m = {cfg_get('buffer_length_m', 0.003465)!r}",
         f"channel_height_m = {cfg_get('channel_height_m', 0.00077)!r}",
+        "",
+        f"n_buffer_in = {layout_settings['n_buffer_in']!r}",
+        f"n_active = {layout_settings['n_active']!r}",
+        f"n_buffer_out = {layout_settings['n_buffer_out']!r}",
+        f"cell_length_x_m = {layout_settings['cell_length_x_m']!r}",
     ]
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -844,6 +870,64 @@ def execute_case(
     contour_command = build_pyensight_command(args, geo_name, case_name)
     cff_file, cff_source = resolve_cff_file(args, paths)
 
+    # Resolve layout for every case (including --dry-run) before any Fluent work.
+    layout_settings, layout_error = try_resolve_post_layout_settings(geo_name)
+    if layout_error is not None:
+        print(f"[{selected_index}] {geo_name}/{case_name}")
+        print(f"  layout: {STATUS_LAYOUT_UNKNOWN} :: {layout_error}")
+        plan = {
+            "selected_index": selected_index,
+            "geo_name": geo_name,
+            "case_name": case_name,
+            "case_dir": case_dir.as_posix(),
+            "case_status": row.get("case_status", ""),
+            "convergence_status": row.get("convergence_status", ""),
+            "report_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "pyensight_contour_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "shear_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "report_command": "",
+            "contour_command": "",
+            "shear_command": "",
+            "missing_cff_file": "",
+        }
+        result = {
+            "geo_name": geo_name,
+            "case_name": case_name,
+            "case_dir": case_dir.as_posix(),
+            "selected_index": selected_index,
+            "report_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "pyensight_contour_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "shear_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "report_returncode": None,
+            "contour_returncode": None,
+            "shear_returncode": None,
+            "missing_cff_file": "",
+            "cff_file_used": cff_file.as_posix(),
+            "cff_source": cff_source,
+            "shear_export_mode": args.shear_export_mode,
+            "shear_retry_attempted": False,
+            "shear_retry_mode": "",
+            "shear_retry_status": "",
+            "shear_retry_returncode": None,
+            "shear_retry_log_file": "",
+            "output_files_detected": "",
+            "error_summary": layout_error,
+            "runtime_seconds_total": 0.0,
+            "suggested_next_action": (
+                "Register this geometry in _domain_layout.GEOMETRY_LAYOUT_REGISTRY "
+                "or pass a supported geo_name, then rerun."
+            ),
+            "stage_details": {
+                "report": None,
+                "pyensight_contours": None,
+                "shear": None,
+                "shear_retry_fallback": None,
+            },
+        }
+        return plan, result
+
+    assert layout_settings is not None
+
     report_status_planned = STATUS_PLANNED
     contour_status_planned = STATUS_PLANNED if args.run_pyensight_contours else STATUS_SKIPPED_DISABLED
     shear_status_planned = STATUS_PLANNED if args.run_shear else STATUS_SKIPPED_DISABLED
@@ -909,7 +993,14 @@ def execute_case(
         report_config = config_dir / f"{safe_name(geo_name)}__{safe_name(case_name)}__post_config.py"
         env = build_subprocess_env({"PYFLUENT_POST_CONFIG": str(report_config)})
         if not args.dry_run:
-            write_report_config(report_config, args.results_root, geo_name, case_name, paths)
+            write_report_config(
+                report_config,
+                args.results_root,
+                geo_name,
+                case_name,
+                paths,
+                layout_settings,
+            )
         report_result = run_stage_command("report", report_command, report_log, args.dry_run, env=env)
     else:
         report_result = skipped_stage("report", report_status_planned, report_log)
