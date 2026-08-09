@@ -217,6 +217,11 @@ _CURRENT_RECORD = GeometryLayoutRecord(
 # See module tests for the deliberate omissions.
 GEOMETRY_LAYOUT_REGISTRY: Mapping[str, GeometryLayoutRecord] = {
     "D2450_a45_7c_brg110": _CURRENT_RECORD,
+    # PROVISIONAL: Sin_ST / Pillar are LEGACY 1+3+1 on total mesh x-extent
+    # 0.017325 m alone. Extent does not fix period count — 0.017325 is
+    # 5 x 0.003465 but equally 3 x 0.005775 — and neither family's true
+    # streamwise period is recorded in this repo. Confirm against the
+    # measured membrane wall x-range before trusting these entries.
     "Sin_ST": _LEGACY_RECORD,
     "Pillar": _LEGACY_RECORD,
 }
