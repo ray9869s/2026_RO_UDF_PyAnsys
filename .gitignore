@@ -49,3 +49,8 @@ My_CFD_Project/03_Results/
 My_CFD_Project/00_Geometries/
 
 My_CFD_Project/jupyter_notebook/
+
+# Auto-generated batch_config backups (local only).
+# Note: My_CFD_Project/01_Scripts/Archive/ is tracked legacy source and is NOT this.
+My_CFD_Project/01_Scripts/batch_config_before_*.py
+/_archive/
