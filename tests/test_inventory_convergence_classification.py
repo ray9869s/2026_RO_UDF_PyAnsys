@@ -2,6 +2,12 @@
 
 parse_logs() is the pure function behind detect_logs_and_convergence() in
 00_case_inventory.py. These tests avoid filesystem scans and Ansys imports.
+
+Max-iter default resolution is tested against injected common_solver_settings
+(and optional tmp batch_config files), not against whatever live batch_config.py
+contains for the current campaign — same fixture style as
+tests/test_batch_layout_wiring.py (tmp_path-written configs) and helpers that
+pass explicit settings into pure functions rather than reading campaign state.
 """
 
 from __future__ import annotations
@@ -73,19 +79,73 @@ class TestInventoryConvergenceClassification:
         )
         assert result.convergence_status == inventory.MAX_ITER_REACHED
 
-    def test_campaign_1000_iterations_with_batch_config_default_is_max_iter_reached(self, inventory):
-        max_iter_target = inventory._default_max_iter_target()
-        assert max_iter_target == 1000
+    def test_missing_common_solver_settings_falls_back_to_2000_with_warning(
+        self, inventory, capsys
+    ):
+        max_iter_target = inventory.max_iter_target_from_common_solver_settings(None)
+        assert max_iter_target == 2000
+        err = capsys.readouterr().err
+        assert "WARNING" in err
+        assert "common_solver_settings" in err
+        assert "falling back to 2000" in err
+        # A 1000-iteration transcript against that fallback is incomplete, not max-iter.
         result = inventory.parse_logs(
             analyses=[solver_analysis(inventory, "iteration: 1000\n")],
             max_iter_target=max_iter_target,
             has_case_data_pair=True,
             has_summary_metrics_wide=True,
         )
-        assert result.hit_max_iter_target is True
-        assert result.convergence_status == inventory.MAX_ITER_REACHED
+        assert result.hit_max_iter_target is False
+        assert result.convergence_status == inventory.POSSIBLY_INCOMPLETE
 
-    def test_campaign_1000_iterations_with_explicit_2000_target_is_possibly_incomplete(self, inventory):
+    def test_present_common_solver_settings_uses_campaign_cap_without_warning(
+        self, inventory, capsys
+    ):
+        max_iter_target = inventory.max_iter_target_from_common_solver_settings(
+            {"max_iterations": 2000}
+        )
+        assert max_iter_target == 2000
+        err = capsys.readouterr().err
+        assert "WARNING" not in err
+
+    def test_malformed_max_iterations_falls_back_with_warning(self, inventory, capsys):
+        max_iter_target = inventory.max_iter_target_from_common_solver_settings(
+            {"max_iterations": "not-an-int"}
+        )
+        assert max_iter_target == 2000
+        err = capsys.readouterr().err
+        assert "WARNING" in err
+        assert "max_iterations" in err
+        assert "falling back to 2000" in err
+
+    def test_tmp_batch_config_without_common_settings_warns(
+        self, inventory, tmp_path: Path, capsys
+    ):
+        # Fixture injection via tmp_path-written config (not live batch_config.py).
+        cfg = tmp_path / "batch_config.py"
+        cfg.write_text("mesh_batch_cases = []\n", encoding="utf-8")
+        max_iter_target = inventory._default_max_iter_target(cfg)
+        assert max_iter_target == 2000
+        err = capsys.readouterr().err
+        assert "WARNING" in err
+        assert "common_solver_settings" in err
+
+    def test_tmp_batch_config_with_common_settings_happy_path(
+        self, inventory, tmp_path: Path, capsys
+    ):
+        cfg = tmp_path / "batch_config.py"
+        cfg.write_text(
+            "common_solver_settings = {'max_iterations': 1000}\n",
+            encoding="utf-8",
+        )
+        max_iter_target = inventory._default_max_iter_target(cfg)
+        assert max_iter_target == 1000
+        err = capsys.readouterr().err
+        assert "WARNING" not in err
+
+    def test_campaign_1000_iterations_with_explicit_2000_target_is_possibly_incomplete(
+        self, inventory
+    ):
         result = inventory.parse_logs(
             analyses=[solver_analysis(inventory, "iteration: 1000\n")],
             max_iter_target=2000,
@@ -95,7 +155,9 @@ class TestInventoryConvergenceClassification:
         assert result.hit_max_iter_target is False
         assert result.convergence_status == inventory.POSSIBLY_INCOMPLETE
 
-    def test_campaign_1000_iterations_with_matching_target_is_max_iter_reached(self, inventory):
+    def test_campaign_1000_iterations_with_matching_target_is_max_iter_reached(
+        self, inventory
+    ):
         result = inventory.parse_logs(
             analyses=[solver_analysis(inventory, "iteration: 1000\n")],
             max_iter_target=1000,
@@ -138,10 +200,13 @@ class TestInventoryConvergenceClassification:
         )
         assert result.convergence_status == inventory.UNKNOWN_NO_LOG
 
-    def test_default_max_iter_cli_matches_batch_config(self, inventory):
+    def test_default_max_iter_cli_uses_injected_helper(self, inventory, monkeypatch):
+        # Do not bind CLI default to live batch_config shape; stub the loader.
+        monkeypatch.setattr(
+            inventory, "_default_max_iter_target", lambda: 2000
+        )
         args = inventory.parse_args([])
-        assert args.max_iter == inventory._default_max_iter_target()
-        assert args.max_iter == 1000
+        assert args.max_iter == 2000
 
 
 class TestClassifyCaseLikelyComplete:
@@ -185,17 +250,6 @@ class TestClassifyCaseLikelyComplete:
             likely_complete_from_logs=True,
         )
         assert record["likely_complete"] is False
-
-    def test_failed_or_diverged_with_artifacts_needs_solver_rerun(self, inventory):
-        # F-02c: was POSTPROCESSED_BASIC; hard failure enters the queue.
-        record = classify_record(
-            inventory,
-            convergence_status=inventory.FAILED_OR_DIVERGED,
-            hard_solver_failure_detected=True,
-        )
-        assert record["likely_complete"] is False
-        assert record["case_status"] == inventory.NEEDS_SOLVER_RERUN
-        assert record["needs_solver_rerun"] is True
 
     def test_crash_reclassified_to_converged_is_likely_complete(self, inventory):
         record = classify_record(

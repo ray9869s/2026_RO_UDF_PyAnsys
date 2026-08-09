@@ -24,6 +24,7 @@ from _mesh_common import (
     parse_meshing_input_summary,
     upsert_mesh_ledger_csv,
 )
+from _solver_common import merge_batch_case_overrides
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
@@ -40,7 +41,7 @@ def _load_module(name, path):
 
 def _build_overrides(case_dict, common_settings):
     """Merge common settings and one case entry into the worker override dict."""
-    overrides = {**common_settings, **case_dict}
+    overrides = merge_batch_case_overrides(common_settings, case_dict)
     # The meshing worker names its output folder after case_name.
     overrides["case_name"] = overrides.pop("mesh_case_name")
     return overrides

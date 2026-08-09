@@ -14,9 +14,13 @@ from helpers import (
     apply_post_json_overrides,
     load_post_config,
     load_run_config,
+    load_solver_common,
     populate_valid_meshing_config,
     populate_valid_solver_config,
 )
+
+_solver_common = load_solver_common()
+merge_batch_case_overrides = _solver_common.merge_batch_case_overrides
 
 
 @pytest.fixture
@@ -153,7 +157,15 @@ def _load_batch_config_module(filename: str):
 
 
 def _campaign_solver_operating_cases():
-    """(inlet_velocity, outlet_gauge_pressure, operating_pressure) from batch configs."""
+    """(inlet_velocity, outlet_gauge_pressure, operating_pressure) from batch configs.
+
+    Mirrors batch_solver_sweep production merge::
+
+        overrides = {**common_solver_settings, **case_dict}
+
+    so keys that live only in common_solver_settings (e.g. operating_pressure)
+    remain visible without requiring every case dict to repeat them.
+    """
     cases: list[tuple[float, float, float]] = []
     seen: set[tuple[float, float, float]] = set()
 
@@ -162,10 +174,12 @@ def _campaign_solver_operating_cases():
         "batch_config_before_sin_3mesh_20260716_231030.py",
     ):
         batchcfg = _load_batch_config_module(filename)
+        common = getattr(batchcfg, "common_solver_settings", {}) or {}
         for entry in getattr(batchcfg, "solver_sweep_cases", []):
-            u = entry["inlet_velocity_value"]
-            p_out = entry["outlet_gauge_pressure"]
-            p_op = entry["operating_pressure"]
+            merged = merge_batch_case_overrides(common, entry)
+            u = merged["inlet_velocity_value"]
+            p_out = merged["outlet_gauge_pressure"]
+            p_op = merged["operating_pressure"]
             key = (float(u), float(p_out), float(p_op))
             if key not in seen:
                 seen.add(key)
@@ -360,18 +374,20 @@ class TestRunConfigOverrideApplication:
 
         common_mesh = getattr(backup, "common_mesh_settings", {})
         for case in getattr(backup, "mesh_batch_cases", []):
-            merged = {**common_mesh, **case}
+            merged = merge_batch_case_overrides(common_mesh, case)
             merged["case_name"] = merged.pop("mesh_case_name")
             override_keys.update(merged)
 
         common_solver = getattr(backup, "common_solver_settings", {})
         for case in getattr(backup, "solver_sweep_cases", []):
-            override_keys.update({**common_solver, **case})
+            override_keys.update(merge_batch_case_overrides(common_solver, case))
             override_keys.add("case_name")
 
         common_solver_current = getattr(current, "common_solver_settings", {})
         for case in getattr(current, "solver_sweep_cases", []):
-            override_keys.update({**common_solver_current, **case})
+            override_keys.update(
+                merge_batch_case_overrides(common_solver_current, case)
+            )
             override_keys.add("case_name")
 
         override_keys.discard("base_case_name")

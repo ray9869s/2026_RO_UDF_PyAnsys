@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -171,6 +172,103 @@ def strip_mesh_suffix(case_name: str) -> tuple[str, str | None]:
 def is_matrix_base_case_name(case_name: str) -> bool:
     """True when case_name matches the plain matrix token (no mesh suffix)."""
     return bool(MATRIX_BASE_CASE_RE.match(case_name))
+
+
+def merge_batch_case_overrides(
+    common_settings: Any,
+    case_dict: Any,
+) -> dict[str, Any]:
+    """Merge common batch settings with one case entry (case wins).
+
+    Production rule from batch_solver_sweep.py::
+
+        overrides = {**common_solver_settings, **case_dict}
+
+    Callers that need resolved worker keys (e.g. operating_pressure living only
+    in common_solver_settings) must use this helper rather than reading the
+    raw case dict alone.
+    """
+    if case_dict is None:
+        raise TypeError("case_dict must be a mapping, got None.")
+    if not hasattr(case_dict, "keys"):
+        raise TypeError(
+            f"case_dict must be a mapping, got {type(case_dict).__name__}."
+        )
+    common: dict[str, Any]
+    if common_settings is None:
+        common = {}
+    elif hasattr(common_settings, "keys"):
+        common = dict(common_settings)
+    else:
+        raise TypeError(
+            "common_settings must be a mapping or None, "
+            f"got {type(common_settings).__name__}."
+        )
+    return {**common, **dict(case_dict)}
+
+
+DEFAULT_MAX_ITERATIONS_FALLBACK = 2000
+DEFAULT_RESIDUAL_TARGET_FALLBACK = 1.0e-7
+
+
+def max_iterations_from_common_solver_settings(
+    settings: Any,
+    *,
+    fallback: int = DEFAULT_MAX_ITERATIONS_FALLBACK,
+    warn: Any = None,
+) -> int:
+    """Resolve max_iterations from a common_solver_settings mapping.
+
+    Missing or malformed settings warn (when ``warn`` is provided) and return
+    ``fallback``. Does not load batch_config.py itself.
+    """
+    if warn is None:
+        def warn(message: str) -> None:
+            print(message, file=sys.stderr)
+
+    if not isinstance(settings, dict):
+        warn(
+            "WARNING: common_solver_settings is not a usable dict "
+            f"(got {type(settings).__name__}); falling back to {fallback}."
+        )
+        return int(fallback)
+    raw = settings.get("max_iterations", fallback)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        warn(
+            "WARNING: common_solver_settings.max_iterations="
+            f"{raw!r} is not an int; falling back to {fallback}."
+        )
+        return int(fallback)
+
+
+def residual_target_from_common_solver_settings(
+    settings: Any,
+    *,
+    fallback: float = DEFAULT_RESIDUAL_TARGET_FALLBACK,
+    warn: Any = None,
+) -> float:
+    """Resolve residual_target from a common_solver_settings mapping."""
+    if warn is None:
+        def warn(message: str) -> None:
+            print(message, file=sys.stderr)
+
+    if not isinstance(settings, dict):
+        warn(
+            "WARNING: common_solver_settings is not a usable dict "
+            f"(got {type(settings).__name__}); falling back to {fallback}."
+        )
+        return float(fallback)
+    raw = settings.get("residual_target", fallback)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        warn(
+            "WARNING: common_solver_settings.residual_target="
+            f"{raw!r} is not numeric; falling back to {fallback}."
+        )
+        return float(fallback)
 
 
 # ---------------------------------------------------------------------------

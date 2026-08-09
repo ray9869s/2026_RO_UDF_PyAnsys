@@ -17,6 +17,7 @@ from _solver_common import (
     final_case_data_paths,
     make_base_case_name,
     make_mesh_qualified_case_name,
+    merge_batch_case_overrides,
     pressure_to_case_token,
     resolve_case_names,
     resolve_input_mode,
@@ -68,7 +69,7 @@ def main():
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")
         print(f"{'='*72}")
-        overrides = {**common_solver_settings, **case_dict}
+        overrides = merge_batch_case_overrides(common_solver_settings, case_dict)
         # The solver must receive the resolved case_name; base_case_name is
         # batch-side naming metadata only, not a solver config key.
         overrides["case_name"] = case_name

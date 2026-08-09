@@ -102,12 +102,15 @@ def test_legacy_opt_out_flag_must_be_bool():
 
 
 def test_current_mesh_batch_names_match_parameters():
+    from helpers import load_solver_common
+
+    merge_batch_case_overrides = load_solver_common().merge_batch_case_overrides
     batch = load_module(
         "mesh_batch_name_validation",
         SCRIPTS_DIR / "batch_config_before_sin_3mesh_20260716_231030.py",
     )
     for case in batch.mesh_batch_cases:
-        merged = {**batch.common_mesh_settings, **case}
+        merged = merge_batch_case_overrides(batch.common_mesh_settings, case)
         assert_mesh_case_name_matches(
             merged["mesh_case_name"],
             merged["m_max"],

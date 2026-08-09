@@ -21,11 +21,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+_SCRIPTS_DIR = SCRIPT_DIR.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 from _residual_transcript import (  # noqa: E402
     PARSE_OK,
     build_summary_text,
     measure_case_dir,
     write_measurement_csv,
+)
+from _solver_common import (  # noqa: E402
+    DEFAULT_MAX_ITERATIONS_FALLBACK,
+    DEFAULT_RESIDUAL_TARGET_FALLBACK,
+    max_iterations_from_common_solver_settings,
+    residual_target_from_common_solver_settings,
 )
 
 DEFAULT_RESULTS_ROOT = Path("My_CFD_Project") / "03_Results"
@@ -48,36 +58,49 @@ SKIP_DIR_NAMES = {
 }
 
 
-def _load_batch_common_solver_settings() -> dict[str, Any]:
+_LOAD_FAILED = object()
+
+
+def _load_batch_common_solver_settings() -> Any:
+    """Load common_solver_settings from batch_config.
+
+    Returns the attribute value (may be None / non-dict) on successful module
+    load, or ``_LOAD_FAILED`` after warning when the file cannot be imported.
+    """
     batch_config_path = SCRIPT_DIR.parent / "batch_config.py"
     try:
         spec = importlib.util.spec_from_file_location(
             "_batch_config_for_residual_report", batch_config_path
         )
         if spec is None or spec.loader is None:
-            return {}
+            raise ImportError(f"Could not load batch config: {batch_config_path}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        settings = getattr(module, "common_solver_settings", {}) or {}
-        return dict(settings) if isinstance(settings, dict) else {}
-    except Exception:
-        return {}
+    except (ImportError, OSError) as exc:
+        print(
+            "WARNING: could not load batch_config for residual defaults "
+            f"({type(exc).__name__}: {exc}); "
+            f"falling back to max_iterations={DEFAULT_MAX_ITERATIONS_FALLBACK}, "
+            f"residual_target={DEFAULT_RESIDUAL_TARGET_FALLBACK}.",
+            file=sys.stderr,
+        )
+        return _LOAD_FAILED
+
+    return getattr(module, "common_solver_settings", None)
 
 
 def default_max_iterations() -> int:
     settings = _load_batch_common_solver_settings()
-    try:
-        return int(settings.get("max_iterations", 2000))
-    except (TypeError, ValueError):
-        return 2000
+    if settings is _LOAD_FAILED:
+        return DEFAULT_MAX_ITERATIONS_FALLBACK
+    return max_iterations_from_common_solver_settings(settings)
 
 
 def default_residual_target() -> float:
     settings = _load_batch_common_solver_settings()
-    try:
-        return float(settings.get("residual_target", 1e-7))
-    except (TypeError, ValueError):
-        return 1e-7
+    if settings is _LOAD_FAILED:
+        return DEFAULT_RESIDUAL_TARGET_FALLBACK
+    return residual_target_from_common_solver_settings(settings)
 
 
 def should_skip_dir_name(name: str, include_hidden: bool) -> bool:

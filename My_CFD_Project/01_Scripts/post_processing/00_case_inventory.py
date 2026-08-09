@@ -21,6 +21,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from _solver_common import (  # noqa: E402
+    DEFAULT_MAX_ITERATIONS_FALLBACK,
+    max_iterations_from_common_solver_settings,
+)
+
 
 DEFAULT_RESULTS_ROOT = Path("My_CFD_Project") / "03_Results"
 DEFAULT_OUTPUT_DIR = DEFAULT_RESULTS_ROOT / "_inventory"
@@ -362,18 +371,53 @@ class LogParseResult:
     launch_error_evidence: list[str] = field(default_factory=list)
 
 
-def _default_max_iter_target() -> int:
+# Fallback when batch_config has no usable common_solver_settings.max_iterations.
+# Kept at 2000 to match run_config.max_iterations / _solver_common default.
+_DEFAULT_MAX_ITER_FALLBACK = DEFAULT_MAX_ITERATIONS_FALLBACK
+
+
+def max_iter_target_from_common_solver_settings(settings) -> int:
+    """Resolve max_iter from an injected common_solver_settings mapping.
+
+    Pure relative to batch_config.py: callers supply the settings (or None).
+    """
+    return max_iterations_from_common_solver_settings(
+        settings,
+        fallback=_DEFAULT_MAX_ITER_FALLBACK,
+    )
+
+
+def _load_batch_config_module(batch_config_path: Path):
+    spec = importlib.util.spec_from_file_location(
+        "_batch_config_for_inventory", batch_config_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load batch config: {batch_config_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _default_max_iter_target(batch_config_path: Path | None = None) -> int:
     """Read the batch campaign iteration cap from batch_config when available."""
-    batch_config_path = Path(__file__).resolve().parents[1] / "batch_config.py"
+    path = (
+        batch_config_path
+        if batch_config_path is not None
+        else Path(__file__).resolve().parents[1] / "batch_config.py"
+    )
     try:
-        spec = importlib.util.spec_from_file_location("_batch_config_for_inventory", batch_config_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load batch config: {batch_config_path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return int(module.common_solver_settings.get("max_iterations", 2000))
-    except Exception:
-        return 2000
+        module = _load_batch_config_module(path)
+    except (ImportError, OSError) as exc:
+        print(
+            "WARNING: could not load batch_config for --max-iter default "
+            f"({type(exc).__name__}: {exc}); "
+            f"falling back to {_DEFAULT_MAX_ITER_FALLBACK}.",
+            file=sys.stderr,
+        )
+        return _DEFAULT_MAX_ITER_FALLBACK
+
+    settings = getattr(module, "common_solver_settings", None)
+    return max_iter_target_from_common_solver_settings(settings)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
