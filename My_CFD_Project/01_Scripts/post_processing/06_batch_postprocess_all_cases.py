@@ -690,6 +690,8 @@ def parse_case_operating_values(case_name: str) -> tuple[Optional[float], Option
 def try_resolve_post_layout_settings(
     geo_name: str,
     mesh_case_name: Optional[str],
+    *,
+    mesh_resolution_source: Optional[str] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """Resolve additive layout keys for a (geo, mesh) pair without aborting.
 
@@ -699,14 +701,45 @@ def try_resolve_post_layout_settings(
     """
     if not mesh_case_name:
         return None, (
-            f"Could not resolve mesh_case_name for geo_name={geo_name!r}; "
-            "case directory name has no mesh part and no solver_mesh_replace_log "
-            "was found. 3-cell (and other unregistered) meshes stay LAYOUT_UNKNOWN."
+            f"Could not resolve a registry mesh_case_name for "
+            f"geo_name={geo_name!r} from solver_mesh_replace_log or the case "
+            "directory name (unregistered / 3-cell meshes stay LAYOUT_UNKNOWN)."
         )
     try:
-        return layout_post_config_values(geo_name, mesh_case_name), None
+        settings = layout_post_config_values(geo_name, mesh_case_name)
     except KeyError as exc:
         return None, str(exc)
+    if mesh_resolution_source:
+        settings = {
+            **settings,
+            "mesh_case_name": mesh_case_name,
+            "mesh_resolution_source": mesh_resolution_source,
+        }
+    return settings, None
+
+
+def resolve_case_dir_for_layout(
+    row: dict[str, str],
+    results_root: Path,
+    geo_name: str,
+    case_name: str,
+) -> Path:
+    """Prefer the inventory case_dir when it exists on disk.
+
+    ``case_paths(results_root, …)`` rebuilds a CWD-relative path from
+    ``--results-root``. When the inventory was scanned from a different
+    working directory (or stores an absolute path), that rebuild can miss a
+    real case directory and the solver replace log inside it. Use the
+    inventory path when it is an existing directory.
+    """
+    rebuilt = results_root / geo_name / case_name
+    raw = (row.get("case_dir") or "").strip()
+    if raw:
+        inventory_dir = Path(raw)
+        if inventory_dir.is_dir():
+            return inventory_dir
+    return rebuilt
+
 
 
 def write_report_config(
@@ -871,7 +904,10 @@ def execute_case(
     geo_name = row["geo_name"]
     case_name = row["case_name"]
     paths = case_paths(args.results_root, geo_name, case_name)
-    case_dir = paths["case_dir"]
+    case_dir = resolve_case_dir_for_layout(
+        row, args.results_root, geo_name, case_name
+    )
+    paths["case_dir"] = case_dir
     config_dir = batch_dir / "report_configs"
 
     report_log = stage_log_path(log_dir, geo_name, case_name, "report")
@@ -883,13 +919,18 @@ def execute_case(
     cff_file, cff_source = resolve_cff_file(args, paths)
 
     # Resolve layout for every case (including --dry-run) before any Fluent work.
-    mesh_case_name = resolve_mesh_case_name(case_dir)
+    mesh_case_name, mesh_resolution_source = resolve_mesh_case_name(
+        case_dir, geo_name
+    )
     layout_settings, layout_error = try_resolve_post_layout_settings(
-        geo_name, mesh_case_name
+        geo_name,
+        mesh_case_name,
+        mesh_resolution_source=mesh_resolution_source,
     )
     if layout_error is not None:
         print(f"[{selected_index}] {geo_name}/{case_name}")
         print(f"  layout: {STATUS_LAYOUT_UNKNOWN} :: {layout_error}")
+        print(f"  case_dir: {case_dir.as_posix()}")
         plan = {
             "selected_index": selected_index,
             "geo_name": geo_name,
@@ -994,6 +1035,10 @@ def execute_case(
     }
 
     print(f"[{selected_index}] {geo_name}/{case_name}")
+    print(
+        f"  mesh_case_name: {mesh_case_name!r} "
+        f"(via {mesh_resolution_source})"
+    )
     for stage_name, planned_status, command in (
         ("report", report_status_planned, report_command),
         ("pyensight_contours", contour_status_planned, contour_command),

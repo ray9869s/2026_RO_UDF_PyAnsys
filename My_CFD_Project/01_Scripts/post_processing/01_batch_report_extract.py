@@ -38,9 +38,9 @@ def try_resolve_post_layout_overrides(geo_name, mesh_case_name):
     """Return (layout_overrides, None) or (None, error_summary) for unknown pairs."""
     if not mesh_case_name:
         return None, (
-            f"Could not resolve mesh_case_name for geo_name={geo_name!r}; "
-            "case directory name has no mesh part and no solver_mesh_replace_log "
-            "was found. 3-cell (and other unregistered) meshes stay LAYOUT_UNKNOWN."
+            f"Could not resolve a registry mesh_case_name for "
+            f"geo_name={geo_name!r} from solver_mesh_replace_log or the case "
+            "directory name (unregistered / 3-cell meshes stay LAYOUT_UNKNOWN)."
         )
     try:
         return layout_post_config_values(geo_name, mesh_case_name), None
@@ -63,9 +63,10 @@ def build_post_case_overrides(
     Returns (overrides, None) on success, or (None, error_summary) when the
     (geo, mesh) pair is not registered. Never substitutes a default layout.
 
-    ``mesh_case_name`` may be supplied explicitly; otherwise it is resolved from
-    ``case_dir`` (or from ``case_name`` as a directory name when ``case_dir`` is
-    omitted).
+    Mesh identity is resolved via :func:`resolve_mesh_case_name` (log first,
+    then validated name candidates). An explicit ``mesh_case_name`` is only
+    used when resolution returns nothing and that name is already in the
+    registry for ``geo_name``.
     """
     overrides = {
         "geo_name": geo_name,
@@ -78,12 +79,19 @@ def build_post_case_overrides(
     if outlet_gauge_pressure is not None:
         overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
 
-    resolved_mesh = mesh_case_name
-    if not resolved_mesh:
-        if case_dir is not None:
-            resolved_mesh = resolve_mesh_case_name(Path(case_dir))
-        else:
-            resolved_mesh = resolve_mesh_case_name(Path(case_name))
+    resolve_dir = Path(case_dir) if case_dir is not None else Path(case_name)
+    resolved_mesh, mesh_source = resolve_mesh_case_name(resolve_dir, geo_name)
+    if resolved_mesh is None and mesh_case_name:
+        # Explicit config mesh only if it is already a registered pair.
+        layout_overrides, layout_error = try_resolve_post_layout_overrides(
+            geo_name, mesh_case_name
+        )
+        if layout_error is None:
+            overrides.update(layout_overrides)
+            overrides["mesh_case_name"] = mesh_case_name
+            overrides["mesh_resolution_source"] = "config"
+            return overrides, None
+        return None, layout_error
 
     layout_overrides, layout_error = try_resolve_post_layout_overrides(
         geo_name, resolved_mesh
@@ -91,6 +99,8 @@ def build_post_case_overrides(
     if layout_error is not None:
         return None, layout_error
     overrides.update(layout_overrides)
+    overrides["mesh_case_name"] = resolved_mesh
+    overrides["mesh_resolution_source"] = mesh_source
     return overrides, None
 
 

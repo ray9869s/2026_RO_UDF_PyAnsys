@@ -230,34 +230,89 @@ class TestGeometryRegistry:
 
 
 class TestResolveMeshCaseName:
-    def test_suffix_shape(self, tmp_path: Path):
-        case_dir = tmp_path / "u0p1_p4M__mesh_max085_min006_cpg5_bl4"
-        case_dir.mkdir()
-        assert (
-            resolve_mesh_case_name(case_dir)
-            == "mesh_max085_min006_cpg5_bl4"
+    def test_log_resolves_to_msh_parent_directory(
+        self, tmp_path: Path
+    ):
+        case_dir = tmp_path / "Pillar" / "u0p2_p6M"
+        case_dir.mkdir(parents=True)
+        (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
+            FIXTURE_REPLACE_LOG, encoding="utf-8"
         )
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "log"
+
+    def test_multiline_host_path_still_resolves_via_log(self, tmp_path: Path):
+        case_dir = tmp_path / "Pillar" / "u0p2_p6M"
+        case_dir.mkdir(parents=True)
+        multiline = (
+            'Reading from HOST:"C:/PyFluent/My_CFD_Project/03_Results/Pillar/\n'
+            "    mesh_max085_min005_cpg5_bl4/"
+            'Pillar_mesh_max085_min005_cpg5_bl4.msh.h5"\n'
+        )
+        (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
+            multiline, encoding="utf-8"
+        )
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "log"
+
+    def test_dated_case_dir_resolves_to_full_name(self, tmp_path: Path):
+        case_dir = tmp_path / "Diamond_Spacer" / "260615_u0p2_p6M"
+        case_dir.mkdir(parents=True)
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Diamond_Spacer")
+        assert mesh_name == "260615_u0p2_p6M"
+        assert source == "name"
+
+    def test_bad_unstable_suffix_strips_to_mesh_prefix(self, tmp_path: Path):
+        case_dir = (
+            tmp_path
+            / "Sin_ST"
+            / "mesh_max085_min005_cpg5_bl4_u0p2_p6M_BAD_UNSTABLE"
+        )
+        case_dir.mkdir(parents=True)
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Sin_ST")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "name"
+
+    def test_attempt_suffix_without_log_returns_none(self, tmp_path: Path):
+        case_dir = tmp_path / "Diamond_Spacer" / "u0p1_p4M__attempt_20260705_161718"
+        case_dir.mkdir(parents=True)
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Diamond_Spacer")
+        assert mesh_name is None
+        assert source is None
+
+    def test_suffix_shape(self, tmp_path: Path):
+        case_dir = tmp_path / "Sin_ST" / "u0p1_p4M__mesh_max085_min006_cpg5_bl4"
+        case_dir.mkdir(parents=True)
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Sin_ST")
+        assert mesh_name == "mesh_max085_min006_cpg5_bl4"
+        assert source == "name"
 
     def test_prefix_shape(self, tmp_path: Path):
-        case_dir = tmp_path / "mesh_max085_min005_cpg5_bl4_u0p1_p4M"
-        case_dir.mkdir()
-        assert (
-            resolve_mesh_case_name(case_dir)
-            == "mesh_max085_min005_cpg5_bl4"
-        )
-
-    def test_plain_shape_uses_replace_log(self, tmp_path: Path):
-        case_dir = tmp_path / "u0p2_p6M"
-        case_dir.mkdir()
-        log_path = case_dir / "solver_mesh_replace_log_u0p2_p6M.txt"
-        log_path.write_text(FIXTURE_REPLACE_LOG, encoding="utf-8")
-        assert resolve_mesh_case_name(case_dir) == "mesh_max085_min005_cpg5_bl4"
+        case_dir = tmp_path / "Pillar" / "mesh_max085_min005_cpg5_bl4_u0p1_p4M"
+        case_dir.mkdir(parents=True)
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "name"
 
     def test_plain_shape_without_log_returns_none(self, tmp_path: Path):
-        case_dir = tmp_path / "u0p2_p6M"
-        case_dir.mkdir()
-        assert resolve_mesh_case_name(case_dir) is None
+        case_dir = tmp_path / "Pillar" / "u0p2_p6M"
+        case_dir.mkdir(parents=True)
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name is None
+        assert source is None
 
+    def test_log_preferred_over_misleading_dirname(self, tmp_path: Path):
+        # Dirname would parse as 'attempt_…'; log is ground truth.
+        case_dir = tmp_path / "Pillar" / "u0p1_p4M__attempt_20260705_161718"
+        case_dir.mkdir(parents=True)
+        (case_dir / "solver_mesh_replace_log_u0p1_p4M__attempt_20260705_161718.txt").write_text(
+            FIXTURE_REPLACE_LOG, encoding="utf-8"
+        )
+        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
+        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
+        assert source == "log"
 
 class TestSolverLogDomainExtents:
     def test_returns_metres_without_1e3_scale(self):

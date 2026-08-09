@@ -145,7 +145,7 @@ class TestBatchPostLayoutUnknown:
         assert result["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         assert result["pyensight_contour_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         assert result["shear_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert "mesh_case_name" in result["error_summary"]
+        assert "registry mesh_case_name" in result["error_summary"]
         assert "UnknownGeo" in result["error_summary"]
         # Must not count as STATUS_FAILED (continue_on_error only stops on FAILED).
         assert result["report_stage_status"] != batch_post.STATUS_FAILED
@@ -217,5 +217,5 @@ class TestBatchReportOverridesLayoutKeys:
         )
         assert overrides is None
         assert error is not None
-        assert "mesh_case_name" in error
+        assert "registry mesh_case_name" in error
         assert "UnknownGeo" in error

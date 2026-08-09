@@ -53,10 +53,21 @@ CURRENT_BUFFER_WALL_BASE_NAMES = (
 
 _MATRIX_BASE_TAIL_RE = re.compile(r"^(?P<mesh>.+)_(?P<base>u\d+p\d+_p\d+M)$")
 _MATRIX_BASE_ONLY_RE = re.compile(r"^u\d+p\d+_p\d+M$")
+# Fluent may wrap the quoted path across lines with leading indent on the
+# continuation; collapse whitespace after the match. Accept optional space
+# after HOST: and either slash style.
 _READING_MSH_RE = re.compile(
-    r'Reading from HOST:"(?P<path>[^"]+\.msh\.h5)"',
+    r'Reading\s+from\s+HOST:\s*"(?P<path>[^"]+\.msh\.h5)"',
     re.IGNORECASE,
 )
+# Trailing case-dir noise that is never part of a mesh_case_name.
+_TRAILING_CASE_NOISE_RE = re.compile(
+    r"(?:_BAD_UNSTABLE|_BAD_HIGH_CONT_OLD|"
+    r"_rerun_attempt_[0-9]+|_attempt_[0-9]+(?:_[0-9]+)*)+$"
+)
+
+MESH_RESOLUTION_LOG = "log"
+MESH_RESOLUTION_NAME = "name"
 _FLOAT_TOKEN = r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
 # Solver mesh-replace / transcript block: header "Domain Extents:" and each
 # axis line MUST carry an explicit "(m)" unit marker. Values are already metres.
@@ -350,16 +361,63 @@ def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, o
 
 
 def mesh_case_name_from_case_dirname(case_name: str) -> Optional[str]:
-    """Parse mesh_case_name from a case directory name, or None if plain."""
+    """Best-effort single parse of a case directory name (heuristic only).
+
+    Prefer :func:`resolve_mesh_case_name`, which validates candidates against
+    the registry and prefers the solver replace log.
+    """
+    candidates = mesh_case_name_candidates_from_dirname(case_name)
+    return candidates[0] if candidates else None
+
+
+def strip_trailing_case_noise(name: str) -> str:
+    """Strip known trailing markers (_BAD_UNSTABLE, _attempt_*, …)."""
+    return _TRAILING_CASE_NOISE_RE.sub("", name)
+
+
+def mesh_case_name_candidates_from_dirname(case_name: str) -> list[str]:
+    """Generate ordered mesh_case_name candidates from a case directory name.
+
+    Includes the full name (needed for Diamond_Spacer/260615_u0p2_p6M), the
+    suffix after ``__``, the prefix before ``_u0p…``, and variants with known
+    trailing markers stripped. Does not validate against the registry.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Optional[str]) -> None:
+        if not value or value in seen:
+            return
+        seen.add(value)
+        ordered.append(value)
+
+    add(case_name)
+    stripped = strip_trailing_case_noise(case_name)
+    add(stripped)
+
     if "__" in case_name:
-        _base, mesh = case_name.split("__", 1)
-        return mesh or None
-    prefix_match = _MATRIX_BASE_TAIL_RE.match(case_name)
-    if prefix_match is not None:
-        return prefix_match.group("mesh")
-    if _MATRIX_BASE_ONLY_RE.match(case_name):
-        return None
-    return None
+        _base, suffix = case_name.split("__", 1)
+        add(suffix)
+        add(strip_trailing_case_noise(suffix))
+    if "__" in stripped:
+        _base, suffix = stripped.split("__", 1)
+        add(suffix)
+        add(strip_trailing_case_noise(suffix))
+
+    for variant in (case_name, stripped):
+        prefix_match = _MATRIX_BASE_TAIL_RE.match(variant)
+        if prefix_match is not None:
+            mesh = prefix_match.group("mesh")
+            add(mesh)
+            add(strip_trailing_case_noise(mesh))
+
+    # Drop plain matrix tokens — they are not mesh identities.
+    return [c for c in ordered if not _MATRIX_BASE_ONLY_RE.match(c)]
+
+
+def _normalize_msh_path(raw_path: str) -> str:
+    """Collapse whitespace/newlines Fluent may insert inside a quoted path."""
+    return "".join(raw_path.split())
 
 
 def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
@@ -378,24 +436,50 @@ def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
         matches = list(_READING_MSH_RE.finditer(text))
         if not matches:
             continue
-        raw_path = matches[-1].group("path")
+        raw_path = _normalize_msh_path(matches[-1].group("path"))
         parent_name = PurePosixPath(raw_path.replace("\\", "/")).parent.name
+        parent_name = parent_name.strip()
         if parent_name:
             return parent_name
     return None
 
 
-def resolve_mesh_case_name(case_dir: Path) -> Optional[str]:
-    """Resolve mesh_case_name from the case directory name, then the replace log.
+def resolve_mesh_case_name(
+    case_dir: Path,
+    geo_name: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a registry-validated mesh_case_name for ``geo_name``.
 
-    Returns None (never a guess) when neither the directory name nor a
-    ``solver_mesh_replace_log_*.txt`` yields a mesh identity.
+    Priority:
+      1. ``solver_mesh_replace_log_*.txt`` (parent dir of the loaded ``.msh.h5``)
+      2. name-derived candidates from the case directory name
+
+    Returns ``(mesh_case_name, source)`` where ``source`` is ``\"log\"`` or
+    ``\"name\"``, or ``(None, None)`` when nothing hits the registry. Never
+    returns an unvalidated guess.
     """
     case_dir = Path(case_dir)
-    from_name = mesh_case_name_from_case_dirname(case_dir.name)
-    if from_name is not None:
-        return from_name
-    return mesh_case_name_from_solver_replace_log(case_dir)
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(name: Optional[str], source: str) -> None:
+        if not name or name in seen:
+            return
+        seen.add(name)
+        ordered.append((name, source))
+
+    log_name = mesh_case_name_from_solver_replace_log(case_dir)
+    if log_name:
+        add(log_name, MESH_RESOLUTION_LOG)
+        add(strip_trailing_case_noise(log_name), MESH_RESOLUTION_LOG)
+
+    for candidate in mesh_case_name_candidates_from_dirname(case_dir.name):
+        add(candidate, MESH_RESOLUTION_NAME)
+
+    for name, source in ordered:
+        if (geo_name, name) in GEOMETRY_LAYOUT_REGISTRY:
+            return name, source
+    return None, None
 
 
 def parse_solver_log_domain_extents_m(
