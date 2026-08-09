@@ -42,15 +42,15 @@ from _fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
     concentration_metric_unit,
     create_x_normal_plane as _create_x_normal_plane,
-    derive_periodic_spacer_pressure_metrics,
-    derive_spacer_cell_metrics,
+    derive_periodic_spacer_pressure_metrics_for_layout,
+    derive_spacer_cell_metrics_for_layout,
     exception_details,
     fluid_zone_reduction_locations,
     mass_fraction_to_molar_concentration,
     segmented_membrane_cp_metrics,
     molar_concentration_to_mass_fraction,
+    resolve_scoring_layout_from_config,
     summary_rows_to_wide_record,
-    unit_cell_boundary_positions,
     unit_cell_areaavg_molar_concentration_name,
     unit_cell_concentration_report_name,
     unit_cell_mixing_cup_report_name,
@@ -60,7 +60,6 @@ from _fluent_report_helpers import (  # noqa: E402
     unit_cell_plane_area_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
-    validate_unit_cell_layout,
     wall_zone_reduction_locations,
 )
 
@@ -675,45 +674,27 @@ if __name__ == "__main__":
         # Cell 6.5. Compute spacer geometry parameters
         # ==========================================================
 
-        domain_x_min_m = getattr(cfg, "domain_x_min_m", 0.0)
-        domain_length_m = getattr(cfg, "domain_length_m", 0.017325)
-        buffer_length_m = getattr(cfg, "buffer_length_m", 0.003465)
-        n_unit_cells = getattr(cfg, "n_unit_cells", 5)
-        n_buffer_cells_each_end = getattr(
-            cfg,
-            "n_buffer_cells_each_end",
-            1,
-        )
-        n_inlet_spacer_cells_excluded = getattr(
-            cfg,
-            "n_inlet_spacer_cells_excluded",
-            1,
-        )
-
-        unit_cell_boundary_x_m = unit_cell_boundary_positions(
-            domain_x_min_m,
-            domain_length_m,
-            n_unit_cells,
-        )
-        spacer_cells = validate_unit_cell_layout(
-            domain_length_m,
-            buffer_length_m,
-            n_unit_cells,
-            n_buffer_cells_each_end,
-        )
-
-        domain_x_max_m = domain_x_min_m + domain_length_m
-        spacer_x_in_m = domain_x_min_m + buffer_length_m
-        spacer_x_out_m = domain_x_max_m - buffer_length_m
-        spacer_length_m = domain_length_m - 2.0 * buffer_length_m
-
-        if spacer_length_m <= 0.0:
-            raise ValueError(
-                f"spacer_length_m must be > 0, got {spacer_length_m}. "
-                f"Check domain_length_m={domain_length_m} and buffer_length_m={buffer_length_m}."
-            )
+        # Asymmetric DomainLayout is required. Legacy getattr defaults for
+        # domain_length_m / n_unit_cells / n_buffer_cells_each_end are gone.
+        # Non-layout getattr defaults (salt_*, channel_height_m,
+        # outlet_gauge_pressure, Fluent launch settings) are unchanged below.
+        scoring_layout = resolve_scoring_layout_from_config(cfg)
+        layout = scoring_layout.layout
+        domain_x_min_m = scoring_layout.domain_x_min_m
+        domain_length_m = scoring_layout.domain_length_m
+        unit_cell_boundary_x_m = scoring_layout.unit_cell_boundary_x_m
+        spacer_cells = scoring_layout.spacer_cells
+        spacer_x_in_m = scoring_layout.spacer_x_in_m
+        spacer_x_out_m = scoring_layout.spacer_x_out_m
+        spacer_length_m = scoring_layout.spacer_length_m
+        n_unit_cells = layout.n_total
+        n_inlet_spacer_cells_excluded = cfg.n_inlet_spacer_cells_excluded
 
         print("\nSpacer plane locations:")
+        print(
+            f"  layout = {layout.n_buffer_in}+{layout.n_active}+{layout.n_buffer_out}"
+            f" (cell_length_x_m={layout.cell_length_x_m})"
+        )
         print(f"  spacer_x_in_m   = {spacer_x_in_m:.6e} m")
         print(f"  spacer_x_out_m  = {spacer_x_out_m:.6e} m")
         print(f"  spacer_length_m = {spacer_length_m:.6e} m")
@@ -1343,17 +1324,16 @@ if __name__ == "__main__":
 
         pressure_drop_spacer_per_m = safe_divide(pressure_drop_spacer, spacer_length_m)
 
-        unit_cell_derived_metrics = derive_spacer_cell_metrics(
+        unit_cell_derived_metrics = derive_spacer_cell_metrics_for_layout(
             computed_values,
-            n_unit_cells,
-            n_buffer_cells_each_end,
+            layout,
         )
-        periodic_pressure_metrics = derive_periodic_spacer_pressure_metrics(
-            unit_cell_derived_metrics,
-            domain_length_m,
-            n_unit_cells,
-            n_buffer_cells_each_end,
-            n_inlet_spacer_cells_excluded,
+        periodic_pressure_metrics = (
+            derive_periodic_spacer_pressure_metrics_for_layout(
+                unit_cell_derived_metrics,
+                layout,
+                n_inlet_spacer_cells_excluded,
+            )
         )
 
         unit_cell_summary_rows = []

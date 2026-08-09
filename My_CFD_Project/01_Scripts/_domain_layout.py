@@ -347,17 +347,33 @@ def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, o
     Raises KeyError via :func:`resolve_layout` when the pair is unknown.
     Keys use the existing post-config names ``active_membrane_base_names`` and
     ``buffer_wall_base_names`` (not a new membrane_wall_base_names alias).
+
+    Also emits ``domain_length_m``, ``buffer_length_m`` (inlet-side), and
+    ``n_unit_cells`` so they stay consistent with the asymmetric layout when
+    applied as ``PYFLUENT_POST_OVERRIDES`` onto a base config that still carries
+    legacy length defaults. For asymmetric layouts ``n_buffer_cells_each_end``
+    is set to ``None`` to clear the inapplicable symmetric key (never a fake
+    each-end count).
     """
     record = resolve_layout(geo_name, mesh_case_name)
     layout = record.layout
-    return {
+    values: dict[str, object] = {
         "n_buffer_in": layout.n_buffer_in,
         "n_active": layout.n_active,
         "n_buffer_out": layout.n_buffer_out,
         "cell_length_x_m": layout.cell_length_x_m,
         "active_membrane_base_names": list(record.membrane_wall_base_names),
         "buffer_wall_base_names": list(record.buffer_wall_base_names),
+        "domain_length_m": layout.total_length_m,
+        "buffer_length_m": layout.n_buffer_in * float(layout.cell_length_x_m),
+        "n_unit_cells": layout.n_total,
     }
+    if layout.n_buffer_in == layout.n_buffer_out:
+        values["n_buffer_cells_each_end"] = layout.n_buffer_in
+    else:
+        # Clear stale symmetric key from 00_post_config; do not invent a fake.
+        values["n_buffer_cells_each_end"] = None
+    return values
 
 
 def mesh_case_name_from_case_dirname(case_name: str) -> Optional[str]:

@@ -419,11 +419,17 @@ class TestPostConfigOverrideAllowlist:
             "fluent_start_timeout",
             "fluent_health_timeout",
             "domain_x_min_m",
+            "n_buffer_in",
+            "n_active",
+            "n_buffer_out",
+            "cell_length_x_m",
             "domain_length_m",
             "buffer_length_m",
             "n_unit_cells",
             "n_buffer_cells_each_end",
             "n_inlet_spacer_cells_excluded",
+            "mesh_case_name",
+            "mesh_resolution_source",
             "salt_mass_fraction_upper_threshold",
             "salt_mass_fraction_lower_threshold",
         }
@@ -470,3 +476,38 @@ class TestPostConfigOverrideApplication:
         apply_post_json_overrides(post_cfg, json.loads(json.dumps(overrides)))
         assert post_cfg.inlet_velocity_value == 0.1
         assert post_cfg.outlet_gauge_pressure == 4.0e6
+
+    def test_asymmetric_layout_override_keys_are_allowed(self, post_cfg):
+        """Live 01_batch path: layout keys must be admitted by the allowlist.
+
+        apply_post_config_overrides → post_config_override_keys rejects any key
+        not declared at module level (or in POST_CONFIG_OVERRIDE_EXTENSIONS).
+        Before these keys were module-level, a live worker raised
+        ValueError: Unknown post config override key(s).
+        """
+        overrides = {
+            "n_buffer_in": 1,
+            "n_active": 7,
+            "n_buffer_out": 2,
+            "cell_length_x_m": 0.003465,
+            "domain_length_m": 0.03465,
+            "buffer_length_m": 0.003465,
+            "n_unit_cells": 10,
+            "n_buffer_cells_each_end": None,
+            "mesh_case_name": "mesh_max085_min006_cpg5_bl4",
+            "mesh_resolution_source": "log",
+            "active_membrane_base_names": ["wall_top_mem", "wall_bottom_mem"],
+            "buffer_wall_base_names": [
+                "wall_top_buffer_in",
+                "wall_top_buffer_out",
+                "wall_bottom_buffer_in",
+                "wall_bottom_buffer_out",
+            ],
+        }
+        apply_post_json_overrides(post_cfg, overrides)
+        assert post_cfg.n_buffer_in == 1
+        assert post_cfg.n_active == 7
+        assert post_cfg.n_buffer_out == 2
+        assert post_cfg.domain_length_m == 0.03465
+        assert post_cfg.n_buffer_cells_each_end is None
+        assert post_cfg.mesh_case_name == "mesh_max085_min006_cpg5_bl4"

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
+
+from _domain_layout import DomainLayout
 
 
 def list_named_object_names(named_object, object_label=""):
@@ -172,6 +176,145 @@ def validate_unit_cell_layout(
             f"n_buffer_cells_each_end={n_buffer_cells_each_end}."
         )
     return spacer_cells
+
+
+@dataclass(frozen=True)
+class ScoringLayoutGeometry:
+    """Geometry derived from an asymmetric DomainLayout for report scoring."""
+
+    layout: DomainLayout
+    domain_x_min_m: float
+    domain_length_m: float
+    spacer_x_in_m: float
+    spacer_x_out_m: float
+    spacer_length_m: float
+    unit_cell_boundary_x_m: list[float]
+    spacer_cells: list[int]
+
+
+_LAYOUT_REL_TOL = 1.0e-9
+_LAYOUT_ABS_TOL = 1.0e-12
+
+
+def scoring_geometry_from_layout(
+    layout: DomainLayout,
+    domain_x_min_m: float,
+) -> ScoringLayoutGeometry:
+    """Derive plane positions and active-cell indices from DomainLayout."""
+    x0 = float(domain_x_min_m)
+    spacer_x_in_m, spacer_x_out_m = layout.active_span(x0)
+    return ScoringLayoutGeometry(
+        layout=layout,
+        domain_x_min_m=x0,
+        domain_length_m=float(layout.total_length_m),
+        spacer_x_in_m=float(spacer_x_in_m),
+        spacer_x_out_m=float(spacer_x_out_m),
+        spacer_length_m=float(layout.active_length_m),
+        unit_cell_boundary_x_m=layout.boundary_positions(x0),
+        spacer_cells=layout.active_cell_numbers(),
+    )
+
+
+def _config_has_layout_value(cfg: Any, name: str) -> bool:
+    """True when cfg defines ``name`` with a non-None value."""
+    if not hasattr(cfg, name):
+        return False
+    return getattr(cfg, name) is not None
+
+
+def _require_config_attr(cfg: Any, name: str) -> Any:
+    if not hasattr(cfg, name):
+        raise AttributeError(f"Missing required layout config key: {name!r}.")
+    value = getattr(cfg, name)
+    if value is None:
+        raise AttributeError(f"Missing required layout config key: {name!r}.")
+    return value
+
+
+def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
+    """Build scoring geometry from asymmetric layout keys on a post config.
+
+    Asymmetric keys ``n_buffer_in``, ``n_active``, ``n_buffer_out``, and
+    ``cell_length_x_m`` are required (no silent 5/1 defaults).
+
+    Rule when legacy geometry keys are also present: they must agree with the
+    asymmetric layout. Disagreement raises — neither side is preferred silently.
+    ``buffer_length_m`` means the inlet-side buffer length
+    (``n_buffer_in * cell_length_x_m``). ``n_buffer_cells_each_end`` is only
+    valid when ``n_buffer_in == n_buffer_out``; a non-None value on an
+    asymmetric layout is a contradiction. A ``None`` value is treated as
+    absent (used to clear the key via overrides).
+    """
+    layout = DomainLayout(
+        int(_require_config_attr(cfg, "n_buffer_in")),
+        int(_require_config_attr(cfg, "n_active")),
+        int(_require_config_attr(cfg, "n_buffer_out")),
+        float(_require_config_attr(cfg, "cell_length_x_m")),
+    )
+    domain_x_min_m = float(_require_config_attr(cfg, "domain_x_min_m"))
+    geometry = scoring_geometry_from_layout(layout, domain_x_min_m)
+
+    if _config_has_layout_value(cfg, "domain_length_m"):
+        domain_length_m = float(cfg.domain_length_m)
+        if not math.isclose(
+            domain_length_m,
+            geometry.domain_length_m,
+            rel_tol=_LAYOUT_REL_TOL,
+            abs_tol=_LAYOUT_ABS_TOL,
+        ):
+            raise ValueError(
+                "domain_length_m contradicts asymmetric layout: "
+                f"domain_length_m={domain_length_m!r}, "
+                f"layout.total_length_m={geometry.domain_length_m!r} "
+                f"(n_buffer_in={layout.n_buffer_in}, n_active={layout.n_active}, "
+                f"n_buffer_out={layout.n_buffer_out}, "
+                f"cell_length_x_m={layout.cell_length_x_m})."
+            )
+
+    if _config_has_layout_value(cfg, "n_unit_cells"):
+        n_unit_cells = int(cfg.n_unit_cells)
+        if n_unit_cells != layout.n_total:
+            raise ValueError(
+                "n_unit_cells contradicts asymmetric layout: "
+                f"n_unit_cells={n_unit_cells!r}, "
+                f"layout.n_total={layout.n_total!r}."
+            )
+
+    if _config_has_layout_value(cfg, "buffer_length_m"):
+        buffer_length_m = float(cfg.buffer_length_m)
+        expected_inlet_buffer_m = (
+            layout.n_buffer_in * float(layout.cell_length_x_m)
+        )
+        if not math.isclose(
+            buffer_length_m,
+            expected_inlet_buffer_m,
+            rel_tol=_LAYOUT_REL_TOL,
+            abs_tol=_LAYOUT_ABS_TOL,
+        ):
+            raise ValueError(
+                "buffer_length_m contradicts asymmetric layout inlet buffer: "
+                f"buffer_length_m={buffer_length_m!r}, "
+                f"expected={expected_inlet_buffer_m!r} "
+                f"(n_buffer_in * cell_length_x_m)."
+            )
+
+    if _config_has_layout_value(cfg, "n_buffer_cells_each_end"):
+        n_each = int(cfg.n_buffer_cells_each_end)
+        if layout.n_buffer_in != layout.n_buffer_out or n_each != layout.n_buffer_in:
+            raise ValueError(
+                "n_buffer_cells_each_end contradicts asymmetric layout: "
+                f"n_buffer_cells_each_end={n_each!r}, "
+                f"n_buffer_in={layout.n_buffer_in}, "
+                f"n_buffer_out={layout.n_buffer_out}. "
+                "Clear n_buffer_cells_each_end (set to None) for asymmetric "
+                "layouts; do not invent a fake each-end count."
+            )
+
+    if geometry.spacer_length_m <= 0.0:
+        raise ValueError(
+            f"spacer_length_m must be > 0, got {geometry.spacer_length_m}."
+        )
+    return geometry
 
 
 def unit_cell_plane_name(boundary_index):
@@ -515,6 +658,42 @@ def derive_spacer_cell_metrics(
     return derived
 
 
+def derive_spacer_cell_metrics_for_layout(
+    computed_values: Mapping[str, Any],
+    layout: DomainLayout,
+) -> dict[str, Optional[float]]:
+    """Asymmetric DomainLayout variant of :func:`derive_spacer_cell_metrics`."""
+    derived: dict[str, Optional[float]] = {}
+    for cell_number in layout.active_cell_numbers():
+        upstream_index = cell_number - 1
+        downstream_index = cell_number
+        p_upstream = computed_values.get(
+            unit_cell_pressure_report_name(upstream_index)
+        )
+        p_downstream = computed_values.get(
+            unit_cell_pressure_report_name(downstream_index)
+        )
+        c_upstream = computed_values.get(
+            unit_cell_concentration_report_name(upstream_index)
+        )
+        c_downstream = computed_values.get(
+            unit_cell_concentration_report_name(downstream_index)
+        )
+
+        derived[f"pp_pressure_drop_cell_{cell_number}"] = (
+            None
+            if p_upstream is None or p_downstream is None
+            else p_upstream - p_downstream
+        )
+        derived[f"pp_salt_mass_fraction_rise_cell_{cell_number}"] = (
+            None
+            if c_upstream is None or c_downstream is None
+            else c_downstream - c_upstream
+        )
+
+    return derived
+
+
 def derive_periodic_spacer_pressure_metrics(
     unit_cell_metrics,
     domain_length_m,
@@ -556,6 +735,57 @@ def derive_periodic_spacer_pressure_metrics(
         periodic_length_m = len(periodic_cells) * cell_length_m
         periodic_per_m = sum(periodic_pressure_drops) / periodic_length_m
 
+    cell2_drop = unit_cell_metrics.get("pp_pressure_drop_cell_2")
+    cell3_drop = unit_cell_metrics.get("pp_pressure_drop_cell_3")
+    cell2_over_cell3 = (
+        None
+        if cell2_drop is None or cell3_drop in (None, 0.0)
+        else cell2_drop / cell3_drop
+    )
+
+    return {
+        "pp_pressure_drop_periodic_per_m": periodic_per_m,
+        "pp_pressure_drop_cell2_over_cell3": cell2_over_cell3,
+    }
+
+
+def derive_periodic_spacer_pressure_metrics_for_layout(
+    unit_cell_metrics: Mapping[str, Any],
+    layout: DomainLayout,
+    n_inlet_spacer_cells_excluded: int,
+) -> dict[str, Optional[float]]:
+    """Asymmetric DomainLayout variant of periodic spacer pressure metrics."""
+    if (
+        isinstance(n_inlet_spacer_cells_excluded, bool)
+        or not isinstance(n_inlet_spacer_cells_excluded, int)
+    ):
+        raise TypeError(
+            "n_inlet_spacer_cells_excluded must be an integer."
+        )
+    if n_inlet_spacer_cells_excluded < 0:
+        raise ValueError(
+            "n_inlet_spacer_cells_excluded must be non-negative."
+        )
+
+    all_spacer_cells = layout.active_cell_numbers()
+    periodic_cells = all_spacer_cells[n_inlet_spacer_cells_excluded:]
+    if not periodic_cells:
+        raise ValueError(
+            "At least one spacer cell must remain for the periodic average."
+        )
+
+    periodic_pressure_drops = [
+        unit_cell_metrics.get(f"pp_pressure_drop_cell_{cell_number}")
+        for cell_number in periodic_cells
+    ]
+    if any(value is None for value in periodic_pressure_drops):
+        periodic_per_m = None
+    else:
+        cell_length_m = float(layout.cell_length_x_m)
+        periodic_length_m = len(periodic_cells) * cell_length_m
+        periodic_per_m = sum(periodic_pressure_drops) / periodic_length_m
+
+    # Intentionally fixed to cells 2 and 3 (not layout-relative).
     cell2_drop = unit_cell_metrics.get("pp_pressure_drop_cell_2")
     cell3_drop = unit_cell_metrics.get("pp_pressure_drop_cell_3")
     cell2_over_cell3 = (

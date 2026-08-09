@@ -55,9 +55,12 @@ class TestWriteReportConfigLayoutKeys:
         assert "wall_bottom_buffer_in" in text
         assert "wall_bottom_buffer_out" in text
         assert "wall_top_mem" in text
-        # Legacy length keys still present and unchanged in meaning.
-        assert "domain_length_m = 0.017325" in text
+        # Length keys must match the asymmetric layout (1+7+2 → 0.03465 m).
+        assert "domain_length_m = 0.03465" in text
         assert "buffer_length_m = 0.003465" in text
+        assert "n_unit_cells = 10" in text
+        assert "n_buffer_cells_each_end = None" in text
+        assert "0.017325" not in text
 
     def test_registered_legacy_geometry_writes_legacy_buffer_names(
         self, batch_post, tmp_path: Path
@@ -81,6 +84,9 @@ class TestWriteReportConfigLayoutKeys:
         assert "n_buffer_in = 1" in text
         assert "n_active = 3" in text
         assert "n_buffer_out = 1" in text
+        assert "domain_length_m = 0.017325" in text
+        assert "n_unit_cells = 5" in text
+        assert "n_buffer_cells_each_end = 1" in text
         assert "buffer_wall_base_names = ['wall_top_buffer', 'wall_bottom_buffer']" in text
 
 
@@ -197,6 +203,10 @@ class TestBatchReportOverridesLayoutKeys:
         assert overrides["n_active"] == 7
         assert overrides["n_buffer_out"] == 2
         assert overrides["cell_length_x_m"] == 0.003465
+        assert overrides["domain_length_m"] == 0.03465
+        assert overrides["buffer_length_m"] == 0.003465
+        assert overrides["n_unit_cells"] == 10
+        assert overrides["n_buffer_cells_each_end"] is None
         assert overrides["buffer_wall_base_names"] == [
             "wall_top_buffer_in",
             "wall_top_buffer_out",

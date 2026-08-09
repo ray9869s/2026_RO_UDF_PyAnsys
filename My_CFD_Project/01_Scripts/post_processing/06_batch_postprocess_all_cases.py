@@ -757,6 +757,13 @@ def write_report_config(
         return getattr(base_cfg, name, default) if base_cfg is not None else default
 
     project_root = results_root.parent
+    n_buffer_in = int(layout_settings["n_buffer_in"])
+    n_active = int(layout_settings["n_active"])
+    n_buffer_out = int(layout_settings["n_buffer_out"])
+    cell_length_x_m = float(layout_settings["cell_length_x_m"])
+    n_total = n_buffer_in + n_active + n_buffer_out
+    domain_length_m = n_total * cell_length_x_m
+    buffer_length_m = n_buffer_in * cell_length_x_m
     lines = [
         f"project_root = {str(project_root)!r}",
         "",
@@ -782,15 +789,22 @@ def write_report_config(
         f"fluent_health_timeout = {cfg_get('fluent_health_timeout', 600)!r}",
         "",
         f"domain_x_min_m = {cfg_get('domain_x_min_m', 0.0)!r}",
-        f"domain_length_m = {cfg_get('domain_length_m', 0.017325)!r}",
-        f"buffer_length_m = {cfg_get('buffer_length_m', 0.003465)!r}",
+        f"domain_length_m = {domain_length_m!r}",
+        f"buffer_length_m = {buffer_length_m!r}",
         f"channel_height_m = {cfg_get('channel_height_m', 0.00077)!r}",
+        f"n_unit_cells = {n_total!r}",
+        f"n_inlet_spacer_cells_excluded = {cfg_get('n_inlet_spacer_cells_excluded', 1)!r}",
         "",
-        f"n_buffer_in = {layout_settings['n_buffer_in']!r}",
-        f"n_active = {layout_settings['n_active']!r}",
-        f"n_buffer_out = {layout_settings['n_buffer_out']!r}",
-        f"cell_length_x_m = {layout_settings['cell_length_x_m']!r}",
+        f"n_buffer_in = {n_buffer_in!r}",
+        f"n_active = {n_active!r}",
+        f"n_buffer_out = {n_buffer_out!r}",
+        f"cell_length_x_m = {cell_length_x_m!r}",
     ]
+    if n_buffer_in == n_buffer_out:
+        lines.append(f"n_buffer_cells_each_end = {n_buffer_in!r}")
+    else:
+        # Asymmetric: do not invent a fake each-end count.
+        lines.append("n_buffer_cells_each_end = None")
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
