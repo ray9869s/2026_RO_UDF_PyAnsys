@@ -72,7 +72,7 @@
 
 /*
    Membrane parameters are kept as static variables instead of macros so that
-   future DEFINE_ON_DEMAND or parameter-sweep hooks can modify them at runtime.
+   future on-demand or parameter-sweep hooks can modify them at runtime.
 */
 static real A_perm = 2.50e-12;      /* Water permeability [m/s/Pa] */
 static real B_perm = 2.50e-8;       /* Salt permeability [m/s] */
@@ -555,7 +555,10 @@ DEFINE_SOURCE(z_mom_source, c, t, dS, eqn)
 #error "260810 inlet profile / probe_inlet_profile require a 3D Fluent build."
 #endif
 
-/* z of bottom membrane wall [m]. Confirm vs mesh (centred vs bottom origin). */
+/* z of bottom membrane wall [m].
+   Server mesh check (channel-centred origin): z extent
+   -3.850746e-04 to 3.852144e-04 m, so INLET_Z_BOTTOM = -0.385e-3 and
+   CHANNEL_HEIGHT = 0.770e-3 are correct for this mesh generation. */
 #define INLET_Z_BOTTOM            (-0.385e-3)
 /* Wall-to-wall channel height H [m]. */
 #define CHANNEL_HEIGHT            ( 0.770e-3)
@@ -570,7 +573,7 @@ DEFINE_SOURCE(z_mom_source, c, t, dS, eqn)
 /* Expected empty-channel inlet area for D2450_a45 [m2] =
    W 3.465e-3 m * H 0.770e-3 m. Case-specific sanity reference only. */
 #define INLET_AREA_EXPECTED_M2    2.668e-6
-/* First-call diagnostic inside DEFINE_PROFILE (hook-drop detector). */
+/* First-call diagnostic inside inlet profile hook (hook-drop detector). */
 #define INLET_PROFILE_DIAGNOSTIC  1
 
 /* Shared marker strings for transcript scans (probe + profile). */
@@ -920,34 +923,4 @@ DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
 #endif /* !RP_HOST */
 }
 
-
-#if 0
-/* =======================================================================
-   FUTURE: audited-safe runtime u_mean (NOT COMPILED)
-
-   Use only if a later campaign needs per-case u_mean without recompile.
-   Pattern: DEFINE_ON_DEMAND on host reads Scheme rp-var, host_to_node_real_1
-   broadcasts to nodes, file-scope static caches the value for DEFINE_PROFILE.
-   Do not call RP_Get_Real from compute nodes for a custom udf/* rp-var unless
-   live-verified on Fluent 25.1 parallel.
-   ======================================================================= */
-
-#define UMEAN_RP_NAME_FUTURE "udf/u-mean"
-static real inlet_umean_cache = 0.2;
-static int inlet_umean_cache_valid = 0;
-
-DEFINE_ON_DEMAND(sync_inlet_umean_future)
-{
-    real umean_host;
-
-    umean_host = 0.2;
-#if !RP_NODE
-    if (RP_Variable_Exists_P(UMEAN_RP_NAME_FUTURE)) {
-        umean_host = RP_Get_Real(UMEAN_RP_NAME_FUTURE);
-    }
-#endif
-    host_to_node_real_1(umean_host);
-    inlet_umean_cache = umean_host;
-    inlet_umean_cache_valid = 1;
-}
-#endif /* future rp-var u_mean pattern */
+/* Archived rp-var u_mean pattern: see reference_rp_var_umean_pattern.txt */

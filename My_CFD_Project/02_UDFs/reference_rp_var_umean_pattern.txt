@@ -1,0 +1,43 @@
+================================================================================
+REFERENCE ONLY — NOT COMPILED
+File: My_CFD_Project/02_UDFs/reference_rp_var_umean_pattern.txt
+================================================================================
+
+Audited-safe pattern for per-case inlet u_mean without recompiling the UDF:
+
+  1. On-demand host read of a Scheme rp-variable (RP_Get_Real on host only)
+  2. host_to_node_real_1 broadcast to all compute nodes
+  3. File-scope static cache consumed later by the inlet velocity profile hook
+
+Adopt this if a later campaign needs per-case u_mean. Do NOT paste this into a
+.c file that Fluent will compile for libudf unless the full function body is
+included too: Fluent builds udf_names.c by TEXT-SCANNING sources for DEFINE_*
+macros (preprocessor is NOT run). A DEFINE_* name without a compiled body
+causes an undefined-symbol link failure (seen with sync_inlet_umean_future
+inside a disabled #if 0 archive block).
+
+Do not call RP_Get_Real from compute nodes for a custom udf/* rp-var unless
+live-verified on Fluent 25.1 parallel.
+
+--------------------------------------------------------------------------------
+Archived pattern (formerly at end of 260810_RO_UDF.c, behind #if 0)
+--------------------------------------------------------------------------------
+
+#define UMEAN_RP_NAME_FUTURE "udf/u-mean"
+static real inlet_umean_cache = 0.2;
+static int inlet_umean_cache_valid = 0;
+
+DEFINE_ON_DEMAND(sync_inlet_umean_future)
+{
+    real umean_host;
+
+    umean_host = 0.2;
+#if !RP_NODE
+    if (RP_Variable_Exists_P(UMEAN_RP_NAME_FUTURE)) {
+        umean_host = RP_Get_Real(UMEAN_RP_NAME_FUTURE);
+    }
+#endif
+    host_to_node_real_1(umean_host);
+    inlet_umean_cache = umean_host;
+    inlet_umean_cache_valid = 1;
+}
