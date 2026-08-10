@@ -188,7 +188,11 @@ INLET_SALT_MASS_FRAC_REF: float = UDF_C_INLET_REF * UDF_MW_SALT / UDF_RHO_REF
 # Membrane-normal direction is z; channel height = 0.77 mm.
 CHANNEL_HEIGHT_M: float = 0.00077
 # Candidate z values tried when bounding-box extraction fails.
-# 0.0 = geometry centred about z=0; 0.000385 = geometry running 0→0.00077 m.
+# Origin is channel-centred (confirmed): server mesh z extent
+# -3.850746e-04..3.852144e-04 m; probe_inlet_profile inlet face centroids
+# -0.378616..+0.378583 mm, eta in [0.00829, 0.99167], zero clamped faces.
+# 0.0 is therefore the correct mid-channel plane; CHANNEL_HEIGHT_M/2 remains
+# only as a legacy bottom-origin fallback candidate.
 CENTER_PLANE_Z_CANDIDATES: List[float] = [0.0, CHANNEL_HEIGHT_M / 2.0]
 
 # ---------------------------------------------------------------------------
@@ -2881,8 +2885,8 @@ def compute_bulk_center_average(
 
     Tries multiple z candidates in order:
       1. z_mid from fluid-part bounding box
-      2. z = 0.0  (geometry centred about z=0)
-      3. z = CHANNEL_HEIGHT_M / 2  (geometry running 0 → CHANNEL_HEIGHT_M)
+      2. z = 0.0  (channel-centred origin; confirmed by mesh + probe)
+      3. z = CHANNEL_HEIGHT_M / 2  (legacy bottom-origin fallback only)
 
     For each candidate the plausibility of the area-average is verified before
     accepting, so implausible values from an off-location plane are skipped.

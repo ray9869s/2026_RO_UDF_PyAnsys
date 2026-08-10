@@ -563,10 +563,12 @@ DEFINE_SOURCE(z_mom_source, c, t, dS, eqn)
 /* Wall-to-wall channel height H [m]. */
 #define CHANNEL_HEIGHT            ( 0.770e-3)
 /* Target area-averaged inlet velocity [m/s].
-   Single operating point for the plug-vs-parabolic inlet test.
-   May be scaled down by the discretization excess reported by
-   probe_inlet_profile. */
-#define U_MEAN                    0.2
+   Measured discretization excess +0.3609% on D2450_a45_7c_brg110
+   mesh_max085_min006_cpg5_bl4 (749 inlet faces, area-weighted mean u =
+   0.200722 at U_MEAN = 0.2). 0.199281 makes the discrete area-weighted
+   mean equal 0.200000 so the parabolic run matches the plug run's flow
+   rate. Mesh-specific — re-run probe_inlet_profile if the mesh changes. */
+#define U_MEAN                    0.199281
 /* Inlet Named Selection base name. Mirrors solver_code_260616.py
    find_zones_by_base_name(..., "inlet"). Fluent may split to inlet.1, ... */
 #define INLET_THREAD_BASE_NAME    "inlet"

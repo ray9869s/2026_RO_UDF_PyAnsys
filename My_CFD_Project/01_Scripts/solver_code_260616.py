@@ -7,6 +7,7 @@ import shutil
 import re
 import json
 import sys
+import time
 import importlib.util
 from pathlib import Path
 
@@ -494,24 +495,96 @@ def verify_file_exists(path, description):
         print(f"Warning: {description} was not found: {path}")
 
 
-def assert_transcript_contains(transcript_path, marker, context):
-    """Raise if a required UDF marker line is missing from a Fluent transcript.
+def _transcript_path_diag(path):
+    """Return a one-line path/size/mtime diagnostic for assert failures."""
+    path = Path(path)
+    if not path.is_file():
+        return f"{path}: missing"
+    try:
+        st = path.stat()
+    except OSError as exc:
+        return f"{path}: stat failed ({exc})"
+    return f"{path}: size={st.st_size} bytes, mtime={st.st_mtime}"
+
+
+def _marker_in_transcript_file(path):
+    """Return file text if readable, else None."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    try:
+        if path.stat().st_size <= 0:
+            return None
+    except OSError:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def assert_transcript_contains(
+    marker,
+    context,
+    *,
+    case_dir,
+    solver_log_path,
+    poll_interval_s=0.5,
+    timeout_s=30.0,
+):
+    """Raise if a required UDF marker is missing from Fluent transcripts.
+
+    Primary source is Fluent's own fluent-*.trn in the case folder (newest
+    mtime first). The PyFluent-managed solver_log_*.txt is a secondary source
+    only when non-empty. Polls and re-reads until the marker appears or
+    timeout_s elapses.
 
     If libudf is not loaded when a UDF BC is set, Fluent can silently drop the
     hook and keep a constant panel value — a 0 m/s run can still converge.
     """
-    if not os.path.isfile(transcript_path):
-        raise FileNotFoundError(
-            f"Transcript not found for {context}: {transcript_path}"
+    case_dir = Path(case_dir)
+    solver_log_path = Path(solver_log_path)
+    deadline = time.monotonic() + float(timeout_s)
+
+    while True:
+        trn_files = []
+        try:
+            trn_files = [
+                p for p in case_dir.glob("fluent-*.trn") if p.is_file()
+            ]
+        except OSError:
+            trn_files = []
+        trn_files.sort(
+            key=lambda p: p.stat().st_mtime if p.is_file() else 0.0,
+            reverse=True,
         )
-    with open(transcript_path, "r", encoding="utf-8", errors="replace") as handle:
-        text = handle.read()
-    if marker not in text:
-        raise RuntimeError(
-            f"Missing required transcript marker for {context}: {marker!r} "
-            f"in {transcript_path}. UDF may not have loaded or executed."
-        )
-    print(f"Transcript marker OK for {context}: {marker!r}")
+
+        search_paths = list(trn_files) + [solver_log_path]
+        for path in search_paths:
+            # solver_log is secondary and only when non-empty; fluent-*.trn
+            # uses the same non-empty read helper.
+            text = _marker_in_transcript_file(path)
+            if text is None:
+                continue
+            if marker in text:
+                print(
+                    f"Transcript marker OK for {context}: {marker!r} "
+                    f"(found in {path})"
+                )
+                return
+
+        if time.monotonic() >= deadline:
+            diag_lines = [_transcript_path_diag(p) for p in search_paths]
+            raise RuntimeError(
+                f"Missing required transcript marker for {context}: {marker!r} "
+                f"after {timeout_s:g}s. Searched (fluent-*.trn newest first, "
+                f"then solver_log if present):\n  "
+                + "\n  ".join(diag_lines)
+                + ". UDF may not have loaded or executed."
+            )
+
+        time.sleep(float(poll_interval_s))
 
 
 def apply_inlet_velocity_boundary(vin, inlet_zone_name, inlet_velocity, *, use_profile, profile_udf_name):
@@ -2199,19 +2272,13 @@ if __name__ == "__main__":
             print("Executing inlet profile probe TUI command:")
             print(probe_tui)
             solver.execute_tui(probe_tui)
-            # Flush marker into solver_log before asserting.
-            try:
-                solver.transcript.stop()
-                solver.transcript.start(file_name=as_fluent_path(solver_log_path))
-            except Exception as transcript_error:
-                print(
-                    "Warning: could not bounce transcript after probe: "
-                    f"{transcript_error}"
-                )
+            # Do not stop/restart the PyFluent transcript here: Transcript.start
+            # in ansys-fluent-core 0.38.0 truncates solver_log_*.txt.
             assert_transcript_contains(
-                solver_log_path,
                 INLET_PROBE_MARKER,
                 "probe_inlet_profile",
+                case_dir=case_path,
+                solver_log_path=solver_log_path,
             )
 
         if use_inlet_velocity_profile:
@@ -2549,21 +2616,14 @@ if __name__ == "__main__":
             print(solution.monitor.residual.equations.get_state())
 
             if use_inlet_velocity_profile:
-                # Profile diagnostic prints on first DEFINE_PROFILE evaluation
-                # (typically during iterate). Bounce transcript so the file
-                # contains the marker before we scan.
-                try:
-                    solver.transcript.stop()
-                    solver.transcript.start(file_name=as_fluent_path(solver_log_path))
-                except Exception as transcript_error:
-                    print(
-                        "Warning: could not bounce transcript after iterate: "
-                        f"{transcript_error}"
-                    )
+                # Profile diagnostic prints on first profile-hook evaluation
+                # (typically during iterate). Prefer fluent-*.trn; do not bounce
+                # the PyFluent transcript (start truncates the log file).
                 assert_transcript_contains(
-                    solver_log_path,
                     INLET_PROFILE_MARKER,
                     "inlet_x_velocity_profile",
+                    case_dir=case_path,
+                    solver_log_path=solver_log_path,
                 )
 
         else:
