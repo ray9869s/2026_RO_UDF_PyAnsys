@@ -114,8 +114,10 @@ def populate_valid_solver_config(cfg: ModuleType) -> None:
     cfg.operating_pressure = 101325.0
     cfg.outlet_gauge_pressure = 4.0e6
     cfg.template_case_file_name = "template_RO_setup.cas.h5"
-    cfg.udf_source_file_name = "260612_RO_UDF.c"
+    cfg.udf_source_file_name = "260810_RO_UDF.c"
     cfg.udf_library_name = "libudf"
+    cfg.use_inlet_velocity_profile = False
+    cfg.run_inlet_profile_probe = False
     cfg.membrane_wall_base_names = ["wall_top_mem", "wall_bottom_mem"]
     cfg.buffer_wall_base_names = ["wall_top_buffer", "wall_bottom_buffer"]
     cfg.target_species_name = "nacl"
