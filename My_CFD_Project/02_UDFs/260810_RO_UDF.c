@@ -1,0 +1,740 @@
+#include "udf.h"
+#include <math.h>
+#include <string.h>
+
+/* ========================= User-Defined Parameters ========================= */
+
+/*
+   WARNING:
+   SALT_YI_INDEX must match the Fluent species order.
+   This index is zero-based. Check the species list after enabling species transport.
+*/
+#define SALT_YI_INDEX   0
+
+/*
+   Membrane wall Named Selection base names.
+   The updated RO spacer geometry splits the former membrane wall into four
+   Named Selections:
+     - wall_top_mem and wall_bottom_mem are active membrane walls.
+     - wall_top_buffer and wall_bottom_buffer are no-slip buffer walls without
+       permeation.
+   Fluent may further split membrane zones into wall_top_mem.1, wall_top_mem.2,
+   wall_bottom_mem.1, wall_bottom_mem.2, etc. after mesh replacement.
+   The name-matching logic below accepts the exact active membrane base names
+   and these split-zone names, while excluding buffer wall names.
+   The solver script calls (update-solver-thread-names) before loading this UDF
+   so that THREAD_NAME(t) returns the correct zone name at runtime.
+   Spacer walls, periodic boundaries, inlet, outlet, and side walls do NOT match
+   these names and will not receive membrane source terms.
+*/
+#define MEMB_THREAD_BASE_NAME_TOP     "wall_top_mem"
+#define MEMB_THREAD_BASE_NAME_BOTTOM  "wall_bottom_mem"
+
+/* Physical constants */
+#define MW_SALT         0.05844     /* NaCl molecular weight [kg/mol] */
+#define C_INLET_REF     597.8268309 /* Inlet/reference NaCl concentration [mol/m3] */
+#define RHO_REF         998.20      /* Reference water density [kg/m3] */
+
+/* Unit conversion */
+#define MS_TO_LMH       3600000.0   /* [m/s] to [L/m2/hr] = 3600 s/hr * 1000 L/m3 */
+
+/*
+   Source ramp settings.
+   These values control how strongly the membrane source terms are applied
+   during the early iterations.
+*/
+#define RAMP_ITER_1       50
+#define RAMP_ITER_2      100
+#define RAMP_ITER_3      150
+
+#define RAMP_FACTOR_1    0.2
+#define RAMP_FACTOR_2    0.5
+#define RAMP_FACTOR_3    0.8
+#define RAMP_FACTOR_FULL 1.0
+
+/*
+   Momentum sink model option.
+
+   0: Isotropic mass-removal momentum sink.
+      The total mass sink coefficient is applied to all velocity components.
+      This is consistent with treating the local cell mass removal as carrying
+      away the local cell momentum.
+
+   1: Normal-projected momentum sink.
+      The momentum sink coefficient is projected using squared membrane
+      face-normal component ratios. This option is intended for sensitivity
+      testing when wall-normal permeation effects need to be isolated.
+*/
+#define USE_NORMAL_PROJECTED_MOMENTUM_SINK 0
+
+/* Numerical safety threshold */
+#define MIN_SOURCE_DENOMINATOR 1.0e-20
+
+/*
+   Membrane parameters are kept as static variables instead of macros so that
+   future DEFINE_ON_DEMAND or parameter-sweep hooks can modify them at runtime.
+*/
+static real A_perm = 2.50e-12;      /* Water permeability [m/s/Pa] */
+static real B_perm = 2.50e-8;       /* Salt permeability [m/s] */
+static real kappa  = 4958.0;        /* Osmotic pressure coefficient [Pa m3/mol] */
+static real p_perm = 101325.0;      /* Permeate-side pressure [Pa] */
+
+
+/* ========================= UDM Index Definition ========================= */
+
+/*
+   Required UDM count: UDM_COUNT
+
+   Fluent/PyFluent must allocate at least UDM_COUNT user-defined memory
+   locations before this UDF writes or reads C_UDMI values.
+
+   N_UDM is the Fluent macro for the number of user-defined memory locations
+   currently used in Fluent. It is used here to guard C_UDMI access.
+*/
+enum {
+    UDM_SI = 0,              /* Salt mass source [kg/m3/s] */
+    UDM_SM = 1,              /* Water mass source [kg/m3/s] */
+    UDM_TOTAL_S = 2,         /* Total mass source [kg/m3/s] */
+    UDM_XMOM = 3,            /* X-momentum sink coefficient [kg/m3/s] */
+    UDM_YMOM = 4,            /* Y-momentum sink coefficient [kg/m3/s] */
+    UDM_ZMOM = 5,            /* Z-momentum sink coefficient [kg/m3/s] */
+    UDM_JW = 6,              /* Adjacent membrane-face area-weighted water flux [m/s] */
+    UDM_CM = 7,              /* Adjacent membrane-face area-weighted salt concentration [mol/m3] */
+    UDM_LMH = 8,             /* Adjacent membrane-face area-weighted water flux [LMH] */
+    UDM_CP_INLET = 9,        /* Adjacent membrane-face area-weighted inlet-referenced CP, Cm/C_INLET_REF [-] */
+    UDM_CELL_STRAIN_RATE = 10, /* Cell-centered strain rate magnitude [1/s], not wall shear rate */
+    UDM_AREA = 11,           /* Membrane face area accumulated in the adjacent cell [m2] */
+    UDM_SALT_FLUX = 12,      /* Adjacent membrane-face area-weighted salt mass flux [kg/m2/s] */
+    UDM_COUNT = 13
+};
+
+static int udm_warning_printed = 0;
+static int membrane_thread_warning_printed = 0;
+
+
+/* ========================= Utility Functions ========================= */
+
+static int ro_udm_available(void)
+{
+    if (N_UDM < UDM_COUNT) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+static real source_ramp(void)
+{
+    int iter = N_ITER;
+
+    if (iter < RAMP_ITER_1) return RAMP_FACTOR_1;
+    if (iter < RAMP_ITER_2) return RAMP_FACTOR_2;
+    if (iter < RAMP_ITER_3) return RAMP_FACTOR_3;
+
+    return RAMP_FACTOR_FULL;
+}
+
+
+static void print_udm_warning(void)
+{
+#if RP_NODE
+    if (I_AM_NODE_ZERO_P) {
+        Message("RO UDF warning: insufficient UDM allocation. Required = %d, current = %d.\n",
+                UDM_COUNT, N_UDM);
+        Message("RO UDF warning: source terms are disabled until enough UDM locations are allocated.\n");
+    }
+#else
+    Message("RO UDF warning: insufficient UDM allocation. Required = %d, current = %d.\n",
+            UDM_COUNT, N_UDM);
+    Message("RO UDF warning: source terms are disabled until enough UDM locations are allocated.\n");
+#endif
+}
+
+
+static int thread_name_matches_base(const char *thread_name, const char *base_name)
+{
+    size_t base_len;
+
+    if (thread_name == NULL || base_name == NULL) {
+        return 0;
+    }
+
+    base_len = strlen(base_name);
+
+    if (strcmp(thread_name, base_name) == 0) {
+        return 1;
+    }
+
+    if (strncmp(thread_name, base_name, base_len) == 0 &&
+        thread_name[base_len] == '.') {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+static int is_membrane_wall_thread(Thread *thread_pointer)
+{
+    const char *thread_name;
+
+    if (thread_pointer == NULL) {
+        return 0;
+    }
+
+    thread_name = THREAD_NAME(thread_pointer);
+
+    if (thread_name == NULL) {
+        return 0;
+    }
+
+    if (thread_name_matches_base(thread_name, MEMB_THREAD_BASE_NAME_TOP)) {
+        return 1;
+    }
+
+    if (thread_name_matches_base(thread_name, MEMB_THREAD_BASE_NAME_BOTTOM)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+static void print_membrane_thread_warning(void)
+{
+#if RP_NODE
+    if (I_AM_NODE_ZERO_P) {
+        Message("RO UDF warning: no membrane wall thread matching '%s' or '%s' was found.\n",
+                MEMB_THREAD_BASE_NAME_TOP, MEMB_THREAD_BASE_NAME_BOTTOM);
+        Message("RO UDF warning: check membrane wall named selections and make sure (update-solver-thread-names) was executed.\n");
+    }
+#else
+    Message("RO UDF warning: no membrane wall thread matching '%s' or '%s' was found.\n",
+            MEMB_THREAD_BASE_NAME_TOP, MEMB_THREAD_BASE_NAME_BOTTOM);
+    Message("RO UDF warning: check membrane wall named selections and make sure (update-solver-thread-names) was executed.\n");
+#endif
+}
+
+
+/* ========================= Loading and Initialization Hooks ========================= */
+
+DEFINE_EXECUTE_ON_LOADING(RO_UDF_on_loading, libname)
+{
+    Message("\n");
+    Message("RO membrane UDF loaded from library: %s\n", libname);
+    Message("Required user-defined memory locations: %d\n", UDM_COUNT);
+    Message("Before running the solver, allocate at least %d UDM locations.\n", UDM_COUNT);
+    Message("Membrane wall base names: %s, %s\n", MEMB_THREAD_BASE_NAME_TOP, MEMB_THREAD_BASE_NAME_BOTTOM);
+    Message("Diagnostic UDMs store adjacent membrane-face area-weighted values.\n");
+    Message("UDM_9  = inlet-referenced CP, Cm/C_INLET_REF (C_INLET_REF = %.6g mol/m3)\n", C_INLET_REF);
+    Message("UDM_10 = cell-centered strain rate magnitude [1/s] (not wall shear rate)\n");
+    Message("UDM_12 = adjacent membrane-face area-weighted salt mass flux [kg/m2/s]\n");
+    Message("For PyFluent automation, allocate %d UDM locations.\n", UDM_COUNT);
+
+    if (C_INLET_REF <= 0.0) {
+        Message("RO UDF error: C_INLET_REF must be positive. Inlet-referenced CP calculation will be invalid.\n");
+    }
+
+    Message("\n");
+}
+
+
+DEFINE_INIT(RO_UDF_init, d)
+{
+    udm_warning_printed = 0;
+    membrane_thread_warning_printed = 0;
+}
+
+
+/* ========================= Adjust Hook ========================= */
+
+DEFINE_ADJUST(RO_membrane_adjust, d)
+{
+#if !RP_HOST
+    Thread *f_thread;
+    Thread *c_thread;
+    face_t f;
+    cell_t c;
+    int membrane_thread_found;
+
+    real Ar[ND_ND];
+    real dAm;
+    real dVm;
+
+    real rho_ref = RHO_REF;
+    real p_op;
+    real pabs;
+    real dp;
+    real Yi_s;
+    real cm;
+    real S_val;
+    real disc;
+    real Jw;
+    real Js;
+    real salt_mass_flux;
+
+    real Sm;
+    real Si;
+    real Stot;
+    real ramp;
+
+    if (!ro_udm_available()) {
+        if (!udm_warning_printed) {
+            print_udm_warning();
+            udm_warning_printed = 1;
+        }
+        return;
+    }
+
+    ramp = source_ramp();
+    p_op = RP_Get_Real("operating-pressure");
+
+    /* 1. Initialize UDM values */
+    thread_loop_c(c_thread, d) {
+        begin_c_loop(c, c_thread) {
+            int i;
+
+            for (i = 0; i < UDM_COUNT; i++) {
+                C_UDMI(c, c_thread, i) = 0.0;
+            }
+
+            C_UDMI(c, c_thread, UDM_CELL_STRAIN_RATE) = C_STRAIN_RATE_MAG(c, c_thread);
+        }
+        end_c_loop(c, c_thread)
+    }
+
+    /* 2. Loop over all membrane wall threads and accumulate adjacent-cell source terms */
+    membrane_thread_found = 0;
+
+    thread_loop_f(f_thread, d) {
+        if (!is_membrane_wall_thread(f_thread)) {
+            continue;
+        }
+
+        membrane_thread_found = 1;
+
+        begin_f_loop(f, f_thread) {
+            c = F_C0(f, f_thread);
+            c_thread = THREAD_T0(f_thread);
+
+            F_AREA(Ar, f, f_thread);
+            dAm = NV_MAG(Ar);
+            dVm = C_VOLUME(c, c_thread);
+
+            if (dAm <= 0.0 || dVm <= 0.0) {
+                continue;
+            }
+
+            /*
+               Current implementation uses cell-center pressure and species mass
+               fraction from the membrane-adjacent cell. A more detailed model may
+               use wall-adjacent reconstructed values.
+            */
+            pabs = C_P(c, c_thread) + p_op;
+            dp   = pabs - p_perm;
+
+            Yi_s = C_YI(c, c_thread, SALT_YI_INDEX);
+            Yi_s = MAX(0.0, MIN(Yi_s, 1.0));
+
+            /*
+               Constant reference density is used to convert salt mass fraction
+               into molar concentration, consistent with the current RO model
+               assumption.
+            */
+            cm = rho_ref * Yi_s / MW_SALT;
+
+            /*
+               Coupled solution-diffusion model.
+               The quadratic form accounts for permeate concentration through
+               cp = Js / Jw.
+            */
+            S_val = A_perm * (dp - kappa * cm);
+            disc  = (S_val + B_perm) * (S_val + B_perm)
+                  + 4.0 * A_perm * B_perm * kappa * cm;
+
+            /*
+               The discriminant should be non-negative because cm is clamped to
+               non-negative values. MAX is retained as a round-off safety guard.
+            */
+            Jw = 0.5 * (S_val - B_perm + sqrt(MAX(disc, 0.0)));
+            Jw = MAX(Jw, 0.0);
+
+            if (Jw + B_perm > MIN_SOURCE_DENOMINATOR) {
+                Js = (B_perm * cm * Jw) / (Jw + B_perm);
+            }
+            else {
+                Js = 0.0;
+            }
+
+            Js = MAX(Js, 0.0);
+
+            /* Apply source ramp for convergence stability */
+            Jw *= ramp;
+            Js *= ramp;
+
+            /*
+               Convert salt molar flux to salt mass flux.
+               Js is [mol/m2/s], so Js * MW_SALT is [kg/m2/s].
+            */
+            salt_mass_flux = Js * MW_SALT;
+
+            /* Convert face fluxes to volumetric source coefficients */
+            Sm   = Jw * dAm * rho_ref / dVm;       /* Water mass sink [kg/m3/s] */
+            Si   = salt_mass_flux * dAm / dVm;     /* Salt mass sink [kg/m3/s] */
+            Stot = Sm + Si;                        /* Total mass sink [kg/m3/s] */
+
+            /* Accumulate mass source terms */
+            C_UDMI(c, c_thread, UDM_SI)      += Si;
+            C_UDMI(c, c_thread, UDM_SM)      += Sm;
+            C_UDMI(c, c_thread, UDM_TOTAL_S) += Stot;
+
+#if USE_NORMAL_PROJECTED_MOMENTUM_SINK
+            /*
+               Optional normal-projected momentum sink.
+               Squared component ratios are used to avoid dependency on the sign
+               convention of the face-area vector.
+            */
+            {
+                real normal_denom = dAm * dAm;
+
+                C_UDMI(c, c_thread, UDM_XMOM) += Stot * (Ar[0] * Ar[0]) / normal_denom;
+                C_UDMI(c, c_thread, UDM_YMOM) += Stot * (Ar[1] * Ar[1]) / normal_denom;
+#if RP_3D
+                C_UDMI(c, c_thread, UDM_ZMOM) += Stot * (Ar[2] * Ar[2]) / normal_denom;
+#endif
+            }
+#else
+            /*
+               Default isotropic mass-removal momentum sink. The removed mass is
+               assumed to carry away the local cell momentum in each velocity
+               component.
+            */
+            C_UDMI(c, c_thread, UDM_XMOM) += Stot;
+            C_UDMI(c, c_thread, UDM_YMOM) += Stot;
+#if RP_3D
+            C_UDMI(c, c_thread, UDM_ZMOM) += Stot;
+#endif
+#endif
+
+            /* Area-weighted diagnostic accumulation */
+            C_UDMI(c, c_thread, UDM_AREA)      += dAm;
+            C_UDMI(c, c_thread, UDM_JW)        += Jw * dAm;
+            C_UDMI(c, c_thread, UDM_CM)        += cm * dAm;
+            C_UDMI(c, c_thread, UDM_LMH)       += (Jw * MS_TO_LMH) * dAm;
+            C_UDMI(c, c_thread, UDM_CP_INLET)  += (cm / C_INLET_REF) * dAm;
+            C_UDMI(c, c_thread, UDM_SALT_FLUX) += salt_mass_flux * dAm;
+        }
+        end_f_loop(f, f_thread)
+    }
+
+    if (!membrane_thread_found && !membrane_thread_warning_printed) {
+        print_membrane_thread_warning();
+        membrane_thread_warning_printed = 1;
+    }
+
+    /* 3. Convert diagnostic accumulations to area-weighted averages */
+    thread_loop_c(c_thread, d) {
+        begin_c_loop(c, c_thread) {
+            real Aacc = C_UDMI(c, c_thread, UDM_AREA);
+
+            if (Aacc > 0.0) {
+                C_UDMI(c, c_thread, UDM_JW)        /= Aacc;
+                C_UDMI(c, c_thread, UDM_CM)        /= Aacc;
+                C_UDMI(c, c_thread, UDM_LMH)       /= Aacc;
+                C_UDMI(c, c_thread, UDM_CP_INLET)  /= Aacc;
+                C_UDMI(c, c_thread, UDM_SALT_FLUX) /= Aacc;
+            }
+        }
+        end_c_loop(c, c_thread)
+    }
+#endif
+}
+
+
+/* ========================= Source Hooks ========================= */
+
+DEFINE_SOURCE(mass_source, c, t, dS, eqn)
+{
+    dS[eqn] = 0.0;
+
+    if (!ro_udm_available()) {
+        return 0.0;
+    }
+
+    return -C_UDMI(c, t, UDM_TOTAL_S);
+}
+
+
+DEFINE_SOURCE(species_salt_source, c, t, dS, eqn)
+{
+    dS[eqn] = 0.0;
+
+    if (!ro_udm_available()) {
+        return 0.0;
+    }
+
+    return -C_UDMI(c, t, UDM_SI);
+}
+
+
+DEFINE_SOURCE(x_mom_source, c, t, dS, eqn)
+{
+    real mtot;
+
+    dS[eqn] = 0.0;
+
+    if (!ro_udm_available()) {
+        return 0.0;
+    }
+
+    mtot = C_UDMI(c, t, UDM_XMOM);
+
+    dS[eqn] = -mtot;
+    return -mtot * C_U(c, t);
+}
+
+
+DEFINE_SOURCE(y_mom_source, c, t, dS, eqn)
+{
+    real mtot;
+
+    dS[eqn] = 0.0;
+
+    if (!ro_udm_available()) {
+        return 0.0;
+    }
+
+    mtot = C_UDMI(c, t, UDM_YMOM);
+
+    dS[eqn] = -mtot;
+    return -mtot * C_V(c, t);
+}
+
+
+#if RP_3D
+DEFINE_SOURCE(z_mom_source, c, t, dS, eqn)
+{
+    real mtot;
+
+    dS[eqn] = 0.0;
+
+    if (!ro_udm_available()) {
+        return 0.0;
+    }
+
+    mtot = C_UDMI(c, t, UDM_ZMOM);
+
+    dS[eqn] = -mtot;
+    return -mtot * C_W(c, t);
+}
+#endif
+
+
+/* ===================== Inlet velocity profile ===========================
+   Fully developed plane-Poiseuille profile in z.
+
+   The channel is periodic in y (no walls in y), so the only walls are the
+   two membranes at constant z. The fully developed solution is therefore
+   1D in z (plane Poiseuille between parallel plates), NOT a 2D
+   rectangular-duct profile. No y-dependence must be introduced.
+
+       eta   = (z - INLET_Z_BOTTOM) / CHANNEL_HEIGHT     in [0, 1]
+       u(z)  = 6 * u_mean * eta * (1 - eta)
+
+   eta = 0    -> bottom membrane, u = 0
+   eta = 0.5  -> channel centre,  u = 1.5 * u_mean
+   eta = 1    -> top membrane,    u = 0
+   cross-section average          = u_mean
+
+   This function is 3D-only (reads x[2]). The existing UDF already uses
+   #if RP_3D only for z-momentum bookkeeping; no RP_3D guard is added here
+   to match that "assume 3D case" style for the main membrane path.
+
+   Geometry constants below are NOT present elsewhere in this UDF file.
+   Post-processing (03_pyensight_contour_export.py) documents the same
+   channel height 0.00077 m and notes the origin may be either centred
+   (z = +/-0.385 mm) or bottom-based (z = 0 .. 0.770 mm). Confirm against
+   the mesh before production use; enable INLET_PROFILE_DIAGNOSTIC for that.
+
+   u_mean source:
+     INLET_UMEAN_FROM_RP == 1 -> RP_Get_Real("udf/u-mean")  [campaign switch]
+     INLET_UMEAN_FROM_RP == 0 -> U_MEAN_FALLBACK #define     [no Scheme dep]
+   This file already calls RP_Get_Real("operating-pressure") on compute
+   nodes inside DEFINE_ADJUST (#if !RP_HOST). Custom rp-vars are NOT
+   verified here; if udf/u-mean is invisible on nodes, set
+   INLET_UMEAN_FROM_RP to 0 and recompile, or add host_to_node_real_1
+   after live diagnosis.
+   ======================================================================= */
+
+#define INLET_Z_BOTTOM          (-0.385e-3)  /* z of bottom membrane wall [m] */
+#define CHANNEL_HEIGHT          ( 0.770e-3)  /* wall-to-wall distance H    [m] */
+#define UMEAN_RP_NAME           "udf/u-mean" /* rp-var holding u_mean [m/s]  */
+#define INLET_UMEAN_FROM_RP     1            /* 1: RP_Get_Real; 0: fallback  */
+#define U_MEAN_FALLBACK         0.2          /* [m/s] used when FROM_RP is 0 */
+#define INLET_PROFILE_DIAGNOSTIC 1           /* 1: first-call console dump   */
+
+DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
+{
+#if !RP_HOST
+    face_t f;
+    real x[ND_ND];
+    real eta;
+    real umean;
+    real u_face;
+#if INLET_PROFILE_DIAGNOSTIC
+    /* static first-call flag is PER PROCESS (each compute node has its own
+       copy). With PRF reductions below, node-0 prints global aggregates once
+       per node-0 process; other nodes still flip their local flag so they
+       do not re-accumulate on later profile evaluations. */
+    static int inlet_profile_diag_done = 0;
+    real z;
+    real eta_raw;
+    real area_vec[ND_ND];
+    real dA;
+    real z_min_local;
+    real z_max_local;
+    real eta_min_local;
+    real eta_max_local;
+    real area_sum_local;
+    real uA_sum_local;
+    int  n_clamp_local;
+    real z_min;
+    real z_max;
+    real eta_min;
+    real eta_max;
+    real area_sum;
+    real uA_sum;
+    int  n_clamp;
+    real u_area_avg;
+#endif
+
+    /*
+       Match DEFINE_ADJUST: mesh work and RP_Get_Real run under !RP_HOST
+       (serial or compute node). DEFINE_SOURCE hooks in this file have no
+       host/node guard; profile face loops need the host excluded because
+       the host has no face data.
+    */
+#if INLET_UMEAN_FROM_RP
+    umean = RP_Get_Real(UMEAN_RP_NAME);
+#else
+    umean = U_MEAN_FALLBACK;
+#endif
+
+#if INLET_PROFILE_DIAGNOSTIC
+    /* Sentinel extrema so partitions with zero inlet faces do not pull the
+       global PRF min/max to 0.0. */
+    z_min_local = 1.0e20;
+    z_max_local = -1.0e20;
+    eta_min_local = 1.0e20;
+    eta_max_local = -1.0e20;
+    area_sum_local = 0.0;
+    uA_sum_local = 0.0;
+    n_clamp_local = 0;
+#endif
+
+    begin_f_loop(f, thread) {
+        F_CENTROID(x, f, thread);
+
+        eta = (x[2] - INLET_Z_BOTTOM) / CHANNEL_HEIGHT;
+
+#if INLET_PROFILE_DIAGNOSTIC
+        if (!inlet_profile_diag_done) {
+            z = x[2];
+            eta_raw = eta;
+
+            if (z < z_min_local) z_min_local = z;
+            if (z > z_max_local) z_max_local = z;
+            if (eta_raw < eta_min_local) eta_min_local = eta_raw;
+            if (eta_raw > eta_max_local) eta_max_local = eta_raw;
+
+            if (eta_raw < 0.0 || eta_raw > 1.0) {
+                n_clamp_local += 1;
+            }
+        }
+#endif
+
+        /* Clamp to the wall value. Boundary-layer face centroids can land
+           a hair outside [0,1] and would otherwise produce a negative
+           velocity, which Fluent reports as inlet reversed flow. */
+        if (eta < 0.0) eta = 0.0;
+        if (eta > 1.0) eta = 1.0;
+
+        u_face = 6.0 * umean * eta * (1.0 - eta);
+        F_PROFILE(f, thread, position) = u_face;
+
+#if INLET_PROFILE_DIAGNOSTIC
+        if (!inlet_profile_diag_done) {
+            F_AREA(area_vec, f, thread);
+            dA = NV_MAG(area_vec);
+            area_sum_local += dA;
+            uA_sum_local += u_face * dA;
+        }
+#endif
+    }
+    end_f_loop(f, thread)
+
+#if INLET_PROFILE_DIAGNOSTIC
+    if (!inlet_profile_diag_done) {
+        /* Global reductions so a 50-core partition does not print misleading
+           per-node min/max/area averages. PRF_* are identity in serial. */
+#if RP_NODE
+        z_min = PRF_GLI1(z_min_local);
+        z_max = PRF_GHI1(z_max_local);
+        eta_min = PRF_GLI1(eta_min_local);
+        eta_max = PRF_GHI1(eta_max_local);
+        area_sum = PRF_GRSUM1(area_sum_local);
+        uA_sum = PRF_GRSUM1(uA_sum_local);
+        n_clamp = (int)PRF_GRSUM1((real)n_clamp_local);
+#else
+        z_min = z_min_local;
+        z_max = z_max_local;
+        eta_min = eta_min_local;
+        eta_max = eta_max_local;
+        area_sum = area_sum_local;
+        uA_sum = uA_sum_local;
+        n_clamp = n_clamp_local;
+#endif
+
+        if (area_sum > 0.0) {
+            u_area_avg = uA_sum / area_sum;
+        }
+        else {
+            u_area_avg = 0.0;
+        }
+
+#if RP_NODE
+        if (I_AM_NODE_ZERO_P) {
+#endif
+            Message("\n");
+            Message("RO UDF inlet_x_velocity_profile diagnostic (first call):\n");
+            Message("  umean (from %s)           = %.6g m/s\n",
+#if INLET_UMEAN_FROM_RP
+                    "RP " UMEAN_RP_NAME,
+#else
+                    "U_MEAN_FALLBACK",
+#endif
+                    umean);
+            Message("  INLET_Z_BOTTOM            = %.6g m (%.6g mm)\n",
+                    INLET_Z_BOTTOM, INLET_Z_BOTTOM * 1000.0);
+            Message("  CHANNEL_HEIGHT            = %.6g m (%.6g mm)\n",
+                    CHANNEL_HEIGHT, CHANNEL_HEIGHT * 1000.0);
+            Message("  inlet face z min/max      = %.6g / %.6g mm\n",
+                    z_min * 1000.0, z_max * 1000.0);
+            Message("  eta raw min/max (preclamp)= %.6g / %.6g\n",
+                    eta_min, eta_max);
+            Message("  faces requiring clamp     = %d\n", n_clamp);
+            Message("  area-weighted mean u      = %.6g m/s\n", u_area_avg);
+            Message("  |u_area_avg - umean|/|umean| = %.3e\n",
+                    (umean != 0.0)
+                    ? fabs(u_area_avg - umean) / fabs(umean)
+                    : fabs(u_area_avg));
+            Message("\n");
+#if RP_NODE
+        }
+#endif
+        inlet_profile_diag_done = 1;
+    }
+#endif /* INLET_PROFILE_DIAGNOSTIC */
+#endif /* !RP_HOST */
+}
