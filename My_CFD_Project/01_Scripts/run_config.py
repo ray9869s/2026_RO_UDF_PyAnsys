@@ -141,8 +141,16 @@ outlet_gauge_pressure = REQUIRED
 
 # Template/UDF file names relative to project_root.
 template_case_file_name = "template_RO_setup.cas.h5"
-udf_source_file_name = "260612_RO_UDF.c"
+udf_source_file_name = "260810_RO_UDF.c"
 udf_library_name = "libudf"
+
+# Inlet velocity profile (DEFINE_PROFILE inlet_x_velocity_profile).
+# False = legacy plug inlet via velocity_magnitude (default, regression-safe).
+# True  = Components + UDF on x-velocity (needs-live-verification on Fluent 25.1).
+use_inlet_velocity_profile = False
+# After UDF load, execute probe_inlet_profile on-demand and assert its marker
+# in the solver transcript. Independent of the BC method (read-only probe).
+run_inlet_profile_probe = False
 
 # Active membrane and buffer wall base names in the solver.
 # Fluent may split these into base, base.1, base.2, ...
@@ -481,6 +489,8 @@ def validate_for_solver():
     _require_set("template_case_file_name", template_case_file_name)
     _require_set("udf_source_file_name", udf_source_file_name)
     _require_set("udf_library_name", udf_library_name)
+    _require_bool("use_inlet_velocity_profile", use_inlet_velocity_profile)
+    _require_bool("run_inlet_profile_probe", run_inlet_profile_probe)
 
     _require_set("membrane_wall_base_names", membrane_wall_base_names)
     _require_set("buffer_wall_base_names", buffer_wall_base_names)

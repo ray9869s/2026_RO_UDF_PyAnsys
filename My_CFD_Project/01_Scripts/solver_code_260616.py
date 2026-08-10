@@ -117,6 +117,16 @@ if __name__ == "__main__":
     udf_master_path = os.path.join(project_root, "02_UDFs", cfg.udf_source_file_name)
     udf_case_path = os.path.join(case_path, os.path.basename(udf_master_path))
     udf_library_name = cfg.udf_library_name
+    use_inlet_velocity_profile = bool(
+        getattr(cfg, "use_inlet_velocity_profile", False)
+    )
+    run_inlet_profile_probe = bool(
+        getattr(cfg, "run_inlet_profile_probe", False)
+    )
+    inlet_profile_function_name = f"inlet_x_velocity_profile::{udf_library_name}"
+    inlet_probe_function_name = f"probe_inlet_profile::{udf_library_name}"
+    INLET_PROFILE_MARKER = "=== RO_UDF inlet_x_velocity_profile ==="
+    INLET_PROBE_MARKER = "=== RO_UDF probe_inlet_profile ==="
 
     # Active membrane and buffer wall base names.
     membrane_wall_base_names = list(cfg.membrane_wall_base_names)
@@ -482,6 +492,66 @@ def verify_file_exists(path, description):
         print(f"Verified {description}: {path}")
     else:
         print(f"Warning: {description} was not found: {path}")
+
+
+def assert_transcript_contains(transcript_path, marker, context):
+    """Raise if a required UDF marker line is missing from a Fluent transcript.
+
+    If libudf is not loaded when a UDF BC is set, Fluent can silently drop the
+    hook and keep a constant panel value — a 0 m/s run can still converge.
+    """
+    if not os.path.isfile(transcript_path):
+        raise FileNotFoundError(
+            f"Transcript not found for {context}: {transcript_path}"
+        )
+    with open(transcript_path, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    if marker not in text:
+        raise RuntimeError(
+            f"Missing required transcript marker for {context}: {marker!r} "
+            f"in {transcript_path}. UDF may not have loaded or executed."
+        )
+    print(f"Transcript marker OK for {context}: {marker!r}")
+
+
+def apply_inlet_velocity_boundary(vin, inlet_zone_name, inlet_velocity, *, use_profile, profile_udf_name):
+    """Set one velocity-inlet zone to plug magnitude or Components+UDF.
+
+    needs-live-verification: settings paths inspected in installed
+    ansys.fluent.core generated settings_251.py (velocity_specification_method,
+    velocity_components ListObject with option/value/udf children). Allowed
+    string 'Components' is listed in settings_261.py constants; 251 schema has
+    the attribute but not the static _allowed_values table.
+    """
+    if not use_profile:
+        vin.momentum.velocity_magnitude.value = inlet_velocity
+        print(
+            f"Inlet BC set on {inlet_zone_name}: "
+            f"velocity_magnitude={inlet_velocity} m/s"
+        )
+        return
+
+    # Settings API (preferred). Flag needs-live-verification on Fluent 25.1.
+    vin.momentum.velocity_specification_method = "Components"
+    components = vin.momentum.velocity_components
+    components.resize(3)
+    # x-velocity <- DEFINE_PROFILE; y,z <- 0
+    components[0].option.set_state("udf")
+    components[0].udf.set_state(profile_udf_name)
+    components[1].option.set_state("value")
+    components[1].value = 0.0
+    components[2].option.set_state("value")
+    components[2].value = 0.0
+    print(
+        f"Inlet BC set on {inlet_zone_name}: Components; "
+        f"x-velocity UDF={profile_udf_name}; y=z=0 "
+        f"(inlet_velocity_value={inlet_velocity} is unused for profile; "
+        f"UDF U_MEAN is the area-mean target)"
+    )
+    # TUI fallback (comment only — not executed):
+    # /define/boundary-conditions/velocity-inlet <zone> , , , , yes , ,
+    #   components yes no no yes "{profile_udf_name}" no 0 no 0
+    # Exact TUI prompts vary by Fluent version; confirm on the Windows host.
 
 
 def parse_zone_id_from_log(log_path, zone_name):
@@ -2013,9 +2083,18 @@ if __name__ == "__main__":
 
         for inlet_zone_name in inlet_zone_names:
             vin = setup.boundary_conditions.velocity_inlet[inlet_zone_name]
-            vin.momentum.velocity_magnitude.value = inlet_velocity
+            # Always set a magnitude plug here. If use_inlet_velocity_profile is
+            # True, Components+UDF is applied after libudf load (below) so Fluent
+            # does not silently drop an unresolved profile hook.
+            apply_inlet_velocity_boundary(
+                vin,
+                inlet_zone_name,
+                inlet_velocity,
+                use_profile=False,
+                profile_udf_name=inlet_profile_function_name,
+            )
             vin.species.species_mass_fraction[species_name].value = salt_mass_fraction
-            print(f"Inlet BC set on {inlet_zone_name}: velocity={inlet_velocity} m/s, {species_name}={salt_mass_fraction}")
+            print(f"Inlet species set on {inlet_zone_name}: {species_name}={salt_mass_fraction}")
             print(vin.get_state())
 
         for outlet_zone_name in outlet_zone_names:
@@ -2109,6 +2188,44 @@ if __name__ == "__main__":
         )
 
         print("UDF library loaded.")
+
+        # Optional geometry probe (read-only; does not change BCs).
+        # Must run after libudf is loaded. Writes to the main solver transcript.
+        if run_inlet_profile_probe or use_inlet_velocity_profile:
+            probe_tui = (
+                f'/define/user-defined/execute-on-demand '
+                f'"{inlet_probe_function_name}"'
+            )
+            print("Executing inlet profile probe TUI command:")
+            print(probe_tui)
+            solver.execute_tui(probe_tui)
+            # Flush marker into solver_log before asserting.
+            try:
+                solver.transcript.stop()
+                solver.transcript.start(file_name=as_fluent_path(solver_log_path))
+            except Exception as transcript_error:
+                print(
+                    "Warning: could not bounce transcript after probe: "
+                    f"{transcript_error}"
+                )
+            assert_transcript_contains(
+                solver_log_path,
+                INLET_PROBE_MARKER,
+                "probe_inlet_profile",
+            )
+
+        if use_inlet_velocity_profile:
+            print("\nRe-applying inlet BC as Components + UDF after libudf load...")
+            for inlet_zone_name in inlet_zone_names:
+                vin = setup.boundary_conditions.velocity_inlet[inlet_zone_name]
+                apply_inlet_velocity_boundary(
+                    vin,
+                    inlet_zone_name,
+                    inlet_velocity,
+                    use_profile=True,
+                    profile_udf_name=inlet_profile_function_name,
+                )
+                print(vin.get_state())
 
 
         # ======================================================
@@ -2430,6 +2547,24 @@ if __name__ == "__main__":
 
             print("\nFinal residual equations state:")
             print(solution.monitor.residual.equations.get_state())
+
+            if use_inlet_velocity_profile:
+                # Profile diagnostic prints on first DEFINE_PROFILE evaluation
+                # (typically during iterate). Bounce transcript so the file
+                # contains the marker before we scan.
+                try:
+                    solver.transcript.stop()
+                    solver.transcript.start(file_name=as_fluent_path(solver_log_path))
+                except Exception as transcript_error:
+                    print(
+                        "Warning: could not bounce transcript after iterate: "
+                        f"{transcript_error}"
+                    )
+                assert_transcript_contains(
+                    solver_log_path,
+                    INLET_PROFILE_MARKER,
+                    "inlet_x_velocity_profile",
+                )
 
         else:
             print("Run calculation is disabled. Skipping solver iterations.")

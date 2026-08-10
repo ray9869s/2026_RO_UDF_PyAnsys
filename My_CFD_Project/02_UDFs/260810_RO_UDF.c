@@ -540,56 +540,283 @@ DEFINE_SOURCE(z_mom_source, c, t, dS, eqn)
    rectangular-duct profile. No y-dependence must be introduced.
 
        eta   = (z - INLET_Z_BOTTOM) / CHANNEL_HEIGHT     in [0, 1]
-       u(z)  = 6 * u_mean * eta * (1 - eta)
+       u(z)  = 6 * U_MEAN * eta * (1 - eta)
 
    eta = 0    -> bottom membrane, u = 0
-   eta = 0.5  -> channel centre,  u = 1.5 * u_mean
+   eta = 0.5  -> channel centre,  u = 1.5 * U_MEAN
    eta = 1    -> top membrane,    u = 0
-   cross-section average          = u_mean
+   cross-section average          = U_MEAN
 
-   This function is 3D-only (reads x[2]). The existing UDF already uses
-   #if RP_3D only for z-momentum bookkeeping; no RP_3D guard is added here
-   to match that "assume 3D case" style for the main membrane path.
-
-   Geometry constants below are NOT present elsewhere in this UDF file.
-   Post-processing (03_pyensight_contour_export.py) documents the same
-   channel height 0.00077 m and notes the origin may be either centred
-   (z = +/-0.385 mm) or bottom-based (z = 0 .. 0.770 mm). Confirm against
-   the mesh before production use; enable INLET_PROFILE_DIAGNOSTIC for that.
-
-   u_mean source:
-     INLET_UMEAN_FROM_RP == 1 -> RP_Get_Real("udf/u-mean")  [campaign switch]
-     INLET_UMEAN_FROM_RP == 0 -> U_MEAN_FALLBACK #define     [no Scheme dep]
-   This file already calls RP_Get_Real("operating-pressure") on compute
-   nodes inside DEFINE_ADJUST (#if !RP_HOST). Custom rp-vars are NOT
-   verified here; if udf/u-mean is invisible on nodes, set
-   INLET_UMEAN_FROM_RP to 0 and recompile, or add host_to_node_real_1
-   after live diagnosis.
+   These additions are 3D-only (read x[2]). The fence below fails a 2D
+   compile of this translation unit without changing any existing hook body.
    ======================================================================= */
 
-#define INLET_Z_BOTTOM          (-0.385e-3)  /* z of bottom membrane wall [m] */
-#define CHANNEL_HEIGHT          ( 0.770e-3)  /* wall-to-wall distance H    [m] */
-#define UMEAN_RP_NAME           "udf/u-mean" /* rp-var holding u_mean [m/s]  */
-#define INLET_UMEAN_FROM_RP     1            /* 1: RP_Get_Real; 0: fallback  */
-#define U_MEAN_FALLBACK         0.2          /* [m/s] used when FROM_RP is 0 */
-#define INLET_PROFILE_DIAGNOSTIC 1           /* 1: first-call console dump   */
+#if !RP_3D
+#error "260810 inlet profile / probe_inlet_profile require a 3D Fluent build."
+#endif
+
+/* z of bottom membrane wall [m]. Confirm vs mesh (centred vs bottom origin). */
+#define INLET_Z_BOTTOM            (-0.385e-3)
+/* Wall-to-wall channel height H [m]. */
+#define CHANNEL_HEIGHT            ( 0.770e-3)
+/* Target area-averaged inlet velocity [m/s].
+   Single operating point for the plug-vs-parabolic inlet test.
+   May be scaled down by the discretization excess reported by
+   probe_inlet_profile. */
+#define U_MEAN                    0.2
+/* Inlet Named Selection base name. Mirrors solver_code_260616.py
+   find_zones_by_base_name(..., "inlet"). Fluent may split to inlet.1, ... */
+#define INLET_THREAD_BASE_NAME    "inlet"
+/* Expected empty-channel inlet area for D2450_a45 [m2] =
+   W 3.465e-3 m * H 0.770e-3 m. Case-specific sanity reference only. */
+#define INLET_AREA_EXPECTED_M2    2.668e-6
+/* First-call diagnostic inside DEFINE_PROFILE (hook-drop detector). */
+#define INLET_PROFILE_DIAGNOSTIC  1
+
+/* Shared marker strings for transcript scans (probe + profile). */
+#define INLET_PROBE_MARKER_LINE \
+    "=== RO_UDF probe_inlet_profile ==="
+#define INLET_PROFILE_MARKER_LINE \
+    "=== RO_UDF inlet_x_velocity_profile ==="
+
+
+static int is_inlet_face_thread(Thread *thread_pointer)
+{
+    const char *thread_name;
+
+    if (thread_pointer == NULL) {
+        return 0;
+    }
+
+    thread_name = THREAD_NAME(thread_pointer);
+
+    if (thread_name == NULL) {
+        return 0;
+    }
+
+    return thread_name_matches_base(thread_name, INLET_THREAD_BASE_NAME);
+}
+
+
+static real inlet_poiseuille_speed(real z, real *eta_raw_out, int *clamped_out)
+{
+    real eta;
+    int clamped;
+
+    eta = (z - INLET_Z_BOTTOM) / CHANNEL_HEIGHT;
+    if (eta_raw_out != NULL) {
+        *eta_raw_out = eta;
+    }
+
+    clamped = 0;
+    if (eta < 0.0) {
+        eta = 0.0;
+        clamped = 1;
+    }
+    if (eta > 1.0) {
+        eta = 1.0;
+        clamped = 1;
+    }
+
+    if (clamped_out != NULL) {
+        *clamped_out = clamped;
+    }
+
+    return 6.0 * U_MEAN * eta * (1.0 - eta);
+}
+
+
+static void print_inlet_profile_stats(
+    const char *marker_line,
+    real z_min,
+    real z_max,
+    real eta_min,
+    real eta_max,
+    int n_clamp,
+    int n_face,
+    real area_sum,
+    real u_area_avg)
+{
+    real excess_pct;
+
+    if (U_MEAN != 0.0) {
+        excess_pct = (u_area_avg / U_MEAN - 1.0) * 100.0;
+    }
+    else {
+        excess_pct = 0.0;
+    }
+
+    /* Message0: cortex/src/cx.h:365 (PARALLEL) / :368 (serial).
+       Prefer Message0 over Message+I_AM_NODE_ZERO_P to avoid 50x spam. */
+    Message0("\n");
+    Message0("%s\n", marker_line);
+    Message0("  U_MEAN                       = %.6g m/s\n", U_MEAN);
+    Message0("  INLET_Z_BOTTOM               = %.6g m (%.6g mm)\n",
+             INLET_Z_BOTTOM, INLET_Z_BOTTOM * 1000.0);
+    Message0("  CHANNEL_HEIGHT               = %.6g m (%.6g mm)\n",
+             CHANNEL_HEIGHT, CHANNEL_HEIGHT * 1000.0);
+    Message0("  INLET_AREA_EXPECTED_M2       = %.6g m2 (D2450_a45 ref)\n",
+             INLET_AREA_EXPECTED_M2);
+    Message0("  inlet face z min/max         = %.6g / %.6g mm\n",
+             z_min * 1000.0, z_max * 1000.0);
+    Message0("  eta raw min/max (preclamp)   = %.6g / %.6g\n",
+             eta_min, eta_max);
+    Message0("  faces (global)               = %d\n", n_face);
+    Message0("  faces requiring clamp        = %d\n", n_clamp);
+    Message0("  inlet area sum               = %.6g m2\n", area_sum);
+    Message0("  area-weighted mean u         = %.6g m/s\n", u_area_avg);
+    Message0("  discretization excess        = %.4g %%\n", excess_pct);
+    if (n_clamp > 0) {
+        Message0(
+            "  WARNING: RO_UDF_INLET_GEOMETRY_OUT_OF_RANGE "
+            "clamp_count=%d (constants disagree with mesh; continuing)\n",
+            n_clamp
+        );
+    }
+    Message0("\n");
+}
+
+
+DEFINE_ON_DEMAND(probe_inlet_profile)
+{
+#if !RP_HOST
+    Domain *d;
+    Thread *f_thread;
+    face_t f;
+    real x[ND_ND];
+    real area_vec[ND_ND];
+    real z;
+    real eta_raw;
+    real u_face;
+    real dA;
+    int clamped;
+    int inlet_thread_found;
+
+    real z_min_local;
+    real z_max_local;
+    real eta_min_local;
+    real eta_max_local;
+    real area_sum_local;
+    real uA_sum_local;
+    int n_clamp_local;
+    int n_face_local;
+
+    real z_min;
+    real z_max;
+    real eta_min;
+    real eta_max;
+    real area_sum;
+    real uA_sum;
+    int n_clamp;
+    int n_face;
+    real u_area_avg;
+
+    /* +/-1e30 sentinels so zero-face partitions do not corrupt PRF min/max. */
+    z_min_local = 1.0e30;
+    z_max_local = -1.0e30;
+    eta_min_local = 1.0e30;
+    eta_max_local = -1.0e30;
+    area_sum_local = 0.0;
+    uA_sum_local = 0.0;
+    n_clamp_local = 0;
+    n_face_local = 0;
+    inlet_thread_found = 0;
+
+    d = Get_Domain(1);
+
+    thread_loop_f(f_thread, d) {
+        if (!is_inlet_face_thread(f_thread)) {
+            continue;
+        }
+
+        inlet_thread_found = 1;
+
+        begin_f_loop(f, f_thread) {
+            F_CENTROID(x, f, f_thread);
+            z = x[2];
+            u_face = inlet_poiseuille_speed(z, &eta_raw, &clamped);
+            /* Read-only probe: do NOT call F_PROFILE. */
+
+            n_face_local += 1;
+            if (z < z_min_local) z_min_local = z;
+            if (z > z_max_local) z_max_local = z;
+            if (eta_raw < eta_min_local) eta_min_local = eta_raw;
+            if (eta_raw > eta_max_local) eta_max_local = eta_raw;
+            if (clamped) {
+                n_clamp_local += 1;
+            }
+
+            F_AREA(area_vec, f, f_thread);
+            dA = NV_MAG(area_vec);
+            area_sum_local += dA;
+            uA_sum_local += u_face * dA;
+        }
+        end_f_loop(f, f_thread)
+    }
+
+    /* Every node reaches reductions, including nodes with zero inlet faces. */
+#if RP_NODE
+    z_min = PRF_GRLOW1(z_min_local);
+    z_max = PRF_GRHIGH1(z_max_local);
+    eta_min = PRF_GRLOW1(eta_min_local);
+    eta_max = PRF_GRHIGH1(eta_max_local);
+    area_sum = PRF_GRSUM1(area_sum_local);
+    uA_sum = PRF_GRSUM1(uA_sum_local);
+    n_clamp = PRF_GISUM1(n_clamp_local);
+    n_face = PRF_GISUM1(n_face_local);
+    inlet_thread_found = PRF_GIOR1(inlet_thread_found);
+#else
+    z_min = z_min_local;
+    z_max = z_max_local;
+    eta_min = eta_min_local;
+    eta_max = eta_max_local;
+    area_sum = area_sum_local;
+    uA_sum = uA_sum_local;
+    n_clamp = n_clamp_local;
+    n_face = n_face_local;
+#endif
+
+    if (area_sum > 0.0) {
+        u_area_avg = uA_sum / area_sum;
+    }
+    else {
+        u_area_avg = 0.0;
+    }
+
+    print_inlet_profile_stats(
+        INLET_PROBE_MARKER_LINE,
+        z_min,
+        z_max,
+        eta_min,
+        eta_max,
+        n_clamp,
+        n_face,
+        area_sum,
+        u_area_avg
+    );
+
+    if (!inlet_thread_found) {
+        Message0(
+            "  WARNING: RO_UDF_INLET_THREAD_NOT_FOUND base='%s'\n",
+            INLET_THREAD_BASE_NAME
+        );
+    }
+#endif /* !RP_HOST */
+}
+
 
 DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
 {
 #if !RP_HOST
     face_t f;
     real x[ND_ND];
-    real eta;
-    real umean;
+    real eta_raw;
     real u_face;
+    int clamped;
 #if INLET_PROFILE_DIAGNOSTIC
-    /* static first-call flag is PER PROCESS (each compute node has its own
-       copy). With PRF reductions below, node-0 prints global aggregates once
-       per node-0 process; other nodes still flip their local flag so they
-       do not re-accumulate on later profile evaluations. */
+    /* static first-call flag is PER PROCESS (each compute node has its own). */
     static int inlet_profile_diag_done = 0;
     real z;
-    real eta_raw;
     real area_vec[ND_ND];
     real dA;
     real z_min_local;
@@ -598,73 +825,46 @@ DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
     real eta_max_local;
     real area_sum_local;
     real uA_sum_local;
-    int  n_clamp_local;
+    int n_clamp_local;
+    int n_face_local;
     real z_min;
     real z_max;
     real eta_min;
     real eta_max;
     real area_sum;
     real uA_sum;
-    int  n_clamp;
+    int n_clamp;
+    int n_face;
     real u_area_avg;
 #endif
 
-    /*
-       Match DEFINE_ADJUST: mesh work and RP_Get_Real run under !RP_HOST
-       (serial or compute node). DEFINE_SOURCE hooks in this file have no
-       host/node guard; profile face loops need the host excluded because
-       the host has no face data.
-    */
-#if INLET_UMEAN_FROM_RP
-    umean = RP_Get_Real(UMEAN_RP_NAME);
-#else
-    umean = U_MEAN_FALLBACK;
-#endif
-
 #if INLET_PROFILE_DIAGNOSTIC
-    /* Sentinel extrema so partitions with zero inlet faces do not pull the
-       global PRF min/max to 0.0. */
-    z_min_local = 1.0e20;
-    z_max_local = -1.0e20;
-    eta_min_local = 1.0e20;
-    eta_max_local = -1.0e20;
+    z_min_local = 1.0e30;
+    z_max_local = -1.0e30;
+    eta_min_local = 1.0e30;
+    eta_max_local = -1.0e30;
     area_sum_local = 0.0;
     uA_sum_local = 0.0;
     n_clamp_local = 0;
+    n_face_local = 0;
 #endif
 
     begin_f_loop(f, thread) {
         F_CENTROID(x, f, thread);
-
-        eta = (x[2] - INLET_Z_BOTTOM) / CHANNEL_HEIGHT;
-
-#if INLET_PROFILE_DIAGNOSTIC
-        if (!inlet_profile_diag_done) {
-            z = x[2];
-            eta_raw = eta;
-
-            if (z < z_min_local) z_min_local = z;
-            if (z > z_max_local) z_max_local = z;
-            if (eta_raw < eta_min_local) eta_min_local = eta_raw;
-            if (eta_raw > eta_max_local) eta_max_local = eta_raw;
-
-            if (eta_raw < 0.0 || eta_raw > 1.0) {
-                n_clamp_local += 1;
-            }
-        }
-#endif
-
-        /* Clamp to the wall value. Boundary-layer face centroids can land
-           a hair outside [0,1] and would otherwise produce a negative
-           velocity, which Fluent reports as inlet reversed flow. */
-        if (eta < 0.0) eta = 0.0;
-        if (eta > 1.0) eta = 1.0;
-
-        u_face = 6.0 * umean * eta * (1.0 - eta);
+        u_face = inlet_poiseuille_speed(x[2], &eta_raw, &clamped);
         F_PROFILE(f, thread, position) = u_face;
 
 #if INLET_PROFILE_DIAGNOSTIC
         if (!inlet_profile_diag_done) {
+            z = x[2];
+            n_face_local += 1;
+            if (z < z_min_local) z_min_local = z;
+            if (z > z_max_local) z_max_local = z;
+            if (eta_raw < eta_min_local) eta_min_local = eta_raw;
+            if (eta_raw > eta_max_local) eta_max_local = eta_raw;
+            if (clamped) {
+                n_clamp_local += 1;
+            }
             F_AREA(area_vec, f, thread);
             dA = NV_MAG(area_vec);
             area_sum_local += dA;
@@ -676,16 +876,15 @@ DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
 
 #if INLET_PROFILE_DIAGNOSTIC
     if (!inlet_profile_diag_done) {
-        /* Global reductions so a 50-core partition does not print misleading
-           per-node min/max/area averages. PRF_* are identity in serial. */
 #if RP_NODE
-        z_min = PRF_GLI1(z_min_local);
-        z_max = PRF_GHI1(z_max_local);
-        eta_min = PRF_GLI1(eta_min_local);
-        eta_max = PRF_GHI1(eta_max_local);
+        z_min = PRF_GRLOW1(z_min_local);
+        z_max = PRF_GRHIGH1(z_max_local);
+        eta_min = PRF_GRLOW1(eta_min_local);
+        eta_max = PRF_GRHIGH1(eta_max_local);
         area_sum = PRF_GRSUM1(area_sum_local);
         uA_sum = PRF_GRSUM1(uA_sum_local);
-        n_clamp = (int)PRF_GRSUM1((real)n_clamp_local);
+        n_clamp = PRF_GISUM1(n_clamp_local);
+        n_face = PRF_GISUM1(n_face_local);
 #else
         z_min = z_min_local;
         z_max = z_max_local;
@@ -694,6 +893,7 @@ DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
         area_sum = area_sum_local;
         uA_sum = uA_sum_local;
         n_clamp = n_clamp_local;
+        n_face = n_face_local;
 #endif
 
         if (area_sum > 0.0) {
@@ -703,38 +903,51 @@ DEFINE_PROFILE(inlet_x_velocity_profile, thread, position)
             u_area_avg = 0.0;
         }
 
-#if RP_NODE
-        if (I_AM_NODE_ZERO_P) {
-#endif
-            Message("\n");
-            Message("RO UDF inlet_x_velocity_profile diagnostic (first call):\n");
-            Message("  umean (from %s)           = %.6g m/s\n",
-#if INLET_UMEAN_FROM_RP
-                    "RP " UMEAN_RP_NAME,
-#else
-                    "U_MEAN_FALLBACK",
-#endif
-                    umean);
-            Message("  INLET_Z_BOTTOM            = %.6g m (%.6g mm)\n",
-                    INLET_Z_BOTTOM, INLET_Z_BOTTOM * 1000.0);
-            Message("  CHANNEL_HEIGHT            = %.6g m (%.6g mm)\n",
-                    CHANNEL_HEIGHT, CHANNEL_HEIGHT * 1000.0);
-            Message("  inlet face z min/max      = %.6g / %.6g mm\n",
-                    z_min * 1000.0, z_max * 1000.0);
-            Message("  eta raw min/max (preclamp)= %.6g / %.6g\n",
-                    eta_min, eta_max);
-            Message("  faces requiring clamp     = %d\n", n_clamp);
-            Message("  area-weighted mean u      = %.6g m/s\n", u_area_avg);
-            Message("  |u_area_avg - umean|/|umean| = %.3e\n",
-                    (umean != 0.0)
-                    ? fabs(u_area_avg - umean) / fabs(umean)
-                    : fabs(u_area_avg));
-            Message("\n");
-#if RP_NODE
-        }
-#endif
+        print_inlet_profile_stats(
+            INLET_PROFILE_MARKER_LINE,
+            z_min,
+            z_max,
+            eta_min,
+            eta_max,
+            n_clamp,
+            n_face,
+            area_sum,
+            u_area_avg
+        );
         inlet_profile_diag_done = 1;
     }
 #endif /* INLET_PROFILE_DIAGNOSTIC */
 #endif /* !RP_HOST */
 }
+
+
+#if 0
+/* =======================================================================
+   FUTURE: audited-safe runtime u_mean (NOT COMPILED)
+
+   Use only if a later campaign needs per-case u_mean without recompile.
+   Pattern: DEFINE_ON_DEMAND on host reads Scheme rp-var, host_to_node_real_1
+   broadcasts to nodes, file-scope static caches the value for DEFINE_PROFILE.
+   Do not call RP_Get_Real from compute nodes for a custom udf/* rp-var unless
+   live-verified on Fluent 25.1 parallel.
+   ======================================================================= */
+
+#define UMEAN_RP_NAME_FUTURE "udf/u-mean"
+static real inlet_umean_cache = 0.2;
+static int inlet_umean_cache_valid = 0;
+
+DEFINE_ON_DEMAND(sync_inlet_umean_future)
+{
+    real umean_host;
+
+    umean_host = 0.2;
+#if !RP_NODE
+    if (RP_Variable_Exists_P(UMEAN_RP_NAME_FUTURE)) {
+        umean_host = RP_Get_Real(UMEAN_RP_NAME_FUTURE);
+    }
+#endif
+    host_to_node_real_1(umean_host);
+    inlet_umean_cache = umean_host;
+    inlet_umean_cache_valid = 1;
+}
+#endif /* future rp-var u_mean pattern */
