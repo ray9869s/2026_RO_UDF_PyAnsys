@@ -27,15 +27,41 @@ from _fluent_report_helpers import (  # noqa: E402
     list_named_object_names,
     wall_zone_reduction_locations,
 )
+from _domain_layout import (  # noqa: E402
+    GEOMETRY_LAYOUT_REGISTRY,
+    mesh_case_name_candidates_from_dirname,
+    resolve_layout,
+)
 
 # ---- Case under test (env-overridable throwaway paths) ----
-# Override with CELL_PROFILE_GEO / CELL_PROFILE_CASE for a second case without
-# editing this file. Defaults keep the original throwaway target.
+# Override with CELL_PROFILE_GEO / CELL_PROFILE_CASE / CELL_PROFILE_MESH.
+# Defaults keep the original D2450 throwaway target.
 PROJECT_ROOT = SCRIPT_DIR.parent
 GEO_NAME = os.environ.get("CELL_PROFILE_GEO", "D2450_a45_7c_brg110")
 CASE_NAME = os.environ.get(
     "CELL_PROFILE_CASE",
     "u0p2_p6M__mesh_max085_min006_cpg5_bl4",
+)
+_DEFAULT_MESH_CASE_NAME = "mesh_max085_min006_cpg5_bl4"
+
+
+def _resolve_cell_profile_mesh_case_name(geo_name: str, case_name: str) -> tuple[str, str]:
+    """Return (mesh_case_name, source) for layout lookup.
+
+    Priority: CELL_PROFILE_MESH env, then dirname candidates that hit the
+    registry, else the D2450 default mesh token.
+    """
+    env_mesh = os.environ.get("CELL_PROFILE_MESH", "").strip()
+    if env_mesh:
+        return env_mesh, "env:CELL_PROFILE_MESH"
+    for candidate in mesh_case_name_candidates_from_dirname(case_name):
+        if (geo_name, candidate) in GEOMETRY_LAYOUT_REGISTRY:
+            return candidate, "case_name"
+    return _DEFAULT_MESH_CASE_NAME, "default"
+
+
+MESH_CASE_NAME, MESH_CASE_NAME_SOURCE = _resolve_cell_profile_mesh_case_name(
+    GEO_NAME, CASE_NAME
 )
 CASE_PATH = PROJECT_ROOT / "03_Results" / GEO_NAME / CASE_NAME
 FINAL_CASE_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
@@ -43,13 +69,33 @@ FINAL_DATA_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
 # Per-case CSV under the geo folder so concurrent runs do not overwrite.
 CSV_PATH = CASE_PATH.parent / f"cell_profile_{CASE_NAME}.csv"
 
-# Geometry [m] — cell length 3.465 mm, asymmetric buffers.
-CELL_LENGTH_M = 0.003465
+# Geometry [m] — prefer registry layout for (GEO_NAME, MESH_CASE_NAME).
+# Fallback keeps the original D2450 1+7+2 / 0.003465 constants when the pair
+# is unregistered so the throwaway script still runs offline.
+_FALLBACK_CELL_LENGTH_M = 0.003465
+_FALLBACK_DOMAIN_X_MAX_M = 0.03465
+_FALLBACK_N_INLET_BUFFER_CELLS = 1
+_FALLBACK_N_SPACER_CELLS = 7
+_FALLBACK_N_OUTLET_BUFFER_CELLS = 2
+
 DOMAIN_X_MIN_M = 0.0
-DOMAIN_X_MAX_M = 0.03465
-N_INLET_BUFFER_CELLS = 1
-N_SPACER_CELLS = 7
-N_OUTLET_BUFFER_CELLS = 2
+LAYOUT_SOURCE = "fallback:D2450_1+7+2"
+try:
+    _layout_record = resolve_layout(GEO_NAME, MESH_CASE_NAME)
+    _layout = _layout_record.layout
+    CELL_LENGTH_M = float(_layout.cell_length_x_m)
+    DOMAIN_X_MAX_M = float(_layout.total_length_m)
+    N_INLET_BUFFER_CELLS = int(_layout.n_buffer_in)
+    N_SPACER_CELLS = int(_layout.n_active)
+    N_OUTLET_BUFFER_CELLS = int(_layout.n_buffer_out)
+    LAYOUT_SOURCE = f"resolve_layout({GEO_NAME!r}, {MESH_CASE_NAME!r})"
+except KeyError:
+    CELL_LENGTH_M = _FALLBACK_CELL_LENGTH_M
+    DOMAIN_X_MAX_M = _FALLBACK_DOMAIN_X_MAX_M
+    N_INLET_BUFFER_CELLS = _FALLBACK_N_INLET_BUFFER_CELLS
+    N_SPACER_CELLS = _FALLBACK_N_SPACER_CELLS
+    N_OUTLET_BUFFER_CELLS = _FALLBACK_N_OUTLET_BUFFER_CELLS
+
 N_TOTAL_CELLS = N_INLET_BUFFER_CELLS + N_SPACER_CELLS + N_OUTLET_BUFFER_CELLS
 
 MEMBRANE_BASE_NAMES = ["wall_top_mem", "wall_bottom_mem"]
@@ -283,6 +329,16 @@ def main():
     print("Resolved paths:")
     print(f"  CELL_PROFILE_GEO  -> GEO_NAME  = {GEO_NAME}")
     print(f"  CELL_PROFILE_CASE -> CASE_NAME = {CASE_NAME}")
+    print(
+        f"  CELL_PROFILE_MESH -> MESH_CASE_NAME = {MESH_CASE_NAME} "
+        f"(source={MESH_CASE_NAME_SOURCE})"
+    )
+    print(f"  layout            = {LAYOUT_SOURCE}")
+    print(
+        f"  cells             = {N_INLET_BUFFER_CELLS}+{N_SPACER_CELLS}+"
+        f"{N_OUTLET_BUFFER_CELLS} "
+        f"(dx={CELL_LENGTH_M} m, Lx={DOMAIN_X_MAX_M} m)"
+    )
     print(f"  CASE_PATH         = {CASE_PATH}")
     print(f"  FINAL_CASE_FILE   = {FINAL_CASE_FILE}")
     print(f"  FINAL_DATA_FILE   = {FINAL_DATA_FILE}")

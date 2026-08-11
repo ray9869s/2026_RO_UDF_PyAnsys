@@ -9,8 +9,11 @@ symmetric production triple
 ``(domain_length_m, n_unit_cells, n_buffer_cells_each_end)``, which cannot
 express the current 1+7+2 generation.
 
-``cell_length_x_m = 0.003465`` is constant across every geometry family in
-``mesh_ledger.csv`` (all measured x extents are exact multiples of that cell).
+``CELL_LENGTH_X_M = 0.003465`` is shared by the legacy 5-cell and current
+10-cell families in ``mesh_ledger.csv``. The entrance-decay diagnostic
+geometry ``D0817_a45_21c_brg110`` uses a separate third of that pitch
+(``CELL_LENGTH_X_D0817_M = 0.001155``) while keeping the same physical
+extent and buffer lengths for cell-by-cell comparison.
 
 There is deliberately **no** ``cell_length_y`` here. The spanwise period lives
 in the meshing config as ``periodic_shift_y`` in **millimetres** (nominal
@@ -26,8 +29,9 @@ wrong.
 
 The registry is keyed by ``(geo_name, mesh_case_name)``. Geo alone is
 insufficient: every legacy family has both 3-cell (x extent 0.010395 m) and
-5-cell (0.017325 m) meshes. Only 5-cell and 10-cell generations with a known
-buffer/active split are registered; 3-cell meshes stay LAYOUT_UNKNOWN.
+5-cell (0.017325 m) meshes. Only 5-cell, 10-cell, and the 30-cell D0817
+diagnostic with a known buffer/active split are registered; 3-cell meshes
+stay LAYOUT_UNKNOWN.
 """
 
 from __future__ import annotations
@@ -38,9 +42,15 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Optional
 
-# Constants harvested from mesh_ledger.csv (all families share this cell length)
-# and from CURRENT / LEGACY buffer-active splits.
+# Constants harvested from mesh_ledger.csv (legacy + current 10-cell families
+# share this cell length) and from CURRENT / LEGACY buffer-active splits.
 CELL_LENGTH_X_M = 0.003465
+# D0817 entrance-decay diagnostic: L_f = 0.816708 mm (= 3.465/(3*sqrt(2))),
+# theta = 45 deg from the inlet face, so cell length = L_f/cos(45) =
+# 1.155000 mm exactly (= 3.465/3). Same physical extent / buffer lengths as
+# D2450_a45_7c_brg110 (30 * 0.001155 = 0.03465 m; spacer 0.003465..0.027720 m;
+# buffers 3.465 / 6.930 mm). Not a production layout.
+CELL_LENGTH_X_D0817_M = 0.001155
 
 MEMBRANE_WALL_BASE_NAMES = ("wall_top_mem", "wall_bottom_mem")
 LEGACY_BUFFER_WALL_BASE_NAMES = ("wall_top_buffer", "wall_bottom_buffer")
@@ -232,11 +242,12 @@ class EvaluationWindow:
 
 @dataclass(frozen=True)
 class GeometryLayoutRecord:
-    """Layout plus wall base names for one (geo, mesh) pair."""
+    """Layout plus wall base names and evaluation window for one (geo, mesh) pair."""
 
     layout: DomainLayout
     membrane_wall_base_names: tuple[str, ...]
     buffer_wall_base_names: tuple[str, ...]
+    evaluation_window: EvaluationWindow
 
 
 @dataclass(frozen=True)
@@ -262,16 +273,42 @@ CURRENT_LAYOUT = DomainLayout(
     n_buffer_out=2,
     cell_length_x_m=CELL_LENGTH_X_M,
 )
+# Entrance-decay diagnostic: 3+21+6 at 1/3 the D2450 cell pitch. Same extent
+# and buffer lengths as CURRENT_LAYOUT so the two compare cell-by-cell.
+D0817_LAYOUT = DomainLayout(
+    n_buffer_in=3,
+    n_active=21,
+    n_buffer_out=6,
+    cell_length_x_m=CELL_LENGTH_X_D0817_M,
+)
+
+# Lead/trail windows: legacy matches post_config n_inlet_spacer_cells_excluded=1.
+# CURRENT / D0817 use lead=3 so aggregate metrics compare on the same physical
+# entrance exclusion (D2450 spacer cells 4-7). Open item (do not fix here):
+# post_config still has n_inlet_spacer_cells_excluded=1, which makes
+# pp_pressure_drop_periodic_per_m ~2% high on D2450 (cell 2 still +9.4% and
+# cell 3 +2.5% vs the cells 4-7 mean of 114.68 Pa).
+LEGACY_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=1, n_trail_excluded=0)
+CURRENT_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
+D0817_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
 
 _LEGACY_RECORD = GeometryLayoutRecord(
     layout=LEGACY_LAYOUT,
     membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
     buffer_wall_base_names=LEGACY_BUFFER_WALL_BASE_NAMES,
+    evaluation_window=LEGACY_EVALUATION_WINDOW,
 )
 _CURRENT_RECORD = GeometryLayoutRecord(
     layout=CURRENT_LAYOUT,
     membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
     buffer_wall_base_names=CURRENT_BUFFER_WALL_BASE_NAMES,
+    evaluation_window=CURRENT_EVALUATION_WINDOW,
+)
+_D0817_RECORD = GeometryLayoutRecord(
+    layout=D0817_LAYOUT,
+    membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
+    buffer_wall_base_names=CURRENT_BUFFER_WALL_BASE_NAMES,
+    evaluation_window=D0817_EVALUATION_WINDOW,
 )
 
 # 5-cell generation (1 + 3 + 1), extent 0.017325 m — from mesh_ledger.csv.
@@ -310,6 +347,12 @@ _CURRENT_10CELL_PAIRS: tuple[tuple[str, str], ...] = (
     ("D2450_a45_ov060", "mesh_max085_min006_cpg5_bl4"),
 )
 
+# 30-cell entrance-decay diagnostic (3 + 21 + 6) at cell pitch 0.001155 m.
+# Same physical extent / buffer lengths as D2450_a45_7c_brg110; not production.
+_D0817_30CELL_PAIRS: tuple[tuple[str, str], ...] = (
+    ("D0817_a45_21c_brg110", "mesh_max085_min006_cpg5_bl4"),
+)
+
 
 def _build_geometry_layout_registry() -> dict[tuple[str, str], GeometryLayoutRecord]:
     registry: dict[tuple[str, str], GeometryLayoutRecord] = {}
@@ -317,6 +360,8 @@ def _build_geometry_layout_registry() -> dict[tuple[str, str], GeometryLayoutRec
         registry[(geo_name, mesh_case_name)] = _LEGACY_RECORD
     for geo_name, mesh_case_name in _CURRENT_10CELL_PAIRS:
         registry[(geo_name, mesh_case_name)] = _CURRENT_RECORD
+    for geo_name, mesh_case_name in _D0817_30CELL_PAIRS:
+        registry[(geo_name, mesh_case_name)] = _D0817_RECORD
     return registry
 
 

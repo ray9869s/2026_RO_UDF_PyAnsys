@@ -232,6 +232,35 @@ class TestGeometryRegistry:
             "wall_top_mem",
             "wall_bottom_mem",
         )
+        assert record.evaluation_window.n_lead_excluded == 3
+        assert record.evaluation_window.n_trail_excluded == 0
+        assert record.evaluation_window.evaluation_local_indices(
+            CURRENT_LAYOUT
+        ) == [4, 5, 6, 7]
+
+    def test_resolve_d0817_entrance_decay_diagnostic(self):
+        from _domain_layout import (
+            CELL_LENGTH_X_D0817_M,
+            CURRENT_BUFFER_WALL_BASE_NAMES,
+            D0817_LAYOUT,
+        )
+
+        record = resolve_layout(
+            "D0817_a45_21c_brg110", "mesh_max085_min006_cpg5_bl4"
+        )
+        assert record.layout == D0817_LAYOUT
+        assert record.layout.n_buffer_in == 3
+        assert record.layout.n_active == 21
+        assert record.layout.n_buffer_out == 6
+        assert record.layout.cell_length_x_m == CELL_LENGTH_X_D0817_M
+        assert abs(record.layout.total_length_m - 0.03465) < 1.0e-12
+        assert record.buffer_wall_base_names == CURRENT_BUFFER_WALL_BASE_NAMES
+        assert record.evaluation_window.n_lead_excluded == 3
+        assert record.evaluation_window.n_trail_excluded == 0
+        # Same physical entrance exclusion as D2450 cells 4-7 convention.
+        assert record.evaluation_window.evaluation_local_indices(
+            D0817_LAYOUT
+        ) == list(range(4, 22))
 
     def test_same_geo_with_3cell_mesh_raises_naming_both(self):
         # 3-cell meshes are deliberately unregistered (LAYOUT_UNKNOWN).
