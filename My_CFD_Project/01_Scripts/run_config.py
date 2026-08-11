@@ -152,9 +152,9 @@ use_inlet_velocity_profile = False
 # in the solver transcript. Independent of the BC method (read-only probe).
 run_inlet_profile_probe = False
 # Verbose settings-API probes + allowed-value trials when applying the
-# Components+UDF inlet BC. Default True while diagnosing Fluent 25.1
-# velocity_components inactivity; set False to silence without deleting.
-debug_inlet_bc_api = True
+# Components+UDF inlet BC. Default False after Fluent 25.1.0 confirmed
+# set_state("Components") activates velocity_components; set True to re-probe.
+debug_inlet_bc_api = False
 
 # Active membrane and buffer wall base names in the solver.
 # Fluent may split these into base, base.1, base.2, ...

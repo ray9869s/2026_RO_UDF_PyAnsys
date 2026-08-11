@@ -28,15 +28,20 @@ from _fluent_report_helpers import (  # noqa: E402
     wall_zone_reduction_locations,
 )
 
-# ---- Case under test (fixed throwaway paths) ----
+# ---- Case under test (env-overridable throwaway paths) ----
+# Override with CELL_PROFILE_GEO / CELL_PROFILE_CASE for a second case without
+# editing this file. Defaults keep the original throwaway target.
 PROJECT_ROOT = SCRIPT_DIR.parent
-GEO_NAME = "D2450_a45_7c_brg110"
-CASE_NAME = "u0p2_p6M__mesh_max085_min006_cpg5_bl4"
+GEO_NAME = os.environ.get("CELL_PROFILE_GEO", "D2450_a45_7c_brg110")
+CASE_NAME = os.environ.get(
+    "CELL_PROFILE_CASE",
+    "u0p2_p6M__mesh_max085_min006_cpg5_bl4",
+)
 CASE_PATH = PROJECT_ROOT / "03_Results" / GEO_NAME / CASE_NAME
 FINAL_CASE_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
 FINAL_DATA_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
-# CSV sits next to the case directory (sibling under the geo folder).
-CSV_PATH = CASE_PATH.parent / "cell_profile.csv"
+# Per-case CSV under the geo folder so concurrent runs do not overwrite.
+CSV_PATH = CASE_PATH.parent / f"cell_profile_{CASE_NAME}.csv"
 
 # Geometry [m] — cell length 3.465 mm, asymmetric buffers.
 CELL_LENGTH_M = 0.003465
@@ -275,7 +280,15 @@ def print_table(title, rows, columns):
 
 
 def main():
-    print("FIELD CHOICE:")
+    print("Resolved paths:")
+    print(f"  CELL_PROFILE_GEO  -> GEO_NAME  = {GEO_NAME}")
+    print(f"  CELL_PROFILE_CASE -> CASE_NAME = {CASE_NAME}")
+    print(f"  CASE_PATH         = {CASE_PATH}")
+    print(f"  FINAL_CASE_FILE   = {FINAL_CASE_FILE}")
+    print(f"  FINAL_DATA_FILE   = {FINAL_DATA_FILE}")
+    print(f"  CSV_PATH          = {CSV_PATH}")
+
+    print("\nFIELD CHOICE:")
     print(
         f"  Water flux UDM = {FIELD_UDM_JW!r} (UDF UDM_JW = adjacent-face "
         "area-weighted water flux [m/s])"
@@ -298,10 +311,6 @@ def main():
         raise FileNotFoundError(f"Final case file not found: {FINAL_CASE_FILE}")
     if not FINAL_DATA_FILE.is_file():
         raise FileNotFoundError(f"Final data file not found: {FINAL_DATA_FILE}")
-
-    print(f"\nCase path: {CASE_PATH}")
-    print(f"Final case: {FINAL_CASE_FILE}")
-    print(f"CSV output: {CSV_PATH}")
 
     pyfluent.config.check_health_timeout = FLUENT_HEALTH_TIMEOUT
 

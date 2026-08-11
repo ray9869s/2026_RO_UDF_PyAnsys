@@ -124,7 +124,7 @@ if __name__ == "__main__":
     run_inlet_profile_probe = bool(
         getattr(cfg, "run_inlet_profile_probe", False)
     )
-    debug_inlet_bc_api = bool(getattr(cfg, "debug_inlet_bc_api", True))
+    debug_inlet_bc_api = bool(getattr(cfg, "debug_inlet_bc_api", False))
     inlet_profile_function_name = f"inlet_x_velocity_profile::{udf_library_name}"
     inlet_probe_function_name = f"probe_inlet_profile::{udf_library_name}"
     INLET_PROFILE_MARKER = "=== RO_UDF inlet_x_velocity_profile ==="
@@ -600,13 +600,12 @@ def apply_inlet_velocity_boundary(
 ):
     """Set one velocity-inlet zone to plug magnitude or Components+UDF.
 
-    needs-live-verification: settings paths inspected in installed
-    ansys.fluent.core generated settings_251.py (velocity_specification_method,
-    velocity_components ListObject with option/value/udf children). Allowed
-    string 'Components' is listed in settings_261.py constants; 251 schema has
-    the attribute but not the static _allowed_values table. When the settings
-    child stays inactive after set_state, fall back to TUI (also
-    needs-live-verification: prompt sequence varies by Fluent version).
+    Live-verified on Fluent 25.1.0 (this host): set_state("Components") is a
+    valid allowed value and activates velocity_components. allowed_values()
+    returned ['Magnitude and Direction', 'Components',
+    'Magnitude, Normal to Boundary']. velocity_components is a fixed-length
+    3-element ListObject in 3D — do not call resize(). TUI fallback below is
+    retained but untested on this host (settings API path works).
     """
     if not use_profile:
         vin.momentum.velocity_magnitude.value = inlet_velocity
@@ -777,19 +776,15 @@ def apply_inlet_velocity_boundary(
                 "8. len(velocity_components)",
                 lambda: len(components),
             )
-            print(f"{tag} 9. calling resize(3)")
-        try:
-            components.resize(3)
-        except Exception as exc:
+        # Fixed-length 3-vector in 3D; resize() is permanently inactive.
+        n_comp = len(components)
+        if n_comp != 3:
             print(
-                f"{tag} 9. resize(3): EXCEPTION {type(exc).__name__}: {exc}"
+                f"{tag} unexpected velocity_components length: "
+                f"len={n_comp} (expected 3)"
             )
-        if debug_inlet_bc_api:
-            _probe(
-                "9. velocity_components state after resize",
-                lambda: components.get_state()
-                if hasattr(components, "get_state")
-                else components(),
+            raise AssertionError(
+                f"velocity_components length must be 3 in 3D, got {n_comp}"
             )
         # x-velocity <- profile UDF; y,z <- 0
         try:
@@ -815,6 +810,9 @@ def apply_inlet_velocity_boundary(
             return
 
     # Settings API path unavailable — TUI fallback.
+    # Dead on this host: settings API path confirmed working on Fluent 25.1.0
+    # (set_state("Components") activates velocity_components). Fallback kept
+    # but untested; prompt sequence may still vary by Fluent version.
     print("=" * 72)
     print(
         f"{tag} SETTINGS API PATH UNAVAILABLE: velocity_components is "
@@ -823,18 +821,12 @@ def apply_inlet_velocity_boundary(
     )
     print("=" * 72)
 
-    # needs-live-verification: Fluent 25.1 velocity-inlet TUI prompt order
-    # varies; this one-shot is adapted from the prior comment-only sketch.
-    # commas accept defaults; "components" selects Components; then
-    # x=UDF / y=value0 / z=value0.
     tui_cmd = (
         f"/define/boundary-conditions/velocity-inlet {inlet_zone_name} "
         f", , , , yes , , components yes no no yes "
         f'"{profile_udf_name}" no 0 no 0'
     )
-    print(
-        f"{tag} TUI fallback command (needs-live-verification): {tui_cmd}"
-    )
+    print(f"{tag} TUI fallback command (untested on this host): {tui_cmd}")
     if solver is None:
         print(
             f"{tag} TUI fallback SKIPPED: solver session was not passed to "
@@ -853,7 +845,7 @@ def apply_inlet_velocity_boundary(
         f"Inlet BC set on {inlet_zone_name}: TUI Components+UDF fallback; "
         f"profile_udf_name={profile_udf_name} "
         f"(inlet_velocity_value={inlet_velocity} unused for profile; "
-        f"UDF U_MEAN is the area-mean target; needs-live-verification)"
+        f"UDF U_MEAN is the area-mean target; untested fallback)"
     )
 
 
