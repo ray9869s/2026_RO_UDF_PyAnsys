@@ -253,6 +253,7 @@ class TestRunConfigOverrideAllowlist:
             "udf_library_name",
             "use_inlet_velocity_profile",
             "run_inlet_profile_probe",
+            "debug_inlet_bc_api",
             "membrane_wall_base_names",
             "buffer_wall_base_names",
             "target_species_name",

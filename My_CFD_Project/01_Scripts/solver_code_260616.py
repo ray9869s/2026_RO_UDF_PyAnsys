@@ -124,6 +124,7 @@ if __name__ == "__main__":
     run_inlet_profile_probe = bool(
         getattr(cfg, "run_inlet_profile_probe", False)
     )
+    debug_inlet_bc_api = bool(getattr(cfg, "debug_inlet_bc_api", True))
     inlet_profile_function_name = f"inlet_x_velocity_profile::{udf_library_name}"
     inlet_probe_function_name = f"probe_inlet_profile::{udf_library_name}"
     INLET_PROFILE_MARKER = "=== RO_UDF inlet_x_velocity_profile ==="
@@ -587,14 +588,25 @@ def assert_transcript_contains(
         time.sleep(float(poll_interval_s))
 
 
-def apply_inlet_velocity_boundary(vin, inlet_zone_name, inlet_velocity, *, use_profile, profile_udf_name):
+def apply_inlet_velocity_boundary(
+    vin,
+    inlet_zone_name,
+    inlet_velocity,
+    *,
+    use_profile,
+    profile_udf_name,
+    solver=None,
+    debug_inlet_bc_api=False,
+):
     """Set one velocity-inlet zone to plug magnitude or Components+UDF.
 
     needs-live-verification: settings paths inspected in installed
     ansys.fluent.core generated settings_251.py (velocity_specification_method,
     velocity_components ListObject with option/value/udf children). Allowed
     string 'Components' is listed in settings_261.py constants; 251 schema has
-    the attribute but not the static _allowed_values table.
+    the attribute but not the static _allowed_values table. When the settings
+    child stays inactive after set_state, fall back to TUI (also
+    needs-live-verification: prompt sequence varies by Fluent version).
     """
     if not use_profile:
         vin.momentum.velocity_magnitude.value = inlet_velocity
@@ -604,27 +616,245 @@ def apply_inlet_velocity_boundary(vin, inlet_zone_name, inlet_velocity, *, use_p
         )
         return
 
-    # Settings API (preferred). Flag needs-live-verification on Fluent 25.1.
-    vin.momentum.velocity_specification_method = "Components"
-    components = vin.momentum.velocity_components
-    components.resize(3)
-    # x-velocity <- DEFINE_PROFILE; y,z <- 0
-    components[0].option.set_state("udf")
-    components[0].udf.set_state(profile_udf_name)
-    components[1].option.set_state("value")
-    components[1].value = 0.0
-    components[2].option.set_state("value")
-    components[2].value = 0.0
-    print(
-        f"Inlet BC set on {inlet_zone_name}: Components; "
-        f"x-velocity UDF={profile_udf_name}; y=z=0 "
-        f"(inlet_velocity_value={inlet_velocity} is unused for profile; "
-        f"UDF U_MEAN is the area-mean target)"
+    tag = f"[inlet-bc-api:{inlet_zone_name}]"
+
+    def _probe(label, fn):
+        """Print a diagnostic; never abort the BC path."""
+        if not debug_inlet_bc_api:
+            try:
+                return fn()
+            except Exception:
+                return None
+        try:
+            value = fn()
+            print(f"{tag} {label}: {value!r}")
+            return value
+        except Exception as exc:
+            print(f"{tag} {label}: EXCEPTION {type(exc).__name__}: {exc}")
+            return None
+
+    def _components_active():
+        try:
+            return bool(vin.momentum.velocity_components.is_active())
+        except Exception as exc:
+            if debug_inlet_bc_api:
+                print(
+                    f"{tag} velocity_components.is_active(): "
+                    f"EXCEPTION {type(exc).__name__}: {exc}"
+                )
+            return False
+
+    def _spec_value():
+        try:
+            return vin.momentum.velocity_specification_method()
+        except Exception:
+            try:
+                return vin.momentum.velocity_specification_method.get_state()
+            except Exception as exc:
+                return f"<unreadable: {type(exc).__name__}: {exc}>"
+
+    # --- Read-only probes before any mutation (debug only prints) ---
+    _probe("1. vin.momentum() full state", lambda: vin.momentum())
+    _probe(
+        "2. velocity_specification_method() current",
+        lambda: vin.momentum.velocity_specification_method(),
     )
-    # TUI fallback (comment only — not executed):
-    # /define/boundary-conditions/velocity-inlet <zone> , , , , yes , ,
-    #   components yes no no yes "{profile_udf_name}" no 0 no 0
-    # Exact TUI prompts vary by Fluent version; confirm on the Windows host.
+    allowed_via_method = _probe(
+        "3. velocity_specification_method.allowed_values()",
+        lambda: vin.momentum.velocity_specification_method.allowed_values(),
+    )
+    allowed_via_attr = _probe(
+        "4. velocity_specification_method.get_attr('allowed-values')",
+        lambda: vin.momentum.velocity_specification_method.get_attr(
+            "allowed-values"
+        ),
+    )
+    _probe(
+        "5. velocity_components.is_active() BEFORE any set",
+        lambda: vin.momentum.velocity_components.is_active(),
+    )
+
+    # Collect allowed strings for activation trials (quiet if debug off).
+    if allowed_via_method is None and not debug_inlet_bc_api:
+        try:
+            allowed_via_method = (
+                vin.momentum.velocity_specification_method.allowed_values()
+            )
+        except Exception:
+            allowed_via_method = None
+    if allowed_via_attr is None and not debug_inlet_bc_api:
+        try:
+            allowed_via_attr = (
+                vin.momentum.velocity_specification_method.get_attr(
+                    "allowed-values"
+                )
+            )
+        except Exception:
+            allowed_via_attr = None
+
+    allowed_candidates = []
+    for source in (allowed_via_method, allowed_via_attr):
+        if source is None:
+            continue
+        if isinstance(source, (list, tuple, set)):
+            allowed_candidates.extend(list(source))
+        else:
+            allowed_candidates.append(source)
+
+    # --- Activation attempts ---
+    if debug_inlet_bc_api:
+        print(f"{tag} 6. attempting set_state('Components')")
+    try:
+        vin.momentum.velocity_specification_method.set_state("Components")
+    except Exception as exc:
+        print(
+            f"{tag} 6. set_state('Components'): "
+            f"EXCEPTION {type(exc).__name__}: {exc}"
+        )
+    if debug_inlet_bc_api:
+        print(f"{tag} 6. after Components: spec={_spec_value()!r}")
+        print(f"{tag} 6. after Components: components_active={_components_active()!r}")
+
+    if not _components_active():
+        component_like = [
+            c for c in allowed_candidates
+            if isinstance(c, str) and "omponent" in c.lower()
+        ]
+        # De-duplicate while preserving order.
+        seen = set()
+        component_like_unique = []
+        for cand in component_like:
+            if cand in seen:
+                continue
+            seen.add(cand)
+            component_like_unique.append(cand)
+        if "Components" in seen:
+            # Already tried; skip repeat.
+            component_like_unique = [
+                c for c in component_like_unique if c != "Components"
+            ]
+        if debug_inlet_bc_api:
+            print(
+                f"{tag} 7. components still inactive; trying allowed "
+                f"strings containing 'omponent': {component_like_unique!r}"
+            )
+        for cand in component_like_unique:
+            if debug_inlet_bc_api:
+                print(f"{tag} 7. attempting set_state({cand!r})")
+            try:
+                vin.momentum.velocity_specification_method.set_state(cand)
+            except Exception as exc:
+                print(
+                    f"{tag} 7. set_state({cand!r}): "
+                    f"EXCEPTION {type(exc).__name__}: {exc}"
+                )
+                continue
+            active_now = _components_active()
+            if debug_inlet_bc_api:
+                print(
+                    f"{tag} 7. after {cand!r}: spec={_spec_value()!r}, "
+                    f"components_active={active_now!r}"
+                )
+            if active_now:
+                if debug_inlet_bc_api:
+                    print(
+                        f"{tag} 7. ACTIVATED velocity_components via "
+                        f"set_state({cand!r})"
+                    )
+                break
+
+    if _components_active():
+        components = vin.momentum.velocity_components
+        if debug_inlet_bc_api:
+            _probe("8. type(velocity_components)", lambda: type(components))
+            _probe(
+                "8. velocity_components state",
+                lambda: components.get_state()
+                if hasattr(components, "get_state")
+                else components(),
+            )
+            _probe(
+                "8. len(velocity_components)",
+                lambda: len(components),
+            )
+            print(f"{tag} 9. calling resize(3)")
+        try:
+            components.resize(3)
+        except Exception as exc:
+            print(
+                f"{tag} 9. resize(3): EXCEPTION {type(exc).__name__}: {exc}"
+            )
+        if debug_inlet_bc_api:
+            _probe(
+                "9. velocity_components state after resize",
+                lambda: components.get_state()
+                if hasattr(components, "get_state")
+                else components(),
+            )
+        # x-velocity <- profile UDF; y,z <- 0
+        try:
+            components[0].option.set_state("udf")
+            components[0].udf.set_state(profile_udf_name)
+            components[1].option.set_state("value")
+            components[1].value = 0.0
+            components[2].option.set_state("value")
+            components[2].value = 0.0
+        except Exception as exc:
+            print(
+                f"{tag} 10. option/udf assignment: "
+                f"EXCEPTION {type(exc).__name__}: {exc}"
+            )
+            # Fall through to TUI if settings child assignment failed.
+        else:
+            print(
+                f"Inlet BC set on {inlet_zone_name}: Components; "
+                f"x-velocity UDF={profile_udf_name}; y=z=0 "
+                f"(inlet_velocity_value={inlet_velocity} is unused for profile; "
+                f"UDF U_MEAN is the area-mean target)"
+            )
+            return
+
+    # Settings API path unavailable — TUI fallback.
+    print("=" * 72)
+    print(
+        f"{tag} SETTINGS API PATH UNAVAILABLE: velocity_components is "
+        "inactive (or assignment failed) after velocity_specification_method "
+        "trials. Falling back to TUI."
+    )
+    print("=" * 72)
+
+    # needs-live-verification: Fluent 25.1 velocity-inlet TUI prompt order
+    # varies; this one-shot is adapted from the prior comment-only sketch.
+    # commas accept defaults; "components" selects Components; then
+    # x=UDF / y=value0 / z=value0.
+    tui_cmd = (
+        f"/define/boundary-conditions/velocity-inlet {inlet_zone_name} "
+        f", , , , yes , , components yes no no yes "
+        f'"{profile_udf_name}" no 0 no 0'
+    )
+    print(
+        f"{tag} TUI fallback command (needs-live-verification): {tui_cmd}"
+    )
+    if solver is None:
+        print(
+            f"{tag} TUI fallback SKIPPED: solver session was not passed to "
+            "apply_inlet_velocity_boundary."
+        )
+        return
+    try:
+        solver.execute_tui(tui_cmd)
+        print(f"{tag} TUI fallback execute_tui completed.")
+    except Exception as exc:
+        print(
+            f"{tag} TUI fallback execute_tui: "
+            f"EXCEPTION {type(exc).__name__}: {exc}"
+        )
+    print(
+        f"Inlet BC set on {inlet_zone_name}: TUI Components+UDF fallback; "
+        f"profile_udf_name={profile_udf_name} "
+        f"(inlet_velocity_value={inlet_velocity} unused for profile; "
+        f"UDF U_MEAN is the area-mean target; needs-live-verification)"
+    )
 
 
 def parse_zone_id_from_log(log_path, zone_name):
@@ -2165,6 +2395,8 @@ if __name__ == "__main__":
                 inlet_velocity,
                 use_profile=False,
                 profile_udf_name=inlet_profile_function_name,
+                solver=solver,
+                debug_inlet_bc_api=debug_inlet_bc_api,
             )
             vin.species.species_mass_fraction[species_name].value = salt_mass_fraction
             print(f"Inlet species set on {inlet_zone_name}: {species_name}={salt_mass_fraction}")
@@ -2291,6 +2523,8 @@ if __name__ == "__main__":
                     inlet_velocity,
                     use_profile=True,
                     profile_udf_name=inlet_profile_function_name,
+                    solver=solver,
+                    debug_inlet_bc_api=debug_inlet_bc_api,
                 )
                 print(vin.get_state())
 

@@ -118,6 +118,7 @@ def populate_valid_solver_config(cfg: ModuleType) -> None:
     cfg.udf_library_name = "libudf"
     cfg.use_inlet_velocity_profile = False
     cfg.run_inlet_profile_probe = False
+    cfg.debug_inlet_bc_api = True
     cfg.membrane_wall_base_names = ["wall_top_mem", "wall_bottom_mem"]
     cfg.buffer_wall_base_names = ["wall_top_buffer", "wall_bottom_buffer"]
     cfg.target_species_name = "nacl"

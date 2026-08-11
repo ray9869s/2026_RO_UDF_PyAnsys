@@ -151,6 +151,10 @@ use_inlet_velocity_profile = False
 # After UDF load, execute probe_inlet_profile on-demand and assert its marker
 # in the solver transcript. Independent of the BC method (read-only probe).
 run_inlet_profile_probe = False
+# Verbose settings-API probes + allowed-value trials when applying the
+# Components+UDF inlet BC. Default True while diagnosing Fluent 25.1
+# velocity_components inactivity; set False to silence without deleting.
+debug_inlet_bc_api = True
 
 # Active membrane and buffer wall base names in the solver.
 # Fluent may split these into base, base.1, base.2, ...
@@ -491,6 +495,7 @@ def validate_for_solver():
     _require_set("udf_library_name", udf_library_name)
     _require_bool("use_inlet_velocity_profile", use_inlet_velocity_profile)
     _require_bool("run_inlet_profile_probe", run_inlet_profile_probe)
+    _require_bool("debug_inlet_bc_api", debug_inlet_bc_api)
 
     _require_set("membrane_wall_base_names", membrane_wall_base_names)
     _require_set("buffer_wall_base_names", buffer_wall_base_names)
