@@ -89,7 +89,9 @@ DEFAULT_FIELDS: List[str] = ["cp_inlet", "water_flux", "lmh", "salt_flux"]
 # Candidates are tried in order (exact, then normalised) against ENS_VAR.DESCRIPTION.
 FIELD_SPECS: dict = {
     "cp_inlet": {
-        "display_label": "CP_inlet [-]",
+        # Field key kept as cp_inlet for pipeline compatibility; semantics are
+        # now film-theory CP on udm-9 (not Cm/C_INLET_REF). Intended rename: cp.
+        "display_label": "CP [-] (film-theory)",
         "var_candidates": ["udm-9", "UDM-9", "User Defined Memory 9", "udm_9"],
         "surface_type": "membrane",
         "output_suffix": "cp_inlet_membrane",
@@ -111,7 +113,8 @@ FIELD_SPECS: dict = {
     },
     "salt_flux": {
         "display_label": "Salt flux Js [kg/m²/s]",
-        "var_candidates": ["udm-12", "UDM-12", "User Defined Memory 12", "udm_12"],
+        # COUNT=12 => valid indices 0..11. udm-12 is out of range — do not fall back.
+        "var_candidates": ["udm-10", "UDM-10", "User Defined Memory 10", "udm_10"],
         "surface_type": "membrane",
         "output_suffix": "salt_flux_membrane",
         "derive_shear_rate": False,
@@ -3912,25 +3915,25 @@ def export_contour(
                             derived_variable_mode = "calculator_failed"
                             warnings.append(
                                 f"WARN: SALT_FLUX_WALL_DIRECT calculator failed ({sf_diag}); "
-                                f"fallback to UDM_12; wall mapping may be unreliable"
+                                f"fallback to UDM_10; wall mapping may be unreliable"
                             )
                     else:
                         derived_variable_mode = "calculator_failed"
                         warnings.append(
                             f"WARN: WATER_FLUX_WALL_DIRECT failed ({jw_diag}); "
-                            f"fallback to UDM_12; wall mapping may be unreliable"
+                            f"fallback to UDM_10; wall mapping may be unreliable"
                         )
                 else:
                     derived_variable_mode = "primitive_unavailable"
                     warnings.append(
                         f"WARN: no pressure variable found ({pres_diag}); "
-                        f"fallback to UDM_12; wall mapping may be unreliable"
+                        f"fallback to UDM_10; wall mapping may be unreliable"
                     )
             else:
                 derived_variable_mode = "primitive_unavailable"
                 warnings.append(
                     "WARN: no primitive salt variable found; "
-                    "fallback to UDM_12; wall mapping may be unreliable"
+                    "fallback to UDM_10; wall mapping may be unreliable"
                 )
 
     # ---- shear_rate wall direct (membrane only, no salt needed) ----

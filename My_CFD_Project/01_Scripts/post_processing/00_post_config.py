@@ -78,18 +78,22 @@ salt_permeability_m_per_s = 2.50e-8
 active_membrane_base_names = ["wall_top_mem", "wall_bottom_mem"]
 buffer_wall_base_names = ["wall_top_buffer", "wall_bottom_buffer"]
 
-udm_indices = {
-    "salt_mass_source": 0,
-    "water_mass_source": 1,
-    "total_mass_source": 2,
-    "jw": 6,
-    "cm": 7,
-    "lmh": 8,
-    "cp_inlet": 9,
-    "cell_strain_rate": 10,
-    "membrane_area_acc": 11,
-    "salt_mass_flux": 12,
-}
+# Wire post_config indices from the canonical layout module when available.
+# Fallback literals keep the file loadable if imported before sys.path is set.
+try:
+    from _udm_layout import UDM_INDEX_BY_ROLE as udm_indices  # type: ignore
+except ImportError:
+    udm_indices = {
+        "salt_mass_source": 0,
+        "total_mass_source": 1,
+        "jw": 6,
+        "cm": 7,
+        "lmh": 8,
+        "cp": 9,
+        "cell_strain_rate": 5,
+        "membrane_area_acc": 11,
+        "salt_mass_flux": 10,
+    }
 
 product_version = "25.1.0"
 processor_count = 1

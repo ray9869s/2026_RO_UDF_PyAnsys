@@ -116,7 +116,7 @@ AREA_MEM_FALLBACK_BY_GEO = {
 # (volumetric sink) — NOT used for membrane flux averages.
 FIELD_UDM_JW = "udm-6"
 FIELD_UDM_LMH = "udm-8"
-FIELD_UDM_CP_INLET = "udm-9"
+FIELD_UDM_CP_INLET = "udm-9"  # film-theory CP (UDM_CP); key name kept for CSV columns
 FIELD_UDM_SI = "udm-0"  # salt sink — listed only to document exclusion
 FIELD_SALT_MASS_FRACTION = "nacl"
 FIELD_PRESSURE = "pressure"
@@ -608,7 +608,7 @@ def main():
     )
     print(
         f"  CP inlet UDM   = {FIELD_UDM_CP_INLET!r} "
-        "(UDF UDM_CP_INLET = Cm / C_INLET_REF)"
+        "(UDF UDM_CP = film-theory CP, inlet-referenced; was Cm/C_INLET_REF)"
     )
     print(
         f"  Salt sink UDM  = {FIELD_UDM_SI!r} (UDF UDM_SI) — NOT used for "

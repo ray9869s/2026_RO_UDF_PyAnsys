@@ -16,8 +16,8 @@ Formula:
   - wall-shear : Fluent built-in wall shear stress magnitude
   - mu         : dynamic viscosity from 00_post_config.py (default 8.93e-4 Pa·s)
 
-  UDM_10 (cell_strain_rate) is NOT used.  Cell strain rate is NOT used.
-  UDM_10 is cell-centered strain rate magnitude and is intentionally not used
+  UDM_5 (cell_strain_rate) is NOT used.  Cell strain rate is NOT used.
+  UDM_5 is cell-centered strain rate magnitude and is intentionally not used
   for wall shear-rate contouring.
 
 Paths:
@@ -2735,7 +2735,7 @@ def _build_shear_colorbar_entry(
     timestamp: str,
     extra_notes: str = "",
 ) -> Dict[str, Any]:
-    notes = "UDM_10 (cell_strain_rate) is not used for wall shear-rate contouring."
+    notes = "UDM_5 (cell_strain_rate) is not used for wall shear-rate contouring."
     if extra_notes:
         notes = f"{notes} {extra_notes}"
     return {

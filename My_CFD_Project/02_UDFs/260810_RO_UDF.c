@@ -71,6 +71,21 @@
 #define MIN_SOURCE_DENOMINATOR 1.0e-20
 
 /*
+   Diagnostic storage switches (compile-time).
+   Face path is primary (F_UDMI on membrane wall threads). Cell path retains
+   the legacy adjacent-cell area-weighted C_UDMI diagnostics for live compare
+   until F_UDMI wall-thread allocation is proven on Fluent 25.1.
+   Default: both ON. Rebuild with -DRO_UDM_FACE_DIAGNOSTICS=0 or
+   -DRO_UDM_CELL_DIAGNOSTICS=0 to isolate one path.
+*/
+#ifndef RO_UDM_FACE_DIAGNOSTICS
+#define RO_UDM_FACE_DIAGNOSTICS 1
+#endif
+#ifndef RO_UDM_CELL_DIAGNOSTICS
+#define RO_UDM_CELL_DIAGNOSTICS 1
+#endif
+
+/*
    Membrane parameters are kept as static variables instead of macros so that
    future on-demand or parameter-sweep hooks can modify them at runtime.
 */
@@ -86,30 +101,57 @@ static real p_perm = 101325.0;      /* Permeate-side pressure [Pa] */
    Required UDM count: UDM_COUNT
 
    Fluent/PyFluent must allocate at least UDM_COUNT user-defined memory
-   locations before this UDF writes or reads C_UDMI values.
+   locations before this UDF writes or reads C_UDMI / F_UDMI values.
 
    N_UDM is the Fluent macro for the number of user-defined memory locations
-   currently used in Fluent. It is used here to guard C_UDMI access.
+   currently used in Fluent. It is used here to guard UDM access.
+
+   Layout (UDM_SM removed; water sink = TOTAL_S - SI):
+     0  UDM_SI          cell   salt mass sink [kg/m3/s]
+     1  UDM_TOTAL_S     cell   total mass sink [kg/m3/s]
+     2  UDM_XMOM        cell   x-momentum sink coefficient
+     3  UDM_YMOM        cell   y-momentum sink coefficient
+     4  UDM_ZMOM        cell   z-momentum sink coefficient (slot always
+                               reserved; written only under #if RP_3D)
+     5  UDM_STRAIN_RATE cell   cell-centred strain rate magnitude [1/s]
+     6  UDM_JW          face (+ optional cell) water flux [m/s]
+     7  UDM_CM          face (+ optional cell) wall salt conc. [mol/m3]
+     8  UDM_LMH         face (+ optional cell) water flux [LMH]
+     9  UDM_CP          face (+ optional cell) film-theory CP [-]
+    10  UDM_SALT_FLUX   face (+ optional cell) salt mass flux [kg/m2/s]
+    11  UDM_AREA        cell   membrane-face area accumulator [m2]
+                               (only when RO_UDM_CELL_DIAGNOSTICS)
+
+   Face and cell diagnostics share indices 6-10 on different threads so a
+   single allocation count covers both. Live compare on wall_top_mem:
+     surface-areaavg(udm-8) with FACE=1 CELL=0  vs  FACE=0 CELL=1
+   (same index; isolate with the compile switches).
+
+   Default both ON => UDM_COUNT = 12.
 */
 enum {
     UDM_SI = 0,              /* Salt mass source [kg/m3/s] */
-    UDM_SM = 1,              /* Water mass source [kg/m3/s] */
-    UDM_TOTAL_S = 2,         /* Total mass source [kg/m3/s] */
-    UDM_XMOM = 3,            /* X-momentum sink coefficient [kg/m3/s] */
-    UDM_YMOM = 4,            /* Y-momentum sink coefficient [kg/m3/s] */
-    UDM_ZMOM = 5,            /* Z-momentum sink coefficient [kg/m3/s] */
-    UDM_JW = 6,              /* Adjacent membrane-face area-weighted water flux [m/s] */
-    UDM_CM = 7,              /* Adjacent membrane-face area-weighted salt concentration [mol/m3] */
-    UDM_LMH = 8,             /* Adjacent membrane-face area-weighted water flux [LMH] */
-    UDM_CP_INLET = 9,        /* Adjacent membrane-face area-weighted inlet-referenced CP, Cm/C_INLET_REF [-] */
-    UDM_CELL_STRAIN_RATE = 10, /* Cell-centered strain rate magnitude [1/s], not wall shear rate */
-    UDM_AREA = 11,           /* Membrane face area accumulated in the adjacent cell [m2] */
-    UDM_SALT_FLUX = 12,      /* Adjacent membrane-face area-weighted salt mass flux [kg/m2/s] */
-    UDM_COUNT = 13
+    UDM_TOTAL_S = 1,         /* Total mass source [kg/m3/s] */
+    UDM_XMOM = 2,            /* X-momentum sink coefficient [kg/m3/s] */
+    UDM_YMOM = 3,            /* Y-momentum sink coefficient [kg/m3/s] */
+    UDM_ZMOM = 4,            /* Z-momentum sink coefficient [kg/m3/s] */
+    UDM_STRAIN_RATE = 5,     /* Cell-centered strain rate magnitude [1/s] */
+    UDM_JW = 6,              /* Water flux [m/s] (face primary; cell optional) */
+    UDM_CM = 7,              /* Wall salt concentration [mol/m3] */
+    UDM_LMH = 8,             /* Water flux [LMH] */
+    UDM_CP = 9,              /* Film-theory CP, inlet-referenced [-] */
+    UDM_SALT_FLUX = 10,      /* Salt mass flux [kg/m2/s] */
+#if RO_UDM_CELL_DIAGNOSTICS
+    UDM_AREA = 11,           /* Membrane face area accumulated in adjacent cell */
+    UDM_COUNT = 12
+#else
+    UDM_COUNT = 11
+#endif
 };
 
 static int udm_warning_printed = 0;
 static int membrane_thread_warning_printed = 0;
+static int cp_denom_warning_printed = 0;
 
 
 /* ========================= Utility Functions ========================= */
@@ -217,6 +259,39 @@ static void print_membrane_thread_warning(void)
 }
 
 
+/*
+   Film-theory CP, inlet-referenced (group 2021/2023 papers):
+     cp_perm = B_perm * cm / (Jw + B_perm)                 [mol/m3]
+     CP      = (cm - cp_perm) / (C_INLET_REF - cp_perm)    [-]
+   Jw must be the UNRAMPED physical flux. Reference concentration is the
+   INLET concentration C_INLET_REF (= 597.8268309 mol/m3 ~ 35,000 ppm),
+   not the local bulk. Returns 0 and sets *cp_failed=1 if the CP denominator
+   is not positive (should be unreachable).
+*/
+static real ro_compute_cp(real cm, real Jw_phys, int *cp_failed)
+{
+    real cp_perm;
+    real denom;
+
+    *cp_failed = 0;
+
+    if (Jw_phys + B_perm > MIN_SOURCE_DENOMINATOR) {
+        cp_perm = B_perm * cm / (Jw_phys + B_perm);
+    }
+    else {
+        cp_perm = 0.0;
+    }
+
+    denom = C_INLET_REF - cp_perm;
+    if (denom <= 0.0) {
+        *cp_failed = 1;
+        return 0.0;
+    }
+
+    return (cm - cp_perm) / denom;
+}
+
+
 /* ========================= Loading and Initialization Hooks ========================= */
 
 DEFINE_EXECUTE_ON_LOADING(RO_UDF_on_loading, libname)
@@ -226,14 +301,36 @@ DEFINE_EXECUTE_ON_LOADING(RO_UDF_on_loading, libname)
     Message("Required user-defined memory locations: %d\n", UDM_COUNT);
     Message("Before running the solver, allocate at least %d UDM locations.\n", UDM_COUNT);
     Message("Membrane wall base names: %s, %s\n", MEMB_THREAD_BASE_NAME_TOP, MEMB_THREAD_BASE_NAME_BOTTOM);
-    Message("Diagnostic UDMs store adjacent membrane-face area-weighted values.\n");
-    Message("UDM_9  = inlet-referenced CP, Cm/C_INLET_REF (C_INLET_REF = %.6g mol/m3)\n", C_INLET_REF);
-    Message("UDM_10 = cell-centered strain rate magnitude [1/s] (not wall shear rate)\n");
-    Message("UDM_12 = adjacent membrane-face area-weighted salt mass flux [kg/m2/s]\n");
+    Message("RO_UDM_FACE_DIAGNOSTICS = %d  (F_UDMI on membrane walls)\n",
+            RO_UDM_FACE_DIAGNOSTICS);
+    Message("RO_UDM_CELL_DIAGNOSTICS = %d  (C_UDMI area-weighted adjacent-cell)\n",
+            RO_UDM_CELL_DIAGNOSTICS);
+    Message("UDM layout:\n");
+    Message("  0  UDM_SI          cell   salt mass sink [kg/m3/s]\n");
+    Message("  1  UDM_TOTAL_S     cell   total mass sink [kg/m3/s] (water = TOTAL_S - SI)\n");
+    Message("  2  UDM_XMOM        cell   x-momentum sink coefficient\n");
+    Message("  3  UDM_YMOM        cell   y-momentum sink coefficient\n");
+    Message("  4  UDM_ZMOM        cell   z-momentum sink coefficient\n");
+    Message("  5  UDM_STRAIN_RATE cell   cell-centred strain rate [1/s]\n");
+    Message("  6  UDM_JW          face/cell water flux [m/s]\n");
+    Message("  7  UDM_CM          face/cell wall salt concentration [mol/m3]\n");
+    Message("  8  UDM_LMH         face/cell water flux [LMH]\n");
+    Message("  9  UDM_CP          face/cell film-theory CP [-]\n");
+    Message("     CP = (cm - cp_perm)/(C_INLET_REF - cp_perm),\n");
+    Message("     cp_perm = B_perm*cm/(Jw+B_perm), Jw UNRAMPED.\n");
+    Message("     C_INLET_REF = %.6g mol/m3 (~35000 ppm inlet), NOT local bulk.\n",
+            C_INLET_REF);
+    Message(" 10  UDM_SALT_FLUX   face/cell salt mass flux [kg/m2/s]\n");
+#if RO_UDM_CELL_DIAGNOSTICS
+    Message(" 11  UDM_AREA        cell   membrane area accumulator (cell-diag only)\n");
+#endif
+    Message("Live compare (double-avg cell vs single-avg face) on wall_top_mem:\n");
+    Message("  Rebuild FACE=1 CELL=0 vs FACE=0 CELL=1, then surface-areaavg(udm-8).\n");
+    Message("  Same index 8; face uses F_UDMI, cell uses area-weighted C_UDMI.\n");
     Message("For PyFluent automation, allocate %d UDM locations.\n", UDM_COUNT);
 
     if (C_INLET_REF <= 0.0) {
-        Message("RO UDF error: C_INLET_REF must be positive. Inlet-referenced CP calculation will be invalid.\n");
+        Message("RO UDF error: C_INLET_REF must be positive. CP calculation will be invalid.\n");
     }
 
     Message("\n");
@@ -244,6 +341,7 @@ DEFINE_INIT(RO_UDF_init, d)
 {
     udm_warning_printed = 0;
     membrane_thread_warning_printed = 0;
+    cp_denom_warning_printed = 0;
 }
 
 
@@ -257,6 +355,7 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
     face_t f;
     cell_t c;
     int membrane_thread_found;
+    int cp_failed;
 
     real Ar[ND_ND];
     real dAm;
@@ -272,7 +371,11 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
     real disc;
     real Jw;
     real Js;
+    real Jw_phys;
+    real Js_phys;
     real salt_mass_flux;
+    real salt_mass_flux_phys;
+    real cp_face;
 
     real Sm;
     real Si;
@@ -290,7 +393,7 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
     ramp = source_ramp();
     p_op = RP_Get_Real("operating-pressure");
 
-    /* 1. Initialize UDM values */
+    /* 1. Initialize cell UDM values (sources + optional cell diagnostics) */
     thread_loop_c(c_thread, d) {
         begin_c_loop(c, c_thread) {
             int i;
@@ -299,10 +402,27 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
                 C_UDMI(c, c_thread, i) = 0.0;
             }
 
-            C_UDMI(c, c_thread, UDM_CELL_STRAIN_RATE) = C_STRAIN_RATE_MAG(c, c_thread);
+            C_UDMI(c, c_thread, UDM_STRAIN_RATE) = C_STRAIN_RATE_MAG(c, c_thread);
         }
         end_c_loop(c, c_thread)
     }
+
+#if RO_UDM_FACE_DIAGNOSTICS
+    /* Zero face diagnostic slots on membrane walls before rewrite. */
+    thread_loop_f(f_thread, d) {
+        if (!is_membrane_wall_thread(f_thread)) {
+            continue;
+        }
+        begin_f_loop(f, f_thread) {
+            F_UDMI(f, f_thread, UDM_JW) = 0.0;
+            F_UDMI(f, f_thread, UDM_CM) = 0.0;
+            F_UDMI(f, f_thread, UDM_LMH) = 0.0;
+            F_UDMI(f, f_thread, UDM_CP) = 0.0;
+            F_UDMI(f, f_thread, UDM_SALT_FLUX) = 0.0;
+        }
+        end_f_loop(f, f_thread)
+    }
+#endif
 
     /* 2. Loop over all membrane wall threads and accumulate adjacent-cell source terms */
     membrane_thread_found = 0;
@@ -357,21 +477,51 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
                The discriminant should be non-negative because cm is clamped to
                non-negative values. MAX is retained as a round-off safety guard.
             */
-            Jw = 0.5 * (S_val - B_perm + sqrt(MAX(disc, 0.0)));
-            Jw = MAX(Jw, 0.0);
+            Jw_phys = 0.5 * (S_val - B_perm + sqrt(MAX(disc, 0.0)));
+            Jw_phys = MAX(Jw_phys, 0.0);
 
-            if (Jw + B_perm > MIN_SOURCE_DENOMINATOR) {
-                Js = (B_perm * cm * Jw) / (Jw + B_perm);
+            if (Jw_phys + B_perm > MIN_SOURCE_DENOMINATOR) {
+                Js_phys = (B_perm * cm * Jw_phys) / (Jw_phys + B_perm);
             }
             else {
-                Js = 0.0;
+                Js_phys = 0.0;
             }
 
-            Js = MAX(Js, 0.0);
+            Js_phys = MAX(Js_phys, 0.0);
+            salt_mass_flux_phys = Js_phys * MW_SALT;
 
-            /* Apply source ramp for convergence stability */
-            Jw *= ramp;
-            Js *= ramp;
+            /* Diagnostics use UNRAMPED physical fluxes / film-theory CP. */
+            cp_face = ro_compute_cp(cm, Jw_phys, &cp_failed);
+            if (cp_failed && !cp_denom_warning_printed) {
+#if RP_NODE
+                if (I_AM_NODE_ZERO_P) {
+                    Message(
+                        "RO UDF error: CP denominator (C_INLET_REF - cp_perm) "
+                        "is not positive. cm=%.6g Jw_phys=%.6g C_INLET_REF=%.6g\n",
+                        cm, Jw_phys, C_INLET_REF
+                    );
+                }
+#else
+                Message(
+                    "RO UDF error: CP denominator (C_INLET_REF - cp_perm) "
+                    "is not positive. cm=%.6g Jw_phys=%.6g C_INLET_REF=%.6g\n",
+                    cm, Jw_phys, C_INLET_REF
+                );
+#endif
+                cp_denom_warning_printed = 1;
+            }
+
+#if RO_UDM_FACE_DIAGNOSTICS
+            F_UDMI(f, f_thread, UDM_JW) = Jw_phys;
+            F_UDMI(f, f_thread, UDM_CM) = cm;
+            F_UDMI(f, f_thread, UDM_LMH) = Jw_phys * MS_TO_LMH;
+            F_UDMI(f, f_thread, UDM_CP) = cp_face;
+            F_UDMI(f, f_thread, UDM_SALT_FLUX) = salt_mass_flux_phys;
+#endif
+
+            /* Apply source ramp for convergence stability (sources only). */
+            Jw = Jw_phys * ramp;
+            Js = Js_phys * ramp;
 
             /*
                Convert salt molar flux to salt mass flux.
@@ -384,9 +534,8 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
             Si   = salt_mass_flux * dAm / dVm;     /* Salt mass sink [kg/m3/s] */
             Stot = Sm + Si;                        /* Total mass sink [kg/m3/s] */
 
-            /* Accumulate mass source terms */
+            /* Accumulate mass source terms (UDM_SM removed; water = TOTAL_S - SI) */
             C_UDMI(c, c_thread, UDM_SI)      += Si;
-            C_UDMI(c, c_thread, UDM_SM)      += Sm;
             C_UDMI(c, c_thread, UDM_TOTAL_S) += Stot;
 
 #if USE_NORMAL_PROJECTED_MOMENTUM_SINK
@@ -417,13 +566,15 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
 #endif
 #endif
 
-            /* Area-weighted diagnostic accumulation */
+#if RO_UDM_CELL_DIAGNOSTICS
+            /* Area-weighted cell diagnostic accumulation (UNRAMPED). */
             C_UDMI(c, c_thread, UDM_AREA)      += dAm;
-            C_UDMI(c, c_thread, UDM_JW)        += Jw * dAm;
+            C_UDMI(c, c_thread, UDM_JW)        += Jw_phys * dAm;
             C_UDMI(c, c_thread, UDM_CM)        += cm * dAm;
-            C_UDMI(c, c_thread, UDM_LMH)       += (Jw * MS_TO_LMH) * dAm;
-            C_UDMI(c, c_thread, UDM_CP_INLET)  += (cm / C_INLET_REF) * dAm;
-            C_UDMI(c, c_thread, UDM_SALT_FLUX) += salt_mass_flux * dAm;
+            C_UDMI(c, c_thread, UDM_LMH)       += (Jw_phys * MS_TO_LMH) * dAm;
+            C_UDMI(c, c_thread, UDM_CP)        += cp_face * dAm;
+            C_UDMI(c, c_thread, UDM_SALT_FLUX) += salt_mass_flux_phys * dAm;
+#endif
         }
         end_f_loop(f, f_thread)
     }
@@ -433,7 +584,8 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
         membrane_thread_warning_printed = 1;
     }
 
-    /* 3. Convert diagnostic accumulations to area-weighted averages */
+#if RO_UDM_CELL_DIAGNOSTICS
+    /* 3. Convert cell diagnostic accumulations to area-weighted averages */
     thread_loop_c(c_thread, d) {
         begin_c_loop(c, c_thread) {
             real Aacc = C_UDMI(c, c_thread, UDM_AREA);
@@ -442,12 +594,13 @@ DEFINE_ADJUST(RO_membrane_adjust, d)
                 C_UDMI(c, c_thread, UDM_JW)        /= Aacc;
                 C_UDMI(c, c_thread, UDM_CM)        /= Aacc;
                 C_UDMI(c, c_thread, UDM_LMH)       /= Aacc;
-                C_UDMI(c, c_thread, UDM_CP_INLET)  /= Aacc;
+                C_UDMI(c, c_thread, UDM_CP)        /= Aacc;
                 C_UDMI(c, c_thread, UDM_SALT_FLUX) /= Aacc;
             }
         }
         end_c_loop(c, c_thread)
     }
+#endif
 #endif
 }
 

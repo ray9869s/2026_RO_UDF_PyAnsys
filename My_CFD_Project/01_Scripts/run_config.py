@@ -179,7 +179,7 @@ mixture_viscosity = 8.93e-4
 mass_diffusivity = 2.0e-9
 
 # UDM/UDF settings
-udm_count = 13
+udm_count = 12
 
 # Solver run settings
 residual_target = 1e-7

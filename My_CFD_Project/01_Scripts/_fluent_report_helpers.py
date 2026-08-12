@@ -363,8 +363,15 @@ def unit_cell_mixing_cup_report_spec(boundary_index, field_name="nacl"):
     )
 
 
-def udm_area_sum_report_spec(field_name="udm-11"):
+from _udm_layout import (  # noqa: E402
+    FIELD_UDM_MEMBRANE_AREA_ACC as _DEFAULT_UDM_AREA_FIELD,
+)
+
+
+def udm_area_sum_report_spec(field_name=None):
     """Return the Fluent report spec for the unweighted membrane-area UDM sum."""
+    if field_name is None:
+        field_name = _DEFAULT_UDM_AREA_FIELD
     return ("pp_udm_area_sum", "volume-sum", field_name)
 
 

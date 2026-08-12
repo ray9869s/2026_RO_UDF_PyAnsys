@@ -2452,12 +2452,19 @@ if __name__ == "__main__":
         # ======================================================
 
         print(f"UDF active membrane wall base names (hardcoded in UDF): {membrane_wall_base_names}")
-        print(f"UDF-9  = inlet-referenced CP, Cm/C_INLET_REF")
-        print(f"UDF-10 = cell-centered strain rate magnitude [1/s] (not wall shear rate)")
+        print("UDF UDM layout (must match 260810_RO_UDF.c UDM_COUNT=12 default dual):")
+        print("  0 SI, 1 TOTAL_S, 2-4 X/Y/ZMOM, 5 STRAIN_RATE (cell)")
+        print("  6 JW, 7 CM, 8 LMH, 9 CP (film-theory), 10 SALT_FLUX (face+optional cell)")
+        print("  11 AREA (cell-diag accumulator)")
+        print("  UDF-5  = cell-centered strain rate magnitude [1/s] (not wall shear rate)")
+        print("  UDF-9  = film-theory CP, (cm-cp_perm)/(C_INLET_REF-cp_perm), Jw unramped")
+        print("  UDF-10 = salt mass flux [kg/m2/s] (was UDF-12)")
+        print("  Live compare face vs cell LMH: surface-areaavg(udm-8) with FACE/CELL switches")
         print(f"Using SALT_YI_INDEX = {salt_yi_index}")
 
         # Allocate User-Defined Memory using Fluent TUI.
         # The settings API path setup.user_defined.memory is not available in this solver tree.
+        # Hardcoded in run_config.py as udm_count (keep in sync with UDF UDM_COUNT).
         solver.execute_tui(f"/define/user-defined/user-defined-memory {udm_count}")
 
         print(f"Requested UDM memory locations: {udm_count}")

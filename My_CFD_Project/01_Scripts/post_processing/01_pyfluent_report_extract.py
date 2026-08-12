@@ -62,6 +62,17 @@ from _fluent_report_helpers import (  # noqa: E402
     udm_area_sum_report_spec,
     wall_zone_reduction_locations,
 )
+from _udm_layout import (  # noqa: E402
+    FIELD_UDM_CELL_STRAIN_RATE,
+    FIELD_UDM_CM,
+    FIELD_UDM_CP_INLET,
+    FIELD_UDM_JW,
+    FIELD_UDM_LMH,
+    FIELD_UDM_MEMBRANE_AREA_ACC,
+    FIELD_UDM_SALT_FLUX,
+    FIELD_UDM_SI,
+    FIELD_UDM_TOTAL_S,
+)
 
 
 def load_python_config(config_path):
@@ -633,18 +644,8 @@ if __name__ == "__main__":
         FIELD_VELOCITY_MAG = "velocity-magnitude"
         FIELD_SALT_MASS_FRACTION = "nacl"
 
-        # UDM field names from Fluent field list.
-        FIELD_UDM_SM = "udm-1"          # water mass source
-        FIELD_UDM_SI = "udm-0"          # salt mass source
-        FIELD_UDM_TOTAL_S = "udm-2"     # total mass source
-
-        FIELD_UDM_JW = "udm-6"
-        FIELD_UDM_CM = "udm-7"
-        FIELD_UDM_LMH = "udm-8"
-        FIELD_UDM_CP_INLET = "udm-9"
-        FIELD_UDM_CELL_STRAIN_RATE = "udm-10"
-        FIELD_UDM_MEMBRANE_AREA_ACC = "udm-11"
-        FIELD_UDM_SALT_FLUX = "udm-12"
+        # UDM field names — imported from _udm_layout (locked to 260810_RO_UDF.c).
+        # UDM_SM removed: water sink = volint(TOTAL_S) - volint(SI).
 
         # Wall shear stress magnitude field.
         # Wall shear rate will be calculated later as wall_shear / mu.
@@ -656,7 +657,6 @@ if __name__ == "__main__":
             "FIELD_ABSOLUTE_PRESSURE": FIELD_ABSOLUTE_PRESSURE,
             "FIELD_VELOCITY_MAG": FIELD_VELOCITY_MAG,
             "FIELD_SALT_MASS_FRACTION": FIELD_SALT_MASS_FRACTION,
-            "FIELD_UDM_SM": FIELD_UDM_SM,
             "FIELD_UDM_SI": FIELD_UDM_SI,
             "FIELD_UDM_TOTAL_S": FIELD_UDM_TOTAL_S,
             "FIELD_UDM_JW": FIELD_UDM_JW,
@@ -669,6 +669,10 @@ if __name__ == "__main__":
             "FIELD_WALL_SHEAR": FIELD_WALL_SHEAR,
         }.items():
             print(f"  {name}: {value}")
+        print(
+            "  water sink = volint(FIELD_UDM_TOTAL_S) - volint(FIELD_UDM_SI) "
+            "(UDM_SM removed)"
+        )
 
         # ==========================================================
         # Cell 6.5. Compute spacer geometry parameters
@@ -943,9 +947,9 @@ if __name__ == "__main__":
                 failed_report_specs.append((report_name, report_type, field_name, str(e)))
 
         # Volume integral reports for source balance.
-        # This part may still need adjustment depending on allowed volume report_type names.
+        # Water sink is derived as TOTAL_S - SI (UDM_SM removed); no separate
+        # pp_volint_water_mass_source report.
         volume_report_specs = [
-            ("pp_volint_water_mass_source", "volume-integral", FIELD_UDM_SM),
             ("pp_volint_salt_mass_source", "volume-integral", FIELD_UDM_SI),
             ("pp_volint_total_mass_source", "volume-integral", FIELD_UDM_TOTAL_S),
             udm_area_sum_report_spec(FIELD_UDM_MEMBRANE_AREA_ACC),
@@ -1294,11 +1298,20 @@ if __name__ == "__main__":
 
         # ----------------------------------------------------------
         # Mass source balance
+        # Water sink = volint(TOTAL_S) - volint(SI); UDM_SM removed.
+        # Metric key water_sink_volume_integral_UDM1 kept for CSV schema.
         # ----------------------------------------------------------
 
-        water_sink_volint = get_value("pp_volint_water_mass_source")
         salt_sink_volint = get_value("pp_volint_salt_mass_source")
         total_sink_volint = get_value("pp_volint_total_mass_source")
+        if salt_sink_volint is not None and total_sink_volint is not None:
+            water_sink_volint = float(total_sink_volint) - float(salt_sink_volint)
+        else:
+            water_sink_volint = None
+            print(
+                "WARNING: cannot derive water_sink_volume_integral_UDM1; "
+                f"salt_volint={salt_sink_volint!r}, total_volint={total_sink_volint!r}"
+            )
 
         mass_balance_error = None
         if boundary_permeate_mass_flow is not None and total_sink_volint is not None:

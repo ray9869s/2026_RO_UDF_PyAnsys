@@ -56,6 +56,12 @@ PROJECT_ROOT_DEFAULT = SCRIPT_DIR.parents[1]
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
+_SCRIPTS_DIR = SCRIPT_DIR.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from _udm_layout import EXPECTED_UDM_FIELDS  # noqa: E402
+
 
 # ----------------------------------------------------------
 # Critical columns expected from summary_metrics_wide.csv
@@ -83,24 +89,6 @@ EXPECTED_REPORT_FILES = [
     "wall_shear_report.csv",
     "raw_report_values.json",
 ]
-
-
-# ----------------------------------------------------------
-# Expected UDM fields
-# ----------------------------------------------------------
-
-EXPECTED_UDM_FIELDS = {
-    "udm-0": "salt_mass_source",
-    "udm-1": "water_mass_source",
-    "udm-2": "total_mass_source",
-    "udm-6": "Jw",
-    "udm-7": "Cm",
-    "udm-8": "LMH",
-    "udm-9": "CP_inlet",
-    "udm-10": "cell_strain_rate",
-    "udm-11": "membrane_area_acc",
-    "udm-12": "salt_mass_flux",
-}
 
 
 # ----------------------------------------------------------

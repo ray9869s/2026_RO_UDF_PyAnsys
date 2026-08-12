@@ -128,6 +128,6 @@ def populate_valid_solver_config(cfg: ModuleType) -> None:
     cfg.mixture_density = 998.2
     cfg.mixture_viscosity = 8.93e-4
     cfg.mass_diffusivity = 2.0e-9
-    cfg.udm_count = 13
+    cfg.udm_count = 12
     cfg.residual_target = 1e-7
     cfg.max_iterations = 1000
