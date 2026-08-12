@@ -154,6 +154,8 @@ def test_solve_time_qoi_reports_are_split_across_initialization_boundary():
         assert report.report_type == report_type
         assert report.field == field_name
         assert getattr(report, "print") is True
+        # Fluent 25.1 surface defs have no create_report_file attribute; the
+        # helper still attempts the setattr and the mock records it as False.
         assert report.create_report_file is False
         assert report.create_report_plot is False
 
@@ -161,6 +163,56 @@ def test_solve_time_qoi_reports_are_split_across_initialization_boundary():
         "pressure_spacer_in_avg - pressure_spacer_out_avg"
     )
     assert getattr(expression_reports["pressure_drop_spacer"], "print") is True
+
+
+def test_lmh_udm_avg_report_file_uses_monitor_report_files():
+    solver_code = load_solver_code("solver_qoi_report_file")
+    report_files = NamedGroup()
+    solution = SimpleNamespace(
+        monitor=SimpleNamespace(report_files=report_files)
+    )
+
+    object_name = solver_code.ensure_lmh_udm_avg_report_file(
+        solution,
+        report_name="lmh_udm_avg",
+        file_name="lmh_udm_avg.out",
+    )
+    assert object_name == "lmh_udm_avg_rfile"
+    report_file = report_files["lmh_udm_avg_rfile"]
+    assert report_file.report_defs == ["lmh_udm_avg"]
+    assert report_file.file_name == "lmh_udm_avg.out"
+    assert report_file.active is True
+
+
+def test_qoi_convergence_condition_uses_any_met():
+    solver_code = load_solver_code("solver_qoi_convergence")
+
+    class ConvergenceReports(NamedGroup):
+        pass
+
+    convergence_reports = ConvergenceReports()
+    convergence_conditions = SettingsObject()
+    convergence_conditions.convergence_reports = convergence_reports
+    solution = SimpleNamespace(
+        monitor=SimpleNamespace(convergence_conditions=convergence_conditions)
+    )
+
+    object_name = solver_code.configure_qoi_convergence_condition(
+        solution,
+        report_name="lmh_udm_avg",
+        stop_criterion=1e-3,
+        previous_values_to_consider=100,
+        initial_values_to_ignore=200,
+        active=False,
+    )
+    assert object_name == "lmh_udm_avg_conv"
+    assert convergence_conditions.condition == "any-condition-is-met"
+    report = convergence_reports["lmh_udm_avg_conv"]
+    assert report.report_defs == "lmh_udm_avg"
+    assert report.stop_criterion == pytest.approx(1e-3)
+    assert report.previous_values_to_consider == 100
+    assert report.initial_values_to_ignore == 200
+    assert report.active is False
 
 
 def test_phase_a_failures_are_retried_after_initialization():

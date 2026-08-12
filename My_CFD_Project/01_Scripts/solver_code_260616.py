@@ -15,7 +15,12 @@ from _solver_common import normalize_path, path_to_fluent_str as as_fluent_path
 from _solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
     SOLVER_EXIT_SUCCESS,
+    assess_residual_convergence,
+    classify_solver_stop_reason,
     collect_solver_final_artifact_failures,
+    fluent_report_relative_window_met,
+    format_stop_reason_marker,
+    parse_fluent_report_file_series,
     resolve_solver_final_artifact_exit_code,
 )
 from _fluent_report_helpers import create_x_normal_plane
@@ -186,6 +191,15 @@ if __name__ == "__main__":
     ramp_full_iteration = cfg.ramp_full_iteration
     post_ramp_buffer_iterations = cfg.post_ramp_buffer_iterations
     minimum_full_source_iterations = ramp_full_iteration + post_ramp_buffer_iterations
+
+    # QoI convergence stop
+    enable_qoi_convergence_stop = cfg.enable_qoi_convergence_stop
+    qoi_convergence_report_name = cfg.qoi_convergence_report_name
+    qoi_stop_criterion = cfg.qoi_stop_criterion
+    qoi_previous_values_to_consider = cfg.qoi_previous_values_to_consider
+    qoi_initial_values_to_ignore = cfg.qoi_initial_values_to_ignore
+    enable_lmh_udm_avg_report_file = cfg.enable_lmh_udm_avg_report_file
+    lmh_udm_avg_report_file_name = cfg.lmh_udm_avg_report_file_name
 
     # Output files
     solver_log_path = os.path.join(case_path, f"solver_log_{case_name}.txt")
@@ -1471,6 +1485,277 @@ def set_residual_convergence_check(solution, species_name, enable):
     print(f"Residual convergence check set to: {enable}")
 
 
+def _list_named_object_names_best_effort(named_object):
+    try:
+        names = named_object.get_object_names()
+        if names is not None:
+            return [str(name) for name in names]
+    except Exception:
+        pass
+    try:
+        state = named_object.get_state()
+        if isinstance(state, dict):
+            return sorted(str(key) for key in state.keys())
+    except Exception:
+        pass
+    return []
+
+
+def ensure_lmh_udm_avg_report_file(solution, report_name, file_name):
+    """Create/update a Fluent report file for one QoI report definition.
+
+    Fluent 25.1 surface report definitions do not expose create_report_file;
+    history is written through solution.monitor.report_files instead.
+    The file is written relative to Fluent's working directory (the case dir).
+    """
+    report_files = solution.monitor.report_files
+    object_name = f"{report_name}_rfile"
+    existing = _list_named_object_names_best_effort(report_files)
+    if object_name in existing:
+        report_file = report_files[object_name]
+        print(f"Report file already exists. Updating: {object_name}")
+    else:
+        try:
+            report_file = report_files.create(object_name)
+        except TypeError:
+            report_file = report_files.create(name=object_name)
+        print(f"Report file created: {object_name}")
+
+    report_file.report_defs = [report_name]
+    report_file.file_name = file_name
+    try:
+        report_file.frequency = 1
+    except Exception:
+        pass
+    try:
+        report_file.print = False
+    except Exception:
+        pass
+    try:
+        report_file.active = True
+    except Exception:
+        pass
+    try:
+        report_file.write_instantaneous_values = True
+    except Exception:
+        pass
+    print(f"Report file '{object_name}' -> {file_name} (report_defs={report_name})")
+    return object_name
+
+
+def configure_qoi_convergence_condition(
+    solution,
+    *,
+    report_name,
+    stop_criterion,
+    previous_values_to_consider,
+    initial_values_to_ignore,
+    active,
+):
+    """Configure Fluent report-definition convergence conditions (Any vs residuals)."""
+    convergence = solution.monitor.convergence_conditions
+    convergence.condition = "any-condition-is-met"
+    try:
+        convergence.check_for = "solution-convergence"
+    except Exception as exc:
+        print(f"Could not set convergence_conditions.check_for: {exc}")
+    try:
+        convergence.frequency = 1
+    except Exception as exc:
+        print(f"Could not set convergence_conditions.frequency: {exc}")
+
+    reports = convergence.convergence_reports
+    object_name = f"{report_name}_conv"
+    existing = _list_named_object_names_best_effort(reports)
+    if object_name in existing:
+        report = reports[object_name]
+        print(f"Convergence report already exists. Updating: {object_name}")
+    else:
+        try:
+            report = reports.create(object_name)
+        except TypeError:
+            report = reports.create(name=object_name)
+        print(f"Convergence report created: {object_name}")
+
+    report.report_defs = report_name
+    report.stop_criterion = float(stop_criterion)
+    report.previous_values_to_consider = int(previous_values_to_consider)
+    report.initial_values_to_ignore = int(initial_values_to_ignore)
+    report.active = bool(active)
+    try:
+        report.print = True
+    except Exception:
+        pass
+    print(
+        "QoI convergence condition configured: "
+        f"report={report_name}, stop_criterion={stop_criterion}, "
+        f"Np={previous_values_to_consider}, ignore={initial_values_to_ignore}, "
+        f"active={active}, condition=any-condition-is-met"
+    )
+    return object_name
+
+
+def set_qoi_convergence_condition_active(solution, object_name, active):
+    """Activate or deactivate a named QoI convergence report."""
+    report = solution.monitor.convergence_conditions.convergence_reports[object_name]
+    report.active = bool(active)
+    print(f"QoI convergence condition '{object_name}' active={active}")
+
+
+def residual_current_values_from_solution(solution, species_name):
+    """Best-effort read of current residual magnitudes for stop-reason classification."""
+    values = {}
+    try:
+        state = solution.monitor.residual.equations.get_state()
+    except Exception as exc:
+        print(f"Could not read residual equations for stop reason: {exc}")
+        return values
+    if not isinstance(state, dict):
+        return values
+
+    targets = [
+        "continuity",
+        "x-velocity",
+        "y-velocity",
+        "z-velocity",
+        species_name,
+    ]
+    for name in targets:
+        eq_state = state.get(name)
+        if not isinstance(eq_state, dict):
+            continue
+        for key in (
+            "residual",
+            "current_residual",
+            "value",
+            "current_value",
+            "normalized_residual",
+        ):
+            raw = eq_state.get(key)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                values[name] = float(raw)
+                break
+    return values
+
+
+def qoi_met_from_report_file(report_file_path, previous_values_to_consider, stop_criterion):
+    """Evaluate Fluent's relative window criterion from a written report file.
+
+    Returns (evaluable, met, final_iteration).
+    evaluable is False when the file is missing, unreadable, or has fewer than
+    Np+1 numeric rows (so the UG formula cannot be applied).
+    """
+    path = Path(report_file_path)
+    if not path.is_file():
+        print(f"QoI report file not found for stop-reason check: {path}")
+        return False, False, None
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        print(f"Could not read QoI report file {path}: {exc}")
+        return False, False, None
+    series = parse_fluent_report_file_series(text)
+    if not series:
+        print(f"QoI report file had no numeric rows: {path}")
+        return False, False, None
+    final_iteration = int(series[-1][0])
+    required = int(previous_values_to_consider) + 1
+    if len(series) < required:
+        print(
+            f"QoI report file too short for window check: rows={len(series)}, "
+            f"required={required}, path={path}"
+        )
+        return False, False, final_iteration
+    window = [value for _iteration, value in series[-required:]]
+    met = fluent_report_relative_window_met(window, stop_criterion)
+    print(
+        f"QoI report-file window check: rows={len(series)}, "
+        f"window_len={len(window)}, met={met}"
+    )
+    return True, met, final_iteration
+
+
+def determine_and_print_stop_reason(
+    solution,
+    *,
+    species_name,
+    residual_target,
+    max_iterations,
+    qoi_enabled,
+    qoi_report_file_path,
+    qoi_previous_values_to_consider,
+    qoi_stop_criterion,
+    diverged,
+    calculation_ran=True,
+):
+    """Classify stop reason, print the inventory marker, and return the reason.
+
+    Intended to run immediately after iterate() returns or raises, before later
+    post-iterate steps (write_case_data, transcript assertions), so a partial
+    failure still records why iteration ended.
+    """
+    if not calculation_ran:
+        reason = classify_solver_stop_reason(
+            diverged=False,
+            residuals_met=False,
+            qoi_met=False,
+            qoi_check_enabled=False,
+            qoi_report_evaluable=False,
+            final_iteration=None,
+            max_iterations=max_iterations,
+            calculation_ran=False,
+        )
+        marker = format_stop_reason_marker(reason)
+        print(marker)
+        print("Stop-reason details: calculation_ran=False")
+        return reason
+
+    residual_values = residual_current_values_from_solution(solution, species_name)
+    target_names = [
+        "continuity",
+        "x-velocity",
+        "y-velocity",
+        "z-velocity",
+        species_name,
+    ]
+    residual_assessment = assess_residual_convergence(
+        residual_values,
+        {name: float(residual_target) for name in target_names},
+    )
+    residuals_met = bool(residual_assessment.get("strict_met"))
+
+    qoi_met = False
+    qoi_report_evaluable = False
+    final_iteration = None
+    if qoi_enabled:
+        qoi_report_evaluable, qoi_met, final_iteration = qoi_met_from_report_file(
+            qoi_report_file_path,
+            qoi_previous_values_to_consider,
+            qoi_stop_criterion,
+        )
+
+    reason = classify_solver_stop_reason(
+        diverged=bool(diverged),
+        residuals_met=residuals_met,
+        qoi_met=qoi_met,
+        qoi_check_enabled=bool(qoi_enabled),
+        qoi_report_evaluable=bool(qoi_report_evaluable),
+        final_iteration=final_iteration,
+        max_iterations=max_iterations,
+        calculation_ran=True,
+    )
+    marker = format_stop_reason_marker(reason)
+    print(marker)
+    print(
+        "Stop-reason details: "
+        f"residuals_met={residuals_met}, qoi_met={qoi_met}, "
+        f"qoi_report_evaluable={qoi_report_evaluable}, "
+        f"final_iteration={final_iteration}, max_iterations={max_iterations}, "
+        f"diverged={diverged}"
+    )
+    return reason
+
+
 RELAXATION_PROFILES = {
     "conservative": {
         "explicit_pressure_under_relaxation": 0.2,
@@ -2750,6 +3035,26 @@ if __name__ == "__main__":
         print("\nResidual equations state after setting:")
         print(solution.monitor.residual.equations.get_state())
 
+        qoi_convergence_object_name = None
+        qoi_report_file_path = os.path.join(case_path, lmh_udm_avg_report_file_name)
+        if enable_solve_time_qoi_reports and enable_lmh_udm_avg_report_file:
+            ensure_lmh_udm_avg_report_file(
+                solution=solution,
+                report_name=qoi_convergence_report_name,
+                file_name=lmh_udm_avg_report_file_name,
+            )
+            print(f"QoI report file path (case dir): {qoi_report_file_path}")
+
+        if enable_qoi_convergence_stop:
+            qoi_convergence_object_name = configure_qoi_convergence_condition(
+                solution=solution,
+                report_name=qoi_convergence_report_name,
+                stop_criterion=qoi_stop_criterion,
+                previous_values_to_consider=qoi_previous_values_to_consider,
+                initial_values_to_ignore=qoi_initial_values_to_ignore,
+                active=not use_ramp_convergence_safety,
+            )
+
         relaxation_result = apply_real_under_relaxation(
             solver=solver,
             profile=relaxation_profile,
@@ -2788,18 +3093,21 @@ if __name__ == "__main__":
 
         # This cell runs the solver calculation.
         # If use_ramp_convergence_safety is True:
-        #   Phase 1 runs a fixed number of iterations with residual convergence stopping disabled.
-        #   Phase 2 re-enables convergence checks and lets Fluent stop early when residual criteria are met.
+        #   Phase 1 runs a fixed number of iterations with residual convergence stopping disabled
+        #   and QoI convergence condition inactive.
+        #   Phase 2 re-enables residual checks and the QoI condition, then lets Fluent stop early
+        #   when residual criteria OR the lmh_udm_avg window criterion are met (Any).
 
+        calculation_diverged = False
         if run_calculation_enabled:
             print("Starting solver calculation.")
             print(f"Maximum iterations requested: {max_iterations}")
             print(f"Residual target: {residual_target}")
+            print(f"QoI convergence stop enabled: {enable_qoi_convergence_stop}")
 
             if use_ramp_convergence_safety:
                 pre_convergence_iterations = minimum_full_source_iterations
                 remaining_iterations = max_iterations - pre_convergence_iterations
-
                 if remaining_iterations <= 0:
                     raise ValueError(
                         "max_iterations must be larger than minimum_full_source_iterations. "
@@ -2807,41 +3115,100 @@ if __name__ == "__main__":
                         f"minimum_full_source_iterations={minimum_full_source_iterations}"
                     )
 
-                print(
-                    "\nRunning ramp-up phase without residual convergence stopping.\n"
-                    f"Ramp full iteration: {ramp_full_iteration}\n"
-                    f"Post-ramp buffer iterations: {post_ramp_buffer_iterations}\n"
-                    f"Ramp-up phase iterations: {pre_convergence_iterations}"
-                )
+            try:
+                if use_ramp_convergence_safety:
+                    print(
+                        "\nRunning ramp-up phase without residual/QoI convergence stopping.\n"
+                        f"Ramp full iteration: {ramp_full_iteration}\n"
+                        f"Post-ramp buffer iterations: {post_ramp_buffer_iterations}\n"
+                        f"Ramp-up phase iterations: {pre_convergence_iterations}"
+                    )
 
-                set_residual_convergence_check(
-                    solution=solution,
-                    species_name=species_name,
-                    enable=False,
-                )
+                    set_residual_convergence_check(
+                        solution=solution,
+                        species_name=species_name,
+                        enable=False,
+                    )
+                    if qoi_convergence_object_name is not None:
+                        set_qoi_convergence_condition_active(
+                            solution,
+                            qoi_convergence_object_name,
+                            False,
+                        )
 
-                solution.run_calculation.iterate(iter_count=pre_convergence_iterations)
+                    solution.run_calculation.iterate(
+                        iter_count=pre_convergence_iterations
+                    )
 
-                print(
-                    "\nRamp-up phase completed. "
-                    "The membrane source ramp should now be fully applied."
-                )
+                    print(
+                        "\nRamp-up phase completed. "
+                        "The membrane source ramp should now be fully applied."
+                    )
 
-                print("\nRe-enabling residual convergence check for full-source convergence phase.")
+                    print(
+                        "\nRe-enabling residual and QoI convergence checks "
+                        "for full-source convergence phase."
+                    )
 
-                set_residual_convergence_check(
-                    solution=solution,
-                    species_name=species_name,
-                    enable=True,
-                )
+                    set_residual_convergence_check(
+                        solution=solution,
+                        species_name=species_name,
+                        enable=True,
+                    )
+                    if qoi_convergence_object_name is not None:
+                        set_qoi_convergence_condition_active(
+                            solution,
+                            qoi_convergence_object_name,
+                            True,
+                        )
 
-                print(f"\nRunning convergence phase. Maximum additional iterations: {remaining_iterations}")
+                    print(
+                        f"\nRunning convergence phase. "
+                        f"Maximum additional iterations: {remaining_iterations}"
+                    )
 
-                solution.run_calculation.iterate(iter_count=remaining_iterations)
+                    solution.run_calculation.iterate(iter_count=remaining_iterations)
 
-            else:
-                print("\nRamp convergence safety is disabled.")
-                solution.run_calculation.iterate(iter_count=max_iterations)
+                else:
+                    print("\nRamp convergence safety is disabled.")
+                    if qoi_convergence_object_name is not None:
+                        set_qoi_convergence_condition_active(
+                            solution,
+                            qoi_convergence_object_name,
+                            True,
+                        )
+                    solution.run_calculation.iterate(iter_count=max_iterations)
+            except Exception as calc_exc:
+                calculation_diverged = True
+                print(f"Solver calculation raised: {type(calc_exc).__name__}: {calc_exc}")
+                raise
+            finally:
+                try:
+                    # Printed here (after iterate, before write_case_data /
+                    # transcript assertions) so post-iterate failures still
+                    # retain why iteration ended.
+                    determine_and_print_stop_reason(
+                        solution,
+                        species_name=species_name,
+                        residual_target=residual_target,
+                        max_iterations=max_iterations,
+                        qoi_enabled=bool(
+                            enable_qoi_convergence_stop
+                            and enable_lmh_udm_avg_report_file
+                        ),
+                        qoi_report_file_path=qoi_report_file_path,
+                        qoi_previous_values_to_consider=(
+                            qoi_previous_values_to_consider
+                        ),
+                        qoi_stop_criterion=qoi_stop_criterion,
+                        diverged=calculation_diverged,
+                        calculation_ran=True,
+                    )
+                except Exception as stop_exc:
+                    print(
+                        "WARNING: could not determine stop reason: "
+                        f"{type(stop_exc).__name__}: {stop_exc}"
+                    )
 
             print("\nSolver calculation completed.")
 
@@ -2861,6 +3228,24 @@ if __name__ == "__main__":
 
         else:
             print("Run calculation is disabled. Skipping solver iterations.")
+            try:
+                determine_and_print_stop_reason(
+                    solution,
+                    species_name=species_name,
+                    residual_target=residual_target,
+                    max_iterations=max_iterations,
+                    qoi_enabled=False,
+                    qoi_report_file_path=qoi_report_file_path,
+                    qoi_previous_values_to_consider=qoi_previous_values_to_consider,
+                    qoi_stop_criterion=qoi_stop_criterion,
+                    diverged=False,
+                    calculation_ran=False,
+                )
+            except Exception as stop_exc:
+                print(
+                    "WARNING: could not determine stop reason: "
+                    f"{type(stop_exc).__name__}: {stop_exc}"
+                )
 
 
         # ======================================================

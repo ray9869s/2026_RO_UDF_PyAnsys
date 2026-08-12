@@ -40,6 +40,7 @@ MESH_PARAMETER_NAMES = (
     "peel_layers",
     "min_orthogonal_quality_threshold",
     "max_aspect_ratio_threshold",
+    "max_skewness_threshold",
     "fail_if_quality_not_parsed",
     "periodic_after_surface_mesh",
     "save_surface_mesh_checkpoint",
@@ -482,6 +483,10 @@ def parse_meshing_input_summary(text):
             "max_aspect_ratio_threshold",
             float,
         ),
+        "Maximum skewness threshold [-]": (
+            "max_skewness_threshold",
+            float,
+        ),
     }
     parameters = {}
     for label, (name, value_type) in label_types.items():
@@ -543,20 +548,29 @@ def evaluate_quality_gate(mesh_parameters, metrics):
     """Return True/False when parsed values can determine the configured gate."""
     min_quality = metrics.get("min_orthogonal_quality")
     max_aspect = metrics.get("max_aspect_ratio")
+    max_skewness = metrics.get("max_skewness")
     min_limit = mesh_parameters.get("min_orthogonal_quality_threshold")
-    max_limit = mesh_parameters.get("max_aspect_ratio_threshold")
+    max_aspect_limit = mesh_parameters.get("max_aspect_ratio_threshold")
+    max_skewness_limit = mesh_parameters.get("max_skewness_threshold")
+    fail_if_not_parsed = mesh_parameters.get("fail_if_quality_not_parsed")
     if min_quality is not None and min_limit is not None:
         if min_quality < min_limit:
             return False
-    elif mesh_parameters.get("fail_if_quality_not_parsed"):
+    elif fail_if_not_parsed:
         return False
-    if max_limit is not None:
+    if max_aspect_limit is not None:
         if max_aspect is not None:
-            if max_aspect > max_limit:
+            if max_aspect > max_aspect_limit:
                 return False
-        elif mesh_parameters.get("fail_if_quality_not_parsed"):
+        elif fail_if_not_parsed:
             return False
-    if min_quality is None and max_aspect is None:
+    if max_skewness_limit is not None:
+        if max_skewness is not None:
+            if max_skewness > max_skewness_limit:
+                return False
+        elif fail_if_not_parsed:
+            return False
+    if min_quality is None and max_aspect is None and max_skewness is None:
         return None
     return True
 

@@ -28,6 +28,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from _solver_common import (  # noqa: E402
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     max_iterations_from_common_solver_settings,
+    parse_stop_reason_from_text,
 )
 
 
@@ -347,6 +348,7 @@ class LogFileAnalysis:
 @dataclass
 class LogParseResult:
     convergence_status: str = UNKNOWN_NO_LOG
+    stop_reason: str = ""
     max_iteration_detected: Optional[int] = None
     hit_max_iter_target: bool = False
     convergence_evidence: list[str] = field(default_factory=list)
@@ -895,6 +897,15 @@ def parse_logs(
                 "No solver_run log was found; convergence status is based on non-solver logs only."
             )
 
+    stop_reason = ""
+    for analysis in analyses:
+        if analysis.role != ROLE_SOLVER_RUN or not analysis.text:
+            continue
+        parsed_reason = parse_stop_reason_from_text(analysis.text)
+        if parsed_reason:
+            stop_reason = parsed_reason
+    result.stop_reason = stop_reason
+
     has_failure = bool(
         result.failure_evidence
         or result.udf_compile_error_evidence
@@ -906,12 +917,26 @@ def parse_logs(
     has_converged = bool(result.convergence_evidence)
     has_completion = bool(result.completion_evidence)
 
-    if has_failure:
+    if stop_reason == "diverged" or has_failure:
         result.convergence_status = FAILED_OR_DIVERGED
-    elif has_max_iter:
+        if not stop_reason and has_failure:
+            result.stop_reason = "diverged"
+    elif stop_reason == "max_iter_reached" or (has_max_iter and not stop_reason):
         result.convergence_status = MAX_ITER_REACHED
+        if not stop_reason:
+            result.stop_reason = "max_iter_reached"
+    elif stop_reason in {"residual_converged", "qoi_converged"}:
+        result.convergence_status = CONVERGED
+    elif stop_reason in {
+        "unknown_early_stop",
+        "qoi_report_unavailable",
+        "not_run",
+    }:
+        result.convergence_status = POSSIBLY_INCOMPLETE
     elif has_converged:
         result.convergence_status = CONVERGED
+        # Legacy runs without an explicit marker remain blank.
+        result.stop_reason = ""
     elif has_completion:
         result.convergence_status = POSSIBLY_INCOMPLETE
     elif has_case_data_pair:
@@ -922,9 +947,17 @@ def parse_logs(
         result.convergence_status = UNKNOWN_UNPARSED
 
     result.likely_complete_from_logs = bool(
-        (has_converged or has_completion)
+        (has_converged or has_completion or stop_reason in {"residual_converged", "qoi_converged"})
         and not has_failure
         and not bool(result.max_iter_evidence)
+        and stop_reason
+        not in {
+            "max_iter_reached",
+            "diverged",
+            "unknown_early_stop",
+            "qoi_report_unavailable",
+            "not_run",
+        }
     )
     return result
 
@@ -1055,6 +1088,7 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
             "udf_compile_log_files": log_files_by_role[ROLE_UDF_COMPILE],
             "unknown_log_files": log_files_by_role[ROLE_UNKNOWN],
             "convergence_status": parsed.convergence_status,
+            "stop_reason": parsed.stop_reason,
             "max_iteration_detected": parsed.max_iteration_detected,
             "max_iter_target": max_iter_target,
             "hit_max_iter_target": parsed.hit_max_iter_target,
@@ -1623,6 +1657,7 @@ CASE_INVENTORY_FIELDNAMES = [
     "udf_compile_log_files",
     "unknown_log_files",
     "convergence_status",
+    "stop_reason",
     "max_iteration_detected",
     "max_iter_target",
     "hit_max_iter_target",
@@ -1707,6 +1742,7 @@ RERUN_FIELDNAMES = [
     "case_name",
     "max_iteration_detected",
     "convergence_status",
+    "stop_reason",
     "hard_solver_failure_detected",
     "max_iter_only",
     "failure_evidence_short",
@@ -1718,6 +1754,7 @@ COMPACT_FIELDNAMES = [
     "geo_name",
     "case_name",
     "convergence_status",
+    "stop_reason",
     "case_status",
     "max_iteration_detected",
     "has_final_cas",

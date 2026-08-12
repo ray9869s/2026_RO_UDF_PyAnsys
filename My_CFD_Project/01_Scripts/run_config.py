@@ -113,6 +113,10 @@ peel_layers = 2
 # Mesh quality gate
 min_orthogonal_quality_threshold = 0.05
 max_aspect_ratio_threshold = 100.0
+# Surface max skewness. Measured Diamond-family meshes are ~0.64–0.67;
+# 0.85 sits above Fluent's skewed-cell highlight band (0.80) with campaign
+# headroom, while still rejecting genuinely bad surfaces near 0.90+.
+max_skewness_threshold = 0.85
 fail_if_quality_not_parsed = False
 
 # When True: surface mesh first (no shadow-copy constraint), then
@@ -198,6 +202,18 @@ pseudo_time_verbosity = "preserve"
 use_ramp_convergence_safety = True
 ramp_full_iteration = 150
 post_ramp_buffer_iterations = 50
+
+# QoI-based convergence stop (Fluent monitor.convergence_conditions).
+# Uses report-definition relative window (UG 37.18) on lmh_udm_avg, OR residual
+# absolute criteria (any-condition-is-met). See solver_code for ramp gating.
+enable_qoi_convergence_stop = True
+qoi_convergence_report_name = "lmh_udm_avg"
+qoi_stop_criterion = 1e-3
+qoi_previous_values_to_consider = 100
+qoi_initial_values_to_ignore = 200
+# Write per-iteration history for the QoI stop report (Fluent report file).
+enable_lmh_udm_avg_report_file = True
+lmh_udm_avg_report_file_name = "lmh_udm_avg.out"
 
 # Report definitions
 update_rho_avg_report_definition = True
@@ -530,6 +546,34 @@ def validate_for_solver():
         "pseudo_time_verbosity",
         pseudo_time_verbosity,
     )
+    _require_bool("use_ramp_convergence_safety", use_ramp_convergence_safety)
+    _require_positive_number("ramp_full_iteration", ramp_full_iteration)
+    _require_nonnegative_number(
+        "post_ramp_buffer_iterations",
+        post_ramp_buffer_iterations,
+    )
+    _require_bool("enable_qoi_convergence_stop", enable_qoi_convergence_stop)
+    if enable_qoi_convergence_stop:
+        if not enable_solve_time_qoi_reports:
+            raise ValueError(
+                "enable_qoi_convergence_stop requires enable_solve_time_qoi_reports=True"
+            )
+        _require_set("qoi_convergence_report_name", qoi_convergence_report_name)
+        _require_positive_float("qoi_stop_criterion", qoi_stop_criterion)
+        _require_positive_number(
+            "qoi_previous_values_to_consider",
+            qoi_previous_values_to_consider,
+        )
+        _require_nonnegative_number(
+            "qoi_initial_values_to_ignore",
+            qoi_initial_values_to_ignore,
+        )
+    _require_bool(
+        "enable_lmh_udm_avg_report_file",
+        enable_lmh_udm_avg_report_file,
+    )
+    if enable_lmh_udm_avg_report_file:
+        _require_set("lmh_udm_avg_report_file_name", lmh_udm_avg_report_file_name)
     _require_bool(
         "enable_solve_time_qoi_reports",
         enable_solve_time_qoi_reports,

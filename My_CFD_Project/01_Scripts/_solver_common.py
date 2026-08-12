@@ -645,3 +645,131 @@ def classify_convergence(
         "status": "COMPLETED_NEEDS_REVIEW",
         "details": "Monitor stability could not be determined from available data.",
     }
+
+
+# ---------------------------------------------------------------------------
+# Solver stop reason (residual vs QoI vs cap vs diverge)
+# ---------------------------------------------------------------------------
+
+STOP_REASON_RESIDUAL_CONVERGED = "residual_converged"
+STOP_REASON_QOI_CONVERGED = "qoi_converged"
+STOP_REASON_MAX_ITER_REACHED = "max_iter_reached"
+STOP_REASON_DIVERGED = "diverged"
+STOP_REASON_UNKNOWN_EARLY_STOP = "unknown_early_stop"
+STOP_REASON_QOI_REPORT_UNAVAILABLE = "qoi_report_unavailable"
+STOP_REASON_NOT_RUN = "not_run"
+STOP_REASON_MARKER_PREFIX = "SOLVER_STOP_REASON="
+
+STOP_REASON_VALUES = (
+    STOP_REASON_RESIDUAL_CONVERGED,
+    STOP_REASON_QOI_CONVERGED,
+    STOP_REASON_MAX_ITER_REACHED,
+    STOP_REASON_DIVERGED,
+    STOP_REASON_UNKNOWN_EARLY_STOP,
+    STOP_REASON_QOI_REPORT_UNAVAILABLE,
+    STOP_REASON_NOT_RUN,
+)
+
+
+def fluent_report_relative_window_met(
+    values: list[float],
+    stop_criterion: float,
+) -> bool:
+    """Return True when Fluent UG 37.18 report stop criterion is met.
+
+    For history values ordered oldest→newest with length Np+1 (current plus
+    previous_values_to_consider samples), Fluent stops when::
+
+        max_k |m(n) - m(n-k)| / |m(n)|  <  stop_criterion
+
+    for k = 1 .. Np. Absolute value protects zero/sign flips.
+    """
+    if stop_criterion <= 0.0:
+        raise ValueError(f"stop_criterion must be positive, got {stop_criterion!r}")
+    if len(values) < 2:
+        return False
+    current = float(values[-1])
+    denom = abs(current)
+    if denom == 0.0:
+        return False
+    previous = values[:-1]
+    return max(abs(current - float(v)) / denom for v in previous) < float(stop_criterion)
+
+
+def parse_fluent_report_file_series(text: str) -> list[tuple[int, float]]:
+    """Parse a Fluent report-file body into (iteration, value) pairs.
+
+    Accepts the common quoted-header + whitespace numeric rows layout.
+    Last value column is used when multiple report defs share one file.
+    """
+    rows: list[tuple[int, float]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('"') or line.startswith("("):
+            continue
+        tokens = line.split()
+        if len(tokens) < 2:
+            continue
+        try:
+            iteration = int(float(tokens[0]))
+            value = float(tokens[-1])
+        except ValueError:
+            continue
+        rows.append((iteration, value))
+    return rows
+
+
+def classify_solver_stop_reason(
+    *,
+    diverged: bool,
+    residuals_met: bool,
+    qoi_met: bool,
+    qoi_check_enabled: bool,
+    qoi_report_evaluable: bool,
+    final_iteration: int | None,
+    max_iterations: int,
+    calculation_ran: bool = True,
+) -> str:
+    """Classify why a solver run stopped.
+
+    Priority:
+      not_run → diverged → residual_converged → qoi_converged →
+      qoi_report_unavailable → unknown_early_stop → max_iter_reached
+
+    Early stop without confirmed residual/QoI evidence is unknown_early_stop,
+    never qoi_converged. Missing/short QoI report history is
+    qoi_report_unavailable so plumbing failures stay visible.
+    """
+    if not calculation_ran:
+        return STOP_REASON_NOT_RUN
+    if diverged:
+        return STOP_REASON_DIVERGED
+    if residuals_met:
+        return STOP_REASON_RESIDUAL_CONVERGED
+    if qoi_met:
+        return STOP_REASON_QOI_CONVERGED
+    if qoi_check_enabled and not qoi_report_evaluable:
+        return STOP_REASON_QOI_REPORT_UNAVAILABLE
+    if final_iteration is not None and int(final_iteration) < int(max_iterations):
+        return STOP_REASON_UNKNOWN_EARLY_STOP
+    return STOP_REASON_MAX_ITER_REACHED
+
+
+def format_stop_reason_marker(reason: str) -> str:
+    """Return the stable solver-log marker line for inventory parsing."""
+    if reason not in STOP_REASON_VALUES:
+        raise ValueError(f"Unknown stop reason: {reason!r}")
+    return f"{STOP_REASON_MARKER_PREFIX}{reason}"
+
+
+def parse_stop_reason_from_text(text: str) -> str | None:
+    """Return the last SOLVER_STOP_REASON= value found in log/transcript text."""
+    found: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(STOP_REASON_MARKER_PREFIX):
+            continue
+        value = line[len(STOP_REASON_MARKER_PREFIX) :].strip()
+        if value in STOP_REASON_VALUES:
+            found = value
+    return found

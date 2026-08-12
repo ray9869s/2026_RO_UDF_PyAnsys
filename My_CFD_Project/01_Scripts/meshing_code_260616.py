@@ -128,6 +128,7 @@ if __name__ == "__main__":
     # [Mesh quality gate]
     min_orthogonal_quality_threshold = cfg.min_orthogonal_quality_threshold
     max_aspect_ratio_threshold = cfg.max_aspect_ratio_threshold
+    max_skewness_threshold = cfg.max_skewness_threshold
     fail_if_quality_not_parsed = cfg.fail_if_quality_not_parsed
 
     # [Checkpoint options]
@@ -177,6 +178,9 @@ if __name__ == "__main__":
 
     if max_aspect_ratio_threshold is not None and max_aspect_ratio_threshold <= 0.0:
         raise ValueError("max_aspect_ratio_threshold must be positive or None.")
+
+    if max_skewness_threshold is not None and max_skewness_threshold <= 0.0:
+        raise ValueError("max_skewness_threshold must be positive or None.")
 
     wall_spacer_boundary_layer_overlap = (
         set(wall_spacer_labels) & set(boundary_layer_labels)
@@ -330,6 +334,7 @@ def print_meshing_input_summary():
     print(f"Peel layers [-]: {peel_layers}")
     print(f"Minimum orthogonal quality threshold [-]: {min_orthogonal_quality_threshold}")
     print(f"Maximum aspect ratio threshold [-]: {max_aspect_ratio_threshold}")
+    print(f"Maximum skewness threshold [-]: {max_skewness_threshold}")
     print("=" * 72 + "\n")
 
 
@@ -426,16 +431,18 @@ def apply_mesh_quality_gate(
     log_path,
     min_orthogonal_quality_limit,
     max_aspect_ratio_limit,
+    max_skewness_limit,
     fail_if_not_parsed,
 ):
     """Apply mesh quality pass/fail criteria using the Fluent transcript."""
     metrics = parse_mesh_metrics_from_log(log_path)
     min_orthogonal_quality = metrics["min_orthogonal_quality"]
     max_aspect_ratio = metrics["max_aspect_ratio"]
+    max_skewness = metrics["max_skewness"]
 
     print(f"Parsed minimum orthogonal quality: {min_orthogonal_quality}")
     print(f"Parsed maximum aspect ratio: {max_aspect_ratio}")
-    print(f"Parsed maximum skewness: {metrics['max_skewness']}")
+    print(f"Parsed maximum skewness: {max_skewness}")
     print(f"Parsed cell count: {metrics['cell_count']}")
 
     if min_orthogonal_quality is None:
@@ -473,6 +480,25 @@ def apply_mesh_quality_gate(
                     f"Mesh quality failed: maximum aspect ratio "
                     f"{max_aspect_ratio} is above the threshold "
                     f"{max_aspect_ratio_limit}."
+                )
+
+    if max_skewness_limit is not None:
+        if max_skewness is None:
+            message = (
+                "Could not parse maximum skewness from the transcript. "
+                "The skewness gate could not be applied."
+            )
+
+            if fail_if_not_parsed:
+                raise RuntimeError(message)
+
+            print(f"Warning: {message}")
+        else:
+            if max_skewness > max_skewness_limit:
+                raise RuntimeError(
+                    f"Mesh quality failed: maximum skewness "
+                    f"{max_skewness} is above the threshold "
+                    f"{max_skewness_limit}."
                 )
 
     print("Mesh quality gate passed.")
@@ -748,6 +774,7 @@ if __name__ == "__main__":
             log_path=mesh_log_path,
             min_orthogonal_quality_limit=min_orthogonal_quality_threshold,
             max_aspect_ratio_limit=max_aspect_ratio_threshold,
+            max_skewness_limit=max_skewness_threshold,
             fail_if_not_parsed=fail_if_quality_not_parsed,
         )
 

@@ -14,6 +14,7 @@ from _mesh_common import (
     MESH_METRIC_NAMES,
     MESH_PARAMETER_NAMES,
     build_mesh_ledger_record,
+    evaluate_quality_gate,
     mesh_parameters_from_mapping,
     parse_mesh_metrics_text,
     parse_meshing_input_summary,
@@ -50,7 +51,8 @@ Volume hex max cell length [mm]: 0.0595
 Peel layers [-]: 2
 Minimum orthogonal quality threshold [-]: 0.05
 Maximum aspect ratio threshold [-]: 100.0
-Maximum Skewness = 9.2e-01
+Maximum skewness threshold [-]: 0.85
+Maximum Skewness = 5.2e-01
 Minimum Orthogonal Quality = 1.1e-01
 Maximum Aspect Ratio = 4.2e+01
 Total Number of Cells = 123,456
@@ -135,7 +137,7 @@ def test_extended_parser_preserves_existing_quality_results():
     assert metrics == {
         "min_orthogonal_quality": 0.11,
         "max_aspect_ratio": 42.0,
-        "max_skewness": 0.92,
+        "max_skewness": 0.52,
         "cell_count": 123456,
         "domain_extent_x_m": None,
         "domain_extent_y_m": None,
@@ -246,6 +248,36 @@ def test_input_summary_recovers_logged_mesh_parameters():
     assert parameters["wall_spacer_labels"] == ["wall_spacer"]
 
 
+def test_quality_gate_fails_when_max_skewness_exceeds_threshold():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 100.0,
+        "max_skewness_threshold": 0.85,
+        "fail_if_quality_not_parsed": False,
+    }
+    metrics = {
+        "min_orthogonal_quality": 0.11,
+        "max_aspect_ratio": 42.0,
+        "max_skewness": 0.90,
+    }
+    assert evaluate_quality_gate(parameters, metrics) is False
+
+
+def test_quality_gate_passes_when_max_skewness_within_threshold():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 100.0,
+        "max_skewness_threshold": 0.85,
+        "fail_if_quality_not_parsed": False,
+    }
+    metrics = {
+        "min_orthogonal_quality": 0.11,
+        "max_aspect_ratio": 64.82,
+        "max_skewness": 0.670634,
+    }
+    assert evaluate_quality_gate(parameters, metrics) is True
+
+
 def test_ledger_contains_every_mesh_parameter_and_metric(tmp_path):
     parameters = mesh_parameters_from_mapping(
         parse_meshing_input_summary(SYNTHETIC_MESH_LOG)
@@ -268,6 +300,8 @@ def test_ledger_contains_every_mesh_parameter_and_metric(tmp_path):
     assert record["exit_code"] == 0
     assert record["wall_time_seconds"] == 12.5
     assert record["quality_gate_passed"] is True
+    assert record["max_skewness_threshold"] == pytest.approx(0.85)
+    assert record["max_skewness"] == pytest.approx(0.52)
 
     ledger_path = tmp_path / "mesh_ledger.csv"
     upsert_mesh_ledger_csv(ledger_path, [record])
