@@ -184,7 +184,26 @@ def test_lmh_udm_avg_report_file_uses_monitor_report_files():
     assert report_file.active is True
 
 
-def test_qoi_convergence_condition_uses_any_met():
+def test_pressure_drop_spacer_report_file_uses_monitor_report_files():
+    solver_code = load_solver_code("solver_qoi_dp_report_file")
+    report_files = NamedGroup()
+    solution = SimpleNamespace(
+        monitor=SimpleNamespace(report_files=report_files)
+    )
+
+    object_name = solver_code.ensure_lmh_udm_avg_report_file(
+        solution,
+        report_name="pressure_drop_spacer",
+        file_name="pressure_drop_spacer.out",
+    )
+    assert object_name == "pressure_drop_spacer_rfile"
+    report_file = report_files["pressure_drop_spacer_rfile"]
+    assert report_file.report_defs == ["pressure_drop_spacer"]
+    assert report_file.file_name == "pressure_drop_spacer.out"
+    assert report_file.active is True
+
+
+def test_qoi_convergence_condition_uses_any_condition_is_met():
     solver_code = load_solver_code("solver_qoi_convergence")
 
     class ConvergenceReports(NamedGroup):
@@ -213,6 +232,18 @@ def test_qoi_convergence_condition_uses_any_met():
     assert report.previous_values_to_consider == 100
     assert report.initial_values_to_ignore == 200
     assert report.active is False
+
+
+def test_qoi_convergence_stop_is_lmh_only_dp_file_kept():
+    solver_code = load_solver_code("solver_qoi_lmh_only")
+    text = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    assert solver_code.QOI_CONVERGENCE_CONDITION == "any-condition-is-met"
+    assert "QOI_STOP_PRESSURE_REPORT_NAME" not in text
+    assert "report_name=qoi_convergence_report_name" in text
+    assert 'report_name="pressure_drop_spacer"' in text
+    assert "qoi_stop_report_file_paths.append(lmh_report_file_path)" in text
+    assert "qoi_stop_report_file_paths.append(dp_report_file_path)" not in text
+    assert "enable=not enable_qoi_convergence_stop" not in text
 
 
 def test_phase_a_failures_are_retried_after_initialization():
@@ -322,6 +353,10 @@ def test_solve_time_qoi_config_defaults_and_validation():
     assert cfg.domain_x_min_m == 0.0
     assert cfg.domain_length_m == 0.017325
     assert cfg.buffer_length_m == 0.003465
+    assert cfg.enable_qoi_convergence_stop is True
+    assert cfg.qoi_convergence_report_name == "lmh_udm_avg"
+    assert cfg.enable_pressure_drop_spacer_report_file is True
+    assert cfg.pressure_drop_spacer_report_file_name == "pressure_drop_spacer.out"
     cfg.validate_for_solver()
 
 

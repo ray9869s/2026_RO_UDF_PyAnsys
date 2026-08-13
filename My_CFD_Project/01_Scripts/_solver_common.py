@@ -657,8 +657,14 @@ STOP_REASON_MAX_ITER_REACHED = "max_iter_reached"
 STOP_REASON_DIVERGED = "diverged"
 STOP_REASON_UNKNOWN_EARLY_STOP = "unknown_early_stop"
 STOP_REASON_QOI_REPORT_UNAVAILABLE = "qoi_report_unavailable"
+STOP_REASON_ITERATION_UNKNOWN = "iteration_unknown"
 STOP_REASON_NOT_RUN = "not_run"
 STOP_REASON_MARKER_PREFIX = "SOLVER_STOP_REASON="
+
+# Fluent console phrases. The QoI phrase contains the residual phrase as a
+# substring, so match QoI first.
+FLUENT_QOI_CONVERGED_PHRASE = "report definition solution is converged"
+FLUENT_RESIDUAL_CONVERGED_PHRASE = "solution is converged"
 
 STOP_REASON_VALUES = (
     STOP_REASON_RESIDUAL_CONVERGED,
@@ -667,8 +673,12 @@ STOP_REASON_VALUES = (
     STOP_REASON_DIVERGED,
     STOP_REASON_UNKNOWN_EARLY_STOP,
     STOP_REASON_QOI_REPORT_UNAVAILABLE,
+    STOP_REASON_ITERATION_UNKNOWN,
     STOP_REASON_NOT_RUN,
 )
+
+_ITERATION_PREFIX_RE = re.compile(r"^iteration\s+(\d+)\s*:", re.IGNORECASE)
+_BANG_ITERATION_RE = re.compile(r"!\s*(\d+)\s+")
 
 
 def fluent_report_relative_window_met(
@@ -719,13 +729,79 @@ def parse_fluent_report_file_series(text: str) -> list[tuple[int, float]]:
     return rows
 
 
+def _iteration_from_convergence_line(line: str) -> int | None:
+    """Extract the iteration printed on a Fluent convergence marker line."""
+    bang = _BANG_ITERATION_RE.search(line)
+    if bang:
+        return int(bang.group(1))
+    lower = line.lower()
+    for phrase in (FLUENT_QOI_CONVERGED_PHRASE, FLUENT_RESIDUAL_CONVERGED_PHRASE):
+        idx = lower.find(phrase)
+        if idx < 0:
+            continue
+        prefix = line[:idx].strip()
+        tokens = prefix.replace("!", " ").split()
+        if tokens:
+            try:
+                return int(tokens[-1])
+            except ValueError:
+                return None
+        return None
+    return None
+
+
+def parse_fluent_convergence_marker(text: str) -> tuple[str | None, int | None]:
+    """Return (stop_reason, iteration) from Fluent console convergence lines.
+
+    Matches 'report definition solution is converged' before the residual
+    phrase 'solution is converged' so a QoI stop is not misclassified.
+    Last matching line in *text* wins.
+    """
+    reason: str | None = None
+    iteration: int | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if FLUENT_QOI_CONVERGED_PHRASE in lower:
+            reason = STOP_REASON_QOI_CONVERGED
+            iteration = _iteration_from_convergence_line(line)
+        elif FLUENT_RESIDUAL_CONVERGED_PHRASE in lower:
+            reason = STOP_REASON_RESIDUAL_CONVERGED
+            iteration = _iteration_from_convergence_line(line)
+    return reason, iteration
+
+
+def parse_last_residual_iteration_from_transcript_text(text: str) -> int | None:
+    """Return the last residual-table (or 'iteration N:') iteration in *text*."""
+    last: int | None = None
+    saw_header = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        prefix = _ITERATION_PREFIX_RE.match(line)
+        if prefix:
+            last = int(prefix.group(1))
+            continue
+        if "continuity" in line.lower() and not line[0].isdigit():
+            if parse_transcript_residual_columns(line):
+                saw_header = True
+            continue
+        if saw_header and line[0].isdigit():
+            try:
+                last = int(float(line.split()[0]))
+            except ValueError:
+                continue
+    return last
+
+
 def classify_solver_stop_reason(
     *,
     diverged: bool,
     residuals_met: bool,
     qoi_met: bool,
-    qoi_check_enabled: bool,
-    qoi_report_evaluable: bool,
     final_iteration: int | None,
     max_iterations: int,
     calculation_ran: bool = True,
@@ -734,11 +810,17 @@ def classify_solver_stop_reason(
 
     Priority:
       not_run → diverged → residual_converged → qoi_converged →
-      qoi_report_unavailable → unknown_early_stop → max_iter_reached
+      unknown_early_stop → max_iter_reached → iteration_unknown
 
-    Early stop without confirmed residual/QoI evidence is unknown_early_stop,
-    never qoi_converged. Missing/short QoI report history is
-    qoi_report_unavailable so plumbing failures stay visible.
+    residuals_met / qoi_met come from Fluent transcript markers, not from
+    settings-state residual 'current' fields. Report-file window checks are
+    a cross-check only and must not be passed as qoi_met.
+
+    No marker plus a known count below the cap is unknown_early_stop.
+    No marker plus count equal to the cap is max_iter_reached.
+    No marker and no countable iteration is iteration_unknown, never
+    max_iter_reached. qoi_report_unavailable remains in the enum for
+    historical logs; new classification does not emit it.
     """
     if not calculation_ran:
         return STOP_REASON_NOT_RUN
@@ -748,9 +830,9 @@ def classify_solver_stop_reason(
         return STOP_REASON_RESIDUAL_CONVERGED
     if qoi_met:
         return STOP_REASON_QOI_CONVERGED
-    if qoi_check_enabled and not qoi_report_evaluable:
-        return STOP_REASON_QOI_REPORT_UNAVAILABLE
-    if final_iteration is not None and int(final_iteration) < int(max_iterations):
+    if final_iteration is None:
+        return STOP_REASON_ITERATION_UNKNOWN
+    if int(final_iteration) < int(max_iterations):
         return STOP_REASON_UNKNOWN_EARLY_STOP
     return STOP_REASON_MAX_ITER_REACHED
 

@@ -108,6 +108,19 @@ bl_growth_rate = 1.2
 
 # Volume mesh controls
 vol_hex_max_factor = 0.7
+# peel_layers is NOT a near-wall knob. It only changes the interior
+# prism-to-hexcore transition. Measured on D2450_a45_7c_brg110 with
+# bl_layers 4, bl_height_factor 0.4:
+#   peel_layers 2 -> 796,009 cells, 749 inlet faces,
+#                    skewness 0.67063399, min orthogonal 0.102087
+#   peel_layers 0 -> 987,599 cells, 749 inlet faces,
+#                    skewness 0.67063399, min orthogonal 0.102087
+# Identical inlet-face count and quality to eight significant figures;
+# 24% more cells. Do not retune peel_layers to refine the membrane BL.
+# bl_layers and bl_height DO change near-wall resolution (749 -> 914
+# inlet faces from bl4 to bl6), but window CP was still not grid-converged
+# between those two (1.039 vs 1.051). That is why 260813 measures y1 and
+# optionally reconstructs c_wall.
 peel_layers = 2
 
 # Mesh quality gate
@@ -145,7 +158,7 @@ outlet_gauge_pressure = REQUIRED
 
 # Template/UDF file names relative to project_root.
 template_case_file_name = "template_RO_setup.cas.h5"
-udf_source_file_name = "260810_RO_UDF.c"
+udf_source_file_name = "260813_RO_UDF.c"
 udf_library_name = "libudf"
 
 # Inlet velocity profile (DEFINE_PROFILE inlet_x_velocity_profile).
@@ -183,7 +196,7 @@ mixture_viscosity = 8.93e-4
 mass_diffusivity = 2.0e-9
 
 # UDM/UDF settings
-udm_count = 12
+udm_count = 13
 
 # Solver run settings
 residual_target = 1e-7
@@ -204,16 +217,23 @@ ramp_full_iteration = 150
 post_ramp_buffer_iterations = 50
 
 # QoI-based convergence stop (Fluent monitor.convergence_conditions).
-# Uses report-definition relative window (UG 37.18) on lmh_udm_avg, OR residual
-# absolute criteria (any-condition-is-met). See solver_code for ramp gating.
+# condition = any-condition-is-met; residual check_convergence stays True
+# (1e-7). The only QoI report condition is lmh_udm_avg (stop_criterion 1e-3,
+# Np=100, ignore=200). QoI is inactive during the 200-iteration ramp.
+# pressure_drop_spacer.out is written for diagnostics only — not a stop
+# condition. Live bl6 evidence: dP already matched to ~7 sig figs at the
+# LMH stop while continuity was still falling; AND-ing dP bought nothing
+# and a never-closing dP window would send runs to max_iterations.
 enable_qoi_convergence_stop = True
 qoi_convergence_report_name = "lmh_udm_avg"
 qoi_stop_criterion = 1e-3
 qoi_previous_values_to_consider = 100
 qoi_initial_values_to_ignore = 200
-# Write per-iteration history for the QoI stop report (Fluent report file).
+# Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"
+enable_pressure_drop_spacer_report_file = True
+pressure_drop_spacer_report_file_name = "pressure_drop_spacer.out"
 
 # Report definitions
 update_rho_avg_report_definition = True
@@ -574,6 +594,15 @@ def validate_for_solver():
     )
     if enable_lmh_udm_avg_report_file:
         _require_set("lmh_udm_avg_report_file_name", lmh_udm_avg_report_file_name)
+    _require_bool(
+        "enable_pressure_drop_spacer_report_file",
+        enable_pressure_drop_spacer_report_file,
+    )
+    if enable_pressure_drop_spacer_report_file:
+        _require_set(
+            "pressure_drop_spacer_report_file_name",
+            pressure_drop_spacer_report_file_name,
+        )
     _require_bool(
         "enable_solve_time_qoi_reports",
         enable_solve_time_qoi_reports,

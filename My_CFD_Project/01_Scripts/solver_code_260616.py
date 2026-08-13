@@ -7,6 +7,7 @@ import shutil
 import re
 import json
 import sys
+import math
 import time
 import importlib.util
 from pathlib import Path
@@ -15,12 +16,13 @@ from _solver_common import normalize_path, path_to_fluent_str as as_fluent_path
 from _solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
     SOLVER_EXIT_SUCCESS,
-    assess_residual_convergence,
     classify_solver_stop_reason,
     collect_solver_final_artifact_failures,
     fluent_report_relative_window_met,
     format_stop_reason_marker,
+    parse_fluent_convergence_marker,
     parse_fluent_report_file_series,
+    parse_last_residual_iteration_from_transcript_text,
     resolve_solver_final_artifact_exit_code,
 )
 from _fluent_report_helpers import create_x_normal_plane
@@ -200,6 +202,12 @@ if __name__ == "__main__":
     qoi_initial_values_to_ignore = cfg.qoi_initial_values_to_ignore
     enable_lmh_udm_avg_report_file = cfg.enable_lmh_udm_avg_report_file
     lmh_udm_avg_report_file_name = cfg.lmh_udm_avg_report_file_name
+    enable_pressure_drop_spacer_report_file = (
+        cfg.enable_pressure_drop_spacer_report_file
+    )
+    pressure_drop_spacer_report_file_name = (
+        cfg.pressure_drop_spacer_report_file_name
+    )
 
     # Output files
     solver_log_path = os.path.join(case_path, f"solver_log_{case_name}.txt")
@@ -237,6 +245,90 @@ def require_items(required_items, available_items, item_type):
             f"Missing required {item_type}: {missing_items}. "
             f"Available {item_type}: {available_items}"
         )
+
+
+def fluent_mass_diffusivity_value(state):
+    """Extract the numeric mixture mass diffusivity from a Fluent get_state dict.
+
+    Raises if the state is missing or not a numeric `value`. The solver does
+    not write this property; it only reads the template.
+    """
+    if not isinstance(state, dict):
+        raise TypeError(
+            f"Mixture mass diffusivity state is {type(state).__name__}, "
+            f"expected dict. State={state!r}"
+        )
+    if "value" not in state:
+        raise ValueError(
+            f"Mixture mass diffusivity state has no 'value' key: {state!r}"
+        )
+    try:
+        return float(state["value"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Mixture mass diffusivity 'value' is not numeric: {state!r}"
+        ) from exc
+
+
+def assert_fluent_mass_diffusivity_matches_config(
+    state,
+    expected,
+    *,
+    rel_tol=1e-9,
+):
+    """Raise if the template diffusivity does not match run_config."""
+    actual = fluent_mass_diffusivity_value(state)
+    expected_value = float(expected)
+    option = state.get("option")
+    if option is not None and option != "constant-dilute-appx":
+        raise ValueError(
+            f"Fluent mixture mass diffusivity option is {option!r}, "
+            f"expected 'constant-dilute-appx'. State={state!r}. "
+            "UDF D_SALT is a constant and only matches that setting."
+        )
+    if not math.isclose(actual, expected_value, rel_tol=rel_tol, abs_tol=0.0):
+        raise ValueError(
+            f"Fluent mixture mass diffusivity {actual!r} does not match "
+            f"run_config.mass_diffusivity {expected_value!r}. State={state!r}. "
+            "The solver does not write this property; the template, "
+            "run_config.mass_diffusivity, and UDF D_SALT must stay in lockstep."
+        )
+    return actual
+
+
+def replace_define_real(text, macro_name, new_value):
+    """Replace a real/float #define value in a C source string.
+
+    Matches one decimal or scientific literal after `#define NAME`.
+    Raises if the macro is missing or appears more than once.
+    """
+    formatted = format(float(new_value), ".10g")
+    pattern = (
+        rf"(^\s*#define\s+{re.escape(macro_name)}\s+)"
+        rf"([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)"
+        rf"(.*$)"
+    )
+    replacement = rf"\g<1>{formatted}\g<3>"
+
+    found = list(re.finditer(pattern, text, flags=re.MULTILINE))
+    if len(found) != 1:
+        raise ValueError(
+            f'Could not find exactly one real macro definition for "{macro_name}".'
+        )
+
+    new_text, count = re.subn(
+        pattern,
+        replacement,
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise ValueError(
+            f'Could not find exactly one real macro definition for "{macro_name}".'
+        )
+
+    return new_text
 
 
 def replace_define_int(text, macro_name, new_value):
@@ -345,8 +437,12 @@ def copy_and_patch_udf_to_case_folder(
     source_path,
     destination_path,
     salt_yi_index_value,
+    u_target_value,
 ):
-    """Copy UDF to case folder and patch SALT_YI_INDEX.
+    """Copy UDF to the case folder and patch SALT_YI_INDEX and U_TARGET.
+
+    Rewrites only destination_path (the case-local copy). The master under
+    02_UDFs is never modified.
 
     MEMB_THREAD_BASE_NAME_TOP and MEMB_THREAD_BASE_NAME_BOTTOM are hardcoded in
     the UDF as "wall_top_mem" and "wall_bottom_mem" and do not require runtime patching.
@@ -371,11 +467,17 @@ def copy_and_patch_udf_to_case_folder(
         "SALT_YI_INDEX",
         salt_yi_index_value,
     )
+    udf_text = replace_define_real(
+        udf_text,
+        "U_TARGET",
+        u_target_value,
+    )
 
     with open(destination_path, "w", encoding="utf-8", newline="\n") as file:
         file.write(udf_text)
 
     print(f"Patched SALT_YI_INDEX = {salt_yi_index_value}")
+    print(f"Patched U_TARGET = {u_target_value}")
     print(f"Case-specific UDF ready: {destination_path}")
 
     return destination_path
@@ -539,6 +641,48 @@ def _marker_in_transcript_file(path):
         return None
 
 
+def list_solver_transcript_paths(case_dir, solver_log_path):
+    """Return fluent-*.trn (newest mtime first), then the PyFluent solver log."""
+    case_dir = Path(case_dir)
+    solver_log_path = Path(solver_log_path)
+    trn_files = []
+    try:
+        trn_files = [p for p in case_dir.glob("fluent-*.trn") if p.is_file()]
+    except OSError:
+        trn_files = []
+    trn_files.sort(
+        key=lambda p: p.stat().st_mtime if p.is_file() else 0.0,
+        reverse=True,
+    )
+    return list(trn_files) + [solver_log_path]
+
+
+def read_solver_transcripts(case_dir, solver_log_path):
+    """Yield (path, text) for non-empty transcripts in search order."""
+    results = []
+    for path in list_solver_transcript_paths(case_dir, solver_log_path):
+        text = _marker_in_transcript_file(path)
+        if text is None:
+            continue
+        results.append((path, text))
+    return results
+
+
+def select_solve_transcript(case_dir, solver_log_path):
+    """Pick the newest transcript that has a convergence marker or residual table.
+
+    Newest fluent-*.trn first, then the PyFluent solver log. The first file
+    that looks like a solve transcript is used so an older rerun's marker is
+    not preferred over a newer max-iter file with no marker.
+    """
+    for path, text in read_solver_transcripts(case_dir, solver_log_path):
+        marker_reason, _marker_iter = parse_fluent_convergence_marker(text)
+        table_iter = parse_last_residual_iteration_from_transcript_text(text)
+        if marker_reason or table_iter is not None:
+            return path, text
+    return None, ""
+
+
 def assert_transcript_contains(
     marker,
     context,
@@ -558,27 +702,11 @@ def assert_transcript_contains(
     If libudf is not loaded when a UDF BC is set, Fluent can silently drop the
     hook and keep a constant panel value — a 0 m/s run can still converge.
     """
-    case_dir = Path(case_dir)
-    solver_log_path = Path(solver_log_path)
     deadline = time.monotonic() + float(timeout_s)
 
     while True:
-        trn_files = []
-        try:
-            trn_files = [
-                p for p in case_dir.glob("fluent-*.trn") if p.is_file()
-            ]
-        except OSError:
-            trn_files = []
-        trn_files.sort(
-            key=lambda p: p.stat().st_mtime if p.is_file() else 0.0,
-            reverse=True,
-        )
-
-        search_paths = list(trn_files) + [solver_log_path]
+        search_paths = list_solver_transcript_paths(case_dir, solver_log_path)
         for path in search_paths:
-            # solver_log is secondary and only when non-empty; fluent-*.trn
-            # uses the same non-empty read helper.
             text = _marker_in_transcript_file(path)
             if text is None:
                 continue
@@ -818,8 +946,7 @@ def apply_inlet_velocity_boundary(
             print(
                 f"Inlet BC set on {inlet_zone_name}: Components; "
                 f"x-velocity UDF={profile_udf_name}; y=z=0 "
-                f"(inlet_velocity_value={inlet_velocity} is unused for profile; "
-                f"UDF U_MEAN is the area-mean target)"
+                f"(U_TARGET patched from inlet_velocity_value={inlet_velocity})"
             )
             return
 
@@ -858,8 +985,8 @@ def apply_inlet_velocity_boundary(
     print(
         f"Inlet BC set on {inlet_zone_name}: TUI Components+UDF fallback; "
         f"profile_udf_name={profile_udf_name} "
-        f"(inlet_velocity_value={inlet_velocity} unused for profile; "
-        f"UDF U_MEAN is the area-mean target; untested fallback)"
+        f"(U_TARGET patched from inlet_velocity_value={inlet_velocity}; "
+        f"untested fallback)"
     )
 
 
@@ -1543,6 +1670,9 @@ def ensure_lmh_udm_avg_report_file(solution, report_name, file_name):
     return object_name
 
 
+QOI_CONVERGENCE_CONDITION = "any-condition-is-met"
+
+
 def configure_qoi_convergence_condition(
     solution,
     *,
@@ -1552,9 +1682,14 @@ def configure_qoi_convergence_condition(
     initial_values_to_ignore,
     active,
 ):
-    """Configure Fluent report-definition convergence conditions (Any vs residuals)."""
+    """Configure one Fluent report-definition convergence condition.
+
+    Sets the global selector to any-condition-is-met so residual checks
+    (kept enabled) OR the LMH window can stop the run. Call once per
+    report; the selector is overwritten to the same value each time.
+    """
     convergence = solution.monitor.convergence_conditions
-    convergence.condition = "any-condition-is-met"
+    convergence.condition = QOI_CONVERGENCE_CONDITION
     try:
         convergence.check_for = "solution-convergence"
     except Exception as exc:
@@ -1590,7 +1725,7 @@ def configure_qoi_convergence_condition(
         "QoI convergence condition configured: "
         f"report={report_name}, stop_criterion={stop_criterion}, "
         f"Np={previous_values_to_consider}, ignore={initial_values_to_ignore}, "
-        f"active={active}, condition=any-condition-is-met"
+        f"active={active}, condition={QOI_CONVERGENCE_CONDITION}"
     )
     return object_name
 
@@ -1600,42 +1735,6 @@ def set_qoi_convergence_condition_active(solution, object_name, active):
     report = solution.monitor.convergence_conditions.convergence_reports[object_name]
     report.active = bool(active)
     print(f"QoI convergence condition '{object_name}' active={active}")
-
-
-def residual_current_values_from_solution(solution, species_name):
-    """Best-effort read of current residual magnitudes for stop-reason classification."""
-    values = {}
-    try:
-        state = solution.monitor.residual.equations.get_state()
-    except Exception as exc:
-        print(f"Could not read residual equations for stop reason: {exc}")
-        return values
-    if not isinstance(state, dict):
-        return values
-
-    targets = [
-        "continuity",
-        "x-velocity",
-        "y-velocity",
-        "z-velocity",
-        species_name,
-    ]
-    for name in targets:
-        eq_state = state.get(name)
-        if not isinstance(eq_state, dict):
-            continue
-        for key in (
-            "residual",
-            "current_residual",
-            "value",
-            "current_value",
-            "normalized_residual",
-        ):
-            raw = eq_state.get(key)
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-                values[name] = float(raw)
-                break
-    return values
 
 
 def qoi_met_from_report_file(report_file_path, previous_values_to_consider, stop_criterion):
@@ -1669,90 +1768,157 @@ def qoi_met_from_report_file(report_file_path, previous_values_to_consider, stop
     window = [value for _iteration, value in series[-required:]]
     met = fluent_report_relative_window_met(window, stop_criterion)
     print(
-        f"QoI report-file window check: rows={len(series)}, "
+        f"QoI report-file window check: path={path}, rows={len(series)}, "
         f"window_len={len(window)}, met={met}"
     )
     return True, met, final_iteration
 
 
+def qoi_met_from_report_files(
+    report_file_paths,
+    previous_values_to_consider,
+    stop_criterion,
+):
+    """AND-combine UG window checks across report files.
+
+    Returns (evaluable, met, final_iteration). evaluable is True only when
+    every path is evaluable. met is True only when every path is met.
+    final_iteration is the max last-row iteration among readable files.
+    """
+    if not report_file_paths:
+        return False, False, None
+    evaluable_all = True
+    met_all = True
+    last_iterations = []
+    for path in report_file_paths:
+        evaluable, met, final_iteration = qoi_met_from_report_file(
+            path,
+            previous_values_to_consider,
+            stop_criterion,
+        )
+        if final_iteration is not None:
+            last_iterations.append(int(final_iteration))
+        if not evaluable:
+            evaluable_all = False
+            met_all = False
+        elif not met:
+            met_all = False
+    combined_iteration = max(last_iterations) if last_iterations else None
+    return evaluable_all, met_all, combined_iteration
+
+
 def determine_and_print_stop_reason(
-    solution,
     *,
-    species_name,
-    residual_target,
+    case_dir,
+    solver_log_path,
     max_iterations,
     qoi_enabled,
-    qoi_report_file_path,
+    qoi_report_file_paths,
     qoi_previous_values_to_consider,
     qoi_stop_criterion,
     diverged,
     calculation_ran=True,
 ):
-    """Classify stop reason, print the inventory marker, and return the reason.
+    """Classify stop reason from the Fluent transcript, print the marker.
 
     Intended to run immediately after iterate() returns or raises, before later
     post-iterate steps (write_case_data, transcript assertions), so a partial
     failure still records why iteration ended.
+
+    Primary determination is the console phrases
+    'report definition solution is converged' (QoI) and
+    'solution is converged' (residuals). Report-file window checks are a
+    cross-check only.
     """
     if not calculation_ran:
         reason = classify_solver_stop_reason(
             diverged=False,
             residuals_met=False,
             qoi_met=False,
-            qoi_check_enabled=False,
-            qoi_report_evaluable=False,
             final_iteration=None,
             max_iterations=max_iterations,
             calculation_ran=False,
         )
         marker = format_stop_reason_marker(reason)
         print(marker)
-        print("Stop-reason details: calculation_ran=False")
+        print("Stop-reason details: calculation_ran=False, qoi_check_enabled=False")
         return reason
 
-    residual_values = residual_current_values_from_solution(solution, species_name)
-    target_names = [
-        "continuity",
-        "x-velocity",
-        "y-velocity",
-        "z-velocity",
-        species_name,
-    ]
-    residual_assessment = assess_residual_convergence(
-        residual_values,
-        {name: float(residual_target) for name in target_names},
+    transcript_path, transcript_text = select_solve_transcript(
+        case_dir,
+        solver_log_path,
     )
-    residuals_met = bool(residual_assessment.get("strict_met"))
+    transcript_reason, transcript_iteration = parse_fluent_convergence_marker(
+        transcript_text
+    )
+    table_iteration = parse_last_residual_iteration_from_transcript_text(
+        transcript_text
+    )
+    residuals_met = transcript_reason == "residual_converged"
+    qoi_met = transcript_reason == "qoi_converged"
+    final_iteration = transcript_iteration
+    if final_iteration is None:
+        final_iteration = table_iteration
 
-    qoi_met = False
-    qoi_report_evaluable = False
-    final_iteration = None
+    report_file_evaluable = False
+    report_file_qoi_met = False
+    report_file_iteration = None
+    discrepancy = None
     if qoi_enabled:
-        qoi_report_evaluable, qoi_met, final_iteration = qoi_met_from_report_file(
-            qoi_report_file_path,
-            qoi_previous_values_to_consider,
-            qoi_stop_criterion,
+        report_file_evaluable, report_file_qoi_met, report_file_iteration = (
+            qoi_met_from_report_files(
+                qoi_report_file_paths,
+                qoi_previous_values_to_consider,
+                qoi_stop_criterion,
+            )
         )
+        if qoi_met and not report_file_qoi_met:
+            discrepancy = (
+                "transcript qoi_converged but report-file window check "
+                f"disagrees (evaluable={report_file_evaluable}, "
+                f"report_file_qoi_met={report_file_qoi_met})"
+            )
+            print(f"Stop-reason discrepancy: {discrepancy}")
+        if final_iteration is None:
+            final_iteration = report_file_iteration
 
     reason = classify_solver_stop_reason(
         diverged=bool(diverged),
         residuals_met=residuals_met,
         qoi_met=qoi_met,
-        qoi_check_enabled=bool(qoi_enabled),
-        qoi_report_evaluable=bool(qoi_report_evaluable),
         final_iteration=final_iteration,
         max_iterations=max_iterations,
         calculation_ran=True,
     )
     marker = format_stop_reason_marker(reason)
     print(marker)
-    print(
-        "Stop-reason details: "
-        f"residuals_met={residuals_met}, qoi_met={qoi_met}, "
-        f"qoi_report_evaluable={qoi_report_evaluable}, "
-        f"final_iteration={final_iteration}, max_iterations={max_iterations}, "
-        f"diverged={diverged}"
-    )
+    detail_parts = [
+        f"transcript_file={transcript_path}",
+        f"transcript_reason={transcript_reason}",
+        f"transcript_iteration={transcript_iteration}",
+        f"table_iteration={table_iteration}",
+        f"residuals_met={residuals_met}",
+        f"qoi_met={qoi_met}",
+        f"qoi_check_enabled={bool(qoi_enabled)}",
+        f"final_iteration={final_iteration}",
+        f"max_iterations={max_iterations}",
+        f"diverged={diverged}",
+    ]
+    if qoi_enabled:
+        detail_parts.extend(
+            [
+                f"report_file_qoi_met={report_file_qoi_met}",
+                f"qoi_report_evaluable={report_file_evaluable}",
+                f"report_file_iteration={report_file_iteration}",
+            ]
+        )
+        if discrepancy:
+            detail_parts.append(f"discrepancy={discrepancy}")
+    else:
+        detail_parts.append(
+            "qoi_report_check=skipped (enable_qoi_convergence_stop=False)"
+        )
+    print("Stop-reason details: " + ", ".join(detail_parts))
     return reason
 
 
@@ -2583,7 +2749,16 @@ if __name__ == "__main__":
         print(mixture_object.viscosity.get_state())
 
         print("Mixture mass diffusivity state:")
-        print(mixture_object.mass_diffusivity.get_state())
+        diffusivity_state = mixture_object.mass_diffusivity.get_state()
+        print(diffusivity_state)
+        assert_fluent_mass_diffusivity_matches_config(
+            diffusivity_state,
+            mass_diffusivity,
+        )
+        print(
+            f"Mixture mass diffusivity matches run_config.mass_diffusivity="
+            f"{mass_diffusivity}"
+        )
 
         print("Fluid zone states:")
         for fluid_zone_name in target_fluid_zones:
@@ -2737,13 +2912,15 @@ if __name__ == "__main__":
         # ======================================================
 
         print(f"UDF active membrane wall base names (hardcoded in UDF): {membrane_wall_base_names}")
-        print("UDF UDM layout (must match 260810_RO_UDF.c UDM_COUNT=12 default dual):")
+        print("UDF UDM layout (must match 260813_RO_UDF.c UDM_COUNT=13 default dual):")
         print("  0 SI, 1 TOTAL_S, 2-4 X/Y/ZMOM, 5 STRAIN_RATE (cell)")
         print("  6 JW, 7 CM, 8 LMH, 9 CP (film-theory), 10 SALT_FLUX (face+optional cell)")
         print("  11 AREA (cell-diag accumulator)")
+        print("  12 Y1 (face: wall-to-adjacent-centroid distance [m])")
         print("  UDF-5  = cell-centered strain rate magnitude [1/s] (not wall shear rate)")
         print("  UDF-9  = film-theory CP, (cm-cp_perm)/(C_INLET_REF-cp_perm), Jw unramped")
         print("  UDF-10 = salt mass flux [kg/m2/s] (was UDF-12)")
+        print("  UDF-12 = y1 wall-to-centroid distance [m]")
         print("  Live compare face vs cell LMH: surface-areaavg(udm-8) with FACE/CELL switches")
         print(f"Using SALT_YI_INDEX = {salt_yi_index}")
 
@@ -2758,6 +2935,7 @@ if __name__ == "__main__":
             source_path=udf_master_path,
             destination_path=udf_case_path,
             salt_yi_index_value=salt_yi_index,
+            u_target_value=inlet_velocity,
         )
 
         solver.tui.define.user_defined.compiled_functions(
@@ -3035,24 +3213,44 @@ if __name__ == "__main__":
         print("\nResidual equations state after setting:")
         print(solution.monitor.residual.equations.get_state())
 
-        qoi_convergence_object_name = None
-        qoi_report_file_path = os.path.join(case_path, lmh_udm_avg_report_file_name)
+        qoi_convergence_object_names = []
+        qoi_stop_report_file_paths = []
+        lmh_report_file_path = os.path.join(case_path, lmh_udm_avg_report_file_name)
+        dp_report_file_path = os.path.join(
+            case_path, pressure_drop_spacer_report_file_name
+        )
         if enable_solve_time_qoi_reports and enable_lmh_udm_avg_report_file:
             ensure_lmh_udm_avg_report_file(
                 solution=solution,
                 report_name=qoi_convergence_report_name,
                 file_name=lmh_udm_avg_report_file_name,
             )
-            print(f"QoI report file path (case dir): {qoi_report_file_path}")
+            qoi_stop_report_file_paths.append(lmh_report_file_path)
+            print(f"QoI report file path (case dir): {lmh_report_file_path}")
+        if enable_solve_time_qoi_reports and enable_pressure_drop_spacer_report_file:
+            ensure_lmh_udm_avg_report_file(
+                solution=solution,
+                report_name="pressure_drop_spacer",
+                file_name=pressure_drop_spacer_report_file_name,
+            )
+            print(f"QoI report file path (case dir): {dp_report_file_path}")
 
         if enable_qoi_convergence_stop:
-            qoi_convergence_object_name = configure_qoi_convergence_condition(
-                solution=solution,
-                report_name=qoi_convergence_report_name,
-                stop_criterion=qoi_stop_criterion,
-                previous_values_to_consider=qoi_previous_values_to_consider,
-                initial_values_to_ignore=qoi_initial_values_to_ignore,
-                active=not use_ramp_convergence_safety,
+            print(
+                "QoI convergence stop: "
+                f"{QOI_CONVERGENCE_CONDITION} on [{qoi_convergence_report_name}] "
+                "with residual check_convergence left on. "
+                "pressure_drop_spacer.out is diagnostic-only (not a stop condition)."
+            )
+            qoi_convergence_object_names.append(
+                configure_qoi_convergence_condition(
+                    solution=solution,
+                    report_name=qoi_convergence_report_name,
+                    stop_criterion=qoi_stop_criterion,
+                    previous_values_to_consider=qoi_previous_values_to_consider,
+                    initial_values_to_ignore=qoi_initial_values_to_ignore,
+                    active=not use_ramp_convergence_safety,
+                )
             )
 
         relaxation_result = apply_real_under_relaxation(
@@ -3094,9 +3292,10 @@ if __name__ == "__main__":
         # This cell runs the solver calculation.
         # If use_ramp_convergence_safety is True:
         #   Phase 1 runs a fixed number of iterations with residual convergence stopping disabled
-        #   and QoI convergence condition inactive.
-        #   Phase 2 re-enables residual checks and the QoI condition, then lets Fluent stop early
-        #   when residual criteria OR the lmh_udm_avg window criterion are met (Any).
+        #   and QoI convergence conditions inactive.
+        #   Phase 2 activates the LMH QoI condition (any-condition-is-met) and
+        #   re-enables residual check_convergence so Fluent stops on residual
+        #   OR LMH. pressure_drop_spacer.out is diagnostic-only.
 
         calculation_diverged = False
         if run_calculation_enabled:
@@ -3129,10 +3328,10 @@ if __name__ == "__main__":
                         species_name=species_name,
                         enable=False,
                     )
-                    if qoi_convergence_object_name is not None:
+                    for object_name in qoi_convergence_object_names:
                         set_qoi_convergence_condition_active(
                             solution,
-                            qoi_convergence_object_name,
+                            object_name,
                             False,
                         )
 
@@ -3146,8 +3345,9 @@ if __name__ == "__main__":
                     )
 
                     print(
-                        "\nRe-enabling residual and QoI convergence checks "
-                        "for full-source convergence phase."
+                        "\nEnabling convergence-phase stopping: "
+                        f"QoI reports active={bool(qoi_convergence_object_names)}, "
+                        "residual check_convergence=True."
                     )
 
                     set_residual_convergence_check(
@@ -3155,10 +3355,10 @@ if __name__ == "__main__":
                         species_name=species_name,
                         enable=True,
                     )
-                    if qoi_convergence_object_name is not None:
+                    for object_name in qoi_convergence_object_names:
                         set_qoi_convergence_condition_active(
                             solution,
-                            qoi_convergence_object_name,
+                            object_name,
                             True,
                         )
 
@@ -3171,10 +3371,15 @@ if __name__ == "__main__":
 
                 else:
                     print("\nRamp convergence safety is disabled.")
-                    if qoi_convergence_object_name is not None:
+                    set_residual_convergence_check(
+                        solution=solution,
+                        species_name=species_name,
+                        enable=True,
+                    )
+                    for object_name in qoi_convergence_object_names:
                         set_qoi_convergence_condition_active(
                             solution,
-                            qoi_convergence_object_name,
+                            object_name,
                             True,
                         )
                     solution.run_calculation.iterate(iter_count=max_iterations)
@@ -3188,15 +3393,11 @@ if __name__ == "__main__":
                     # transcript assertions) so post-iterate failures still
                     # retain why iteration ended.
                     determine_and_print_stop_reason(
-                        solution,
-                        species_name=species_name,
-                        residual_target=residual_target,
+                        case_dir=case_path,
+                        solver_log_path=solver_log_path,
                         max_iterations=max_iterations,
-                        qoi_enabled=bool(
-                            enable_qoi_convergence_stop
-                            and enable_lmh_udm_avg_report_file
-                        ),
-                        qoi_report_file_path=qoi_report_file_path,
+                        qoi_enabled=bool(enable_qoi_convergence_stop),
+                        qoi_report_file_paths=qoi_stop_report_file_paths,
                         qoi_previous_values_to_consider=(
                             qoi_previous_values_to_consider
                         ),
@@ -3230,12 +3431,11 @@ if __name__ == "__main__":
             print("Run calculation is disabled. Skipping solver iterations.")
             try:
                 determine_and_print_stop_reason(
-                    solution,
-                    species_name=species_name,
-                    residual_target=residual_target,
+                    case_dir=case_path,
+                    solver_log_path=solver_log_path,
                     max_iterations=max_iterations,
                     qoi_enabled=False,
-                    qoi_report_file_path=qoi_report_file_path,
+                    qoi_report_file_paths=qoi_stop_report_file_paths,
                     qoi_previous_values_to_consider=qoi_previous_values_to_consider,
                     qoi_stop_criterion=qoi_stop_criterion,
                     diverged=False,

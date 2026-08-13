@@ -644,7 +644,7 @@ if __name__ == "__main__":
         FIELD_VELOCITY_MAG = "velocity-magnitude"
         FIELD_SALT_MASS_FRACTION = "nacl"
 
-        # UDM field names — imported from _udm_layout (locked to 260810_RO_UDF.c).
+        # UDM field names — imported from _udm_layout (locked to 260813_RO_UDF.c).
         # UDM_SM removed: water sink = volint(TOTAL_S) - volint(SI).
 
         # Wall shear stress magnitude field.

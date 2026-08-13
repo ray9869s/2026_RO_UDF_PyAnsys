@@ -50,8 +50,17 @@ tests that pass on both from the start.
   tree, case-naming (`u0p1_p4M__<mesh>` style), and all CSV/JSON output
   schemas (column names/order/count **byte-identical**) and output filenames
   must stay unchanged unless explicitly approved.
-- **Do not modify** UDF physics (`02_UDFs/*.c`), the `.scm` template's computed
-  values, or anything in `00_Geometries/`.
+- **UDF files are dated and immutable once used for results.** Any change to
+  UDF physics, to the UDM layout, or to the meaning of an existing hook gets
+  a **new dated file** under `02_UDFs/` (e.g. `260813_RO_UDF.c`), never an
+  in-place edit of an existing one. Point `run_config.udf_source_file_name`
+  at the new file. Rationale: `260810_RO_UDF.c` was overwritten three times
+  after results had already been produced with it, so the filename no longer
+  identified a single behaviour. Bug fixes that do not change physics, UDM
+  indices, or hook semantics may stay in the same file as ordinary commits.
+  Leave older dated files byte-identical; they are regression references.
+- **Do not modify** the `.scm` template's computed values, or anything in
+  `00_Geometries/`.
 - **Refactor by extraction, not rewrite.** Keep entry-point script names
   stable (no renames of `07_batch_solver_rerun.py`, `solver_code_*.py`, etc.).
 - Validators are **input-only**: never change behavior for valid inputs, only

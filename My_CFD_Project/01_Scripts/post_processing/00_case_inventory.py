@@ -930,6 +930,7 @@ def parse_logs(
     elif stop_reason in {
         "unknown_early_stop",
         "qoi_report_unavailable",
+        "iteration_unknown",
         "not_run",
     }:
         result.convergence_status = POSSIBLY_INCOMPLETE
@@ -956,6 +957,7 @@ def parse_logs(
             "diverged",
             "unknown_early_stop",
             "qoi_report_unavailable",
+            "iteration_unknown",
             "not_run",
         }
     )

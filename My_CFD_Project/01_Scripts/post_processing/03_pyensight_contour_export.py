@@ -113,7 +113,8 @@ FIELD_SPECS: dict = {
     },
     "salt_flux": {
         "display_label": "Salt flux Js [kg/m²/s]",
-        # COUNT=12 => valid indices 0..11. udm-12 is out of range — do not fall back.
+        # COUNT=13 => valid indices 0..12. udm-12 is Y1 (wall-centroid
+        # distance), not salt flux. udm-13 is out of range — do not fall back.
         "var_candidates": ["udm-10", "UDM-10", "User Defined Memory 10", "udm_10"],
         "surface_type": "membrane",
         "output_suffix": "salt_flux_membrane",

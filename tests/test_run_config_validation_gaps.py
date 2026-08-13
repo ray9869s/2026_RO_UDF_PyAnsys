@@ -285,6 +285,8 @@ class TestRunConfigOverrideAllowlist:
             "qoi_initial_values_to_ignore",
             "enable_lmh_udm_avg_report_file",
             "lmh_udm_avg_report_file_name",
+            "enable_pressure_drop_spacer_report_file",
+            "pressure_drop_spacer_report_file_name",
             "update_rho_avg_report_definition",
             "rho_avg_report_name",
             "rho_avg_report_field",

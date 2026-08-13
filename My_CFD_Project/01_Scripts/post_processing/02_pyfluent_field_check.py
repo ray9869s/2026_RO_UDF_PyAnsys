@@ -60,7 +60,11 @@ _SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from _udm_layout import EXPECTED_UDM_FIELDS  # noqa: E402
+from _udm_layout import (  # noqa: E402
+    expected_udm_fields_from_enum,
+    find_case_udf_path,
+    parse_udm_enum_from_c,
+)
 
 
 # ----------------------------------------------------------
@@ -491,6 +495,7 @@ def run_pyfluent_live_checks(
     records: list[CheckRecord],
     cfg: Any,
     paths: dict[str, Any],
+    expected_udm_fields: dict[str, str],
 ) -> None:
     add_check(records, "pyfluent_live", "enabled", "INFO", "--with-fluent was requested.")
 
@@ -525,7 +530,11 @@ def run_pyfluent_live_checks(
         )
 
         check_solver_surfaces(records, session, cfg)
-        check_solver_fields(records, session)
+        check_solver_fields(
+            records,
+            session,
+            expected_udm_fields=expected_udm_fields,
+        )
 
     except Exception as exc:
         add_check(records, "pyfluent_live", "unhandled_exception", "FAIL", f"{type(exc).__name__}: {exc}")
@@ -685,7 +694,11 @@ def check_solver_surfaces(records: list[CheckRecord], session: Any, cfg: Any) ->
             add_check(records, "pyfluent_live_surface", expected, "WARN", "Surface not found in field_info surface list.")
 
 
-def check_solver_fields(records: list[CheckRecord], session: Any) -> None:
+def check_solver_fields(
+    records: list[CheckRecord],
+    session: Any,
+    expected_udm_fields: dict[str, str],
+) -> None:
     field_names: set[str] = set()
 
     try:
@@ -708,7 +721,7 @@ def check_solver_fields(records: list[CheckRecord], session: Any) -> None:
     else:
         add_check(records, "pyfluent_live", "field_count", "WARN", "No fields detected through field_info.")
 
-    for field_name, description in EXPECTED_UDM_FIELDS.items():
+    for field_name, description in expected_udm_fields.items():
         if normalize_name(field_name) in field_names_norm:
             add_check(records, "pyfluent_live_field", field_name, "PASS", f"Found expected field: {description}")
         else:
@@ -875,7 +888,22 @@ def run_field_check(
     check_raw_report_json(records, raw_json_path)
 
     if with_fluent:
-        run_pyfluent_live_checks(records, cfg, paths)
+        # Layout comes from the case-local UDF copy. Missing copy is fatal
+        # (no fallback to the live master's udm-N meanings) and is raised
+        # before Fluent is launched.
+        udf_path = find_case_udf_path(paths["case_path"])
+        expected_udm_fields = expected_udm_fields_from_enum(
+            parse_udm_enum_from_c(udf_path.read_text(encoding="utf-8"))
+        )
+        add_check(
+            records,
+            "pyfluent_live",
+            "case_udf_layout",
+            "INFO",
+            "UDM fields derived from case-local UDF.",
+            udf_path.name,
+        )
+        run_pyfluent_live_checks(records, cfg, paths, expected_udm_fields)
     else:
         add_check(records, "pyfluent_live", "enabled", "INFO", "Skipped. Use --with-fluent to run live PyFluent checks.")
 

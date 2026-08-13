@@ -93,6 +93,7 @@ except ImportError:
         "cell_strain_rate": 5,
         "membrane_area_acc": 11,
         "salt_mass_flux": 10,
+        "wall_centroid_distance": 12,
     }
 
 product_version = "25.1.0"

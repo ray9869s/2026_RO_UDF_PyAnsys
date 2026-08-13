@@ -1,4 +1,4 @@
-"""Lock Python UDM indices to the enum in 260810_RO_UDF.c.
+"""Lock Python UDM indices to the enum in 260813_RO_UDF.c.
 
 Parses the C enum rather than duplicating numbers, so Python and UDF cannot
 silently drift after a renumber.
@@ -6,8 +6,8 @@ silently drift after a renumber.
 
 from __future__ import annotations
 
+import hashlib
 import re
-from pathlib import Path
 
 import pytest
 
@@ -23,6 +23,7 @@ from _udm_layout import (
     FIELD_UDM_SALT_FLUX,
     FIELD_UDM_SI,
     FIELD_UDM_TOTAL_S,
+    FIELD_UDM_Y1,
     UDM_AREA,
     UDM_CM,
     UDM_COUNT,
@@ -35,12 +36,24 @@ from _udm_layout import (
     UDM_STRAIN_RATE,
     UDM_TOTAL_S,
     UDM_XMOM,
+    UDM_Y1,
     UDM_YMOM,
     UDM_ZMOM,
+    expected_udm_fields_from_case,
+    expected_udm_fields_from_enum,
+    find_case_udf_path,
+    parse_udm_enum_from_c,
 )
-from helpers import POST_DIR, REPO_ROOT, SCRIPTS_DIR, load_post_config
+from helpers import REPO_ROOT, SCRIPTS_DIR, load_post_config, load_run_config
 
-UDF_PATH = REPO_ROOT / "My_CFD_Project" / "02_UDFs" / "260810_RO_UDF.c"
+UDF_DIR = REPO_ROOT / "My_CFD_Project" / "02_UDFs"
+UDF_PATH = UDF_DIR / "260813_RO_UDF.c"
+UDF_260810_PATH = UDF_DIR / "260810_RO_UDF.c"
+UDF_260612_PATH = UDF_DIR / "260612_RO_UDF.c"
+
+# Frozen regression references — do not edit those files in place.
+MD5_260810 = "c88b7bbcc8f573a932f09e48445d66f5"
+MD5_260612 = "078e66d8f3fb8b9398d267037c450c98"
 
 # Symbols the default dual build must expose (CELL diagnostics ON).
 REQUIRED_C_SYMBOLS = {
@@ -56,45 +69,9 @@ REQUIRED_C_SYMBOLS = {
     "UDM_CP": 9,
     "UDM_SALT_FLUX": 10,
     "UDM_AREA": 11,
-    "UDM_COUNT": 12,
+    "UDM_Y1": 12,
+    "UDM_COUNT": 13,
 }
-
-
-def parse_udm_enum_from_c(source: str) -> dict[str, int]:
-    """Parse `enum { NAME = N, ... }` UDM block from 260810_RO_UDF.c.
-
-    Evaluates only the default dual-on branch: keeps lines under
-    `#if RO_UDM_CELL_DIAGNOSTICS` and drops the `#else` ... `#endif` arm so
-    UDM_AREA / UDM_COUNT=12 are visible.
-    """
-    enum_match = re.search(
-        r"enum\s*\{(?P<body>.*?)\n\};",
-        source,
-        flags=re.DOTALL,
-    )
-    if enum_match is None:
-        raise AssertionError("Could not find UDM enum { ... }; in 260810_RO_UDF.c")
-
-    body = enum_match.group("body")
-    # Keep CELL-diagnostics branch; drop the #else arm (COUNT=11).
-    body = re.sub(
-        r"#else.*?#endif",
-        "",
-        body,
-        flags=re.DOTALL,
-    )
-    body = re.sub(r"#if[^\n]*\n", "", body)
-    body = re.sub(r"#endif[^\n]*\n?", "", body)
-
-    parsed: dict[str, int] = {}
-    for match in re.finditer(
-        r"\b(UDM_[A-Z0-9_]+)\s*=\s*(\d+)\b",
-        body,
-    ):
-        parsed[match.group(1)] = int(match.group(2))
-    if not parsed:
-        raise AssertionError("UDM enum body contained no NAME = N entries")
-    return parsed
 
 
 @pytest.fixture(scope="module")
@@ -121,6 +98,7 @@ def test_python_udm_layout_matches_c_enum(c_udm_enum):
         "UDM_CP": UDM_CP,
         "UDM_SALT_FLUX": UDM_SALT_FLUX,
         "UDM_AREA": UDM_AREA,
+        "UDM_Y1": UDM_Y1,
         "UDM_COUNT": UDM_COUNT,
     }
     assert python_side == c_udm_enum
@@ -137,6 +115,7 @@ def test_field_strings_use_parsed_indices(c_udm_enum):
     assert FIELD_UDM_CELL_STRAIN_RATE == f"udm-{c_udm_enum['UDM_STRAIN_RATE']}"
     assert FIELD_UDM_SALT_FLUX == f"udm-{c_udm_enum['UDM_SALT_FLUX']}"
     assert FIELD_UDM_MEMBRANE_AREA_ACC == f"udm-{c_udm_enum['UDM_AREA']}"
+    assert FIELD_UDM_Y1 == f"udm-{c_udm_enum['UDM_Y1']}"
 
 
 def test_post_config_udm_indices_match_layout(c_udm_enum):
@@ -147,6 +126,7 @@ def test_post_config_udm_indices_match_layout(c_udm_enum):
     assert post_cfg.udm_indices["cell_strain_rate"] == c_udm_enum["UDM_STRAIN_RATE"]
     assert post_cfg.udm_indices["salt_mass_flux"] == c_udm_enum["UDM_SALT_FLUX"]
     assert post_cfg.udm_indices["cp"] == c_udm_enum["UDM_CP"]
+    assert post_cfg.udm_indices["wall_centroid_distance"] == c_udm_enum["UDM_Y1"]
     assert "water_mass_source" not in post_cfg.udm_indices
     assert "cp_inlet" not in post_cfg.udm_indices
 
@@ -159,8 +139,58 @@ def test_expected_udm_fields_cover_valid_range_only():
         assert 0 <= index < UDM_COUNT, field_name
 
 
-def test_no_legacy_udm_12_in_active_post_scripts():
-    """udm-12 is out of range when UDM_COUNT=12 (valid 0..11)."""
+def test_module_expected_fields_match_parsed_260813(c_udm_enum):
+    assert EXPECTED_UDM_FIELDS == expected_udm_fields_from_enum(c_udm_enum)
+
+
+def test_case_udf_fields_follow_dated_layouts():
+    fields_813 = expected_udm_fields_from_enum(
+        parse_udm_enum_from_c(UDF_PATH.read_text(encoding="utf-8"))
+    )
+    fields_810 = expected_udm_fields_from_enum(
+        parse_udm_enum_from_c(UDF_260810_PATH.read_text(encoding="utf-8"))
+    )
+    fields_612 = expected_udm_fields_from_enum(
+        parse_udm_enum_from_c(UDF_260612_PATH.read_text(encoding="utf-8"))
+    )
+
+    assert fields_813["udm-12"] == "wall_centroid_distance"
+    assert "udm-12" not in fields_810
+    assert fields_810["udm-10"] == "salt_mass_flux"
+    assert fields_612["udm-12"] == "salt_mass_flux"
+    assert fields_612["udm-1"] == "water_mass_source"
+
+
+def test_expected_udm_fields_from_case_uses_case_local_copy(tmp_path):
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "260810_RO_UDF.c").write_text(
+        UDF_260810_PATH.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    fields = expected_udm_fields_from_case(case_dir)
+    assert "udm-12" not in fields
+    assert find_case_udf_path(case_dir).name == "260810_RO_UDF.c"
+
+
+def test_expected_udm_fields_from_case_missing_copy_raises(tmp_path):
+    case_dir = tmp_path / "empty_case"
+    case_dir.mkdir()
+    with pytest.raises(FileNotFoundError, match="No case-local UDF"):
+        expected_udm_fields_from_case(case_dir)
+
+
+def test_expected_udm_fields_from_case_multiple_copies_raise(tmp_path):
+    case_dir = tmp_path / "two_udfs"
+    case_dir.mkdir()
+    (case_dir / "260810_RO_UDF.c").write_text("enum { UDM_COUNT = 1\n};", encoding="utf-8")
+    (case_dir / "260813_RO_UDF.c").write_text("enum { UDM_COUNT = 1\n};", encoding="utf-8")
+    with pytest.raises(ValueError, match="Multiple case-local UDFs"):
+        expected_udm_fields_from_case(case_dir)
+
+
+def test_no_legacy_udm_13_in_active_post_scripts():
+    """udm-13 is out of range when UDM_COUNT=13 (valid 0..12). udm-12 is Y1."""
     active_roots = [
         SCRIPTS_DIR / "post_processing" / "01_pyfluent_report_extract.py",
         SCRIPTS_DIR / "post_processing" / "02_pyfluent_field_check.py",
@@ -169,13 +199,34 @@ def test_no_legacy_udm_12_in_active_post_scripts():
         SCRIPTS_DIR / "_udm_layout.py",
         SCRIPTS_DIR / "_fluent_report_helpers.py",
     ]
-    banned = re.compile(r"udm-12|UDM_12|User Defined Memory 12")
+    banned = re.compile(r"udm-13|UDM_13|User Defined Memory 13")
     for path in active_roots:
         text = path.read_text(encoding="utf-8")
-        # Allow comments that say the fallback was removed / out of range.
         for line_no, line in enumerate(text.splitlines(), start=1):
-            if "out of range" in line or "do not fall back" in line or "was 12" in line:
-                continue
-            if "was udm-12" in line or "was UDF-12" in line:
+            if "out of range" in line or "do not fall back" in line:
                 continue
             assert banned.search(line) is None, f"{path}:{line_no}: {line}"
+
+
+def test_d_salt_matches_run_config_mass_diffusivity():
+    source = UDF_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"^\s*#define\s+D_SALT\s+([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)",
+        source,
+        flags=re.MULTILINE,
+    )
+    assert match is not None, "Could not find #define D_SALT in 260813_RO_UDF.c"
+    run_cfg = load_run_config()
+    assert float(match.group(1)) == pytest.approx(float(run_cfg.mass_diffusivity))
+
+
+def test_analytic_cwall_defaults_off():
+    source = UDF_PATH.read_text(encoding="utf-8")
+    assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+0", source)
+
+
+def test_frozen_udf_regression_references_unchanged():
+    digest_810 = hashlib.md5(UDF_260810_PATH.read_bytes()).hexdigest()
+    digest_612 = hashlib.md5(UDF_260612_PATH.read_bytes()).hexdigest()
+    assert digest_810 == MD5_260810
+    assert digest_612 == MD5_260612
