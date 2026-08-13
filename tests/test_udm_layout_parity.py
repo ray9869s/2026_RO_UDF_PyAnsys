@@ -48,6 +48,7 @@ from helpers import REPO_ROOT, SCRIPTS_DIR, load_post_config, load_run_config
 
 UDF_DIR = REPO_ROOT / "My_CFD_Project" / "02_UDFs"
 UDF_PATH = UDF_DIR / "260813_RO_UDF.c"
+UDF_260815_PATH = UDF_DIR / "260815_RO_UDF.c"
 UDF_260814_PATH = UDF_DIR / "260814_RO_UDF.c"
 UDF_260810_PATH = UDF_DIR / "260810_RO_UDF.c"
 UDF_260612_PATH = UDF_DIR / "260612_RO_UDF.c"
@@ -210,15 +211,20 @@ def test_no_legacy_udm_13_in_active_post_scripts():
 
 
 def test_d_salt_matches_run_config_mass_diffusivity():
-    source = UDF_PATH.read_text(encoding="utf-8")
-    match = re.search(
-        r"^\s*#define\s+D_SALT\s+([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)",
-        source,
-        flags=re.MULTILINE,
-    )
-    assert match is not None, "Could not find #define D_SALT in 260813_RO_UDF.c"
     run_cfg = load_run_config()
-    assert float(match.group(1)) == pytest.approx(float(run_cfg.mass_diffusivity))
+    expected = float(run_cfg.mass_diffusivity)
+    for label, path in (
+        ("260813_RO_UDF.c", UDF_PATH),
+        ("260815_RO_UDF.c", UDF_260815_PATH),
+    ):
+        source = path.read_text(encoding="utf-8")
+        match = re.search(
+            r"^\s*#define\s+D_SALT\s+([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)",
+            source,
+            flags=re.MULTILINE,
+        )
+        assert match is not None, f"Could not find #define D_SALT in {label}"
+        assert float(match.group(1)) == pytest.approx(expected)
 
 
 def test_analytic_cwall_defaults_off():
@@ -248,6 +254,19 @@ def test_260814_matches_260813_except_analytic_cwall_and_date():
         )
     )
     assert norm_813 == norm_814
+
+
+def test_260815_production_flags_and_cell_y1():
+    source = UDF_260815_PATH.read_text(encoding="utf-8")
+    assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+1", source)
+    assert re.search(r"#define\s+RO_UDM_FACE_DIAGNOSTICS\s+0", source)
+    assert re.search(r"#define\s+RO_UDM_CELL_DIAGNOSTICS\s+1", source)
+    assert "C_UDMI(c, c_thread, UDM_Y1)        += y1 * dAm;" in source
+    assert "C_UDMI(c, c_thread, UDM_Y1)        /= Aacc;" in source
+    parsed = parse_udm_enum_from_c(source)
+    assert parsed == REQUIRED_C_SYMBOLS
+    assert parsed["UDM_COUNT"] == 13
+    assert parsed["UDM_Y1"] == 12
 
 
 def test_y1_first_adjust_print_omits_cp_comparison():

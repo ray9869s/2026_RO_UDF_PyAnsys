@@ -12,6 +12,10 @@ matrices in `batch_config.py` → subprocess workers (`meshing_code_*.py`,
 `01_Scripts/post_processing/`. A multi-fidelity Bayesian optimization (MFBO)
 layer is planned but not implemented — keep it in mind, don't build it unasked.
 
+Production UDF is `260815_RO_UDF.c`. `RO_ANALYTIC_CWALL = 1` is the production
+setting. CP is grid-independent to about 0.4% against geometry-to-geometry
+differences of 2.7%. The grid-convergence question is closed.
+
 ## Environment (critical)
 
 - Code is edited in **WSL (Linux)**. There is **NO Ansys Fluent/EnSight here,
