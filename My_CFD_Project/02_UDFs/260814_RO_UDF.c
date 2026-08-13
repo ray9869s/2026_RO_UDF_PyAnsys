@@ -90,7 +90,7 @@
    so it can be triggered after the concentration field has developed.
 */
 #ifndef RO_ANALYTIC_CWALL
-#define RO_ANALYTIC_CWALL 0
+#define RO_ANALYTIC_CWALL 1
 #endif
 
 /*
@@ -1000,7 +1000,7 @@ DEFINE_SOURCE(z_mom_source, c, t, dS, eqn)
    ======================================================================= */
 
 #if !RP_3D
-#error "260813 inlet profile / probe_inlet_profile require a 3D Fluent build."
+#error "260814 inlet profile / probe_inlet_profile require a 3D Fluent build."
 #endif
 
 /* z of bottom membrane wall [m].

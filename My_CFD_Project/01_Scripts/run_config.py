@@ -121,6 +121,12 @@ vol_hex_max_factor = 0.7
 # inlet faces from bl4 to bl6), but window CP was still not grid-converged
 # between those two (1.039 vs 1.051). That is why 260813 measures y1 and
 # optionally reconstructs c_wall.
+# Measured first-cell centroid distance y1 at the membrane wall on
+# D2450_a45_7c_brg110 (260813 first-ADJUST diagnostic, area-weighted):
+#   bl4  mean 5.736 um  min 0.9652  max 16.14
+#   bl6  mean 3.985 um  min 0.5629  max 6.19
+# NOT the 1.2 / 0.6 um that bl_height/2 would imply: the prism layer at
+# the membrane wall is 5-7x thicker than bl_height specifies.
 peel_layers = 2
 
 # Mesh quality gate
@@ -158,7 +164,9 @@ outlet_gauge_pressure = REQUIRED
 
 # Template/UDF file names relative to project_root.
 template_case_file_name = "template_RO_setup.cas.h5"
-udf_source_file_name = "260813_RO_UDF.c"
+# 260814 = 260813 with RO_ANALYTIC_CWALL=1 (reconstruct c_wall + one Picard
+# re-solve). 260813 remains the cell-centre (flag off) sibling.
+udf_source_file_name = "260814_RO_UDF.c"
 udf_library_name = "libudf"
 
 # Inlet velocity profile (DEFINE_PROFILE inlet_x_velocity_profile).

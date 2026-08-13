@@ -48,6 +48,7 @@ from helpers import REPO_ROOT, SCRIPTS_DIR, load_post_config, load_run_config
 
 UDF_DIR = REPO_ROOT / "My_CFD_Project" / "02_UDFs"
 UDF_PATH = UDF_DIR / "260813_RO_UDF.c"
+UDF_260814_PATH = UDF_DIR / "260814_RO_UDF.c"
 UDF_260810_PATH = UDF_DIR / "260810_RO_UDF.c"
 UDF_260612_PATH = UDF_DIR / "260612_RO_UDF.c"
 
@@ -223,6 +224,44 @@ def test_d_salt_matches_run_config_mass_diffusivity():
 def test_analytic_cwall_defaults_off():
     source = UDF_PATH.read_text(encoding="utf-8")
     assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+0", source)
+
+
+def test_260814_analytic_cwall_on():
+    source = UDF_260814_PATH.read_text(encoding="utf-8")
+    assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+1", source)
+
+
+def test_260814_matches_260813_except_analytic_cwall_and_date():
+    """260814 is 260813 with reconstruction ON; no other drift."""
+    text_813 = UDF_PATH.read_text(encoding="utf-8")
+    text_814 = UDF_260814_PATH.read_text(encoding="utf-8")
+    norm_813 = (
+        text_813.replace("260813", "DATE").replace(
+            "#define RO_ANALYTIC_CWALL 0",
+            "#define RO_ANALYTIC_CWALL FLAG",
+        )
+    )
+    norm_814 = (
+        text_814.replace("260814", "DATE").replace(
+            "#define RO_ANALYTIC_CWALL 1",
+            "#define RO_ANALYTIC_CWALL FLAG",
+        )
+    )
+    assert norm_813 == norm_814
+
+
+def test_y1_first_adjust_print_omits_cp_comparison():
+    source = UDF_PATH.read_text(encoding="utf-8")
+    y1_header = source.find("=== RO_UDF membrane wall y1 ===")
+    assert y1_header != -1
+    probe_header = source.find("=== RO_UDF probe_cp_reconstruction ===")
+    assert probe_header != -1
+    y1_block = source[y1_header:probe_header]
+    assert "CP raw (cell-centre)" not in y1_block
+    assert "DEFINE_ON_DEMAND(probe_cp_reconstruction)" in source
+    probe_block = source[probe_header:probe_header + 800]
+    assert "CP raw (cell-centre)" in probe_block
+    assert "CP reconstructed" in probe_block
 
 
 def test_frozen_udf_regression_references_unchanged():
