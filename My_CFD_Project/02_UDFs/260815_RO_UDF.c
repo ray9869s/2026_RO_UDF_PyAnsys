@@ -114,23 +114,41 @@
      y1 area-weighted mean   5.736 um (bl4)   3.985 um (bl6)
      y1 min / max            0.9652 / 16.14   0.5629 / 6.19
 
-   probe_cp_reconstruction on bl4 at iteration 301:
-     CP raw (cell-centre)   1.03618
-     CP reconstructed       1.05826
-
-   Consistency: CP_recon = CP_raw * exp(Jw*y1/D). With Jw = 25.885/3.6e6
-   = 7.190e-6 m/s, y1 = 5.736e-6 m, D = 2e-9 m2/s the exponent is 0.02062
-   and the factor 1.02084, giving 1.05777 against measured 1.05826 —
-   0.05% apart (area-weighting nonlinearity).
+   probe_cp_reconstruction at iteration 301:
+     bl4   CP raw 1.03618   CP recon 1.05826
+     bl6   CP raw 1.04714   CP recon 1.06242
+   Each is self-consistent with CP_raw * exp(Jw*y1/D) to within 0.05%
+   (bl4) and 0.02% (bl6). CP excess grid discrepancy 30.3% -> 7.1%.
 
    Predictions before the run: 2.2% Jw drop and 0.5% grid gap;
    measured 2.13% and 0.44%.
 
-   Residual 0.44% is consistent with c_1 being a cell average rather than
-   a point value: for an exponential near-wall profile the cell mean
-   exceeds the centre value by about u^2/24 with u = 2*y1/delta, giving
-   2.1% on bl4 and 1.0% on bl6, a 1.1% difference acting on a 6% CP
-   excess. Second-order accounted for, so further refinement buys little.
+   The reconstruction reduces the CP-excess grid discrepancy from 30%
+   to 7% and the LMH gap from 1.10% to 0.44%. Each grid is internally
+   consistent with its own exp(Jw*y1/D) factor. The residual 7% is not
+   explained. The cell-average effect has the wrong sign: for a convex
+   decaying profile the cell mean exceeds the centroid point value, so
+   the reconstruction overestimates c_wall more on the thicker-first-cell
+   grid (bl4, y1 5.736 um vs 3.985 um; ~2.21% vs ~0.82%). Correcting
+   for it would lower bl4 more than bl6, but bl4's reconstructed CP is
+   already the lower of the two, so that correction would widen the gap.
+   Jensen on the per-face exp(Pe) spread has the wrong sign too, since
+   bl4 has the wider y1 distribution (max 16.14 um vs 6.19 um). The
+   residual is accepted on the grounds of magnitude, not mechanism:
+   0.44% in LMH against 2.7% between geometries.
+
+   Open question, not a conclusion: the implemented profile is the 1D
+   suction-diffusion balance D dc/dy = Jw(c_p - c), whose decay length
+   is D/Jw = 2.8e-4 m = 278 um. The film-theory concentration boundary
+   layer is D/k = D*ln(beta)/Jw, about 16 um here — 18x thinner. Over
+   y1 ~ 6 um the 1D form predicts only a 2% correction while a 16 um
+   decay length would predict roughly 40%. The two are different
+   physics: the 1D form ignores tangential convection, which is what
+   actually sets the layer thickness. Whether the 1D reconstruction is
+   the right closure this close to the wall is unresolved; it bears on
+   whether the true CP is nearer 1.06 or higher. It does not change
+   the production decision: the reconstruction demonstrably reduces
+   grid dependence and the residual is small.
 
    Conclusion: RO_ANALYTIC_CWALL = 1 is the production setting. CP is
    grid-independent to about 0.4% against geometry-to-geometry
