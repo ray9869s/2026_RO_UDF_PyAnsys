@@ -81,6 +81,24 @@ def series_to_rows(values: list[float], start_iter: int = 1) -> list[str]:
     ]
 
 
+def log_linear_with_jitter(
+    n: int, intercept: float, slope: float, jitter: float = 1e-3
+) -> list[float]:
+    """10**(a + b*i) plus deterministic LCG jitter in log10-space.
+
+    Jitter (~1e-3) is far above float ULP (~1e-15) so post-detrend acf1 is
+    platform-stable, but small versus the trend so descent labels stay put.
+    """
+    # Iterated NR LCG (not a closed form in i: that stays affine until wrap).
+    x = 123456789
+    values = []
+    for i in range(n):
+        x = (1664525 * x + 1013904223) % 4294967296
+        noise = x / 4294967296.0 - 0.5
+        values.append(10 ** (intercept + slope * i + jitter * noise))
+    return values
+
+
 class TestPositionalParse:
     def test_twelve_field_row(self, residual_mod):
         line = make_row(
@@ -159,20 +177,30 @@ class TestTrendClassification:
         assert trend["trend_reason"] == residual_mod.REASON_FLAT_ENDPOINT
 
     def test_still_descending(self, residual_mod):
-        # Exact log-linear in float log-space; after detrend acf1 << old ~0.99.
-        values = [10 ** (-5 - 0.005 * i) for i in range(200)]
+        # Log-linear descent plus LCG jitter in log10-space. Without jitter,
+        # OLS residuals are ~1e-15 and acf1 is platform-dependent ULP noise.
+        values = log_linear_with_jitter(200, -5.0, -0.005)
         iters = list(range(1, 201))
+        fit = residual_mod.fit_log10_line(iters, values)
+        assert fit is not None
+        _a, _b, e, _ui, _uv = fit
+        rms = math.sqrt(sum(x * x for x in e) / len(e))
+        assert rms > 1e-6
+        raw_acf = residual_mod.lag1_acf([math.log10(v) for v in values])
+        assert raw_acf is not None and raw_acf > 0.9
         trend = residual_mod.classify_residual_trend(iters, values, window_iters_used=200)
         assert trend["trend"] == residual_mod.TREND_STILL_DESCENDING
         assert trend["trend_reason"] == residual_mod.REASON_DOMINANT_DESCENT
         assert abs(trend["acf1"]) < 0.35
 
     def test_pure_log_linear_detrended_acf1_near_zero(self, residual_mod):
-        values = [10 ** (-4 - 0.002 * i) for i in range(200)]
+        values = log_linear_with_jitter(200, -4.0, -0.002)
         iters = list(range(1, 201))
         fit = residual_mod.fit_log10_line(iters, values)
         assert fit is not None
         _a, _b, e, _ui, _uv = fit
+        rms = math.sqrt(sum(x * x for x in e) / len(e))
+        assert rms > 1e-6
         # Contrast with pre-fix mean-detrended raw series (~0.99).
         raw_acf = residual_mod.lag1_acf([math.log10(v) for v in values])
         assert raw_acf is not None and raw_acf > 0.9
