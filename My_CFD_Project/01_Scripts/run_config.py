@@ -131,11 +131,29 @@ peel_layers = 2
 
 # Mesh quality gate
 min_orthogonal_quality_threshold = 0.05
-max_aspect_ratio_threshold = 100.0
-# Surface max skewness. Measured Diamond-family meshes are ~0.64–0.67;
-# 0.85 sits above Fluent's skewed-cell highlight band (0.80) with campaign
-# headroom, while still rejecting genuinely bad surfaces near 0.90+.
+# Boundary-layer meshes are anisotropic by design. The first prism layer is
+# 2.4 um against an 85 um lateral size, so a geometric aspect ratio around 35
+# is intended; Fluent's reported aspect ratio is not a simple edge ratio
+# (a perfect cube reports about 1.732). Measured maxima so far: 62.8, 64.8,
+# 83.3, 84.8. The a30 geometries have the widest periodic span and may
+# exceed 100. 150 is a campaign ceiling, not a quality target.
+max_aspect_ratio_threshold = 150.0
+# Surface max skewness. Ansys guidance is that a surface mesh with maximum
+# skewness below 0.7 tends to produce a good volume mesh. Our two points
+# are consistent with that:
+#   D2450_a45  surface max skew 0.6706  ->  volume min ortho 0.1021
+#   D0817_a60  surface max skew 0.8678  ->  volume min ortho 0.0664
+# Keep this surface gate even though the solver sees the volume mesh.
+# Measured Diamond-family meshes are ~0.64–0.67; 0.85 sits above Fluent's
+# skewed-cell highlight band (0.80) with campaign headroom, while still
+# rejecting genuinely bad surfaces near 0.90+.
 max_skewness_threshold = 0.85
+# Fraction of surface faces above Fluent's fixed 0.80 skewness highlight.
+# Measured: D2450_a45 0/174102; D0817_a45 0/161304; D0817_a60 3/324454
+# (9.2e-6). 1e-4 leaves ~11x headroom over the worst measured mesh and
+# still fails a mesh with thousands of bad faces. Both this and
+# max_skewness_threshold must pass.
+skewed_face_fraction_threshold = 1.0e-4
 fail_if_quality_not_parsed = False
 
 # When True: surface mesh first (no shadow-copy constraint), then

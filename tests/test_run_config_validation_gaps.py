@@ -243,6 +243,7 @@ class TestRunConfigOverrideAllowlist:
             "min_orthogonal_quality_threshold",
             "max_aspect_ratio_threshold",
             "max_skewness_threshold",
+            "skewed_face_fraction_threshold",
             "fail_if_quality_not_parsed",
             "save_surface_mesh_checkpoint",
             "allow_legacy_mesh_case_name_mismatch",

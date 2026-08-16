@@ -129,6 +129,7 @@ if __name__ == "__main__":
     min_orthogonal_quality_threshold = cfg.min_orthogonal_quality_threshold
     max_aspect_ratio_threshold = cfg.max_aspect_ratio_threshold
     max_skewness_threshold = cfg.max_skewness_threshold
+    skewed_face_fraction_threshold = cfg.skewed_face_fraction_threshold
     fail_if_quality_not_parsed = cfg.fail_if_quality_not_parsed
 
     # [Checkpoint options]
@@ -181,6 +182,14 @@ if __name__ == "__main__":
 
     if max_skewness_threshold is not None and max_skewness_threshold <= 0.0:
         raise ValueError("max_skewness_threshold must be positive or None.")
+
+    if (
+        skewed_face_fraction_threshold is not None
+        and not (0.0 < skewed_face_fraction_threshold <= 1.0)
+    ):
+        raise ValueError(
+            "skewed_face_fraction_threshold must be in (0, 1] or None."
+        )
 
     wall_spacer_boundary_layer_overlap = (
         set(wall_spacer_labels) & set(boundary_layer_labels)
@@ -335,6 +344,7 @@ def print_meshing_input_summary():
     print(f"Minimum orthogonal quality threshold [-]: {min_orthogonal_quality_threshold}")
     print(f"Maximum aspect ratio threshold [-]: {max_aspect_ratio_threshold}")
     print(f"Maximum skewness threshold [-]: {max_skewness_threshold}")
+    print(f"Skewed face fraction threshold [-]: {skewed_face_fraction_threshold}")
     print("=" * 72 + "\n")
 
 
@@ -432,6 +442,7 @@ def apply_mesh_quality_gate(
     min_orthogonal_quality_limit,
     max_aspect_ratio_limit,
     max_skewness_limit,
+    skewed_face_fraction_limit,
     fail_if_not_parsed,
 ):
     """Apply mesh quality pass/fail criteria using the Fluent transcript."""
@@ -439,10 +450,21 @@ def apply_mesh_quality_gate(
     min_orthogonal_quality = metrics["min_orthogonal_quality"]
     max_aspect_ratio = metrics["max_aspect_ratio"]
     max_skewness = metrics["max_skewness"]
+    skewed_face_fraction = metrics["skewed_face_fraction"]
+    skewed_faces_over_080 = metrics["skewed_faces_over_080"]
+    surface_face_count = metrics["surface_face_count"]
 
     print(f"Parsed minimum orthogonal quality: {min_orthogonal_quality}")
     print(f"Parsed maximum aspect ratio: {max_aspect_ratio}")
     print(f"Parsed maximum skewness: {max_skewness}")
+    print(f"Parsed averaged skewness: {metrics['averaged_skewness']}")
+    print(f"Parsed skewed faces over 0.80: {skewed_faces_over_080}")
+    print(f"Parsed surface face count: {surface_face_count}")
+    print(f"Parsed skewed face fraction: {skewed_face_fraction}")
+    print(
+        "Parsed cells below min ortho quality: "
+        f"{metrics['cells_below_min_ortho_quality']}"
+    )
     print(f"Parsed cell count: {metrics['cell_count']}")
 
     if min_orthogonal_quality is None:
@@ -499,6 +521,26 @@ def apply_mesh_quality_gate(
                     f"Mesh quality failed: maximum skewness "
                     f"{max_skewness} is above the threshold "
                     f"{max_skewness_limit}."
+                )
+
+    if skewed_face_fraction_limit is not None:
+        if skewed_face_fraction is None:
+            message = (
+                "Could not parse skewed face fraction from the transcript. "
+                "The skewed-face-count gate could not be applied."
+            )
+
+            if fail_if_not_parsed:
+                raise RuntimeError(message)
+
+            print(f"Warning: {message}")
+        else:
+            if skewed_face_fraction > skewed_face_fraction_limit:
+                raise RuntimeError(
+                    f"Mesh quality failed: skewed face fraction "
+                    f"{skewed_face_fraction} "
+                    f"({skewed_faces_over_080} / {surface_face_count}) "
+                    f"is above the threshold {skewed_face_fraction_limit}."
                 )
 
     print("Mesh quality gate passed.")
@@ -775,6 +817,7 @@ if __name__ == "__main__":
             min_orthogonal_quality_limit=min_orthogonal_quality_threshold,
             max_aspect_ratio_limit=max_aspect_ratio_threshold,
             max_skewness_limit=max_skewness_threshold,
+            skewed_face_fraction_limit=skewed_face_fraction_threshold,
             fail_if_not_parsed=fail_if_quality_not_parsed,
         )
 

@@ -52,6 +52,7 @@ Peel layers [-]: 2
 Minimum orthogonal quality threshold [-]: 0.05
 Maximum aspect ratio threshold [-]: 100.0
 Maximum skewness threshold [-]: 0.85
+Skewed face fraction threshold [-]: 0.0001
 Maximum Skewness = 5.2e-01
 Minimum Orthogonal Quality = 1.1e-01
 Maximum Aspect Ratio = 4.2e+01
@@ -107,6 +108,23 @@ REAL_SURFACE_SKEWNESS_TABLE = """
 ---------------- Surface Meshing of Sin_ST complete in  6.06 minutes, with a maximum skewness of  0.52.
 """
 
+REAL_D0817_A60_SURFACE_TABLE = """
+                     name    skewed-cells (> 0.80)   averaged-skewness   maximum-skewness   face count
+                    solid                       3         0.029528853         0.86782818        324454
+"""
+
+REAL_D0817_A60_VOLUME_TABLE = """
+    name    id      cells (quality < 0.05)   minimum quality   cell count
+    solid   11094                        0       0.066464689       1071672
+"""
+
+REAL_VOLUME_TABLE_WITH_OVERALL = """
+                     name       id cells (quality < 0.05)  minimum quality cell count
+                    fluid      120                      5      0.065995142    2179173
+                  airfoil      115                      3       0.10070853    1876929
+          Overall Summary     none                      8      0.065995142    4056102
+"""
+
 
 def legacy_quality_parser(text):
     float_pattern = r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
@@ -138,6 +156,11 @@ def test_extended_parser_preserves_existing_quality_results():
         "min_orthogonal_quality": 0.11,
         "max_aspect_ratio": 42.0,
         "max_skewness": 0.52,
+        "averaged_skewness": None,
+        "skewed_faces_over_080": None,
+        "surface_face_count": None,
+        "skewed_face_fraction": None,
+        "cells_below_min_ortho_quality": None,
         "cell_count": 123456,
         "domain_extent_x_m": None,
         "domain_extent_y_m": None,
@@ -154,6 +177,10 @@ def test_extended_parser_preserves_existing_quality_results():
 def test_real_surface_table_prefers_full_precision_skewness():
     metrics = parse_mesh_metrics_text(REAL_SURFACE_SKEWNESS_TABLE)
     assert metrics["max_skewness"] == pytest.approx(0.52229388)
+    assert metrics["averaged_skewness"] == pytest.approx(0.024561487)
+    assert metrics["skewed_faces_over_080"] == 0
+    assert metrics["surface_face_count"] == 756890
+    assert metrics["skewed_face_fraction"] == 0.0
 
 
 def test_surface_summary_skewness_is_fallback_when_table_absent():
@@ -163,6 +190,10 @@ def test_surface_summary_skewness_is_fallback_when_table_absent():
     )
     metrics = parse_mesh_metrics_text(text)
     assert metrics["max_skewness"] == pytest.approx(0.36)
+    assert metrics["averaged_skewness"] is None
+    assert metrics["skewed_faces_over_080"] is None
+    assert metrics["surface_face_count"] is None
+    assert metrics["skewed_face_fraction"] is None
 
 
 @pytest.mark.parametrize(
@@ -225,6 +256,12 @@ wall 1 0.02 0.61 200
 """
     metrics = parse_mesh_metrics_text(text)
     assert metrics["max_skewness"] == pytest.approx(0.61)
+    assert metrics["skewed_faces_over_080"] == 1
+    assert metrics["surface_face_count"] == 300
+    assert metrics["skewed_face_fraction"] == pytest.approx(1.0 / 300.0)
+    assert metrics["averaged_skewness"] == pytest.approx(
+        (0.01 * 100 + 0.02 * 200) / 300
+    )
 
 
 def test_partial_mesh_check_blocks_leave_derived_metrics_none():
@@ -246,19 +283,23 @@ def test_input_summary_recovers_logged_mesh_parameters():
     assert parameters["bl_layers"] == 4
     assert parameters["periodic_shift_y"] == 3.465
     assert parameters["wall_spacer_labels"] == ["wall_spacer"]
+    assert parameters["max_skewness_threshold"] == pytest.approx(0.85)
+    assert parameters["skewed_face_fraction_threshold"] == pytest.approx(1.0e-4)
 
 
 def test_quality_gate_fails_when_max_skewness_exceeds_threshold():
     parameters = {
         "min_orthogonal_quality_threshold": 0.05,
-        "max_aspect_ratio_threshold": 100.0,
+        "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 1.0e-4,
         "fail_if_quality_not_parsed": False,
     }
     metrics = {
         "min_orthogonal_quality": 0.11,
         "max_aspect_ratio": 42.0,
         "max_skewness": 0.90,
+        "skewed_face_fraction": 0.0,
     }
     assert evaluate_quality_gate(parameters, metrics) is False
 
@@ -266,16 +307,113 @@ def test_quality_gate_fails_when_max_skewness_exceeds_threshold():
 def test_quality_gate_passes_when_max_skewness_within_threshold():
     parameters = {
         "min_orthogonal_quality_threshold": 0.05,
-        "max_aspect_ratio_threshold": 100.0,
+        "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 1.0e-4,
         "fail_if_quality_not_parsed": False,
     }
     metrics = {
         "min_orthogonal_quality": 0.11,
         "max_aspect_ratio": 64.82,
         "max_skewness": 0.670634,
+        "skewed_face_fraction": 0.0,
     }
     assert evaluate_quality_gate(parameters, metrics) is True
+
+
+def test_d0817_a60_surface_and_volume_tables_parse():
+    metrics = parse_mesh_metrics_text(
+        REAL_D0817_A60_SURFACE_TABLE + REAL_D0817_A60_VOLUME_TABLE
+    )
+    assert metrics["max_skewness"] == pytest.approx(0.86782818)
+    assert metrics["averaged_skewness"] == pytest.approx(0.029528853)
+    assert metrics["skewed_faces_over_080"] == 3
+    assert metrics["surface_face_count"] == 324454
+    assert metrics["skewed_face_fraction"] == pytest.approx(3 / 324454)
+    assert metrics["cells_below_min_ortho_quality"] == 0
+    # The volume-table row is numerically similar to a surface row; it must
+    # not be folded into the surface metrics (that would add id 11094 as a
+    # skewed-face count and 1,071,672 as extra faces).
+    assert metrics["skewed_faces_over_080"] != 11097
+
+
+def test_volume_table_prefers_overall_summary_poor_cell_count():
+    metrics = parse_mesh_metrics_text(REAL_VOLUME_TABLE_WITH_OVERALL)
+    assert metrics["cells_below_min_ortho_quality"] == 8
+
+
+def test_quality_gate_fails_when_skewed_face_fraction_exceeds_threshold():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 150.0,
+        "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 1.0e-4,
+        "fail_if_quality_not_parsed": False,
+    }
+    metrics = {
+        "min_orthogonal_quality": 0.11,
+        "max_aspect_ratio": 83.3,
+        "max_skewness": 0.84,
+        "skewed_face_fraction": 30000 / 324454,
+    }
+    assert evaluate_quality_gate(parameters, metrics) is False
+
+
+def test_quality_gate_passes_measured_d0817_a60_fraction_with_max_under_limit():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 150.0,
+        "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 1.0e-4,
+        "fail_if_quality_not_parsed": False,
+    }
+    metrics = {
+        "min_orthogonal_quality": 0.066464689,
+        "max_aspect_ratio": 83.3,
+        "max_skewness": 0.84,
+        "skewed_face_fraction": 3 / 324454,
+    }
+    assert evaluate_quality_gate(parameters, metrics) is True
+
+
+def test_quality_gate_requires_both_skewness_gates():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 150.0,
+        "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 1.0e-4,
+        "fail_if_quality_not_parsed": False,
+    }
+    high_max = {
+        "min_orthogonal_quality": 0.0664,
+        "max_aspect_ratio": 83.3,
+        "max_skewness": 0.86782818,
+        "skewed_face_fraction": 3 / 324454,
+    }
+    high_fraction = {
+        "min_orthogonal_quality": 0.11,
+        "max_aspect_ratio": 83.3,
+        "max_skewness": 0.84,
+        "skewed_face_fraction": 30000 / 324454,
+    }
+    assert evaluate_quality_gate(parameters, high_max) is False
+    assert evaluate_quality_gate(parameters, high_fraction) is False
+
+
+def test_new_ledger_columns_sit_next_to_existing_quality_fields():
+    names = list(MESH_LEDGER_FIELDNAMES)
+    max_skew = names.index("max_skewness")
+    assert names[max_skew:max_skew + 6] == [
+        "max_skewness",
+        "averaged_skewness",
+        "skewed_faces_over_080",
+        "surface_face_count",
+        "skewed_face_fraction",
+        "cells_below_min_ortho_quality",
+    ]
+    assert names[names.index("max_skewness_threshold") + 1] == (
+        "skewed_face_fraction_threshold"
+    )
 
 
 def test_ledger_contains_every_mesh_parameter_and_metric(tmp_path):
@@ -301,7 +439,13 @@ def test_ledger_contains_every_mesh_parameter_and_metric(tmp_path):
     assert record["wall_time_seconds"] == 12.5
     assert record["quality_gate_passed"] is True
     assert record["max_skewness_threshold"] == pytest.approx(0.85)
+    assert record["skewed_face_fraction_threshold"] == pytest.approx(1.0e-4)
     assert record["max_skewness"] == pytest.approx(0.52)
+    assert record["averaged_skewness"] is None
+    assert record["skewed_faces_over_080"] is None
+    assert record["surface_face_count"] is None
+    assert record["skewed_face_fraction"] is None
+    assert record["cells_below_min_ortho_quality"] is None
 
     ledger_path = tmp_path / "mesh_ledger.csv"
     upsert_mesh_ledger_csv(ledger_path, [record])
@@ -311,6 +455,11 @@ def test_ledger_contains_every_mesh_parameter_and_metric(tmp_path):
         rows = list(reader)
     assert len(rows) == 1
     assert rows[0]["cell_count"] == "123456"
+    assert rows[0]["averaged_skewness"] == ""
+    assert rows[0]["skewed_faces_over_080"] == ""
+    assert rows[0]["surface_face_count"] == ""
+    assert rows[0]["skewed_face_fraction"] == ""
+    assert rows[0]["cells_below_min_ortho_quality"] == ""
 
 
 def test_ledger_upserts_one_row_per_case(tmp_path):
@@ -369,6 +518,9 @@ def test_retroactive_builder_uses_same_schema(tmp_path):
     assert records[0]["status"] == "SUCCESS"
     assert records[0]["cell_count"] == 123456
     assert records[0]["porosity"] is None
+    assert records[0]["averaged_skewness"] is None
+    assert records[0]["skewed_faces_over_080"] is None
+    assert records[0]["cells_below_min_ortho_quality"] is None
 
     real_case_dir = (
         tmp_path
@@ -384,7 +536,8 @@ def test_retroactive_builder_uses_same_schema(tmp_path):
     real_log.write_text(
         SYNTHETIC_MESH_LOG
         + REAL_SURFACE_SKEWNESS_TABLE
-        + REAL_SIN_ST_MESH_CHECK,
+        + REAL_SIN_ST_MESH_CHECK
+        + REAL_D0817_A60_VOLUME_TABLE,
         encoding="utf-8",
     )
     (
@@ -398,6 +551,11 @@ def test_retroactive_builder_uses_same_schema(tmp_path):
         if row["mesh_case_name"] == "mesh_max085_min005_cpg5_bl4_real"
     )
     assert real_record["max_skewness"] == pytest.approx(0.52229388)
+    assert real_record["averaged_skewness"] == pytest.approx(0.024561487)
+    assert real_record["skewed_faces_over_080"] == 0
+    assert real_record["surface_face_count"] == 756890
+    assert real_record["skewed_face_fraction"] == 0.0
+    assert real_record["cells_below_min_ortho_quality"] == 0
     assert real_record["cell_count"] == 2106112
     assert real_record["porosity"] == pytest.approx(0.7344725011140605)
 

@@ -41,6 +41,7 @@ MESH_PARAMETER_NAMES = (
     "min_orthogonal_quality_threshold",
     "max_aspect_ratio_threshold",
     "max_skewness_threshold",
+    "skewed_face_fraction_threshold",
     "fail_if_quality_not_parsed",
     "periodic_after_surface_mesh",
     "save_surface_mesh_checkpoint",
@@ -51,6 +52,11 @@ MESH_METRIC_NAMES = (
     "min_orthogonal_quality",
     "max_aspect_ratio",
     "max_skewness",
+    "averaged_skewness",
+    "skewed_faces_over_080",
+    "surface_face_count",
+    "skewed_face_fraction",
+    "cells_below_min_ortho_quality",
     "cell_count",
     "domain_extent_x_m",
     "domain_extent_y_m",
@@ -68,6 +74,8 @@ _MESH_CHECK_VOLUME_TO_M3 = 1.0e-9
 _POROSITY_CLAMP_TOLERANCE = 1.0e-6
 
 _FLOAT_TOKEN = r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+# Fluent Meshing's surface-quality table prints this header with a fixed
+# 0.80 skewed-cell highlight. That cutoff is Fluent's, not a campaign setting.
 _SURFACE_SKEWNESS_HEADER = re.compile(
     r"^[ \t]*name[ \t]+skewed-cells[ \t]+\("
     r">[ \t]*0\.80\)[ \t]+averaged-skewness[ \t]+"
@@ -86,6 +94,23 @@ _SURFACE_SKEWNESS_SUMMARY = re.compile(
     rf"^[ \t-]*Surface[ \t]+Meshing[^\r\n]*?"
     rf"maximum[ \t]+skewness[ \t]+of[ \t]+"
     rf"(?P<maximum>{_FLOAT_TOKEN})[ \t]*\.?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Fluent Meshing's volume-quality table prints this header with a fixed
+# 0.05 cutoff. That is Fluent's own reporting threshold, not our
+# min_orthogonal_quality_threshold; the two happen to coincide.
+_VOLUME_QUALITY_HEADER = re.compile(
+    r"^[ \t]*name[ \t]+id[ \t]+cells[ \t]+\("
+    r"quality[ \t]*<[ \t]*0\.05\)[ \t]+"
+    r"minimum[ \t]+quality[ \t]+cell[ \t]+count[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_VOLUME_QUALITY_ROW = re.compile(
+    rf"^[ \t]*(?P<name>\S+(?:[ \t]+\S+)*?)[ \t]+"
+    rf"(?P<id>\S+)[ \t]+"
+    rf"(?P<poor_cells>[\d,]+)[ \t]+"
+    rf"(?P<minimum>{_FLOAT_TOKEN})[ \t]+"
+    rf"(?P<cell_count>[\d,]+)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 _CREATED_CELL_COUNT = re.compile(
@@ -228,32 +253,105 @@ def _parse_last_int(pattern, text, flags=0):
     return int(str(value).replace(",", ""))
 
 
-def _parse_surface_table_max_skewness(text):
-    """Return full-precision max skewness from surface skewness tables."""
-    headers = list(_SURFACE_SKEWNESS_HEADER.finditer(text))
-    if not headers:
-        return None
+_TABLE_SEPARATOR = re.compile(r"^[ \t]*-+(?:[ \t]+-+)*[ \t]*$")
 
+
+def _rows_after_headers(text, header_regex, row_regex):
+    """Yield regex matches for data rows belonging to each table header."""
+    for header in header_regex.finditer(text):
+        saw_row = False
+        for line in text[header.end():].splitlines():
+            stripped = line.strip()
+            if not stripped:
+                if saw_row:
+                    break
+                continue
+            if _TABLE_SEPARATOR.match(line):
+                if saw_row:
+                    break
+                continue
+            match = row_regex.match(line)
+            if not match:
+                break
+            saw_row = True
+            yield match
+
+
+def _parse_surface_skewness_table(text):
+    """Return surface-face skewness metrics from Fluent Meshing tables."""
     unique_rows = {}
-    for index, header in enumerate(headers):
-        start = header.end()
-        end = (
-            headers[index + 1].start()
-            if index + 1 < len(headers)
-            else len(text)
+    for match in _rows_after_headers(
+        text,
+        _SURFACE_SKEWNESS_HEADER,
+        _SURFACE_SKEWNESS_ROW,
+    ):
+        key = (
+            match.group("skewed_cells"),
+            match.group("average"),
+            match.group("maximum"),
+            match.group("face_count"),
         )
-        block = text[start:end]
-        for match in _SURFACE_SKEWNESS_ROW.finditer(block):
-            key = (
-                match.group("skewed_cells"),
-                match.group("average"),
-                match.group("maximum"),
-                match.group("face_count"),
-            )
-            unique_rows[key] = float(match.group("maximum"))
+        unique_rows[key] = {
+            "skewed_faces_over_080": int(
+                match.group("skewed_cells").replace(",", "")
+            ),
+            "averaged_skewness": float(match.group("average")),
+            "max_skewness": float(match.group("maximum")),
+            "surface_face_count": int(
+                match.group("face_count").replace(",", "")
+            ),
+        }
     if not unique_rows:
         return None
-    return max(unique_rows.values())
+
+    rows = list(unique_rows.values())
+    skewed_faces = sum(row["skewed_faces_over_080"] for row in rows)
+    face_count = sum(row["surface_face_count"] for row in rows)
+    weighted_average = None
+    if face_count:
+        weighted_average = sum(
+            row["averaged_skewness"] * row["surface_face_count"]
+            for row in rows
+        ) / face_count
+    return {
+        "max_skewness": max(row["max_skewness"] for row in rows),
+        "averaged_skewness": weighted_average,
+        "skewed_faces_over_080": skewed_faces,
+        "surface_face_count": face_count,
+        "skewed_face_fraction": (
+            skewed_faces / face_count if face_count else None
+        ),
+    }
+
+
+def _parse_volume_quality_table(text):
+    """Return the volume-table count of cells below Fluent's 0.05 quality mark."""
+    unique_rows = {}
+    for match in _rows_after_headers(
+        text,
+        _VOLUME_QUALITY_HEADER,
+        _VOLUME_QUALITY_ROW,
+    ):
+        key = (
+            match.group("name").strip().lower(),
+            match.group("poor_cells"),
+            match.group("minimum"),
+            match.group("cell_count"),
+        )
+        unique_rows[key] = {
+            "name": match.group("name").strip(),
+            "poor_cells": int(match.group("poor_cells").replace(",", "")),
+        }
+    if not unique_rows:
+        return None
+
+    rows = list(unique_rows.values())
+    overall = [
+        row for row in rows if row["name"].lower().startswith("overall")
+    ]
+    if overall:
+        return overall[-1]["poor_cells"]
+    return sum(row["poor_cells"] for row in rows)
 
 
 def _parse_surface_summary_max_skewness(text):
@@ -319,7 +417,7 @@ def _derive_bounding_box_and_porosity(
 
 
 def parse_mesh_metrics_text(text):
-    """Parse final volume-mesh quality metrics from a Fluent transcript."""
+    """Parse surface and volume mesh quality metrics from a Fluent transcript."""
     min_orthogonal_quality = parse_last_float(
         rf"Minimum\s+Orthogonal\s+Quality\s*=\s*{_FLOAT_PATTERN}",
         text,
@@ -338,15 +436,27 @@ def parse_mesh_metrics_text(text):
         re.IGNORECASE,
     )
 
-    max_skewness = _parse_surface_table_max_skewness(text)
-    if max_skewness is None:
+    surface_table = _parse_surface_skewness_table(text)
+    if surface_table is None:
         max_skewness = _parse_surface_summary_max_skewness(text)
-    if max_skewness is None:
-        max_skewness = parse_last_float(
-            rf"Maximum(?:\s+Cell)?\s+Skewness\s*(?:=|:)\s*{_FLOAT_PATTERN}",
-            text,
-            re.IGNORECASE,
-        )
+        if max_skewness is None:
+            max_skewness = parse_last_float(
+                rf"Maximum(?:\s+Cell)?\s+Skewness\s*(?:=|:)\s*{_FLOAT_PATTERN}",
+                text,
+                re.IGNORECASE,
+            )
+        averaged_skewness = None
+        skewed_faces_over_080 = None
+        surface_face_count = None
+        skewed_face_fraction = None
+    else:
+        max_skewness = surface_table["max_skewness"]
+        averaged_skewness = surface_table["averaged_skewness"]
+        skewed_faces_over_080 = surface_table["skewed_faces_over_080"]
+        surface_face_count = surface_table["surface_face_count"]
+        skewed_face_fraction = surface_table["skewed_face_fraction"]
+
+    cells_below_min_ortho_quality = _parse_volume_quality_table(text)
 
     cell_count = _parse_created_cell_count(text)
     if cell_count is None:
@@ -389,6 +499,11 @@ def parse_mesh_metrics_text(text):
         "min_orthogonal_quality": min_orthogonal_quality,
         "max_aspect_ratio": max_aspect_ratio,
         "max_skewness": max_skewness,
+        "averaged_skewness": averaged_skewness,
+        "skewed_faces_over_080": skewed_faces_over_080,
+        "surface_face_count": surface_face_count,
+        "skewed_face_fraction": skewed_face_fraction,
+        "cells_below_min_ortho_quality": cells_below_min_ortho_quality,
         "cell_count": cell_count,
         "domain_extent_x_m": domain_extent_x_m,
         "domain_extent_y_m": domain_extent_y_m,
@@ -487,6 +602,10 @@ def parse_meshing_input_summary(text):
             "max_skewness_threshold",
             float,
         ),
+        "Skewed face fraction threshold [-]": (
+            "skewed_face_fraction_threshold",
+            float,
+        ),
     }
     parameters = {}
     for label, (name, value_type) in label_types.items():
@@ -549,9 +668,13 @@ def evaluate_quality_gate(mesh_parameters, metrics):
     min_quality = metrics.get("min_orthogonal_quality")
     max_aspect = metrics.get("max_aspect_ratio")
     max_skewness = metrics.get("max_skewness")
+    skewed_face_fraction = metrics.get("skewed_face_fraction")
     min_limit = mesh_parameters.get("min_orthogonal_quality_threshold")
     max_aspect_limit = mesh_parameters.get("max_aspect_ratio_threshold")
     max_skewness_limit = mesh_parameters.get("max_skewness_threshold")
+    skewed_face_fraction_limit = mesh_parameters.get(
+        "skewed_face_fraction_threshold"
+    )
     fail_if_not_parsed = mesh_parameters.get("fail_if_quality_not_parsed")
     if min_quality is not None and min_limit is not None:
         if min_quality < min_limit:
@@ -570,7 +693,18 @@ def evaluate_quality_gate(mesh_parameters, metrics):
                 return False
         elif fail_if_not_parsed:
             return False
-    if min_quality is None and max_aspect is None and max_skewness is None:
+    if skewed_face_fraction_limit is not None:
+        if skewed_face_fraction is not None:
+            if skewed_face_fraction > skewed_face_fraction_limit:
+                return False
+        elif fail_if_not_parsed:
+            return False
+    if (
+        min_quality is None
+        and max_aspect is None
+        and max_skewness is None
+        and skewed_face_fraction is None
+    ):
         return None
     return True
 
