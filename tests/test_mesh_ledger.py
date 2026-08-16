@@ -52,7 +52,7 @@ Peel layers [-]: 2
 Minimum orthogonal quality threshold [-]: 0.05
 Maximum aspect ratio threshold [-]: 100.0
 Maximum skewness threshold [-]: 0.85
-Skewed face fraction threshold [-]: 0.0001
+Skewed face fraction threshold [-]: 3e-5
 Maximum Skewness = 5.2e-01
 Minimum Orthogonal Quality = 1.1e-01
 Maximum Aspect Ratio = 4.2e+01
@@ -284,7 +284,7 @@ def test_input_summary_recovers_logged_mesh_parameters():
     assert parameters["periodic_shift_y"] == 3.465
     assert parameters["wall_spacer_labels"] == ["wall_spacer"]
     assert parameters["max_skewness_threshold"] == pytest.approx(0.85)
-    assert parameters["skewed_face_fraction_threshold"] == pytest.approx(1.0e-4)
+    assert parameters["skewed_face_fraction_threshold"] == pytest.approx(3.0e-5)
 
 
 def test_quality_gate_fails_when_max_skewness_exceeds_threshold():
@@ -292,7 +292,7 @@ def test_quality_gate_fails_when_max_skewness_exceeds_threshold():
         "min_orthogonal_quality_threshold": 0.05,
         "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
-        "skewed_face_fraction_threshold": 1.0e-4,
+        "skewed_face_fraction_threshold": 3.0e-5,
         "fail_if_quality_not_parsed": False,
     }
     metrics = {
@@ -309,7 +309,7 @@ def test_quality_gate_passes_when_max_skewness_within_threshold():
         "min_orthogonal_quality_threshold": 0.05,
         "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
-        "skewed_face_fraction_threshold": 1.0e-4,
+        "skewed_face_fraction_threshold": 3.0e-5,
         "fail_if_quality_not_parsed": False,
     }
     metrics = {
@@ -347,7 +347,7 @@ def test_quality_gate_fails_when_skewed_face_fraction_exceeds_threshold():
         "min_orthogonal_quality_threshold": 0.05,
         "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
-        "skewed_face_fraction_threshold": 1.0e-4,
+        "skewed_face_fraction_threshold": 3.0e-5,
         "fail_if_quality_not_parsed": False,
     }
     metrics = {
@@ -364,7 +364,7 @@ def test_quality_gate_passes_measured_d0817_a60_fraction_with_max_under_limit():
         "min_orthogonal_quality_threshold": 0.05,
         "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
-        "skewed_face_fraction_threshold": 1.0e-4,
+        "skewed_face_fraction_threshold": 3.0e-5,
         "fail_if_quality_not_parsed": False,
     }
     metrics = {
@@ -381,7 +381,7 @@ def test_quality_gate_requires_both_skewness_gates():
         "min_orthogonal_quality_threshold": 0.05,
         "max_aspect_ratio_threshold": 150.0,
         "max_skewness_threshold": 0.85,
-        "skewed_face_fraction_threshold": 1.0e-4,
+        "skewed_face_fraction_threshold": 3.0e-5,
         "fail_if_quality_not_parsed": False,
     }
     high_max = {
@@ -398,6 +398,50 @@ def test_quality_gate_requires_both_skewness_gates():
     }
     assert evaluate_quality_gate(parameters, high_max) is False
     assert evaluate_quality_gate(parameters, high_fraction) is False
+
+
+def test_quality_gate_fails_incomplete_cpg7_fraction_at_3e_minus_5():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 150.0,
+        "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 3.0e-5,
+        "fail_if_quality_not_parsed": False,
+    }
+    passing_worst = {
+        "min_orthogonal_quality": 0.0664,
+        "max_aspect_ratio": 83.3,
+        "max_skewness": 0.84,
+        "skewed_face_fraction": 9.25e-6,
+        "averaged_skewness": 0.0336,
+    }
+    failed_cpg7 = {
+        "min_orthogonal_quality": 0.11,
+        "max_aspect_ratio": 83.3,
+        "max_skewness": 0.84,
+        "skewed_face_fraction": 8.22e-5,
+        "averaged_skewness": 0.0251,
+    }
+    assert evaluate_quality_gate(parameters, passing_worst) is True
+    assert evaluate_quality_gate(parameters, failed_cpg7) is False
+
+
+def test_quality_gate_ignores_averaged_skewness():
+    parameters = {
+        "min_orthogonal_quality_threshold": 0.05,
+        "max_aspect_ratio_threshold": 150.0,
+        "max_skewness_threshold": 0.85,
+        "skewed_face_fraction_threshold": 3.0e-5,
+        "fail_if_quality_not_parsed": False,
+    }
+    metrics = {
+        "min_orthogonal_quality": 0.11,
+        "max_aspect_ratio": 64.82,
+        "max_skewness": 0.670634,
+        "skewed_face_fraction": 0.0,
+        "averaged_skewness": 0.99,
+    }
+    assert evaluate_quality_gate(parameters, metrics) is True
 
 
 def test_new_ledger_columns_sit_next_to_existing_quality_fields():
@@ -439,7 +483,7 @@ def test_ledger_contains_every_mesh_parameter_and_metric(tmp_path):
     assert record["wall_time_seconds"] == 12.5
     assert record["quality_gate_passed"] is True
     assert record["max_skewness_threshold"] == pytest.approx(0.85)
-    assert record["skewed_face_fraction_threshold"] == pytest.approx(1.0e-4)
+    assert record["skewed_face_fraction_threshold"] == pytest.approx(3.0e-5)
     assert record["max_skewness"] == pytest.approx(0.52)
     assert record["averaged_skewness"] is None
     assert record["skewed_faces_over_080"] is None
@@ -490,6 +534,36 @@ def test_ledger_upserts_one_row_per_case(tmp_path):
         rows = list(csv.DictReader(stream))
     assert len(rows) == 1
     assert rows[0]["status"] == "SUCCESS"
+
+
+def test_ledger_upsert_read_write_encodings_preserve_geo_name(tmp_path):
+    parameters = mesh_parameters_from_mapping({})
+    metrics = {name: None for name in MESH_METRIC_NAMES}
+    path = tmp_path / "ledger.csv"
+    record_kw = dict(
+        geo_name="Sin_ST",
+        mesh_case_name="mesh_case",
+        mesh_parameters=parameters,
+        exit_code=0,
+        wall_time_seconds=1.0,
+        metrics=metrics,
+        mesh_log_path=tmp_path / "log.txt",
+        mesh_file_path=tmp_path / "mesh.msh.h5",
+    )
+    upsert_mesh_ledger_csv(
+        path,
+        [build_mesh_ledger_record(status="SUCCESS", **record_kw)],
+    )
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    upsert_mesh_ledger_csv(
+        path,
+        [build_mesh_ledger_record(status="SUCCESS", **record_kw)],
+    )
+    with path.open("r", newline="", encoding="utf-8-sig") as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 1
+    assert rows[0]["geo_name"] == "Sin_ST"
+    assert rows[0]["mesh_case_name"] == "mesh_case"
 
 
 def test_retroactive_builder_uses_same_schema(tmp_path):

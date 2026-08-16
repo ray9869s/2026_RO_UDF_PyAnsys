@@ -149,11 +149,17 @@ max_aspect_ratio_threshold = 150.0
 # rejecting genuinely bad surfaces near 0.90+.
 max_skewness_threshold = 0.85
 # Fraction of surface faces above Fluent's fixed 0.80 skewness highlight.
-# Measured: D2450_a45 0/174102; D0817_a45 0/161304; D0817_a60 3/324454
-# (9.2e-6). 1e-4 leaves ~11x headroom over the worst measured mesh and
-# still fails a mesh with thousands of bad faces. Both this and
-# max_skewness_threshold must pass.
-skewed_face_fraction_threshold = 1.0e-4
+# Both this and max_skewness_threshold must pass. Calibration from the
+# rebuild, including incomplete D2450_a45_7c_test meshes that never
+# produced volume metrics:
+#   passing, worst   9.25e-06  D0817_a60_15c_brg156
+#   failed, cpg7     8.22e-05  max skew 0.9996
+#   failed, cpg5     1.32e-04  max skew 0.9966
+#   failed, cpg3     2.33e-04  max skew 0.9995
+# 3e-5 sits in that 9x gap: 3.2x headroom over the worst passing mesh,
+# 2.7x margin below the best failing one. 1e-4 would let cpg7 pass the
+# fraction gate outright.
+skewed_face_fraction_threshold = 3.0e-5
 fail_if_quality_not_parsed = False
 
 # When True: surface mesh first (no shadow-copy constraint), then

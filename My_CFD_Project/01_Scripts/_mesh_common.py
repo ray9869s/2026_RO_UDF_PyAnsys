@@ -52,6 +52,11 @@ MESH_METRIC_NAMES = (
     "min_orthogonal_quality",
     "max_aspect_ratio",
     "max_skewness",
+    # Recorded for diagnostics only; not a quality discriminator.
+    # Passing: 0.0199 (D2450_a45), 0.0295 (D0817_a60), 0.0336 (D0817_a45).
+    # Failed:  0.0273 (cpg3), 0.0259 (cpg5), 0.0251 (cpg7).
+    # Failed meshes sit inside the passing range; the worst passer is
+    # higher than all three failures.
     "averaged_skewness",
     "skewed_faces_over_080",
     "surface_face_count",
