@@ -9,6 +9,12 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Package build artifacts
+build/
+dist/
+*.egg-info/
+src/*.egg-info/
+
 # Jupyter
 .ipynb_checkpoints/
 
