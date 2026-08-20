@@ -477,7 +477,7 @@ class TestClassifyConvergenceParity:
 
 class TestRerun07ImportsSharedConvergence:
     def test_rerun_module_binds_shared_helpers(self, rerun07):
-        import _solver_common
+        from ro import solver_common as _solver_common
 
         for name in (
             "parse_residuals_from_transcript_text",

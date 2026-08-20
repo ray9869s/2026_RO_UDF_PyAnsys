@@ -12,8 +12,8 @@ import time
 import importlib.util
 from pathlib import Path
 
-from _solver_common import normalize_path, path_to_fluent_str as as_fluent_path
-from _solver_common import (
+from ro.solver_common import normalize_path, path_to_fluent_str as as_fluent_path
+from ro.solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
     SOLVER_EXIT_SUCCESS,
     classify_solver_stop_reason,
@@ -25,7 +25,7 @@ from _solver_common import (
     parse_last_residual_iteration_from_transcript_text,
     resolve_solver_final_artifact_exit_code,
 )
-from _fluent_report_helpers import create_x_normal_plane
+from ro.fluent_report_helpers import create_x_normal_plane
 
 # ==========================================================
 # ##### [1] Load Run Configuration #####

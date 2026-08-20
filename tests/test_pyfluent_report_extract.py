@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _fluent_report_helpers import (
+from ro.fluent_report_helpers import (
     concentration_range_diagnostics,
     concentration_metric_unit,
     create_x_normal_plane,

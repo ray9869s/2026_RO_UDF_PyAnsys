@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _solver_common import (
+from ro.solver_common import (
     describe_solver_worker_failure,
     final_case_data_paths,
     make_base_case_name,

@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from _domain_layout import CELL_LENGTH_X_M, CURRENT_LAYOUT, DomainLayout, LEGACY_LAYOUT
-from _fluent_report_helpers import (
+from ro.domain_layout import CELL_LENGTH_X_M, CURRENT_LAYOUT, DomainLayout, LEGACY_LAYOUT
+from ro.fluent_report_helpers import (
     derive_periodic_spacer_pressure_metrics,
     derive_periodic_spacer_pressure_metrics_for_layout,
     derive_spacer_cell_metrics,

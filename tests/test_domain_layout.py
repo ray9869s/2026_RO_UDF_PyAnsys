@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from _domain_layout import (
+from ro.domain_layout import (
     CELL_LENGTH_X_M,
     CURRENT_LAYOUT,
     DomainLayout,
@@ -18,7 +18,7 @@ from _domain_layout import (
     resolve_mesh_case_name,
     validate_layout_against_x_extent,
 )
-from _fluent_report_helpers import (
+from ro.fluent_report_helpers import (
     spacer_cell_numbers,
     unit_cell_boundary_positions,
 )
@@ -239,7 +239,7 @@ class TestGeometryRegistry:
         ) == [4, 5, 6, 7]
 
     def test_resolve_d0817_entrance_decay_diagnostic(self):
-        from _domain_layout import (
+        from ro.domain_layout import (
             CELL_LENGTH_X_D0817_M,
             CURRENT_BUFFER_WALL_BASE_NAMES,
             D0817_LAYOUT,

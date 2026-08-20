@@ -38,7 +38,7 @@ SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _fluent_report_helpers import (  # noqa: E402
+from ro.fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
     concentration_metric_unit,
     create_x_normal_plane as _create_x_normal_plane,
@@ -62,7 +62,7 @@ from _fluent_report_helpers import (  # noqa: E402
     udm_area_sum_report_spec,
     wall_zone_reduction_locations,
 )
-from _udm_layout import (  # noqa: E402
+from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_CELL_STRAIN_RATE,
     FIELD_UDM_CM,
     FIELD_UDM_CP_INLET,

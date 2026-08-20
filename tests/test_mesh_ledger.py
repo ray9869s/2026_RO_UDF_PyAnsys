@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _mesh_common import (
+from ro.mesh_common import (
     MESH_LEDGER_FIELDNAMES,
     MESH_METRIC_NAMES,
     MESH_PARAMETER_NAMES,

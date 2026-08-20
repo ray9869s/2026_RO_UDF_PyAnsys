@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from _domain_layout import DomainLayout
+from ro.domain_layout import DomainLayout
 
 
 def list_named_object_names(named_object, object_label=""):
@@ -363,7 +363,7 @@ def unit_cell_mixing_cup_report_spec(boundary_index, field_name="nacl"):
     )
 
 
-from _udm_layout import (  # noqa: E402
+from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_MEMBRANE_AREA_ACC as _DEFAULT_UDM_AREA_FIELD,
 )
 

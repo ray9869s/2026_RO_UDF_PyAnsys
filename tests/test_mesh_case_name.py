@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from _mesh_common import (
+from ro.mesh_common import (
     assert_mesh_case_name_matches,
     make_canonical_mesh_case_name,
     mesh_case_name_provenance,

@@ -30,7 +30,7 @@ SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _domain_layout import (  # noqa: E402
+from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
     resolve_mesh_case_name,
 )

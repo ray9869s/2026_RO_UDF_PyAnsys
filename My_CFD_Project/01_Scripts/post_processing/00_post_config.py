@@ -81,7 +81,7 @@ buffer_wall_base_names = ["wall_top_buffer", "wall_bottom_buffer"]
 # Wire post_config indices from the canonical layout module when available.
 # Fallback literals keep the file loadable if imported before sys.path is set.
 try:
-    from _udm_layout import UDM_INDEX_BY_ROLE as udm_indices  # type: ignore
+    from ro.udm_layout import UDM_INDEX_BY_ROLE as udm_indices  # type: ignore
 except ImportError:
     udm_indices = {
         "salt_mass_source": 0,

@@ -25,7 +25,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from _solver_common import (  # noqa: E402
+from ro.solver_common import (  # noqa: E402
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     max_iterations_from_common_solver_settings,
     parse_stop_reason_from_text,

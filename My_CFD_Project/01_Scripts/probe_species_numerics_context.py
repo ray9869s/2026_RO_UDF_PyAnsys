@@ -13,7 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
-from _solver_common import path_to_fluent_str
+from ro.solver_common import path_to_fluent_str
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent

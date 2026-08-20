@@ -17,7 +17,7 @@ import os
 import types
 from pathlib import Path
 
-from _mesh_common import (
+from ro.mesh_common import (
     assert_mesh_case_name_matches as _assert_mesh_case_name_matches,
 )
 

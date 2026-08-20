@@ -11,7 +11,7 @@ import re
 
 import pytest
 
-from _udm_layout import (
+from ro.udm_layout import (
     EXPECTED_UDM_FIELDS,
     FIELD_UDM_CELL_STRAIN_RATE,
     FIELD_UDM_CM,

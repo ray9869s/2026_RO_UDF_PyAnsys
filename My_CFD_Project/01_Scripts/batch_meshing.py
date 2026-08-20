@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from _mesh_common import (
+from ro.mesh_common import (
     MESH_METRIC_NAMES,
     MESH_PARAMETER_NAMES,
     assert_mesh_case_name_matches,
@@ -24,7 +24,7 @@ from _mesh_common import (
     parse_meshing_input_summary,
     upsert_mesh_ledger_csv,
 )
-from _solver_common import merge_batch_case_overrides
+from ro.solver_common import merge_batch_case_overrides
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"

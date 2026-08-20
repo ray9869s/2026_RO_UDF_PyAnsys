@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from _mesh_common import (
+from ro.mesh_common import (
     build_mesh_ledger_record,
     mesh_parameters_from_mapping,
     parse_mesh_metrics_text,

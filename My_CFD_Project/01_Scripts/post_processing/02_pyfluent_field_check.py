@@ -60,7 +60,7 @@ _SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from _udm_layout import (  # noqa: E402
+from ro.udm_layout import (  # noqa: E402
     expected_udm_fields_from_enum,
     find_case_udf_path,
     parse_udm_enum_from_c,
