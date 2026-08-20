@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import POST_DIR, load_module
+from helpers import POST_DIR, REPO_ROOT, load_module
 
 REAL_TEMPLATE_SHAPE = (
     "(custom-field-function/define\n"
@@ -40,9 +40,12 @@ MALFORMED_SCM = "this is not a fluent cff scm\n"
 
 
 def load_guard():
+    # Load the implementation module, not the 01_Scripts shim. monkeypatch.setattr
+    # of parse_scm_wall_shear_divisor must hit the globals emit_scm_mu_guard_message
+    # actually looks up.
     return load_module(
         "shear_cff_mu_guard_under_test",
-        POST_DIR / "_shear_cff_mu_guard.py",
+        REPO_ROOT / "src" / "ro" / "shear_cff_mu_guard.py",
     )
 
 
