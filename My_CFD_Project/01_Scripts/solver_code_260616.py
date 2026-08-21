@@ -10,8 +10,14 @@ import sys
 import math
 import time
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.manifest import (
+    read_mesh_manifest,
+    read_run_manifest,
+    write_run_manifest,
+)
 from ro.solver_common import normalize_path, path_to_fluent_str as as_fluent_path
 from ro.solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
@@ -27,6 +33,60 @@ from ro.solver_common import (
 )
 from ro.fluent_report_helpers import create_x_normal_plane
 from ro.paths import mesh_dir, run_dir, templates_dir, udfs_dir
+
+
+def _utc_now_string():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
+    inlet_bc_type = (
+        "parabolic" if bool(cfg.use_inlet_velocity_profile) else "plug"
+    )
+    u_target_ms = float(cfg.inlet_velocity_value)
+    u_mean_ms = u_target_ms if inlet_bc_type == "plug" else None
+    return {
+        "schema_version": 1,
+        "family": cfg.family,
+        "geo_id": cfg.geo_id,
+        "mesh_id": cfg.mesh_id,
+        "mesh_sha256": mesh_manifest["mesh_sha256"],
+        "run_id": cfg.run_id,
+        "u_mean_ms": u_mean_ms,
+        "p_gauge_pa": cfg.outlet_gauge_pressure,
+        "u_target_ms": u_target_ms,
+        "inlet_bc_type": inlet_bc_type,
+        "udf_version": cfg.udf_source_file_name,
+        "solver_settings": {
+            "max_iterations": cfg.max_iterations,
+            "residual_target": cfg.residual_target,
+            "operating_pressure": cfg.operating_pressure,
+        },
+        "stop_reason": "RUNNING",
+        "created_utc": created_utc or _utc_now_string(),
+    }
+
+
+def write_worker_run_manifest(
+    cfg,
+    mesh_directory,
+    run_directory,
+    *,
+    created_utc=None,
+):
+    mesh_manifest = read_mesh_manifest(mesh_directory)
+    payload = build_run_manifest_payload(
+        cfg,
+        mesh_manifest,
+        created_utc=created_utc,
+    )
+    return write_run_manifest(run_directory, payload)
+
+
+def finalize_worker_run_manifest(run_directory, stop_reason):
+    payload = read_run_manifest(run_directory)
+    payload["stop_reason"] = stop_reason
+    return write_run_manifest(run_directory, payload)
 
 
 def resolve_solver_paths(cfg):
@@ -99,6 +159,7 @@ if __name__ == "__main__":
 
     resolved_paths = resolve_solver_paths(cfg)
     case_path = resolved_paths["run_directory"]
+    mesh_case_path = resolved_paths["mesh_directory"]
     mesh_file_path = resolved_paths["mesh_file"]
 
     def _optional_path_from_config(name):
@@ -3313,6 +3374,14 @@ if __name__ == "__main__":
         #   re-enables residual check_convergence so Fluent stops on residual
         #   OR LMH. pressure_drop_spacer.out is diagnostic-only.
 
+        run_manifest_path = write_worker_run_manifest(
+            cfg,
+            mesh_case_path,
+            case_path,
+        )
+        print(f"Run manifest written with stop_reason=RUNNING: {run_manifest_path}")
+
+        solver_stop_reason = None
         calculation_diverged = False
         if run_calculation_enabled:
             print("Starting solver calculation.")
@@ -3408,7 +3477,7 @@ if __name__ == "__main__":
                     # Printed here (after iterate, before write_case_data /
                     # transcript assertions) so post-iterate failures still
                     # retain why iteration ended.
-                    determine_and_print_stop_reason(
+                    solver_stop_reason = determine_and_print_stop_reason(
                         case_dir=case_path,
                         solver_log_path=solver_log_path,
                         max_iterations=max_iterations,
@@ -3446,7 +3515,7 @@ if __name__ == "__main__":
         else:
             print("Run calculation is disabled. Skipping solver iterations.")
             try:
-                determine_and_print_stop_reason(
+                solver_stop_reason = determine_and_print_stop_reason(
                     case_dir=case_path,
                     solver_log_path=solver_log_path,
                     max_iterations=max_iterations,
@@ -3462,6 +3531,16 @@ if __name__ == "__main__":
                     "WARNING: could not determine stop reason: "
                     f"{type(stop_exc).__name__}: {stop_exc}"
                 )
+
+        if solver_stop_reason is not None:
+            run_manifest_path = finalize_worker_run_manifest(
+                case_path,
+                solver_stop_reason,
+            )
+            print(
+                f"Run manifest finalized with stop_reason={solver_stop_reason}: "
+                f"{run_manifest_path}"
+            )
 
 
         # ======================================================

@@ -20,6 +20,7 @@ from pathlib import Path
 from ro.mesh_common import (
     assert_mesh_case_name_matches as _assert_mesh_case_name_matches,
 )
+from ro import paths as ro_paths
 
 REQUIRED = "===== Edit here ====="
 
@@ -29,6 +30,17 @@ RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
     "geo_id",
     "mesh_id",
     "run_id",
+    "spacing_code",
+    "attack_angle_deg",
+    "filament_d_m",
+    "bridge_radius_m",
+    "overlap_m",
+    "n_active_cells",
+    "n_buffer_in",
+    "n_buffer_out",
+    "cell_length_x_m",
+    "n_lead_excluded",
+    "n_trail_excluded",
     "mesh_case_name",
     "run_label",
     "restart_from_case_file",
@@ -53,6 +65,20 @@ mesh_id = REQUIRED
 run_id = REQUIRED
 geo_name = REQUIRED
 case_name = REQUIRED
+
+# Explicit mesh-manifest geometry and layout metadata. These values are never
+# inferred from family, ids, or legacy names.
+spacing_code = REQUIRED
+attack_angle_deg = REQUIRED
+filament_d_m = REQUIRED
+bridge_radius_m = REQUIRED
+overlap_m = REQUIRED
+n_active_cells = REQUIRED
+n_buffer_in = REQUIRED
+n_buffer_out = REQUIRED
+cell_length_x_m = REQUIRED
+n_lead_excluded = REQUIRED
+n_trail_excluded = REQUIRED
 
 
 # ==========================================================
@@ -504,11 +530,29 @@ def _require_number(name, value):
         )
 
 
+def _require_integer(name, value, *, minimum):
+    """Raise when a config value is not an integer at or above minimum."""
+    _require_set(name, value)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise TypeError(
+            f"run_config.py value must be an integer >= {minimum}: "
+            f"{name}={value!r}"
+        )
+
+
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
     _require_set("family", family)
     _require_set("geo_id", geo_id)
+    if not isinstance(family, str) or ro_paths.FAMILY_RE.fullmatch(family) is None:
+        raise ValueError(f"run_config.py family is invalid: {family!r}")
+    if (
+        not isinstance(geo_id, str)
+        or ro_paths.GEO_ID_RE.fullmatch(geo_id) is None
+        or ro_paths._GEO_ID_FORBIDDEN.search(geo_id) is not None
+    ):
+        raise ValueError(f"run_config.py geo_id is invalid: {geo_id!r}")
     _require_set("geo_name", geo_name)
     _require_set("case_name", case_name)
     _require_positive_number("processor_count", processor_count)
@@ -518,6 +562,31 @@ def validate_for_meshing():
     """Validate settings required by meshing automation."""
     validate_common()
     _require_set("mesh_id", mesh_id)
+    if not isinstance(mesh_id, str) or ro_paths.MESH_ID_RE.fullmatch(mesh_id) is None:
+        raise ValueError(f"run_config.py mesh_id is invalid: {mesh_id!r}")
+    _require_set("spacing_code", spacing_code)
+    if not isinstance(spacing_code, str) or not spacing_code.strip():
+        raise ValueError(
+            f"run_config.py spacing_code must be a non-empty string: "
+            f"{spacing_code!r}"
+        )
+    _require_number("attack_angle_deg", attack_angle_deg)
+    _require_positive_number("filament_d_m", filament_d_m)
+    _require_nonnegative_number("bridge_radius_m", bridge_radius_m)
+    _require_nonnegative_number("overlap_m", overlap_m)
+    _require_integer("n_active_cells", n_active_cells, minimum=1)
+    _require_integer("n_buffer_in", n_buffer_in, minimum=0)
+    _require_integer("n_buffer_out", n_buffer_out, minimum=0)
+    _require_positive_number("cell_length_x_m", cell_length_x_m)
+    _require_integer("n_lead_excluded", n_lead_excluded, minimum=0)
+    _require_integer("n_trail_excluded", n_trail_excluded, minimum=0)
+    if n_lead_excluded + n_trail_excluded >= n_active_cells:
+        raise ValueError(
+            "run_config.py lead/trail exclusions must leave an active cell. "
+            f"n_active_cells={n_active_cells!r}, "
+            f"n_lead_excluded={n_lead_excluded!r}, "
+            f"n_trail_excluded={n_trail_excluded!r}"
+        )
 
     _require_positive_number("m_max", m_max)
     _require_positive_number("m_min", m_min)
@@ -566,6 +635,10 @@ def validate_for_solver():
     validate_common()
     _require_set("mesh_id", mesh_id)
     _require_set("run_id", run_id)
+    if not isinstance(mesh_id, str) or ro_paths.MESH_ID_RE.fullmatch(mesh_id) is None:
+        raise ValueError(f"run_config.py mesh_id is invalid: {mesh_id!r}")
+    if not isinstance(run_id, str) or ro_paths.RUN_ID_RE.fullmatch(run_id) is None:
+        raise ValueError(f"run_config.py run_id is invalid: {run_id!r}")
 
     _require_positive_float("inlet_velocity_value", inlet_velocity_value)
 

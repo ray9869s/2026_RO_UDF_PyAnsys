@@ -52,6 +52,21 @@ class TestNumericHelperGaps:
 
 
 class TestMeshingValidation:
+    def test_missing_manifest_metadata_is_rejected(self, cfg):
+        cfg.bridge_radius_m = cfg.REQUIRED
+        with pytest.raises(ValueError, match="bridge_radius_m"):
+            cfg.validate_for_meshing()
+
+    def test_malformed_manifest_layout_count_is_rejected(self, cfg):
+        cfg.n_active_cells = 7.5
+        with pytest.raises(TypeError, match="integer"):
+            cfg.validate_for_meshing()
+
+    def test_invalid_explicit_family_is_rejected(self, cfg):
+        cfg.family = "Diamond"
+        with pytest.raises(ValueError, match="family is invalid"):
+            cfg.validate_for_meshing()
+
     def test_m_min_greater_than_m_max_is_rejected(self, cfg):
         cfg.m_max = 0.01
         cfg.m_min = 0.10
@@ -308,6 +323,7 @@ class TestRunConfigOverrideAllowlist:
 
         excluded = {
             "os": "imported module",
+            "ro_paths": "imported module",
             "Path": "imported callable type",
             "validate_common": "public function",
             "validate_for_meshing": "public function",
@@ -332,6 +348,17 @@ class TestRunConfigOverrideAllowlist:
             "geo_id",
             "mesh_id",
             "run_id",
+            "spacing_code",
+            "attack_angle_deg",
+            "filament_d_m",
+            "bridge_radius_m",
+            "overlap_m",
+            "n_active_cells",
+            "n_buffer_in",
+            "n_buffer_out",
+            "cell_length_x_m",
+            "n_lead_excluded",
+            "n_trail_excluded",
             "mesh_case_name",
             "run_label",
             "restart_from_case_file",

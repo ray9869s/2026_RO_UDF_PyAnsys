@@ -2,13 +2,16 @@
 # ##### [0] Import Required Packages #####
 # ==========================================================
 import ansys.fluent.core as pyfluent
+import hashlib
 import os
 import re
 import json
 import importlib.util
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.manifest import write_mesh_manifest
 from ro.mesh_common import (
     MESH_METRIC_NAMES,
     build_mesh_ledger_record,
@@ -18,6 +21,71 @@ from ro.mesh_common import (
     write_mesh_run_record,
 )
 from ro.paths import geometry_dir, mesh_dir
+
+
+def _utc_now_string():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_mesh_manifest_payload(cfg, mesh_metrics, mesh_sha256, *, created_utc=None):
+    return {
+        "schema_version": 1,
+        "family": cfg.family,
+        "geo_id": cfg.geo_id,
+        "mesh_id": cfg.mesh_id,
+        "spacing_code": cfg.spacing_code,
+        "attack_angle_deg": cfg.attack_angle_deg,
+        "filament_d_m": cfg.filament_d_m,
+        "bridge_radius_m": cfg.bridge_radius_m,
+        "overlap_m": cfg.overlap_m,
+        "n_active_cells": cfg.n_active_cells,
+        "n_buffer_in": cfg.n_buffer_in,
+        "n_buffer_out": cfg.n_buffer_out,
+        "cell_length_x_m": cfg.cell_length_x_m,
+        "membrane_wall_base_names": list(cfg.active_membrane_wall_labels),
+        "buffer_wall_base_names": list(cfg.buffer_wall_labels),
+        "n_lead_excluded": cfg.n_lead_excluded,
+        "n_trail_excluded": cfg.n_trail_excluded,
+        "max_size": cfg.m_max,
+        "min_size": cfg.m_min,
+        "cpg": cfg.m_cpg,
+        "bl": cfg.bl_layers,
+        "peel": cfg.peel_layers,
+        "ortho_min": mesh_metrics["min_orthogonal_quality"],
+        "AR_max": mesh_metrics["max_aspect_ratio"],
+        "skewness_max": mesh_metrics["max_skewness"],
+        "skewed_face_fraction": mesh_metrics["skewed_face_fraction"],
+        "cell_count": mesh_metrics["cell_count"],
+        "inlet_profile_G": None,
+        "mesh_sha256": mesh_sha256,
+        "created_utc": created_utc or _utc_now_string(),
+        "generator_version": Path(__file__).name,
+    }
+
+
+def write_worker_mesh_manifest(
+    cfg,
+    mesh_directory,
+    mesh_file,
+    mesh_metrics,
+    *,
+    created_utc=None,
+):
+    payload = build_mesh_manifest_payload(
+        cfg,
+        mesh_metrics,
+        _sha256_file(mesh_file),
+        created_utc=created_utc,
+    )
+    return write_mesh_manifest(mesh_directory, payload)
 
 
 def resolve_meshing_paths(cfg):
@@ -844,6 +912,13 @@ if __name__ == "__main__":
             output_path=mesh_file_path,
             description="Final volume mesh",
         )
+        mesh_manifest_path = write_worker_mesh_manifest(
+            cfg,
+            case_path,
+            mesh_file_path,
+            mesh_metrics,
+        )
+        print(f"Mesh manifest written: {mesh_manifest_path}")
         run_status = "SUCCESS"
 
     except Exception as exc:

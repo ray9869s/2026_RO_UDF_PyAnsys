@@ -85,7 +85,7 @@ def run_payload():
             "residual_target": 1.0e-7,
             "operating_pressure": 101325.0,
         },
-        "stop_reason": "CONVERGED",
+        "stop_reason": "qoi_converged",
         "created_utc": "2026-08-21T00:00:00Z",
     }
 
@@ -119,6 +119,70 @@ def test_run_manifest_round_trip(monkeypatch, tmp_path):
     assert path == directory / "manifest.json"
     assert read_run_manifest(directory) == payload
     assert list(iter_run_manifests()) == [(path, payload)]
+
+
+def test_parabolic_run_allows_null_mean_until_profile_g_is_known(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    payload["u_mean_ms"] = None
+    payload["stop_reason"] = "RUNNING"
+
+    write_run_manifest(directory, payload)
+
+    assert read_run_manifest(directory)["u_mean_ms"] is None
+
+
+def test_plug_run_rejects_null_mean(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    payload["inlet_bc_type"] = "plug"
+    payload["u_mean_ms"] = None
+
+    with pytest.raises(ManifestError, match="may not be null for plug"):
+        write_run_manifest(directory, payload)
+
+
+def test_run_rejects_stop_reason_outside_solver_enum(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    payload["stop_reason"] = "CONVERGED"
+
+    with pytest.raises(ManifestError, match="solver stop reason"):
+        write_run_manifest(directory, payload)
+
+
+def test_lazy_manifest_values_fill_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    mesh_directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    mesh_directory.mkdir(parents=True)
+    mesh = mesh_payload()
+    mesh["inlet_profile_G"] = None
+    write_mesh_manifest(mesh_directory, mesh)
+    mesh["inlet_profile_G"] = 1.003609
+    write_mesh_manifest(mesh_directory, mesh)
+    mesh["inlet_profile_G"] = 1.1
+    with pytest.raises(ManifestError, match="changed parameters.*inlet_profile_G"):
+        write_mesh_manifest(mesh_directory, mesh)
+
+    run_directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    run_directory.mkdir(parents=True)
+    run = run_payload()
+    run["u_mean_ms"] = None
+    write_run_manifest(run_directory, run)
+    run["u_mean_ms"] = run["u_target_ms"] / 1.003609
+    write_run_manifest(run_directory, run)
+    run["u_mean_ms"] = 0.1
+    with pytest.raises(ManifestError, match="changed parameters.*u_mean_ms"):
+        write_run_manifest(run_directory, run)
 
 
 def test_manifest_ids_must_match_directory(monkeypatch, tmp_path):

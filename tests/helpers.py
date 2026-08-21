@@ -99,7 +99,19 @@ def populate_valid_common_config(cfg: ModuleType) -> None:
 
 def populate_valid_meshing_config(cfg: ModuleType) -> None:
     populate_valid_common_config(cfg)
+    cfg.mesh_id = "max085_min005_cpg5_bl4"
     cfg.case_name = "mesh_max085_min005_cpg5_bl4"
+    cfg.spacing_code = "D2450"
+    cfg.attack_angle_deg = 45
+    cfg.filament_d_m = 4.0e-4
+    cfg.bridge_radius_m = 1.10e-4
+    cfg.overlap_m = 0.0
+    cfg.n_active_cells = 7
+    cfg.n_buffer_in = 1
+    cfg.n_buffer_out = 2
+    cfg.cell_length_x_m = 0.003465
+    cfg.n_lead_excluded = 3
+    cfg.n_trail_excluded = 0
     cfg.m_max = 0.085
     cfg.m_min = 0.005
     cfg.m_cpg = 5
