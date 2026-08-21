@@ -216,14 +216,26 @@ the manifest only. The overwrite guard below is what makes that safe.
 ```
 family, geo_id, mesh_id, mesh_sha256   # copied from the mesh manifest at solve start
 run_id
-u_mean_ms, p_gauge_pa                  # NUMERIC. Never recovered from run_id.
-u_target_ms                            # the value patched into the UDF
+u_mean_ms                              # NULLABLE until inlet_profile_G is known
+p_gauge_pa                             # NUMERIC. Never recovered from run_id.
+u_target_ms                            # REQUIRED; the value patched into the UDF
 inlet_bc_type                          # "parabolic" is the standard; "plug" is legacy
 udf_version                            # e.g. "260816_RO_UDF.c"
 solver_settings { max_iterations, residual_target, operating_pressure }
 stop_reason
 created_utc
 ```
+
+At solve start, `u_target_ms` is always known and written. For a parabolic inlet,
+`u_mean_ms` stays null until the UDF-emitted `inlet_profile_G` is parsed; the same
+lazy fill writes `u_mean_ms = u_target_ms / inlet_profile_G`. For a plug inlet,
+`u_mean_ms` is known without `G` and may be written as `inlet_velocity_value`.
+Neither value is inferred from `run_id`.
+
+`stop_reason` is written as `RUNNING` at solve start, then replaced by the same
+final stop-reason enum emitted in the solver transcript. A manifest left at
+`RUNNING` after the worker exits means the run crashed or was killed; readers
+must not treat it as pending or successful.
 
 `06.parse_case_operating_values` currently recovers `u` and `p` by regex on the
 case name. That function is **deleted** in step 6b, not adapted.
@@ -425,7 +437,21 @@ project-root locator in the same commit as the file it lives in.
 manifests. Add `layout_from_mesh_manifest(mesh_directory) -> GeometryLayoutRecord`
 (pure; unit-testable from a `tmp_path` JSON). Delete
 `parse_case_operating_values` and the `write_report_config` identity. Replace
-`final_case_data_paths` with a `run_dir`-based artifact helper.
+the remaining path callers with `run_dir`; then delete the now-uncalled
+`final_case_data_paths` wrapper and its characterization tests at
+`tests/test_solver_common_paths.py:148,158,172`.
+
+**Execution-order amendment (2026-08-21).** Split 6b so writers populate metadata
+before readers migrate:
+
+1. **6b-write:** mesh and solver workers write manifests. No downstream reader
+   consumes them yet.
+2. **6a-2b:** `07_batch_solver_rerun.py` reads the four ids from each candidate
+   run manifest and uses `run_dir()`. Missing manifests are fatal; there is no
+   name-parsing or legacy-path fallback.
+3. **6a-3:** migrate post-processing paths, including the previously omitted
+   `01_pyfluent_report_extract.py` and `rebuild_mesh_ledger_from_logs.py`.
+4. Continue the remaining 6b reader/inventory/layout work.
 
 **Step 6c — CLI.** `--family --geo-id --mesh-id --run-id` replace `--geo-name` /
 `--case-name`.
