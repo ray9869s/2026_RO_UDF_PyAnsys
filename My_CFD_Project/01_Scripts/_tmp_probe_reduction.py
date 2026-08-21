@@ -32,14 +32,15 @@ from ro.fluent_report_helpers import (  # noqa: E402
     list_named_object_names,
     wall_zone_reduction_locations,
 )
+from ro.paths import run_dir  # noqa: E402
 
 # ---- Case under test (same as _tmp_cell_profile.py) ----
-PROJECT_ROOT = SCRIPT_DIR.parent
+FAMILY = "diamond"
+GEO_ID = "D2450_a45"
+MESH_ID = "max085_min006_cpg5_bl4"
+RUN_ID = "u0p2_p6M"
 GEO_NAME = "D2450_a45_7c_brg110"
 CASE_NAME = "u0p2_p6M__mesh_max085_min006_cpg5_bl4"
-CASE_PATH = PROJECT_ROOT / "03_Results" / GEO_NAME / CASE_NAME
-FINAL_CASE_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
-FINAL_DATA_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
 
 # Pinned in repo root requirements.txt (also printed at runtime).
 PINNED_PYFLUENT_FILE = "requirements.txt"
@@ -421,15 +422,19 @@ def try_create_iso_clip_tui(solver, clip_name, zone_names, x_min_m, x_max_m):
 
 
 def main():
+    case_path = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    final_case_file = case_path / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
+    final_data_file = case_path / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
+
     print_pyfluent_versions()
 
-    if not FINAL_CASE_FILE.is_file():
-        raise FileNotFoundError(f"Final case file not found: {FINAL_CASE_FILE}")
-    if not FINAL_DATA_FILE.is_file():
-        raise FileNotFoundError(f"Final data file not found: {FINAL_DATA_FILE}")
+    if not final_case_file.is_file():
+        raise FileNotFoundError(f"Final case file not found: {final_case_file}")
+    if not final_data_file.is_file():
+        raise FileNotFoundError(f"Final data file not found: {final_data_file}")
 
-    print(f"\nCase path: {CASE_PATH}")
-    print(f"Final case: {FINAL_CASE_FILE}")
+    print(f"\nCase path: {case_path}")
+    print(f"Final case: {final_case_file}")
     print(
         f"Spans: {SPACER_4_LABEL}=[{SPACER_4_X_MIN_M}, {SPACER_4_X_MAX_M}], "
         f"{BUFFER_OUT_2_LABEL}=[{BUFFER_OUT_2_X_MIN_M}, {BUFFER_OUT_2_X_MAX_M}]"
@@ -448,7 +453,7 @@ def main():
     reduction = None
 
     try:
-        os.chdir(CASE_PATH)
+        os.chdir(case_path)
 
         try:
             print("\nLaunching Fluent in meshing mode, then switching to solver...")
@@ -463,7 +468,7 @@ def main():
                 ui_mode="gui",
                 graphics_driver=GRAPHICS_DRIVER,
                 start_timeout=FLUENT_START_TIMEOUT,
-                cwd=as_fluent_path(CASE_PATH),
+                cwd=as_fluent_path(case_path),
             )
             print("Meshing session launched successfully.")
             solver = meshing.switch_to_solver()
@@ -475,7 +480,7 @@ def main():
 
             print("Reading final case/data (read-only; no iterate / no write)...")
             solver.settings.file.read_case_data(
-                file_name=as_fluent_path(FINAL_CASE_FILE)
+                file_name=as_fluent_path(final_case_file)
             )
             print("Final case/data loaded.")
         except Exception as exc:

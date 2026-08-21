@@ -21,10 +21,11 @@ from pathlib import Path
 
 import ansys.fluent.core as pyfluent
 
+from ro.paths import geometry_dir
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-GEO_NAME = "D2450_a45_7c_test"
-GEO_FULL_PATH = PROJECT_ROOT / "00_Geometries" / f"{GEO_NAME}.dsco"
+FAMILY = "diamond"
+GEO_ID = "D2450_a45"
 
 # Lines marked UNCERTAIN are not copied verbatim from meshing_code_260616.py
 # or are inferred from other repo helpers (07_batch_solver_rerun get_attr).
@@ -171,10 +172,11 @@ def introspect_arguments(arguments, state, prefix=""):
 
 
 def main():
-    if not GEO_FULL_PATH.is_file():
+    geo_full_path = geometry_dir(FAMILY, GEO_ID) / f"{GEO_ID}.dsco"
+    if not geo_full_path.is_file():
         raise FileNotFoundError(
-            f"Geometry file not found: {GEO_FULL_PATH}. "
-            "This probe expects the same 00_Geometries layout as the worker."
+            f"Geometry file not found: {geo_full_path}. "
+            "This probe expects the canonical external geometry layout."
         )
 
     cfg = load_run_config()
@@ -186,7 +188,7 @@ def main():
     periodic_shift_y = cfg.periodic_shift_y
     periodic_shift_z = cfg.periodic_shift_z
 
-    print(f"Geometry: {GEO_FULL_PATH}")
+    print(f"Geometry: {geo_full_path}")
     print(
         "launch_fluent args: "
         f"product_version={product_version!r}, mode='meshing', dimension=3, "
@@ -215,7 +217,7 @@ def main():
 
         # Import Geometry — same Arguments.set_state + Execute as the worker.
         workflow.TaskObject["Import Geometry"].Arguments.set_state({
-            r"FileName": as_fluent_path(str(GEO_FULL_PATH)),
+            r"FileName": as_fluent_path(str(geo_full_path)),
             r"ImportCadPreferences": {
                 r"MaxFacetLength": 0,
             },

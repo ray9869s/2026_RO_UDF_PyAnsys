@@ -23,10 +23,11 @@ from pathlib import Path
 
 import ansys.fluent.core as pyfluent
 
+from ro.paths import geometry_dir
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-GEO_NAME = "D2450_a45_test"
-GEO_FULL_PATH = PROJECT_ROOT / "00_Geometries" / f"{GEO_NAME}.dsco"
+FAMILY = "diamond"
+GEO_ID = "D2450_a45"
 
 # Surface-mesh sizes for a cheap probe mesh. Evidence case used m_max=0.085.
 # UNCERTAIN: these are not loaded from a production mesh_batch case.
@@ -179,10 +180,11 @@ def probe_method_and_labellist(arguments, state):
 
 
 def main():
-    if not GEO_FULL_PATH.is_file():
+    geo_full_path = geometry_dir(FAMILY, GEO_ID) / f"{GEO_ID}.dsco"
+    if not geo_full_path.is_file():
         raise FileNotFoundError(
-            f"Geometry file not found: {GEO_FULL_PATH}. "
-            "This probe expects the same 00_Geometries layout as the worker."
+            f"Geometry file not found: {geo_full_path}. "
+            "This probe expects the canonical external geometry layout."
         )
 
     cfg = load_run_config()
@@ -190,7 +192,7 @@ def main():
     processor_count = cfg.processor_count
     graphics_driver = cfg.graphics_driver
 
-    print(f"Geometry: {GEO_FULL_PATH}")
+    print(f"Geometry: {geo_full_path}")
     print(
         "launch_fluent args: "
         f"product_version={product_version!r}, mode='meshing', dimension=3, "
@@ -221,7 +223,7 @@ def main():
         workflow.InitializeWorkflow(WorkflowType=r"Watertight Geometry")
 
         workflow.TaskObject["Import Geometry"].Arguments.set_state({
-            r"FileName": as_fluent_path(str(GEO_FULL_PATH)),
+            r"FileName": as_fluent_path(str(geo_full_path)),
             r"ImportCadPreferences": {
                 r"MaxFacetLength": 0,
             },

@@ -13,21 +13,14 @@ import argparse
 import json
 from pathlib import Path
 
+from ro.paths import mesh_dir, templates_dir
 from ro.solver_common import path_to_fluent_str
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-DEFAULT_TEMPLATE_CASE = (
-    PROJECT_ROOT / "01_Templates" / "template_RO_setup.cas.h5"
-)
-DEFAULT_MESH_FILE = (
-    PROJECT_ROOT
-    / "03_Results"
-    / "Sin_ST"
-    / "mesh_max100_min006_cpg3_bl3"
-    / "Sin_ST_mesh_max100_min006_cpg3_bl3.msh.h5"
-)
+DEFAULT_FAMILY = "diamond"
+DEFAULT_GEO_ID = "D2450_a45"
+DEFAULT_MESH_ID = "max100_min006_cpg3_bl3"
+DEFAULT_TEMPLATE_CASE_NAME = "template_RO_setup.cas.h5"
 DEFAULT_PRODUCT_VERSION = "25.1.0"
 # Avoid processor_count=1 (slow replace_mesh) and 50 (equals stored partition
 # count on typical production meshes).
@@ -502,13 +495,13 @@ def parse_args(argv=None):
     parser.add_argument(
         "--template-case",
         type=Path,
-        default=DEFAULT_TEMPLATE_CASE,
+        default=None,
         help="Template .cas.h5 used for the pre-replace_mesh phase.",
     )
     parser.add_argument(
         "--mesh-file",
         type=Path,
-        default=DEFAULT_MESH_FILE,
+        default=None,
         help="Mesh .msh.h5 used for replace_mesh (production path).",
     )
     parser.add_argument(
@@ -545,8 +538,17 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def resolve_path_defaults(args):
+    if args.template_case is None:
+        args.template_case = templates_dir() / DEFAULT_TEMPLATE_CASE_NAME
+    if args.mesh_file is None:
+        directory = mesh_dir(DEFAULT_FAMILY, DEFAULT_GEO_ID, DEFAULT_MESH_ID)
+        args.mesh_file = directory / f"{DEFAULT_GEO_ID}_{DEFAULT_MESH_ID}.msh.h5"
+    return args
+
+
 def main(argv=None):
-    args = parse_args(argv)
+    args = resolve_path_defaults(parse_args(argv))
     if args.dry_run:
         plan = build_dry_run_plan(args)
         print(json.dumps(plan, indent=2, default=str))

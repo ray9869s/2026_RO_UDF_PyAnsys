@@ -33,11 +33,15 @@ from ro.domain_layout import (  # noqa: E402
     mesh_case_name_candidates_from_dirname,
     resolve_layout,
 )
+from ro.paths import run_dir  # noqa: E402
 
-# ---- Case under test (env-overridable throwaway paths) ----
-# Override with CELL_PROFILE_GEO / CELL_PROFILE_CASE / CELL_PROFILE_MESH.
-# Defaults keep the original D2450 throwaway target.
-PROJECT_ROOT = SCRIPT_DIR.parent
+# ---- Case under test ----
+# Canonical directory ids select the external run leaf. The legacy
+# CELL_PROFILE_* labels remain overrideable for layout and artifact lookup.
+FAMILY = "diamond"
+GEO_ID = "D2450_a45"
+MESH_ID = "max085_min006_cpg5_bl4"
+RUN_ID = "u0p2_p6M"
 GEO_NAME = os.environ.get("CELL_PROFILE_GEO", "D2450_a45_7c_brg110")
 CASE_NAME = os.environ.get(
     "CELL_PROFILE_CASE",
@@ -64,11 +68,6 @@ def _resolve_cell_profile_mesh_case_name(geo_name: str, case_name: str) -> tuple
 MESH_CASE_NAME, MESH_CASE_NAME_SOURCE = _resolve_cell_profile_mesh_case_name(
     GEO_NAME, CASE_NAME
 )
-CASE_PATH = PROJECT_ROOT / "03_Results" / GEO_NAME / CASE_NAME
-FINAL_CASE_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
-FINAL_DATA_FILE = CASE_PATH / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
-# Per-case CSV under the geo folder so concurrent runs do not overwrite.
-CSV_PATH = CASE_PATH.parent / f"cell_profile_{CASE_NAME}.csv"
 
 # Geometry [m] — prefer registry layout for (GEO_NAME, MESH_CASE_NAME).
 # Fallback keeps the original D2450 1+7+2 / 0.003465 constants when the pair
@@ -564,6 +563,11 @@ def print_table(title, rows, columns):
 
 
 def main():
+    case_path = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    final_case_file = case_path / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
+    final_data_file = case_path / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
+    csv_path = case_path / f"cell_profile_{CASE_NAME}.csv"
+
     eval_local = EVALUATION_WINDOW.evaluation_local_indices(LAYOUT)
     eval_global = EVALUATION_WINDOW.evaluation_cell_numbers(LAYOUT)
     print("Resolved paths:")
@@ -591,10 +595,10 @@ def main():
         f"{N_OUTLET_BUFFER_CELLS} "
         f"(dx={CELL_LENGTH_M} m, Lx={DOMAIN_X_MAX_M} m)"
     )
-    print(f"  CASE_PATH         = {CASE_PATH}")
-    print(f"  FINAL_CASE_FILE   = {FINAL_CASE_FILE}")
-    print(f"  FINAL_DATA_FILE   = {FINAL_DATA_FILE}")
-    print(f"  CSV_PATH          = {CSV_PATH}")
+    print(f"  CASE_PATH         = {case_path}")
+    print(f"  FINAL_CASE_FILE   = {final_case_file}")
+    print(f"  FINAL_DATA_FILE   = {final_data_file}")
+    print(f"  CSV_PATH          = {csv_path}")
 
     print("\nFIELD CHOICE:")
     print(
@@ -623,10 +627,10 @@ def main():
         "printed alongside for bias comparison"
     )
 
-    if not FINAL_CASE_FILE.is_file():
-        raise FileNotFoundError(f"Final case file not found: {FINAL_CASE_FILE}")
-    if not FINAL_DATA_FILE.is_file():
-        raise FileNotFoundError(f"Final data file not found: {FINAL_DATA_FILE}")
+    if not final_case_file.is_file():
+        raise FileNotFoundError(f"Final case file not found: {final_case_file}")
+    if not final_data_file.is_file():
+        raise FileNotFoundError(f"Final data file not found: {final_data_file}")
 
     pyfluent.config.check_health_timeout = FLUENT_HEALTH_TIMEOUT
 
@@ -640,7 +644,7 @@ def main():
     convergence_rows = []
 
     try:
-        os.chdir(CASE_PATH)
+        os.chdir(case_path)
 
         print("\nLaunching Fluent in meshing mode, then switching to solver...")
         print(f"product_version = {PRODUCT_VERSION}")
@@ -654,7 +658,7 @@ def main():
             ui_mode="gui",
             graphics_driver=GRAPHICS_DRIVER,
             start_timeout=FLUENT_START_TIMEOUT,
-            cwd=as_fluent_path(CASE_PATH),
+            cwd=as_fluent_path(case_path),
         )
         print("Meshing session launched successfully.")
         solver = meshing.switch_to_solver()
@@ -666,7 +670,7 @@ def main():
 
         print("Reading final case/data (read-only; no iterate / no write)...")
         solver.settings.file.read_case_data(
-            file_name=as_fluent_path(FINAL_CASE_FILE)
+            file_name=as_fluent_path(final_case_file)
         )
         print("Final case/data loaded.")
 
@@ -1013,11 +1017,11 @@ def main():
             for key in row:
                 if key not in fieldnames:
                     fieldnames.append(key)
-        with open(CSV_PATH, "w", newline="", encoding="utf-8") as fh:
+        with open(csv_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(csv_rows)
-        print(f"\nWrote CSV: {CSV_PATH}")
+        print(f"\nWrote CSV: {csv_path}")
 
         print("\nDone. No iterate and no case/data write were performed.")
         return 0
