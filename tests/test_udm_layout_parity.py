@@ -198,8 +198,8 @@ def test_no_legacy_udm_13_in_active_post_scripts():
         SCRIPTS_DIR / "post_processing" / "02_pyfluent_field_check.py",
         SCRIPTS_DIR / "post_processing" / "03_pyensight_contour_export.py",
         SCRIPTS_DIR / "post_processing" / "03b_pyfluent_shear_contour_export.py",
-        SCRIPTS_DIR / "_udm_layout.py",
-        SCRIPTS_DIR / "_fluent_report_helpers.py",
+        REPO_ROOT / "src" / "ro" / "udm_layout.py",
+        REPO_ROOT / "src" / "ro" / "fluent_report_helpers.py",
     ]
     banned = re.compile(r"udm-13|UDM_13|User Defined Memory 13")
     for path in active_roots:

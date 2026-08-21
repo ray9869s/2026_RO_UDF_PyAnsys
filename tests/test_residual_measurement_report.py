@@ -9,6 +9,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 from helpers import POST_DIR, load_module
+from ro import residual_transcript
 
 HEADER = (
     "iter  continuity  x-velocity  y-velocity  z-velocity  nacl  "
@@ -18,10 +19,7 @@ HEADER = (
 
 @pytest.fixture(scope="module")
 def residual_mod():
-    return load_module(
-        "residual_transcript_under_test",
-        POST_DIR / "_residual_transcript.py",
-    )
+    return residual_transcript
 
 
 @pytest.fixture(scope="module")

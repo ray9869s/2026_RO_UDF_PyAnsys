@@ -8,6 +8,8 @@ import types
 from pathlib import Path
 from types import ModuleType
 
+from ro import solver_common
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "My_CFD_Project" / "01_Scripts"
 POST_DIR = SCRIPTS_DIR / "post_processing"
@@ -33,7 +35,7 @@ def load_batch_solver_sweep() -> ModuleType:
 
 
 def load_solver_common() -> ModuleType:
-    return load_module("solver_common_under_test", SCRIPTS_DIR / "_solver_common.py")
+    return solver_common
 
 
 def load_solver_code(module_name: str = "solver_code_under_test") -> ModuleType:
