@@ -229,6 +229,14 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         "peel",
     ):
         _require_integer(payload, field, "Mesh", minimum=0)
+    mesh_id = payload["mesh_id"]
+    if not isinstance(mesh_id, str) or not mesh_id.endswith(
+        f"_peel{payload['peel']}"
+    ):
+        raise ManifestError(
+            "Mesh manifest mesh_id peel token must match field 'peel'. "
+            f"mesh_id={mesh_id!r}, peel={payload['peel']!r}."
+        )
     for field in ("membrane_wall_base_names", "buffer_wall_base_names"):
         _require_string_list(payload, field, "Mesh")
 

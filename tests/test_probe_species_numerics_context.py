@@ -42,8 +42,8 @@ def test_path_defaults_resolve_after_parse(monkeypatch, tmp_path):
         / "meshes"
         / "diamond"
         / "D2450_a45"
-        / "max100_min006_cpg3_bl3"
-        / "D2450_a45_max100_min006_cpg3_bl3.msh.h5"
+        / "max100_min006_cpg3_bl3_peel2"
+        / "D2450_a45_max100_min006_cpg3_bl3_peel2.msh.h5"
     )
 
 

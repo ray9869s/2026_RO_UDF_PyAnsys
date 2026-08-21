@@ -13,7 +13,7 @@ from ro import paths
 
 FAMILY = "diamond"
 GEO_ID = "D2450_a45"
-MESH_ID = "max085_min006_cpg5_bl4"
+MESH_ID = "max085_min006_cpg5_bl4_peel2"
 RUN_ID = "u0p2_p6M"
 
 
@@ -60,7 +60,8 @@ def test_data_root_relative_raises(monkeypatch):
 @pytest.mark.parametrize(
     ("family", "geo_id", "mesh_id", "message"),
     [
-        (FAMILY, GEO_ID, "max085_min0006_cpg5_bl4", "mesh_id"),
+        (FAMILY, GEO_ID, "max085_min0006_cpg5_bl4_peel2", "mesh_id"),
+        (FAMILY, GEO_ID, "max085_min006_cpg5_bl4", "mesh_id"),
         (FAMILY, "D2450_a45_7c", MESH_ID, "geo_id"),
         ("unknown", GEO_ID, MESH_ID, "family"),
     ],

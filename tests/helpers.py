@@ -91,7 +91,7 @@ def populate_valid_common_config(cfg: ModuleType) -> None:
     cfg.project_root = str(REPO_ROOT / "My_CFD_Project")
     cfg.family = "diamond"
     cfg.geo_id = "D2450_a45"
-    cfg.mesh_id = "max100_min006_cpg3_bl3"
+    cfg.mesh_id = "max100_min006_cpg3_bl3_peel2"
     cfg.run_id = "u0p1_p4M"
     cfg.geo_name = "Sin_ST"
     cfg.case_name = "u0p1_p4M__mesh_max100_min006_cpg3_bl3"
@@ -99,7 +99,7 @@ def populate_valid_common_config(cfg: ModuleType) -> None:
 
 def populate_valid_meshing_config(cfg: ModuleType) -> None:
     populate_valid_common_config(cfg)
-    cfg.mesh_id = "max085_min005_cpg5_bl4"
+    cfg.mesh_id = "max085_min005_cpg5_bl4_peel2"
     cfg.case_name = "mesh_max085_min005_cpg5_bl4"
     cfg.spacing_code = "D2450"
     cfg.attack_angle_deg = 45
@@ -116,6 +116,7 @@ def populate_valid_meshing_config(cfg: ModuleType) -> None:
     cfg.m_min = 0.005
     cfg.m_cpg = 5
     cfg.bl_layers = 4
+    cfg.peel_layers = 2
     cfg.wall_spacer_labels = ["wall_spacer"]
     cfg.active_membrane_wall_labels = ["wall_top_mem", "wall_bottom_mem"]
     cfg.buffer_wall_labels = ["wall_top_buffer", "wall_bottom_buffer"]

@@ -67,6 +67,11 @@ class TestMeshingValidation:
         with pytest.raises(ValueError, match="family is invalid"):
             cfg.validate_for_meshing()
 
+    def test_mesh_id_peel_token_must_match_peel_layers(self, cfg):
+        cfg.peel_layers = 0
+        with pytest.raises(ValueError, match="peel token must match"):
+            cfg.validate_for_meshing()
+
     def test_m_min_greater_than_m_max_is_rejected(self, cfg):
         cfg.m_max = 0.01
         cfg.m_min = 0.10

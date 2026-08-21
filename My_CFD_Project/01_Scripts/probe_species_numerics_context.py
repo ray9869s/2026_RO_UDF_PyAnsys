@@ -19,7 +19,7 @@ from ro.solver_common import path_to_fluent_str
 
 DEFAULT_FAMILY = "diamond"
 DEFAULT_GEO_ID = "D2450_a45"
-DEFAULT_MESH_ID = "max100_min006_cpg3_bl3"
+DEFAULT_MESH_ID = "max100_min006_cpg3_bl3_peel2"
 DEFAULT_TEMPLATE_CASE_NAME = "template_RO_setup.cas.h5"
 DEFAULT_PRODUCT_VERSION = "25.1.0"
 # Avoid processor_count=1 (slow replace_mesh) and 50 (equals stored partition

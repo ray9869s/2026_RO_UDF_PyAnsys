@@ -594,6 +594,12 @@ def validate_for_meshing():
     _require_positive_number("m_min", m_min)
     _require_positive_number("m_cpg", m_cpg)
     _require_positive_number("bl_layers", bl_layers)
+    _require_integer("peel_layers", peel_layers, minimum=0)
+    if not mesh_id.endswith(f"_peel{peel_layers}"):
+        raise ValueError(
+            "run_config.py mesh_id peel token must match peel_layers. "
+            f"mesh_id={mesh_id!r}, peel_layers={peel_layers!r}"
+        )
 
     if m_min > m_max:
         raise ValueError(

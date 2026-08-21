@@ -22,7 +22,7 @@ from ro.paths import mesh_dir, run_dir
 
 FAMILY = "diamond"
 GEO_ID = "D2450_a45"
-MESH_ID = "max085_min006_cpg5_bl4"
+MESH_ID = "max085_min006_cpg5_bl4_peel2"
 RUN_ID = "u0p2_p6M"
 
 
@@ -196,6 +196,17 @@ def test_manifest_ids_must_match_directory(monkeypatch, tmp_path):
         write_mesh_manifest(directory, payload)
 
 
+def test_mesh_manifest_peel_must_match_mesh_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    payload["peel"] = 0
+
+    with pytest.raises(ManifestError, match="peel token must match"):
+        write_mesh_manifest(directory, payload)
+
+
 def test_mesh_overwrite_guard_rejects_changed_parameter(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
@@ -203,9 +214,9 @@ def test_mesh_overwrite_guard_rejects_changed_parameter(monkeypatch, tmp_path):
     payload = mesh_payload()
     write_mesh_manifest(directory, payload)
     changed = copy.deepcopy(payload)
-    changed["peel"] = 3
+    changed["overlap_m"] = 1.0e-5
 
-    with pytest.raises(ManifestError, match="changed parameters.*peel"):
+    with pytest.raises(ManifestError, match="changed parameters.*overlap_m"):
         write_mesh_manifest(directory, changed)
 
 

@@ -37,7 +37,7 @@ from ro.paths import run_dir  # noqa: E402
 # ---- Case under test (same as _tmp_cell_profile.py) ----
 FAMILY = "diamond"
 GEO_ID = "D2450_a45"
-MESH_ID = "max085_min006_cpg5_bl4"
+MESH_ID = "max085_min006_cpg5_bl4_peel2"
 RUN_ID = "u0p2_p6M"
 GEO_NAME = "D2450_a45_7c_brg110"
 CASE_NAME = "u0p2_p6M__mesh_max085_min006_cpg5_bl4"

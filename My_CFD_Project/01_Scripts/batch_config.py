@@ -23,7 +23,9 @@ dry_run = False
 continue_on_failure = True
 skip_existing_final_data = True
 
-common_mesh_settings = {}
+common_mesh_settings = {
+    "peel_layers": 2,
+}
 mesh_batch_cases = []
 
 common_solver_settings = {
@@ -39,7 +41,7 @@ common_solver_settings = {
 
 _FAMILY = "diamond"
 _GEO_ID = "D2450_a45"
-_MESH_ID = "max085_min006_cpg5_bl4"
+_MESH_ID = "max085_min006_cpg5_bl4_peel2"
 _GEO = "D2450_a45_7c_brg110"
 _MESH = "mesh_max085_min006_cpg5_bl4"
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
-MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+$")
+MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+_peel\d+$")
 RUN_ID_RE = re.compile(r"^u\d+p\d+_p\d+M$")
 _GEO_ID_FORBIDDEN = re.compile(r"(?:_brg\d+|_\d+c)(?:_|$)")
 

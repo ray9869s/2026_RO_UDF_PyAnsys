@@ -40,7 +40,7 @@ from ro.paths import run_dir  # noqa: E402
 # CELL_PROFILE_* labels remain overrideable for layout and artifact lookup.
 FAMILY = "diamond"
 GEO_ID = "D2450_a45"
-MESH_ID = "max085_min006_cpg5_bl4"
+MESH_ID = "max085_min006_cpg5_bl4_peel2"
 RUN_ID = "u0p2_p6M"
 GEO_NAME = os.environ.get("CELL_PROFILE_GEO", "D2450_a45_7c_brg110")
 CASE_NAME = os.environ.get(

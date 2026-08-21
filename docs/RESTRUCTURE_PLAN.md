@@ -86,7 +86,7 @@ compatibility requirement — do not preserve old behaviour "just in case."
 ```
 family  = diamond | ml | pillar | sin | empty
 geo_id  = D2450_a45
-mesh_id = max085_min006_cpg5_bl4      (note: no "mesh_" prefix any more)
+mesh_id = max085_min006_cpg5_bl4_peel2 (no "mesh_" prefix; peel is mandatory)
 run_id  = u0p2_p6M
 ```
 
@@ -95,7 +95,7 @@ Compiled once in `src/ro/paths.py`, validated at every builder call:
 ```python
 FAMILY_RE  = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE  = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")   # <=64 chars
-MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+$")           # min0006 must FAIL
+MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+_peel\d+$")   # min0006/bare peel must FAIL
 RUN_ID_RE  = re.compile(r"^u\d+p\d+_p\d+M$")
 _GEO_ID_FORBIDDEN = re.compile(r"(?:_brg\d+|_\d+c)(?:_|$)")            # loud reject
 ```
@@ -208,8 +208,9 @@ why the names are recorded per-mesh rather than assumed.
 Quality fields may be `null` only *before* `mesh_sha256` is set. Once the
 `.msh.h5` exists, quality and sha are required — loudly.
 
-`peel` is deliberately not in `mesh_id` (matching today's behaviour). It lives in
-the manifest only. The overwrite guard below is what makes that safe.
+`peel` is mandatory in `mesh_id` and remains an explicit numeric manifest field.
+Writers validate that the `_peel<N>` token equals the manifest value; readers
+still use the manifest rather than recovering the value from the directory name.
 
 ### Run manifest (`schema_version: 1`)
 
@@ -260,11 +261,10 @@ A folder moved by hand with an old JSON inside must fail, not be trusted.
 manifest already exists at the target and its CAD/mesh parameters differ from the
 incoming ones. Same for runs.
 
-This single rule covers every parameter that changes results but is absent from
-the path — `peel`, `overlap_m`, `bridge_radius_m`. Re-running the same `mesh_id`
-with a different `peel` stops instead of silently overwriting. If a real sweep over
-one of these is ever needed, a path suffix can be added later and the guard makes
-that transition safe.
+This rule still covers parameters that change results but remain absent from the
+path, including `overlap_m` and `bridge_radius_m`. `peel` is both path-visible and
+guarded as a manifest parameter, so an inconsistent token/value pair is rejected
+before any overwrite.
 
 **No fallback anywhere.** A leaf without a valid manifest is refused, not
 processed with defaults.
@@ -369,7 +369,8 @@ answer, listed roughly by how much damage they do.
 2. **`06.write_report_config`'s `project_root = results_root.parent`.** After this
    change there is no `results_root`, and `run_dir`'s parent is a `mesh_id`
    directory. "Updating" this line to `run_dir.parent` would point workers at
-   `templates/` and `udfs/` under `.../meshes/.../max085_.../` — a real directory.
+   `templates/` and `udfs/` under `.../meshes/.../max085_..._peel2/` — a real
+   directory.
    **Delete the identity.** Pass `project_root()` and `run_dir()` as separate
    values. Prefer `PYFLUENT_POST_OVERRIDES` onto the stock `configs/post_config.py`
    over generating a `.py`.

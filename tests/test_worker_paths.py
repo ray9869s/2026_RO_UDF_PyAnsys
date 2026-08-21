@@ -42,7 +42,7 @@ def test_meshing_worker_paths_use_canonical_ids(monkeypatch, tmp_path):
     cfg = SimpleNamespace(
         family="diamond",
         geo_id="D2450_a45",
-        mesh_id="max085_min006_cpg5_bl4",
+        mesh_id="max085_min006_cpg5_bl4_peel2",
         geo_name="D2450_a45_7c_brg110",
         case_name="mesh_max085_min006_cpg5_bl4",
         project_root=str(tmp_path / "legacy-project-root"),
@@ -56,7 +56,7 @@ def test_meshing_worker_paths_use_canonical_ids(monkeypatch, tmp_path):
         / "meshes"
         / "diamond"
         / "D2450_a45"
-        / "max085_min006_cpg5_bl4"
+        / "max085_min006_cpg5_bl4_peel2"
     )
     assert resolved["geometry_file"] == (
         tmp_path / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
