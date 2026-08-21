@@ -48,6 +48,7 @@ from helpers import REPO_ROOT, SCRIPTS_DIR, load_post_config, load_run_config
 
 UDF_DIR = REPO_ROOT / "My_CFD_Project" / "02_UDFs"
 UDF_PATH = UDF_DIR / "260813_RO_UDF.c"
+UDF_260816_PATH = UDF_DIR / "260816_RO_UDF.c"
 UDF_260815_PATH = UDF_DIR / "260815_RO_UDF.c"
 UDF_260814_PATH = UDF_DIR / "260814_RO_UDF.c"
 UDF_260810_PATH = UDF_DIR / "260810_RO_UDF.c"
@@ -56,6 +57,14 @@ UDF_260612_PATH = UDF_DIR / "260612_RO_UDF.c"
 # Frozen regression references — do not edit those files in place.
 MD5_260810 = "c88b7bbcc8f573a932f09e48445d66f5"
 MD5_260612 = "078e66d8f3fb8b9398d267037c450c98"
+
+# Frozen dated files retain their exact historical UTF-8 comment characters.
+LEGACY_NON_ASCII_CHARACTERS = {
+    "260810_RO_UDF.c": ((723, "—"),),
+    "260813_RO_UDF.c": ((555, "·"),),
+    "260814_RO_UDF.c": ((555, "·"),),
+    "260815_RO_UDF.c": ((143, "—"), (633, "·")),
+}
 
 # Symbols the default dual build must expose (CELL diagnostics ON).
 REQUIRED_C_SYMBOLS = {
@@ -216,6 +225,7 @@ def test_d_salt_matches_run_config_mass_diffusivity():
     for label, path in (
         ("260813_RO_UDF.c", UDF_PATH),
         ("260815_RO_UDF.c", UDF_260815_PATH),
+        ("260816_RO_UDF.c", UDF_260816_PATH),
     ):
         source = path.read_text(encoding="utf-8")
         match = re.search(
@@ -256,8 +266,8 @@ def test_260814_matches_260813_except_analytic_cwall_and_date():
     assert norm_813 == norm_814
 
 
-def test_260815_production_flags_and_cell_y1():
-    source = UDF_260815_PATH.read_text(encoding="utf-8")
+def test_260816_production_flags_and_cell_y1():
+    source = UDF_260816_PATH.read_text(encoding="ascii")
     assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+1", source)
     assert re.search(r"#define\s+RO_UDM_FACE_DIAGNOSTICS\s+0", source)
     assert re.search(r"#define\s+RO_UDM_CELL_DIAGNOSTICS\s+1", source)
@@ -267,6 +277,37 @@ def test_260815_production_flags_and_cell_y1():
     assert parsed == REQUIRED_C_SYMBOLS
     assert parsed["UDM_COUNT"] == 13
     assert parsed["UDM_Y1"] == 12
+
+
+def test_260816_matches_260815_except_ascii_comments_and_date():
+    source_815 = UDF_260815_PATH.read_text(encoding="utf-8")
+    source_816 = UDF_260816_PATH.read_text(encoding="ascii")
+    normalized_815 = (
+        source_815.replace("260815", "DATE").replace("—", "--").replace("·", "*")
+    )
+    normalized_816 = source_816.replace("260816", "DATE")
+    assert normalized_816 == normalized_815
+
+
+def test_new_udf_sources_are_ascii_with_exact_frozen_legacy_exceptions():
+    for path in sorted(UDF_DIR.glob("*.c")):
+        source = path.read_text(encoding="utf-8")
+        actual = tuple(
+            (line_no, character)
+            for line_no, line in enumerate(source.splitlines(), start=1)
+            for character in line
+            if not character.isascii()
+        )
+        expected = LEGACY_NON_ASCII_CHARACTERS.get(path.name, ())
+        assert actual == expected, f"{path.name}: unexpected non-ASCII content {actual!r}"
+        if path.name not in LEGACY_NON_ASCII_CHARACTERS:
+            assert path.read_bytes().isascii(), f"{path.name} is not ASCII-only"
+
+
+def test_run_config_selects_ascii_production_udf():
+    run_cfg = load_run_config()
+    assert run_cfg.udf_source_file_name == UDF_260816_PATH.name
+    assert UDF_260816_PATH.read_bytes().isascii()
 
 
 def test_y1_first_adjust_print_omits_cp_comparison():

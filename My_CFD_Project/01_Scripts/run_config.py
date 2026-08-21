@@ -221,11 +221,13 @@ outlet_gauge_pressure = REQUIRED
 
 # Template/UDF file names relative to project_root.
 template_case_file_name = "template_RO_setup.cas.h5"
-# 260815 = production. RO_ANALYTIC_CWALL=1, FACE diagnostics off
-# (unreadable in Fluent 25.1), y1 stored on the cell path.
+# 260816 = ASCII-only production copy of 260815 for Windows UDF compilation.
+# RO_ANALYTIC_CWALL=1, FACE diagnostics off (unreadable in Fluent 25.1),
+# y1 stored on the cell path.
+# 260815 = same UDF behavior, retained as the UTF-8 regression reference.
 # 260814 = reconstruction ON, FACE still on (results sibling).
 # 260813 = cell-centre (flag off) sibling.
-udf_source_file_name = "260815_RO_UDF.c"
+udf_source_file_name = "260816_RO_UDF.c"
 udf_library_name = "libudf"
 
 # Inlet velocity profile (DEFINE_PROFILE inlet_x_velocity_profile).
