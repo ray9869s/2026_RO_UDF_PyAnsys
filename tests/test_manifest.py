@@ -1,0 +1,182 @@
+"""Tests for validated mesh and run manifests."""
+
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from ro.manifest import (
+    MESH_MANIFEST_REQUIRED_FIELDS,
+    RUN_MANIFEST_REQUIRED_FIELDS,
+    ManifestError,
+    iter_mesh_manifests,
+    iter_run_manifests,
+    read_mesh_manifest,
+    read_run_manifest,
+    write_mesh_manifest,
+    write_run_manifest,
+)
+from ro.paths import mesh_dir, run_dir
+
+
+FAMILY = "diamond"
+GEO_ID = "D2450_a45"
+MESH_ID = "max085_min006_cpg5_bl4"
+RUN_ID = "u0p2_p6M"
+
+
+def mesh_payload():
+    return {
+        "schema_version": 1,
+        "family": FAMILY,
+        "geo_id": GEO_ID,
+        "mesh_id": MESH_ID,
+        "spacing_code": "D2450",
+        "attack_angle_deg": 45,
+        "filament_d_m": 4.0e-4,
+        "bridge_radius_m": 1.10e-4,
+        "overlap_m": 0.0,
+        "n_active_cells": 7,
+        "n_buffer_in": 1,
+        "n_buffer_out": 3,
+        "cell_length_x_m": 0.003465,
+        "membrane_wall_base_names": ["wall_top_mem", "wall_bottom_mem"],
+        "buffer_wall_base_names": [
+            "wall_top_buffer_in",
+            "wall_top_buffer_out",
+            "wall_bottom_buffer_in",
+            "wall_bottom_buffer_out",
+        ],
+        "n_lead_excluded": 3,
+        "n_trail_excluded": 0,
+        "max_size": 0.085,
+        "min_size": 0.006,
+        "cpg": 5,
+        "bl": 4,
+        "peel": 2,
+        "ortho_min": 0.12,
+        "AR_max": 42.0,
+        "skewness_max": 0.78,
+        "skewed_face_fraction": 1.0e-6,
+        "cell_count": 123456,
+        "inlet_profile_G": None,
+        "mesh_sha256": "a" * 64,
+        "created_utc": "2026-08-21T00:00:00Z",
+        "generator_version": "meshing_code_260616.py",
+    }
+
+
+def run_payload():
+    return {
+        "schema_version": 1,
+        "family": FAMILY,
+        "geo_id": GEO_ID,
+        "mesh_id": MESH_ID,
+        "mesh_sha256": "a" * 64,
+        "run_id": RUN_ID,
+        "u_mean_ms": 0.199281,
+        "p_gauge_pa": 6.0e6,
+        "u_target_ms": 0.2,
+        "inlet_bc_type": "parabolic",
+        "udf_version": "260816_RO_UDF.c",
+        "solver_settings": {
+            "max_iterations": 2000,
+            "residual_target": 1.0e-7,
+            "operating_pressure": 101325.0,
+        },
+        "stop_reason": "CONVERGED",
+        "created_utc": "2026-08-21T00:00:00Z",
+    }
+
+
+def test_required_field_tuples_match_schema_payloads():
+    assert set(MESH_MANIFEST_REQUIRED_FIELDS) == set(mesh_payload())
+    assert set(RUN_MANIFEST_REQUIRED_FIELDS) == set(run_payload())
+
+
+def test_mesh_manifest_round_trip(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+
+    path = write_mesh_manifest(directory, payload)
+
+    assert path == directory / "manifest.json"
+    assert read_mesh_manifest(directory) == payload
+    assert list(iter_mesh_manifests()) == [(path, payload)]
+
+
+def test_run_manifest_round_trip(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+
+    path = write_run_manifest(directory, payload)
+
+    assert path == directory / "manifest.json"
+    assert read_run_manifest(directory) == payload
+    assert list(iter_run_manifests()) == [(path, payload)]
+
+
+def test_manifest_ids_must_match_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    payload["geo_id"] = "D1225_a45"
+
+    with pytest.raises(ManifestError, match="ids do not match"):
+        write_mesh_manifest(directory, payload)
+
+
+def test_mesh_overwrite_guard_rejects_changed_parameter(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    write_mesh_manifest(directory, payload)
+    changed = copy.deepcopy(payload)
+    changed["peel"] = 3
+
+    with pytest.raises(ManifestError, match="changed parameters.*peel"):
+        write_mesh_manifest(directory, changed)
+
+
+def test_identical_mesh_rewrite_is_silent_and_atomic(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+
+    write_mesh_manifest(directory, payload)
+    write_mesh_manifest(directory, copy.deepcopy(payload))
+
+    assert read_mesh_manifest(directory) == payload
+    assert [path.name for path in directory.iterdir()] == ["manifest.json"]
+
+
+def test_run_overwrite_guard_rejects_changed_parameter(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    write_run_manifest(directory, payload)
+    changed = copy.deepcopy(payload)
+    changed["p_gauge_pa"] = 4.0e6
+
+    with pytest.raises(ManifestError, match="changed parameters.*p_gauge_pa"):
+        write_run_manifest(directory, changed)
+
+
+def test_mesh_quality_is_required_when_sha_is_set(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    payload["ortho_min"] = None
+
+    with pytest.raises(ManifestError, match="may not be null"):
+        write_mesh_manifest(directory, payload)
