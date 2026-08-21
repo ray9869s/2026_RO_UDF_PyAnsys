@@ -156,6 +156,7 @@ class TestSelectCandidatesFixtureCsv:
         assert stats["input_rows"] == 4
         assert stats["non_matrix_case_name"] == 0
         assert stats["selected"] == 4
+        assert {row["latest_log_file"] for row in selected} == {"/tmp/fake.log"}
 
         selected_names = {row["case_name"] for row in selected}
         assert selected_names == {row["case_name"] for row in rows}

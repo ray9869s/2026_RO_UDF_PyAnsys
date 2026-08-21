@@ -161,14 +161,22 @@ class TestFinalPairForCaseParity:
         assert shared == legacy
 
     @pytest.mark.parametrize("geo_name,case_name", FIXTURE_CASES[:2])
-    def test_rerun07_wrapper_matches_legacy_strings(self, rerun07, geo_name, case_name):
-        case_dir, final_case, final_data = rerun07.final_pair_for_case(
-            RESULTS_ROOT,
+    def test_rerun07_final_pair_uses_supplied_run_directory(
+        self,
+        rerun07,
+        tmp_path,
+        geo_name,
+        case_name,
+    ):
+        run_directory = tmp_path / "runs" / "canonical-run"
+        case_dir, final_case, final_data = rerun07.final_pair_for_run(
+            run_directory,
             geo_name,
             case_name,
         )
-        legacy = legacy_final_pair_for_case(str(RESULTS_ROOT), geo_name, case_name)
-        assert (str(case_dir), str(final_case), str(final_data)) == legacy
+        assert case_dir == run_directory
+        assert final_case == run_directory / f"{geo_name}_{case_name}_final.cas.h5"
+        assert final_data == run_directory / f"{geo_name}_{case_name}_final.dat.h5"
 
 
 class TestFluentPathParity:
@@ -333,9 +341,17 @@ class TestAttemptPairForCaseRegression:
         assert attempt_dir.is_absolute()
 
 
-class TestBuildPlanRowsCaseDirUnresolved:
-    def test_plan_emits_unresolved_case_dir_string(self, rerun07):
+class TestBuildPlanRowsCanonicalRunDir:
+    def test_plan_emits_manifest_resolved_run_dir(self, rerun07, tmp_path):
         args = argparse.Namespace(results_root=RESULTS_ROOT)
+        canonical_run_dir = (
+            tmp_path
+            / "runs"
+            / "diamond"
+            / "D2450_a45"
+            / "max085_min006_cpg5_bl4_peel2"
+            / "u0p2_p4M"
+        )
         candidates = [
             {
                 "selected_index": "1",
@@ -344,11 +360,9 @@ class TestBuildPlanRowsCaseDirUnresolved:
                 "case_name": "u0p2_p4M",
                 "convergence_status_before": "MAX_ITER_REACHED",
                 "case_status_before": "NEEDS_SOLVER_RERUN",
+                "_run_directory": str(canonical_run_dir),
             }
         ]
         plan_rows = rerun07.build_plan_rows(candidates, args)
-        expected_case_dir = os.path.join(str(RESULTS_ROOT), "Sin_ST", "u0p2_p4M")
-        assert plan_rows[0]["case_dir"] == expected_case_dir
-        assert plan_rows[0]["case_dir"] == str(
-            rerun07.final_pair_for_case(RESULTS_ROOT, "Sin_ST", "u0p2_p4M")[0]
-        )
+        assert plan_rows[0]["case_dir"] == str(canonical_run_dir)
+        assert not plan_rows[0]["case_dir"].startswith(str(RESULTS_ROOT))

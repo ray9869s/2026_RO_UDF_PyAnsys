@@ -23,13 +23,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ro.manifest import ManifestError, read_run_manifest
+from ro.paths import run_dir, runs_root
 from ro.solver_common import (
     assess_history,
     assess_residual_convergence,
     blending_ramp_values,
     classify_convergence,
     detect_residual_plateau,
-    final_case_data_paths_under_root,
     find_windows_drive_paths,
     is_matrix_base_case_name,
     parse_residuals_from_transcript_text,
@@ -347,7 +348,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--results-root",
         type=Path,
         default=None,
-        help="Root results folder containing <geo_name>/<case_name> case folders.",
+        help=(
+            "Legacy root for inventory/control outputs. Candidate run data is "
+            "resolved from its manifest under RO_DATA_ROOT/runs."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -875,6 +879,7 @@ def normalize_candidate_row(row: dict[str, str]) -> dict[str, str]:
             row,
             ["case_status", "case_status_before", "status"],
         ),
+        "latest_log_file": first_value(row, ["latest_log_file"]),
     }
 
 
@@ -941,17 +946,80 @@ def select_candidates(
     return selected, stats
 
 
-def final_pair_for_case(
-    results_root: Path,
+def resolve_candidate_run_directory(candidate: dict[str, str]) -> Path:
+    cached = candidate.get("_run_directory", "")
+    if cached:
+        return Path(cached)
+
+    geo_name = candidate["geo_name"]
+    case_name = candidate["case_name"]
+    label = f"{geo_name}/{case_name}"
+    latest_log_file = candidate.get("latest_log_file", "")
+    if not latest_log_file:
+        raise ManifestError(
+            f"Candidate {label} has no latest_log_file; refusing to locate its "
+            "run manifest by name parsing or legacy path fallback."
+        )
+
+    latest_log_path = Path(latest_log_file)
+    if not latest_log_path.is_absolute():
+        raise ManifestError(
+            f"Candidate {label} latest_log_file must be absolute to locate its "
+            f"run manifest, got {latest_log_file!r}."
+        )
+
+    canonical_runs_root = runs_root().resolve()
+    log_parent = latest_log_path.resolve().parent
+    try:
+        log_parent.relative_to(canonical_runs_root)
+    except ValueError as exc:
+        raise ManifestError(
+            f"Candidate {label} latest_log_file is outside the canonical runs "
+            f"tree {canonical_runs_root}: {latest_log_path}. Refusing legacy "
+            "path fallback."
+        ) from exc
+
+    candidate_directory = log_parent
+    while candidate_directory != canonical_runs_root:
+        manifest_path = candidate_directory / "manifest.json"
+        if manifest_path.is_file():
+            payload = read_run_manifest(candidate_directory)
+            canonical_directory = run_dir(
+                payload["family"],
+                payload["geo_id"],
+                payload["mesh_id"],
+                payload["run_id"],
+            )
+            candidate["_run_directory"] = str(canonical_directory)
+            return canonical_directory
+        candidate_directory = candidate_directory.parent
+
+    raise ManifestError(
+        f"Candidate {label} has no manifest.json in the latest_log_file "
+        f"ancestry under {canonical_runs_root}: {latest_log_path}. Refusing "
+        "name parsing and legacy path fallback."
+    )
+
+
+def final_pair_for_run(
+    run_directory: Path,
     geo_name: str,
     case_name: str,
 ) -> tuple[Path, Path, Path]:
-    case_dir, final_case_file, final_data_file = final_case_data_paths_under_root(
-        str(results_root),
-        geo_name,
-        case_name,
+    case_dir = Path(run_directory)
+    final_case_file = case_dir / f"{geo_name}_{case_name}_final.cas.h5"
+    final_data_file = case_dir / f"{geo_name}_{case_name}_final.dat.h5"
+    return case_dir, final_case_file, final_data_file
+
+
+def final_pair_for_candidate(
+    candidate: dict[str, str],
+) -> tuple[Path, Path, Path]:
+    return final_pair_for_run(
+        resolve_candidate_run_directory(candidate),
+        candidate["geo_name"],
+        candidate["case_name"],
     )
-    return Path(case_dir), Path(final_case_file), Path(final_data_file)
 
 
 def attempt_pair_for_case(
@@ -978,11 +1046,7 @@ def build_plan_rows(
     for candidate in candidates:
         geo_name = candidate["geo_name"]
         case_name = candidate["case_name"]
-        case_dir, final_case_file, final_data_file = final_pair_for_case(
-            args.results_root,
-            geo_name,
-            case_name,
-        )
+        case_dir, final_case_file, final_data_file = final_pair_for_candidate(candidate)
         case_dir_exists = case_dir.is_dir()
         final_case_exists = final_case_file.is_file()
         final_data_exists = final_data_file.is_file()
@@ -1109,11 +1173,7 @@ def case_log(log_path: Path):
 def make_base_result(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any]:
     geo_name = row["geo_name"]
     case_name = row["case_name"]
-    _, final_case_file, final_data_file = final_pair_for_case(
-        args.results_root,
-        geo_name,
-        case_name,
-    )
+    _, final_case_file, final_data_file = final_pair_for_candidate(row)
     log_file = args.logs_dir / f"{geo_name}__{case_name}__solver_rerun.log"
     case_dir = final_case_file.parent
 
@@ -5192,11 +5252,7 @@ def process_case(
     record = make_base_result(candidate, args)
     geo_name = record["geo_name"]
     case_name = record["case_name"]
-    case_dir, final_case_file, final_data_file = final_pair_for_case(
-        args.results_root,
-        geo_name,
-        case_name,
-    )
+    case_dir, final_case_file, final_data_file = final_pair_for_candidate(candidate)
     case_dir_resolved = case_dir.resolve()
     final_case_file_resolved = final_case_file.resolve()
     final_data_file_resolved = final_data_file.resolve()
@@ -5311,7 +5367,8 @@ def process_case(
                     f"Case directory is not an existing directory: {case_dir_resolved}"
                 )
                 record["suggested_next_action"] = (
-                    "Verify --results-root, --geo-name, and --case-name on the Windows server."
+                    "Verify the candidate run manifest and RO_DATA_ROOT on the "
+                    "Windows server."
                 )
                 return record
 
