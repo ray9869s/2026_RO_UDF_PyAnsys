@@ -2552,6 +2552,16 @@ if __name__ == "__main__":
 
             meshing = None
 
+            run_manifest_path = write_worker_run_manifest(
+                cfg,
+                mesh_case_path,
+                case_path,
+            )
+            print(
+                "Run manifest written with stop_reason=RUNNING: "
+                f"{run_manifest_path}"
+            )
+
             setup = solver.settings.setup
             solution = solver.settings.solution
 
@@ -2611,6 +2621,16 @@ if __name__ == "__main__":
             print("Switched to solver mode successfully.", flush=True)
 
             meshing = None
+
+            run_manifest_path = write_worker_run_manifest(
+                cfg,
+                mesh_case_path,
+                case_path,
+            )
+            print(
+                "Run manifest written with stop_reason=RUNNING: "
+                f"{run_manifest_path}"
+            )
 
             setup = solver.settings.setup
             solution = solver.settings.solution
@@ -3373,13 +3393,6 @@ if __name__ == "__main__":
         #   Phase 2 activates the LMH QoI condition (any-condition-is-met) and
         #   re-enables residual check_convergence so Fluent stops on residual
         #   OR LMH. pressure_drop_spacer.out is diagnostic-only.
-
-        run_manifest_path = write_worker_run_manifest(
-            cfg,
-            mesh_case_path,
-            case_path,
-        )
-        print(f"Run manifest written with stop_reason=RUNNING: {run_manifest_path}")
 
         solver_stop_reason = None
         calculation_diverged = False

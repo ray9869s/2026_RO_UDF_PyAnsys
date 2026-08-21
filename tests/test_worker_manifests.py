@@ -145,3 +145,46 @@ def test_mesh_manifest_fields_have_no_worker_defaults():
             "a" * 64,
             created_utc="2026-08-21T08:00:00Z",
         )
+
+
+def test_run_manifest_write_precedes_case_loading_and_udf_handling():
+    source = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    runtime = source[source.index("    try:\n        os.chdir(case_path)") :]
+    mesh_branch, restart_and_after = runtime.split(
+        "        else:\n"
+        "            # Direct solver-mode launch failed on the Windows server",
+        maxsplit=1,
+    )
+    restart_branch, after_input_load = restart_and_after.split(
+        "        # Update solver-side thread names",
+        maxsplit=1,
+    )
+    manifest_call = "run_manifest_path = write_worker_run_manifest("
+
+    assert mesh_branch.count(manifest_call) == 1
+    assert mesh_branch.index(manifest_call) < mesh_branch.index(
+        "setup = solver.settings.setup"
+    )
+    assert mesh_branch.index(manifest_call) < mesh_branch.index(
+        "solver.settings.file.read_case("
+    )
+    assert mesh_branch.index(manifest_call) < mesh_branch.index(
+        "solver.settings.file.replace_mesh("
+    )
+
+    assert restart_branch.count(manifest_call) == 1
+    assert restart_branch.index(manifest_call) < restart_branch.index(
+        "setup = solver.settings.setup"
+    )
+    assert restart_branch.index(manifest_call) < restart_branch.index(
+        "solver.settings.file.read_case("
+    )
+    assert restart_branch.index(manifest_call) < restart_branch.index(
+        "solver.settings.file.read_data("
+    )
+
+    assert manifest_call not in after_input_load
+    assert "udf_case_path = copy_and_patch_udf_to_case_folder(" in after_input_load
+    assert 'solver.tui.define.user_defined.compiled_functions(\n            "compile"' in (
+        after_input_load
+    )
