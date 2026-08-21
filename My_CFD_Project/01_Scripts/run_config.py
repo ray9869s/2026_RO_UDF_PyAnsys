@@ -23,8 +23,12 @@ from ro.mesh_common import (
 
 REQUIRED = "===== Edit here ====="
 
-# Batch/worker keys not declared as module-level settings in this file.
+# Batch/worker keys allowed even when a substituted config omits declarations.
 RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
+    "family",
+    "geo_id",
+    "mesh_id",
+    "run_id",
     "mesh_case_name",
     "run_label",
     "restart_from_case_file",
@@ -36,14 +40,17 @@ RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
 # [1] Common project/case settings
 # ==========================================================
 
-# My_CFD_Project directory, derived from this file's location
-# (C:/PyFluent/My_CFD_Project on the server, the local copy in WSL).
-# Override with the PYFLUENT_PROJECT_ROOT environment variable if needed.
+# Frozen config value retained for override compatibility. Worker data locations
+# come from RO_DATA_ROOT builders and do not read this value.
 project_root = os.environ.get(
     "PYFLUENT_PROJECT_ROOT",
     str(Path(__file__).resolve().parents[1]),
 )
 
+family = REQUIRED
+geo_id = REQUIRED
+mesh_id = REQUIRED
+run_id = REQUIRED
 geo_name = REQUIRED
 case_name = REQUIRED
 
@@ -500,6 +507,8 @@ def _require_number(name, value):
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
+    _require_set("family", family)
+    _require_set("geo_id", geo_id)
     _require_set("geo_name", geo_name)
     _require_set("case_name", case_name)
     _require_positive_number("processor_count", processor_count)
@@ -508,6 +517,7 @@ def validate_common():
 def validate_for_meshing():
     """Validate settings required by meshing automation."""
     validate_common()
+    _require_set("mesh_id", mesh_id)
 
     _require_positive_number("m_max", m_max)
     _require_positive_number("m_min", m_min)
@@ -554,6 +564,8 @@ def validate_for_meshing():
 def validate_for_solver():
     """Validate settings required by solver automation."""
     validate_common()
+    _require_set("mesh_id", mesh_id)
+    _require_set("run_id", run_id)
 
     _require_positive_float("inlet_velocity_value", inlet_velocity_value)
 

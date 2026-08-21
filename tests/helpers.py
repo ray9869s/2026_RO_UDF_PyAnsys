@@ -89,6 +89,10 @@ def apply_post_json_overrides(cfg: ModuleType, overrides: dict) -> None:
 def populate_valid_common_config(cfg: ModuleType) -> None:
     """Set placeholder fields so validate_common() can run in isolation."""
     cfg.project_root = str(REPO_ROOT / "My_CFD_Project")
+    cfg.family = "diamond"
+    cfg.geo_id = "D2450_a45"
+    cfg.mesh_id = "max100_min006_cpg3_bl3"
+    cfg.run_id = "u0p1_p4M"
     cfg.geo_name = "Sin_ST"
     cfg.case_name = "u0p1_p4M__mesh_max100_min006_cpg3_bl3"
 

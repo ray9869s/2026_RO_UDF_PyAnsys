@@ -26,6 +26,27 @@ from ro.solver_common import (
     resolve_solver_final_artifact_exit_code,
 )
 from ro.fluent_report_helpers import create_x_normal_plane
+from ro.paths import mesh_dir, run_dir, templates_dir, udfs_dir
+
+
+def resolve_solver_paths(cfg):
+    mesh_case_name = getattr(cfg, "mesh_case_name", cfg.case_name)
+    run_directory = run_dir(
+        cfg.family,
+        cfg.geo_id,
+        cfg.mesh_id,
+        cfg.run_id,
+    )
+    mesh_directory = mesh_dir(cfg.family, cfg.geo_id, cfg.mesh_id)
+    udf_master = udfs_dir() / cfg.udf_source_file_name
+    return {
+        "run_directory": run_directory,
+        "mesh_directory": mesh_directory,
+        "mesh_file": mesh_directory / f"{cfg.geo_name}_{mesh_case_name}.msh.h5",
+        "template_case": templates_dir() / cfg.template_case_file_name,
+        "udf_master": udf_master,
+        "udf_case": run_directory / udf_master.name,
+    }
 
 # ==========================================================
 # ##### [1] Load Run Configuration #####
@@ -72,14 +93,13 @@ if __name__ == "__main__":
         cfg.validate_for_solver()
 
     # Project paths
-    project_root = cfg.project_root
     geo_name = cfg.geo_name
     case_name = cfg.case_name
     mesh_case_name = getattr(cfg, "mesh_case_name", case_name)
 
-    case_path = os.path.join(project_root, "03_Results", geo_name, case_name)
-    mesh_case_path = os.path.join(project_root, "03_Results", geo_name, mesh_case_name)
-    mesh_file_path = os.path.join(mesh_case_path, f"{geo_name}_{mesh_case_name}.msh.h5")
+    resolved_paths = resolve_solver_paths(cfg)
+    case_path = resolved_paths["run_directory"]
+    mesh_file_path = resolved_paths["mesh_file"]
 
     def _optional_path_from_config(name):
         value = getattr(cfg, name, None)
@@ -108,11 +128,7 @@ if __name__ == "__main__":
 
     # Template case path.
     # This template case already contains the RO material/species setup.
-    template_case_path = os.path.join(
-        project_root,
-        "01_Templates",
-        cfg.template_case_file_name,
-    )
+    template_case_path = resolved_paths["template_case"]
 
     # Fluent launch settings
     product_version = cfg.product_version
@@ -122,8 +138,8 @@ if __name__ == "__main__":
     fluent_health_timeout = cfg.fluent_health_timeout
 
     # UDF source
-    udf_master_path = os.path.join(project_root, "02_UDFs", cfg.udf_source_file_name)
-    udf_case_path = os.path.join(case_path, os.path.basename(udf_master_path))
+    udf_master_path = resolved_paths["udf_master"]
+    udf_case_path = resolved_paths["udf_case"]
     udf_library_name = cfg.udf_library_name
     use_inlet_velocity_profile = bool(
         getattr(cfg, "use_inlet_velocity_profile", False)

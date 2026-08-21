@@ -31,7 +31,12 @@ def test_path_defaults_resolve_after_parse(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     probe.resolve_path_defaults(args)
 
-    assert args.template_case == REPO_ROOT / "templates" / "template_RO_setup.cas.h5"
+    assert args.template_case == (
+        REPO_ROOT
+        / "My_CFD_Project"
+        / "01_Templates"
+        / "template_RO_setup.cas.h5"
+    )
     assert args.mesh_file == (
         tmp_path
         / "meshes"

@@ -24,6 +24,7 @@ from ro.mesh_common import (
     parse_meshing_input_summary,
     upsert_mesh_ledger_csv,
 )
+from ro.paths import data_root, mesh_dir
 from ro.solver_common import merge_batch_case_overrides
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -129,13 +130,7 @@ def main():
     mesh_batch_cases = getattr(batchcfg, "mesh_batch_cases", [])
 
     base_cfg = _load_module("_base_cfg", BASE_RUN_CONFIG_PATH)
-    project_root = base_cfg.project_root
-    ledger_path = (
-        Path(project_root)
-        / "03_Results"
-        / "_inventory"
-        / "mesh_ledger.csv"
-    )
+    ledger_path = data_root() / "inventory" / "mesh_ledger.csv"
 
     successes = []
     failures = []
@@ -148,6 +143,9 @@ def main():
     print(f"{'='*72}\n")
 
     for i, case_dict in enumerate(mesh_batch_cases):
+        family = case_dict["family"]
+        geo_id = case_dict["geo_id"]
+        mesh_id = case_dict["mesh_id"]
         geo_name = case_dict["geo_name"]
         mesh_case_name = case_dict["mesh_case_name"]
         label = f"{geo_name}/{mesh_case_name}"
@@ -168,10 +166,8 @@ def main():
         print(f"CASE {i + 1}/{total}: {label}")
         print(f"{'='*72}")
 
-        expected_mesh = os.path.join(
-            project_root, "03_Results", geo_name, mesh_case_name,
-            f"{geo_name}_{mesh_case_name}.msh.h5",
-        )
+        mesh_directory = mesh_dir(family, geo_id, mesh_id)
+        expected_mesh = mesh_directory / f"{geo_name}_{mesh_case_name}.msh.h5"
         mesh_log_path = (
             Path(expected_mesh).parent
             / f"mesh_log_{mesh_case_name}.txt"

@@ -17,6 +17,8 @@
 #
 # Mesh lists left empty so this file cannot accidentally trigger a remesh.
 
+from ro.solver_common import make_base_case_name
+
 dry_run = False
 continue_on_failure = True
 skip_existing_final_data = True
@@ -35,6 +37,9 @@ common_solver_settings = {
     ],
 }
 
+_FAMILY = "diamond"
+_GEO_ID = "D2450_a45"
+_MESH_ID = "max085_min006_cpg5_bl4"
 _GEO = "D2450_a45_7c_brg110"
 _MESH = "mesh_max085_min006_cpg5_bl4"
 
@@ -42,6 +47,10 @@ solver_sweep_cases = []
 for _u in (0.1, 0.2, 0.3):
     for _p in (4.0e6, 6.0e6, 8.0e6):
         solver_sweep_cases.append({
+            "family": _FAMILY,
+            "geo_id": _GEO_ID,
+            "mesh_id": _MESH_ID,
+            "run_id": make_base_case_name(_u, _p),
             "geo_name": _GEO,
             "mesh_case_name": _MESH,
             "inlet_velocity_value": _u,       # m/s

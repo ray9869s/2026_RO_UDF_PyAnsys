@@ -214,6 +214,10 @@ class TestRunConfigOverrideAllowlist:
         admitted_config_fields = {
             "REQUIRED",
             "project_root",
+            "family",
+            "geo_id",
+            "mesh_id",
+            "run_id",
             "geo_name",
             "case_name",
             "product_version",
@@ -324,6 +328,10 @@ class TestRunConfigOverrideAllowlist:
         }
 
         assert extensions == {
+            "family",
+            "geo_id",
+            "mesh_id",
+            "run_id",
             "mesh_case_name",
             "run_label",
             "restart_from_case_file",

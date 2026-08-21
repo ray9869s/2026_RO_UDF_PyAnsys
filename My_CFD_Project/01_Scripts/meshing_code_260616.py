@@ -17,6 +17,23 @@ from ro.mesh_common import (
     parse_mesh_metrics_from_log,
     write_mesh_run_record,
 )
+from ro.paths import geometry_dir, mesh_dir
+
+
+def resolve_meshing_paths(cfg):
+    geometry_file = geometry_dir(cfg.family, cfg.geo_id) / f"{cfg.geo_id}.dsco"
+    mesh_directory = mesh_dir(cfg.family, cfg.geo_id, cfg.mesh_id)
+    return {
+        "geometry_file": geometry_file,
+        "mesh_directory": mesh_directory,
+        "mesh_log": mesh_directory / f"mesh_log_{cfg.case_name}.txt",
+        "mesh_file": mesh_directory / f"{cfg.geo_name}_{cfg.case_name}.msh.h5",
+        "mesh_run_record": mesh_directory / "mesh_run_record.json",
+        "surface_mesh_checkpoint": (
+            mesh_directory
+            / f"{cfg.geo_name}_{cfg.case_name}_surface_checkpoint.msh.h5"
+        ),
+    }
 
 # ==========================================================
 # ##### [1] Load Run Configuration #####
@@ -63,7 +80,6 @@ if __name__ == "__main__":
         cfg.validate_for_meshing()
 
     # [Common project/case settings]
-    project_root = cfg.project_root
     geo_name = cfg.geo_name
     case_name = cfg.case_name
 
@@ -257,16 +273,13 @@ if __name__ == "__main__":
     # ##### [3] Path and File Name Settings #####
     # ==========================================================
 
-    geo_full_path = os.path.join(project_root, "00_Geometries", f"{geo_name}.dsco")
-    case_path = os.path.join(project_root, "03_Results", geo_name, case_name)
-
-    mesh_log_path = os.path.join(case_path, f"mesh_log_{case_name}.txt")
-    mesh_file_path = os.path.join(case_path, f"{geo_name}_{case_name}.msh.h5")
-    mesh_run_record_path = os.path.join(case_path, "mesh_run_record.json")
-    surface_mesh_checkpoint_path = os.path.join(
-        case_path,
-        f"{geo_name}_{case_name}_surface_checkpoint.msh.h5",
-    )
+    resolved_paths = resolve_meshing_paths(cfg)
+    geo_full_path = resolved_paths["geometry_file"]
+    case_path = resolved_paths["mesh_directory"]
+    mesh_log_path = resolved_paths["mesh_log"]
+    mesh_file_path = resolved_paths["mesh_file"]
+    mesh_run_record_path = resolved_paths["mesh_run_record"]
+    surface_mesh_checkpoint_path = resolved_paths["surface_mesh_checkpoint"]
 
     if not os.path.isfile(geo_full_path):
         raise FileNotFoundError(f"Geometry file not found: {geo_full_path}")

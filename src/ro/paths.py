@@ -42,11 +42,11 @@ def data_root() -> Path:
 
 
 def templates_dir() -> Path:
-    return project_root() / "templates"
+    return project_root() / "My_CFD_Project" / "01_Templates"
 
 
 def udfs_dir() -> Path:
-    return project_root() / "udfs"
+    return project_root() / "My_CFD_Project" / "02_UDFs"
 
 
 def geometries_root() -> Path:

@@ -12,9 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ro.paths import mesh_dir, run_dir
 from ro.solver_common import (
     describe_solver_worker_failure,
-    final_case_data_paths,
     make_base_case_name,
     make_mesh_qualified_case_name,
     merge_batch_case_overrides,
@@ -27,7 +27,6 @@ from ro.solver_common import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
-BASE_RUN_CONFIG_PATH = SCRIPT_DIR / "run_config.py"
 SOLVER_SCRIPT_PATH = SCRIPT_DIR / "solver_code_260616.py"
 
 
@@ -47,9 +46,6 @@ def main():
     common_solver_settings = getattr(batchcfg, "common_solver_settings", {})
     solver_sweep_cases = getattr(batchcfg, "solver_sweep_cases", [])
 
-    base_cfg = _load_module("_base_cfg", BASE_RUN_CONFIG_PATH)
-    project_root = base_cfg.project_root
-
     successes = []
     failures = []
     skipped = []
@@ -61,6 +57,10 @@ def main():
     print(f"{'='*72}\n")
 
     for i, case_dict in enumerate(solver_sweep_cases):
+        family = case_dict["family"]
+        geo_id = case_dict["geo_id"]
+        mesh_id = case_dict["mesh_id"]
+        run_id = case_dict["run_id"]
         geo_name = case_dict["geo_name"]
         mesh_case_name = case_dict["mesh_case_name"]
         base_case_name, case_name = resolve_case_names(case_dict)
@@ -77,14 +77,14 @@ def main():
 
         input_mode, restart_case_file, restart_data_file = resolve_input_mode(overrides)
 
-        expected_mesh = os.path.join(
-            project_root, "03_Results", geo_name, mesh_case_name,
-            f"{geo_name}_{mesh_case_name}.msh.h5",
+        mesh_directory = mesh_dir(family, geo_id, mesh_id)
+        expected_mesh = mesh_directory / f"{geo_name}_{mesh_case_name}.msh.h5"
+        target_case_folder = run_dir(family, geo_id, mesh_id, run_id)
+        expected_final_case = (
+            target_case_folder / f"{geo_name}_{case_name}_final.cas.h5"
         )
-        target_case_folder, expected_final_case, expected_final_data = final_case_data_paths(
-            project_root,
-            geo_name,
-            case_name,
+        expected_final_data = (
+            target_case_folder / f"{geo_name}_{case_name}_final.dat.h5"
         )
 
         print(f"geo_name       : {geo_name}")
