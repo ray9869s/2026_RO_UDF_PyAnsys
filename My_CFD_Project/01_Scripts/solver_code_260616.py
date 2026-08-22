@@ -32,7 +32,7 @@ from ro.solver_common import (
     resolve_solver_final_artifact_exit_code,
 )
 from ro.fluent_report_helpers import create_x_normal_plane
-from ro.paths import mesh_dir, run_dir, templates_dir, udfs_dir
+from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
 
 
 def _utc_now_string():
@@ -116,14 +116,14 @@ def resolve_solver_paths(cfg):
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
     SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
-    _default_config = SCRIPT_DIR / "run_config.py"
+    _default_config = project_root() / "configs" / "run_config.py"
     _env = os.environ.get("PYFLUENT_RUN_CONFIG")
     CONFIG_PATH = Path(_env or str(_default_config)).resolve()
 
     if not CONFIG_PATH.is_file():
         raise FileNotFoundError(
             f"Run config file not found: {CONFIG_PATH}. "
-            "Set PYFLUENT_RUN_CONFIG or place run_config.py next to this solver script."
+            "Set PYFLUENT_RUN_CONFIG or place run_config.py under <project>/configs/."
         )
 
     config_spec = importlib.util.spec_from_file_location("active_run_config", CONFIG_PATH)

@@ -28,11 +28,13 @@ except Exception:
 
 
 # ----------------------------------------------------------
-# Default config lives next to this script.
+# Default config lives under <project>/configs/.
 # Override with the PYFLUENT_POST_CONFIG environment variable for batch runs.
 # ----------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
+from ro.paths import project_root  # noqa: E402
+
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
 SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:

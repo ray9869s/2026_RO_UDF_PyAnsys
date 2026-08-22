@@ -34,7 +34,7 @@ from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
     resolve_mesh_case_name,
 )
-from ro.paths import data_root, runs_root, templates_dir  # noqa: E402
+from ro.paths import data_root, project_root, runs_root, templates_dir  # noqa: E402
 
 CFF_SOURCE_TEMPLATE = "template"
 CFF_SOURCE_CASE_SPECIFIC = "case_specific"
@@ -43,7 +43,7 @@ CFF_SOURCE_MISSING = "missing"
 REPORT_SCRIPT = SCRIPT_DIR / "01_pyfluent_report_extract.py"
 PYENSIGHT_CONTOUR_SCRIPT = SCRIPT_DIR / "03_pyensight_contour_export.py"
 SHEAR_CONTOUR_SCRIPT = SCRIPT_DIR / "03b_pyfluent_shear_contour_export.py"
-BASE_POST_CONFIG = SCRIPT_DIR / "00_post_config.py"
+BASE_POST_CONFIG = project_root() / "configs" / "00_post_config.py"
 
 STATUS_PLANNED = "PLANNED"
 STATUS_SKIPPED_EXISTING = "SKIPPED_EXISTING"

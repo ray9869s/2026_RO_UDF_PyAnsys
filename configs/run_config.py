@@ -1,7 +1,7 @@
 # ==========================================================
 # run_config.py
 # Common configuration for meshing and solver automation
-# Location: My_CFD_Project/01_Scripts/run_config.py
+# Location: configs/run_config.py
 # ==========================================================
 
 # Edit only this file when changing geometry/case/run parameters.

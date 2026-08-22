@@ -31,7 +31,7 @@ from ro.residual_transcript import (  # noqa: E402
     measure_case_dir,
     write_measurement_csv,
 )
-from ro.paths import data_root, runs_root  # noqa: E402
+from ro.paths import data_root, project_root, runs_root  # noqa: E402
 from ro.solver_common import (  # noqa: E402
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     DEFAULT_RESIDUAL_TARGET_FALLBACK,
@@ -64,7 +64,7 @@ def _load_batch_common_solver_settings() -> Any:
     Returns the attribute value (may be None / non-dict) on successful module
     load, or ``_LOAD_FAILED`` after warning when the file cannot be imported.
     """
-    batch_config_path = SCRIPT_DIR.parent / "batch_config.py"
+    batch_config_path = project_root() / "configs" / "batch_config.py"
     try:
         spec = importlib.util.spec_from_file_location(
             "_batch_config_for_residual_report", batch_config_path

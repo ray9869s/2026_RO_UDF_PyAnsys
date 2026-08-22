@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ro.paths import mesh_dir, run_dir
+from ro.paths import mesh_dir, project_root, run_dir
 from ro.solver_common import (
     describe_solver_worker_failure,
     make_base_case_name,
@@ -26,7 +26,7 @@ from ro.solver_common import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
+BATCH_CONFIG_PATH = project_root() / "configs" / "batch_config.py"
 SOLVER_SCRIPT_PATH = SCRIPT_DIR / "solver_code_260616.py"
 
 

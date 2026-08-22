@@ -13,6 +13,7 @@ from ro import solver_common
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "My_CFD_Project" / "01_Scripts"
 POST_DIR = SCRIPTS_DIR / "post_processing"
+CONFIGS_DIR = REPO_ROOT / "configs"
 
 
 def load_module(name: str, path: Path) -> ModuleType:
@@ -27,7 +28,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 def load_run_config() -> ModuleType:
-    return load_module("run_config_under_test", SCRIPTS_DIR / "run_config.py")
+    return load_module("run_config_under_test", CONFIGS_DIR / "run_config.py")
 
 
 def load_batch_solver_sweep() -> ModuleType:
@@ -73,7 +74,7 @@ def load_case_inventory() -> ModuleType:
 
 
 def load_post_config() -> ModuleType:
-    return load_module("post_config_under_test", POST_DIR / "00_post_config.py")
+    return load_module("post_config_under_test", CONFIGS_DIR / "00_post_config.py")
 
 
 def apply_json_overrides(cfg: ModuleType, overrides: dict) -> None:

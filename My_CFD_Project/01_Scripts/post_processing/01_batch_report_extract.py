@@ -16,7 +16,7 @@ from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
     resolve_mesh_case_name,
 )
-from ro.paths import data_root, runs_root  # noqa: E402
+from ro.paths import data_root, project_root, runs_root  # noqa: E402
 
 
 # ============================================================
@@ -229,14 +229,12 @@ def aggregate_output_paths() -> tuple[Path, Path]:
 # The batch run below executes only when this file is run directly.
 # Importing this module must not run the batch or write any files.
 if __name__ == "__main__":
-    BATCH_CONFIG_PATH = Path(__file__).parent / "00_batch_post_config.py"
+    BATCH_CONFIG_PATH = project_root() / "configs" / "00_batch_post_config.py"
     bcfg = load_python_config(BATCH_CONFIG_PATH, "batch_post_config")
 
     BASE_CONFIG_PATH = Path(bcfg.base_post_config)
     if not BASE_CONFIG_PATH.is_file():
-        # On Windows the absolute path is used; on Linux (WSL testing) fall back
-        # to the file sitting in the same directory as this script.
-        BASE_CONFIG_PATH = Path(__file__).parent / BASE_CONFIG_PATH.name
+        BASE_CONFIG_PATH = project_root() / "configs" / BASE_CONFIG_PATH.name
     base_cfg = load_python_config(BASE_CONFIG_PATH, "base_post_config")
 
 

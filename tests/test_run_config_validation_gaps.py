@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from helpers import (
+    CONFIGS_DIR,
     SCRIPTS_DIR,
     apply_json_overrides,
     apply_post_json_overrides,
@@ -168,7 +169,11 @@ class TestSolverValidation:
 
 
 def _load_batch_config_module(filename: str):
-    path = SCRIPTS_DIR / filename
+    path = (
+        CONFIGS_DIR / filename
+        if filename == "batch_config.py"
+        else SCRIPTS_DIR / filename
+    )
     spec = importlib.util.spec_from_file_location(f"batch_{filename}", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -417,7 +422,7 @@ class TestRunConfigOverrideApplication:
         assert spec.loader is not None
         spec.loader.exec_module(backup)
 
-        current_path = SCRIPTS_DIR / "batch_config.py"
+        current_path = CONFIGS_DIR / "batch_config.py"
         current_spec = importlib.util.spec_from_file_location("_current_batch_config", current_path)
         current = importlib.util.module_from_spec(current_spec)
         assert current_spec.loader is not None

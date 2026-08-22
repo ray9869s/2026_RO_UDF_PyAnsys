@@ -45,6 +45,18 @@ def test_scripts_do_not_use_cwd_relative_results_defaults(name):
     assert "DEFAULT_RESULTS_ROOT" not in text
 
 
+def test_inventory_and_residual_load_batch_config_from_configs_dir():
+    expected = 'project_root() / "configs" / "batch_config.py"'
+    inventory = (POST_DIR / "00_case_inventory.py").read_text(encoding="utf-8")
+    residual = (POST_DIR / "09_residual_measurement_report.py").read_text(
+        encoding="utf-8"
+    )
+    assert expected in inventory
+    assert 'parents[1] / "batch_config.py"' not in inventory
+    assert expected in residual
+    assert 'SCRIPT_DIR.parent / "batch_config.py"' not in residual
+
+
 def test_inventory_parse_args_does_not_require_data_root(inventory, monkeypatch):
     monkeypatch.delenv("RO_DATA_ROOT", raising=False)
     args = inventory.parse_args([])

@@ -24,12 +24,12 @@ from ro.mesh_common import (
     parse_meshing_input_summary,
     upsert_mesh_ledger_csv,
 )
-from ro.paths import data_root, mesh_dir
+from ro.paths import data_root, mesh_dir, project_root
 from ro.solver_common import merge_batch_case_overrides
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BATCH_CONFIG_PATH = SCRIPT_DIR / "batch_config.py"
-BASE_RUN_CONFIG_PATH = SCRIPT_DIR / "run_config.py"
+BATCH_CONFIG_PATH = project_root() / "configs" / "batch_config.py"
+BASE_RUN_CONFIG_PATH = project_root() / "configs" / "run_config.py"
 MESHING_SCRIPT_PATH = SCRIPT_DIR / "meshing_code_260616.py"
 
 

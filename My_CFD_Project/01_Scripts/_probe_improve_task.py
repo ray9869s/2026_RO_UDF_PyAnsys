@@ -21,7 +21,7 @@ from pathlib import Path
 
 import ansys.fluent.core as pyfluent
 
-from ro.paths import geometry_dir
+from ro.paths import geometry_dir, project_root
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 FAMILY = "diamond"
@@ -39,9 +39,9 @@ def as_fluent_path(path):
 
 def load_run_config():
     """Load run_config.py the same way the meshing worker does (no overrides)."""
-    config_path = SCRIPT_DIR / "run_config.py"
+    config_path = project_root() / "configs" / "run_config.py"
     # UNCERTAIN: worker also honors PYFLUENT_RUN_CONFIG; probe always uses
-    # the sibling run_config.py so launch args stay local and obvious.
+    # the stock configs/run_config.py so launch args stay local and obvious.
     if not config_path.is_file():
         raise FileNotFoundError(f"Run config file not found: {config_path}")
 

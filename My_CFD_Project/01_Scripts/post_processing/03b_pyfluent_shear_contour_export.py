@@ -64,11 +64,12 @@ import matplotlib.tri as mtri
 # Paths — resolved from this script's own location (WSL/Linux-safe)
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
 from ro.paths import project_root
 from ro.shear_cff_mu_guard import emit_scm_mu_guard_message
+
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
 
 # Fluent CFF and contour object names
 DEFAULT_CFF_NAME = "cff_wall_shear_rate"
@@ -3115,7 +3116,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config", type=str,
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
-        help="Post-processing config path (default: 00_post_config.py beside this script).",
+        help="Post-processing config path (default: PYFLUENT_POST_CONFIG or <project>/configs/00_post_config.py).",
     )
     parser.add_argument("--geo-name",  type=str, default=None)
     parser.add_argument("--case-name", type=str, default=None)

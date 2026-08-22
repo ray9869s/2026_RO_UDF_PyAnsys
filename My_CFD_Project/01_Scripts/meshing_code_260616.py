@@ -20,7 +20,7 @@ from ro.mesh_common import (
     parse_mesh_metrics_from_log,
     write_mesh_run_record,
 )
-from ro.paths import geometry_dir, mesh_dir
+from ro.paths import geometry_dir, mesh_dir, project_root
 
 
 def _utc_now_string():
@@ -111,14 +111,14 @@ def resolve_meshing_paths(cfg):
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
     SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
-    _default_config = SCRIPT_DIR / "run_config.py"
+    _default_config = project_root() / "configs" / "run_config.py"
     _env = os.environ.get("PYFLUENT_RUN_CONFIG")
     CONFIG_PATH = Path(_env or str(_default_config)).resolve()
 
     if not CONFIG_PATH.is_file():
         raise FileNotFoundError(
             f"Run config file not found: {CONFIG_PATH}. "
-            "Set PYFLUENT_RUN_CONFIG or place run_config.py next to this meshing script."
+            "Set PYFLUENT_RUN_CONFIG or place run_config.py under <project>/configs/."
         )
 
     config_spec = importlib.util.spec_from_file_location("active_run_config", CONFIG_PATH)

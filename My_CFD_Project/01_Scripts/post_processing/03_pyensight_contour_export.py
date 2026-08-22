@@ -57,7 +57,7 @@ except ImportError as _exc:
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
 # ---------------------------------------------------------------------------
@@ -478,7 +478,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config", type=str,
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
-        help=f"Post-processing config Python file. Defaults to ${CONFIG_ENV_VAR} or 00_post_config.py.",
+        help=f"Post-processing config Python file. Defaults to ${CONFIG_ENV_VAR} or <project>/configs/00_post_config.py.",
     )
     parser.add_argument("--geo-name", type=str, default=None, help="Override geo_name from config.")
     parser.add_argument("--case-name", type=str, default=None, help="Override case_name from config.")

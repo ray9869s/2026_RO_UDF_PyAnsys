@@ -32,7 +32,7 @@ from ro.solver_common import (  # noqa: E402
     max_iterations_from_common_solver_settings,
     parse_stop_reason_from_text,
 )
-from ro.paths import data_root, runs_root  # noqa: E402
+from ro.paths import data_root, project_root, runs_root  # noqa: E402
 
 CONVERGED = "CONVERGED"
 MAX_ITER_REACHED = "MAX_ITER_REACHED"
@@ -404,7 +404,7 @@ def _default_max_iter_target(batch_config_path: Path | None = None) -> int:
     path = (
         batch_config_path
         if batch_config_path is not None
-        else Path(__file__).resolve().parents[1] / "batch_config.py"
+        else project_root() / "configs" / "batch_config.py"
     )
     try:
         module = _load_batch_config_module(path)

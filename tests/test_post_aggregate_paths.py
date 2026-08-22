@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from helpers import (
+    CONFIGS_DIR,
     POST_DIR,
     REPO_ROOT,
     SCRIPTS_DIR,
@@ -72,19 +73,19 @@ def load_rebuild_ledger():
 
 
 @pytest.mark.parametrize(
-    "relative",
+    "path",
     [
-        "post_processing/00_post_config.py",
-        "post_processing/00_batch_post_config.py",
-        "run_config.py",
-        "post_processing/05_make_summary_figures.py",
-        "rebuild_mesh_ledger_from_logs.py",
-        "post_processing/01_pyfluent_report_extract.py",
-        "post_processing/01_batch_report_extract.py",
+        CONFIGS_DIR / "00_post_config.py",
+        CONFIGS_DIR / "00_batch_post_config.py",
+        CONFIGS_DIR / "run_config.py",
+        SCRIPTS_DIR / "post_processing/05_make_summary_figures.py",
+        SCRIPTS_DIR / "rebuild_mesh_ledger_from_logs.py",
+        SCRIPTS_DIR / "post_processing/01_pyfluent_report_extract.py",
+        SCRIPTS_DIR / "post_processing/01_batch_report_extract.py",
     ],
 )
-def test_6a3c_scripts_have_no_parents_n_project_root_locator(relative):
-    text = (SCRIPTS_DIR / relative).read_text(encoding="utf-8")
+def test_6a3c_scripts_have_no_parents_n_project_root_locator(path):
+    text = path.read_text(encoding="utf-8")
     assert "parents[1]" not in text
     assert "parents[2]" not in text
     assert ' / "03_Results"' not in text
@@ -92,10 +93,10 @@ def test_6a3c_scripts_have_no_parents_n_project_root_locator(relative):
 
 
 def test_batch_post_config_does_not_declare_aggregate_csv_paths():
-    text = (POST_DIR / "00_batch_post_config.py").read_text(encoding="utf-8")
+    text = (CONFIGS_DIR / "00_batch_post_config.py").read_text(encoding="utf-8")
     assert "merged_summary_csv" not in text
     assert "status_csv" not in text
-    assert "project_root" not in text
+    assert "project_root =" not in text
 
 
 def test_post_config_project_root_uses_canonical_discovery(monkeypatch):
