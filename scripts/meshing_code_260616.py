@@ -98,12 +98,12 @@ def resolve_meshing_paths(cfg):
     return {
         "geometry_file": geometry_file,
         "mesh_directory": mesh_directory,
-        "mesh_log": mesh_directory / f"mesh_log_{cfg.case_name}.txt",
-        "mesh_file": mesh_directory / f"{cfg.geo_name}_{cfg.case_name}.msh.h5",
+        "mesh_log": mesh_directory / f"mesh_log_{cfg.mesh_id}.txt",
+        "mesh_file": mesh_directory / f"{cfg.geo_id}_{cfg.mesh_id}.msh.h5",
         "mesh_run_record": mesh_directory / "mesh_run_record.json",
         "surface_mesh_checkpoint": (
             mesh_directory
-            / f"{cfg.geo_name}_{cfg.case_name}_surface_checkpoint.msh.h5"
+            / f"{cfg.geo_id}_{cfg.mesh_id}_surface_checkpoint.msh.h5"
         ),
     }
 
@@ -166,8 +166,8 @@ if __name__ == "__main__":
         cfg.validate_for_meshing()
 
     # [Common project/case settings]
-    geo_name = cfg.geo_name
-    case_name = cfg.case_name
+    geo_name = cfg.geo_id
+    case_name = cfg.mesh_id
 
     # [Fluent launch settings]
     product_version = cfg.product_version
@@ -963,8 +963,8 @@ if __name__ == "__main__":
                 mesh_metrics = parse_mesh_metrics_from_log(mesh_log_path)
             mesh_parameters = mesh_parameters_from_mapping(globals())
             record = build_mesh_ledger_record(
-                geo_name=geo_name,
-                mesh_case_name=case_name,
+                geo_name=cfg.geo_id,
+                mesh_case_name=cfg.mesh_id,
                 mesh_parameters=mesh_parameters,
                 status=run_status,
                 exit_code=0 if run_status == "SUCCESS" else 1,

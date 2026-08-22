@@ -1090,23 +1090,22 @@ def resolve_candidate_run_directory(candidate: dict[str, str]) -> Path:
 
 def final_pair_for_run(
     run_directory: Path,
-    geo_name: str,
-    case_name: str,
+    geo_id: str,
+    run_id: str,
 ) -> tuple[Path, Path, Path]:
     case_dir = Path(run_directory)
-    final_case_file = case_dir / f"{geo_name}_{case_name}_final.cas.h5"
-    final_data_file = case_dir / f"{geo_name}_{case_name}_final.dat.h5"
+    final_case_file = case_dir / f"{geo_id}_{run_id}_final.cas.h5"
+    final_data_file = case_dir / f"{geo_id}_{run_id}_final.dat.h5"
     return case_dir, final_case_file, final_data_file
 
 
 def final_pair_for_candidate(
     candidate: dict[str, str],
 ) -> tuple[Path, Path, Path]:
-    return final_pair_for_run(
-        resolve_candidate_run_directory(candidate),
-        candidate["geo_name"],
-        candidate["case_name"],
-    )
+    run_directory = Path(resolve_candidate_run_directory(candidate))
+    geo_id = candidate.get("geo_id") or run_directory.parent.parent.name
+    run_id = candidate.get("run_id") or run_directory.name
+    return final_pair_for_run(run_directory, str(geo_id), str(run_id))
 
 
 def attempt_pair_for_case(

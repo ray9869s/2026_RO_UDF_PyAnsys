@@ -79,18 +79,15 @@ def test_non_integral_name_tokens_are_rejected():
         make_canonical_mesh_case_name(0.0855, 0.005, 5, 4)
 
 
-def test_run_config_enforces_names_by_default():
+def test_run_config_enforces_mesh_id_tokens():
     cfg = load_run_config()
     populate_valid_meshing_config(cfg)
     assert cfg.allow_legacy_mesh_case_name_mismatch is False
     cfg.validate_for_meshing()
 
-    cfg.case_name = "mesh_max085_min006_cpg5_bl4"
-    with pytest.raises(AssertionError, match="canonical"):
+    cfg.mesh_id = "max085_min006_cpg5_bl4_peel2"
+    with pytest.raises(ValueError, match="does not match the supplied mesh parameters"):
         cfg.validate_for_meshing()
-
-    cfg.allow_legacy_mesh_case_name_mismatch = True
-    cfg.validate_for_meshing()
 
 
 def test_legacy_opt_out_flag_must_be_bool():

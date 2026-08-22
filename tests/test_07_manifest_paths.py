@@ -15,8 +15,6 @@ FAMILY = "diamond"
 GEO_ID = "D2450_a45"
 MESH_ID = "max085_min006_cpg5_bl4_peel2"
 RUN_ID = "u0p2_p6M"
-GEO_NAME = "D2450_a45_7c_brg110"
-CASE_NAME = "u0p2_p6M__mesh_max085_min006_cpg5_bl4"
 
 
 @pytest.fixture
@@ -54,8 +52,8 @@ def candidate(latest_log_file: str = "") -> dict[str, str]:
     return {
         "selected_index": "1",
         "source_row_number": "2",
-        "geo_name": GEO_NAME,
-        "case_name": CASE_NAME,
+        "geo_name": GEO_ID,
+        "case_name": RUN_ID,
         "convergence_status_before": "MAX_ITER_REACHED",
         "case_status_before": "NEEDS_SOLVER_RERUN",
         "latest_log_file": latest_log_file,
@@ -87,8 +85,8 @@ def test_candidate_reads_ids_from_manifest_and_uses_run_dir(
     assert row["_run_directory"] == str(directory)
     case_dir, final_case, final_data = rerun07.final_pair_for_candidate(row)
     assert case_dir == directory
-    assert final_case == directory / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
-    assert final_data == directory / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
+    assert final_case == directory / f"{GEO_ID}_{RUN_ID}_final.cas.h5"
+    assert final_data == directory / f"{GEO_ID}_{RUN_ID}_final.dat.h5"
 
 
 def test_candidate_without_manifest_is_refused(rerun07, monkeypatch, tmp_path):

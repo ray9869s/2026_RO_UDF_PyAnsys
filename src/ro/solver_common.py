@@ -97,38 +97,49 @@ def make_base_case_name(u, p) -> str:
     return f"{velocity_to_case_token(u)}_{pressure_to_case_token(p)}"
 
 
-def make_mesh_qualified_case_name(base_case_name, mesh_case_name) -> str:
-    if mesh_case_name:
-        return f"{base_case_name}__{mesh_case_name}"
-    return base_case_name
+def _refuse_mesh_qualified_artifact_name(name):
+    if isinstance(name, str) and "__" in name:
+        raise ValueError(
+            "mesh-qualified names are not used for artifacts: "
+            f"{name!r}. Use run_id (u0p2_p6M); mesh_id lives in the path."
+        )
+    return name
 
 
 def resolve_case_names(case_dict) -> tuple[Any, str]:
     """Return (base_case_name, case_name) for a solver sweep entry.
 
+    case_name is the run_id used in artifact names ({geo_id}_{run_id}).
+    Mesh identity is not encoded in the filename.
+
     Priority:
-      1. Explicit "case_name" is used as-is (legacy behavior).
-      2. Explicit "base_case_name" is mesh-qualified with mesh_case_name.
-      3. inlet_velocity_value + outlet_gauge_pressure + mesh_case_name derive both.
-      4. Otherwise "case_name" is required, as before.
+      1. Explicit "run_id".
+      2. Explicit "case_name" (must not be mesh-qualified).
+      3. inlet_velocity_value + outlet_gauge_pressure → make_base_case_name.
+      4. Explicit "base_case_name".
+      5. Otherwise "case_name" is required, as before.
     """
+    run_id = _refuse_mesh_qualified_artifact_name(case_dict.get("run_id"))
+    explicit_case_name = _refuse_mesh_qualified_artifact_name(
+        case_dict.get("case_name")
+    )
     base_case_name = case_dict.get("base_case_name")
-    mesh_case_name = case_dict.get("mesh_case_name")
-    explicit_case_name = case_dict.get("case_name")
+
+    if run_id:
+        return base_case_name or run_id, run_id
 
     if explicit_case_name:
         return base_case_name, explicit_case_name
 
-    if base_case_name and mesh_case_name:
-        return base_case_name, make_mesh_qualified_case_name(base_case_name, mesh_case_name)
-
     u = case_dict.get("inlet_velocity_value")
     p = case_dict.get("outlet_gauge_pressure")
-    if u is not None and p is not None and mesh_case_name:
-        base_case_name = make_base_case_name(u, p)
-        return base_case_name, make_mesh_qualified_case_name(base_case_name, mesh_case_name)
+    if u is not None and p is not None:
+        derived = make_base_case_name(u, p)
+        return derived, derived
 
-    # Legacy behavior: an explicit case_name is required when it cannot be derived.
+    if base_case_name:
+        return base_case_name, _refuse_mesh_qualified_artifact_name(base_case_name)
+
     return base_case_name, case_dict["case_name"]
 
 

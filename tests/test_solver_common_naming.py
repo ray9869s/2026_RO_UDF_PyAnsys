@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from helpers import load_solver_common
@@ -39,32 +37,6 @@ def legacy_make_base_case_name(u, p) -> str:
     return f"{legacy_velocity_to_case_token(u)}_{legacy_pressure_to_case_token(p)}"
 
 
-def legacy_make_mesh_qualified_case_name(base_case_name, mesh_case_name) -> str:
-    if mesh_case_name:
-        return f"{base_case_name}__{mesh_case_name}"
-    return base_case_name
-
-
-def legacy_resolve_case_names(case_dict: dict[str, Any]) -> tuple[Any, str]:
-    base_case_name = case_dict.get("base_case_name")
-    mesh_case_name = case_dict.get("mesh_case_name")
-    explicit_case_name = case_dict.get("case_name")
-
-    if explicit_case_name:
-        return base_case_name, explicit_case_name
-
-    if base_case_name and mesh_case_name:
-        return base_case_name, legacy_make_mesh_qualified_case_name(base_case_name, mesh_case_name)
-
-    u = case_dict.get("inlet_velocity_value")
-    p = case_dict.get("outlet_gauge_pressure")
-    if u is not None and p is not None and mesh_case_name:
-        base_case_name = legacy_make_base_case_name(u, p)
-        return base_case_name, legacy_make_mesh_qualified_case_name(base_case_name, mesh_case_name)
-
-    return base_case_name, case_dict["case_name"]
-
-
 @pytest.fixture(scope="module")
 def common():
     return load_solver_common()
@@ -87,44 +59,41 @@ class TestNamingParityAcrossCampaign:
         assert common.make_base_case_name(velocity, pressure) == base_name
 
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_make_mesh_qualified_case_name(self, common, velocity, pressure, base_name, mesh_name):
-        expected = (
-            legacy_make_mesh_qualified_case_name(base_name, mesh_name)
-            if mesh_name
-            else base_name
-        )
-        assert common.make_mesh_qualified_case_name(base_name, mesh_name) == expected
-
-    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
     def test_resolve_case_names_from_operating_values(
         self, common, velocity, pressure, base_name, mesh_name
     ):
-        if mesh_name is None:
-            pytest.skip("Campaign plain names use explicit case_name in batch config.")
-
         case_dict = {
             "inlet_velocity_value": velocity,
             "outlet_gauge_pressure": pressure,
             "mesh_case_name": mesh_name,
         }
-        assert common.resolve_case_names(case_dict) == legacy_resolve_case_names(case_dict)
+        assert common.resolve_case_names(case_dict) == (base_name, base_name)
 
 
-class TestResolveCaseNamesParity:
+class TestResolveCaseNames:
     def test_explicit_case_name(self, common):
         case_dict = {
             "case_name": "custom_case",
             "base_case_name": "ignored_base",
             "mesh_case_name": SIN_MESH,
         }
-        assert common.resolve_case_names(case_dict) == legacy_resolve_case_names(case_dict)
+        assert common.resolve_case_names(case_dict) == ("ignored_base", "custom_case")
 
-    def test_from_base_and_mesh(self, common):
+    def test_run_id_wins_over_mesh_case_name(self, common):
+        case_dict = {
+            "run_id": "u0p1_p4M",
+            "mesh_case_name": SIN_MESH,
+            "inlet_velocity_value": 0.1,
+            "outlet_gauge_pressure": 4.0e6,
+        }
+        assert common.resolve_case_names(case_dict) == ("u0p1_p4M", "u0p1_p4M")
+
+    def test_from_base_without_mesh_suffix(self, common):
         case_dict = {
             "base_case_name": "u0p1_p4M",
             "mesh_case_name": SIN_MESH,
         }
-        assert common.resolve_case_names(case_dict) == legacy_resolve_case_names(case_dict)
+        assert common.resolve_case_names(case_dict) == ("u0p1_p4M", "u0p1_p4M")
 
     def test_legacy_plain_entry(self, common):
         case_dict = {
@@ -134,7 +103,13 @@ class TestResolveCaseNamesParity:
             "inlet_velocity_value": 0.3,
             "outlet_gauge_pressure": 4.0e6,
         }
-        assert common.resolve_case_names(case_dict) == legacy_resolve_case_names(case_dict)
+        assert common.resolve_case_names(case_dict) == (None, "u0p3_p4M")
+
+    def test_mesh_qualified_case_name_is_refused(self, common):
+        with pytest.raises(ValueError, match="mesh-qualified"):
+            common.resolve_case_names(
+                {"case_name": f"u0p1_p4M__{SIN_MESH}"}
+            )
 
 
 class TestF05MatrixBaseCaseNameHelpers:

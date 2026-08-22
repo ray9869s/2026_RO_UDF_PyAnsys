@@ -90,7 +90,6 @@ def finalize_worker_run_manifest(run_directory, stop_reason):
 
 
 def resolve_solver_paths(cfg):
-    mesh_case_name = getattr(cfg, "mesh_case_name", cfg.case_name)
     run_directory = run_dir(
         cfg.family,
         cfg.geo_id,
@@ -102,7 +101,7 @@ def resolve_solver_paths(cfg):
     return {
         "run_directory": run_directory,
         "mesh_directory": mesh_directory,
-        "mesh_file": mesh_directory / f"{cfg.geo_name}_{mesh_case_name}.msh.h5",
+        "mesh_file": mesh_directory / f"{cfg.geo_id}_{cfg.mesh_id}.msh.h5",
         "template_case": templates_dir() / cfg.template_case_file_name,
         "udf_master": udf_master,
         "udf_case": run_directory / udf_master.name,
@@ -152,10 +151,9 @@ if __name__ == "__main__":
     else:
         cfg.validate_for_solver()
 
-    # Project paths
-    geo_name = cfg.geo_name
-    case_name = cfg.case_name
-    mesh_case_name = getattr(cfg, "mesh_case_name", case_name)
+    # Project paths. Artifact names are {geo_id}_{run_id}; labels stay in sync.
+    geo_name = cfg.geo_id
+    case_name = cfg.run_id
 
     resolved_paths = resolve_solver_paths(cfg)
     case_path = resolved_paths["run_directory"]

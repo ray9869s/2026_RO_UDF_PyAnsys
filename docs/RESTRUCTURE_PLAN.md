@@ -20,6 +20,7 @@ missing decisions; if something needed is not written here, stop and ask.
 | 6a | Route every path construction through `ro.paths` builders | pending |
 | 6b | Manifests: write on creation, read in post; layout from manifest | pending |
 | 6c | CLI flags → `--family --geo-id --mesh-id --run-id` | **DONE** |
+| 6c+ | Artifact names `{geo_id}_{run_id}` / `{geo_id}_{mesh_id}` | **DONE** this commit |
 | 7 | Directory reshuffle by `git mv` (7a templates/udfs, 7b configs, 7c scripts, 7d docs) | pending |
 | 8 | Drop numeric prefixes on orchestration scripts | pending |
 | 9 | Remove the name-keyed domain-layout registry | **DONE** |
@@ -29,15 +30,7 @@ Both commits are pushed. Working tree clean and level with origin.
 
 ### Test baseline
 
-`python -m pytest -q` → **727 passed, 3 skipped** on WSL.
-
-The 3 skips are the `CAMPAIGN_CASES` rows with `mesh_name is None` in
-`test_solver_common_naming.py:103`. They are always skipped.
-
-An earlier figure of **726 passed, 4 skipped** is the *Windows server* count.
-`test_07_path_parity.py` has a `skipif(not _can_create_symlinks())` that passes on
-WSL and skips on Windows without symlink privilege. Both counts are correct for
-their host. Do not treat the difference as a regression.
+`python -m pytest -q` → **784 passed** on WSL (0 skipped).
 
 ---
 
@@ -484,8 +477,13 @@ before readers migrate:
 
 **Step 6c — CLI.** `--family --geo-id --mesh-id --run-id` replace `--geo-name` /
 `--case-name` as selectors. Worker `--geo-name` / `--case-name` remain filename
-labels. A complete four-id selection resolves through `run_dir()` and refuses a
-missing manifest.
+labels, now equal to `geo_id` / `run_id`. A complete four-id selection resolves
+through `run_dir()` and refuses a missing manifest.
+
+**After 6c — artifact names.** Cas/dat files are `{geo_id}_{run_id}_final.{cas,dat}.h5`.
+Mesh files are `{geo_id}_{mesh_id}.msh.h5`. Inventory and 06 refuse a glob fallback
+when the expected name is missing but another `*_final` file is present. The
+archive-era `geo_name` (`D2450_a45_7c_brg110`) is not used for artifact names.
 
 **Step 7 — reshuffle**, one commit per tree: 7a `01_Templates`→`templates/` and
 `02_UDFs`→`udfs/` (update `test_udm_layout_parity.UDF_DIR`); 7b configs; 7c entry

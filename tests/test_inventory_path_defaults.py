@@ -269,3 +269,41 @@ def test_batch_post_default_cff_template_uses_templates_dir(
     )
     assert chosen == template
     assert source == batch_post.CFF_SOURCE_TEMPLATE
+
+
+def test_inventory_refuses_mismatched_final_cas_name(
+    inventory, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    run_directory = write_test_run(
+        run_id="u0p2_p6M", stop_reason="max_iter_reached"
+    )
+    archive_cas = (
+        run_directory
+        / "D2450_a45_7c_brg110_u0p2_p6M__mesh_max085_min006_cpg5_bl4_final.cas.h5"
+    )
+    archive_cas.write_bytes(b"cas")
+    record = {
+        "geo_id": GEO_ID,
+        "run_id": "u0p2_p6M",
+        "_case_dir_path": run_directory,
+    }
+    with pytest.raises(FileNotFoundError, match="refusing a glob fallback"):
+        inventory.detect_case_data_files(record)
+
+
+def test_inventory_missing_final_cas_is_absent_not_a_mismatch(
+    inventory, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    run_directory = write_test_run(
+        run_id="u0p2_p6M", stop_reason="max_iter_reached"
+    )
+    record = {
+        "geo_id": GEO_ID,
+        "run_id": "u0p2_p6M",
+        "_case_dir_path": run_directory,
+    }
+    inventory.detect_case_data_files(record)
+    assert record["has_final_cas"] is False
+    assert record["final_cas_file"] == ""

@@ -16,7 +16,6 @@ from pathlib import Path
 from ro.mesh_common import (
     MESH_METRIC_NAMES,
     MESH_PARAMETER_NAMES,
-    assert_mesh_case_name_matches,
     build_mesh_ledger_record,
     load_mesh_run_record,
     mesh_parameters_from_mapping,
@@ -43,8 +42,10 @@ def _load_module(name, path):
 def _build_overrides(case_dict, common_settings):
     """Merge common settings and one case entry into the worker override dict."""
     overrides = merge_batch_case_overrides(common_settings, case_dict)
-    # The meshing worker names its output folder after case_name.
-    overrides["case_name"] = overrides.pop("mesh_case_name")
+    overrides["geo_name"] = overrides["geo_id"]
+    if "case_name" not in overrides:
+        overrides["case_name"] = overrides["mesh_id"]
+    overrides.pop("mesh_case_name", None)
     return overrides
 
 
@@ -146,32 +147,17 @@ def main():
         family = case_dict["family"]
         geo_id = case_dict["geo_id"]
         mesh_id = case_dict["mesh_id"]
-        geo_name = case_dict["geo_name"]
-        mesh_case_name = case_dict["mesh_case_name"]
-        label = f"{geo_name}/{mesh_case_name}"
+        label = f"{geo_id}/{mesh_id}"
         overrides = _build_overrides(case_dict, common_mesh_settings)
         mesh_parameters = _resolved_mesh_parameters(base_cfg, overrides)
-        assert_mesh_case_name_matches(
-            mesh_case_name,
-            mesh_parameters["m_max"],
-            mesh_parameters["m_min"],
-            mesh_parameters["m_cpg"],
-            mesh_parameters["bl_layers"],
-            allow_legacy=mesh_parameters[
-                "allow_legacy_mesh_case_name_mismatch"
-            ],
-        )
 
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")
         print(f"{'='*72}")
 
         mesh_directory = mesh_dir(family, geo_id, mesh_id)
-        expected_mesh = mesh_directory / f"{geo_name}_{mesh_case_name}.msh.h5"
-        mesh_log_path = (
-            Path(expected_mesh).parent
-            / f"mesh_log_{mesh_case_name}.txt"
-        )
+        expected_mesh = mesh_directory / f"{geo_id}_{mesh_id}.msh.h5"
+        mesh_log_path = mesh_directory / f"mesh_log_{mesh_id}.txt"
         print(f"Expected mesh output: {expected_mesh}")
 
         if skip_existing_mesh and os.path.isfile(expected_mesh):
@@ -179,8 +165,8 @@ def main():
             skipped.append(label)
             _write_case_ledger(
                 ledger_path=ledger_path,
-                geo_name=geo_name,
-                mesh_case_name=mesh_case_name,
+                geo_name=geo_id,
+                mesh_case_name=mesh_id,
                 mesh_parameters=mesh_parameters,
                 status="SKIPPED_EXISTING",
                 exit_code=None,
@@ -220,8 +206,8 @@ def main():
 
         _write_case_ledger(
             ledger_path=ledger_path,
-            geo_name=geo_name,
-            mesh_case_name=mesh_case_name,
+            geo_name=geo_id,
+            mesh_case_name=mesh_id,
             mesh_parameters=mesh_parameters,
             status=status,
             exit_code=result.returncode,

@@ -596,27 +596,33 @@ def discover_cases(
 
 def pick_expected_final_file(
     files: list[Path],
-    geo_name: str,
-    case_name: str,
+    geo_id: str,
+    run_id: str,
     suffix: str,
 ) -> Optional[Path]:
-    expected = f"{geo_name}_{case_name}_final.{suffix}.h5"
+    expected = f"{geo_id}_{run_id}_final.{suffix}.h5"
     for path in files:
         if path.name == expected:
             return path
-    final_files = [p for p in files if p.name.endswith(f"_final.{suffix}.h5")]
-    return sort_paths(final_files)[0] if final_files else None
+    others = [p for p in files if p.name.endswith(f"_final.{suffix}.h5")]
+    if others:
+        found = ", ".join(path.name for path in others)
+        raise FileNotFoundError(
+            f"Expected {expected} but found {found}. Artifact names must be "
+            f"{{geo_id}}_{{run_id}}_final.{suffix}.h5; refusing a glob fallback."
+        )
+    return None
 
 
 def detect_case_data_files(case_record: dict[str, Any]) -> None:
     case_dir = case_record["_case_dir_path"]
-    geo_name = str(case_record["geo_name"])
-    case_name = str(case_record["case_name"])
+    geo_id = str(case_record["geo_id"])
+    run_id = str(case_record["run_id"])
 
     cas_files = sort_paths(case_dir.glob("*.cas.h5"))
     dat_files = sort_paths(case_dir.glob("*.dat.h5"))
-    final_cas = pick_expected_final_file(cas_files, geo_name, case_name, "cas")
-    final_dat = pick_expected_final_file(dat_files, geo_name, case_name, "dat")
+    final_cas = pick_expected_final_file(cas_files, geo_id, run_id, "cas")
+    final_dat = pick_expected_final_file(dat_files, geo_id, run_id, "dat")
 
     case_record.update(
         {

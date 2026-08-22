@@ -17,7 +17,7 @@ import os
 import types
 
 from ro.mesh_common import (
-    assert_mesh_case_name_matches as _assert_mesh_case_name_matches,
+    make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
 )
 from ro import paths as ro_paths
 
@@ -607,14 +607,19 @@ def validate_for_meshing():
         "allow_legacy_mesh_case_name_mismatch",
         allow_legacy_mesh_case_name_mismatch,
     )
-    _assert_mesh_case_name_matches(
-        case_name,
+    mesh_stem = _make_canonical_mesh_case_name(
         m_max,
         m_min,
         m_cpg,
         bl_layers,
-        allow_legacy=allow_legacy_mesh_case_name_mismatch,
-    )
+    ).removeprefix("mesh_")
+    expected_mesh_id_prefix = f"{mesh_stem}_peel"
+    if not mesh_id.startswith(expected_mesh_id_prefix):
+        raise ValueError(
+            "run_config.py mesh_id does not match the supplied mesh parameters: "
+            f"mesh_id={mesh_id!r}, expected to start with "
+            f"{expected_mesh_id_prefix!r}."
+        )
 
     _require_set("wall_spacer_labels", wall_spacer_labels)
     _require_set("active_membrane_wall_labels", active_membrane_wall_labels)

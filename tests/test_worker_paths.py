@@ -63,8 +63,10 @@ def test_meshing_worker_paths_use_canonical_ids(monkeypatch, tmp_path):
     )
     assert resolved["mesh_directory"] == mesh_directory
     assert resolved["mesh_file"] == (
-        mesh_directory
-        / "D2450_a45_7c_brg110_mesh_max085_min006_cpg5_bl4.msh.h5"
+        mesh_directory / "D2450_a45_max085_min006_cpg5_bl4_peel2.msh.h5"
+    )
+    assert resolved["mesh_log"] == (
+        mesh_directory / "mesh_log_max085_min006_cpg5_bl4_peel2.txt"
     )
     assert meshing.resolve_meshing_paths(cfg) == resolved
 
@@ -101,6 +103,9 @@ def test_run_override_project_root_cannot_relocate_worker_paths(
     )
     assert after["mesh_directory"] == (
         data_root / "meshes" / cfg.family / cfg.geo_id / cfg.mesh_id
+    )
+    assert after["mesh_file"] == (
+        after["mesh_directory"] / f"{cfg.geo_id}_{cfg.mesh_id}.msh.h5"
     )
     assert after["template_case"] == (
         repository

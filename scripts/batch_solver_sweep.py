@@ -16,7 +16,6 @@ from ro.paths import mesh_dir, project_root, run_dir
 from ro.solver_common import (
     describe_solver_worker_failure,
     make_base_case_name,
-    make_mesh_qualified_case_name,
     merge_batch_case_overrides,
     pressure_to_case_token,
     resolve_case_names,
@@ -61,10 +60,8 @@ def main():
         geo_id = case_dict["geo_id"]
         mesh_id = case_dict["mesh_id"]
         run_id = case_dict["run_id"]
-        geo_name = case_dict["geo_name"]
-        mesh_case_name = case_dict["mesh_case_name"]
         base_case_name, case_name = resolve_case_names(case_dict)
-        label = f"{geo_name}/{case_name}"
+        label = f"{geo_id}/{run_id}"
 
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")
@@ -72,23 +69,25 @@ def main():
         overrides = merge_batch_case_overrides(common_solver_settings, case_dict)
         # The solver must receive the resolved case_name; base_case_name is
         # batch-side naming metadata only, not a solver config key.
+        overrides["geo_name"] = geo_id
         overrides["case_name"] = case_name
         overrides.pop("base_case_name", None)
 
         input_mode, restart_case_file, restart_data_file = resolve_input_mode(overrides)
 
         mesh_directory = mesh_dir(family, geo_id, mesh_id)
-        expected_mesh = mesh_directory / f"{geo_name}_{mesh_case_name}.msh.h5"
+        expected_mesh = mesh_directory / f"{geo_id}_{mesh_id}.msh.h5"
         target_case_folder = run_dir(family, geo_id, mesh_id, run_id)
         expected_final_case = (
-            target_case_folder / f"{geo_name}_{case_name}_final.cas.h5"
+            target_case_folder / f"{geo_id}_{run_id}_final.cas.h5"
         )
         expected_final_data = (
-            target_case_folder / f"{geo_name}_{case_name}_final.dat.h5"
+            target_case_folder / f"{geo_id}_{run_id}_final.dat.h5"
         )
 
-        print(f"geo_name       : {geo_name}")
-        print(f"mesh_case_name : {mesh_case_name}")
+        print(f"geo_id         : {geo_id}")
+        print(f"mesh_id        : {mesh_id}")
+        print(f"run_id         : {run_id}")
         print(f"base_case_name : {base_case_name if base_case_name else '(n/a)'}")
         print(f"case_name      : {case_name}")
         print(f"input_mode     : {input_mode}")

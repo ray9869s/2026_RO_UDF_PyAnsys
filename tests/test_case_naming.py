@@ -61,17 +61,10 @@ class TestBatchSolverSweepNaming:
         assert sweep.make_base_case_name(velocity, pressure) == f"{expected_token_u}_{expected_token_p}"
 
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_mesh_qualified_names(self, sweep, velocity, pressure, base_name, mesh_name):
+    def test_base_case_name_is_not_mesh_qualified(self, sweep, velocity, pressure, base_name, mesh_name):
         derived_base = sweep.make_base_case_name(velocity, pressure)
         assert derived_base == base_name
-
-        if mesh_name:
-            qualified = sweep.make_mesh_qualified_case_name(base_name, mesh_name)
-            assert qualified == f"{base_name}__{mesh_name}"
-            assert qualified.count("__") == 1
-        else:
-            assert sweep.make_mesh_qualified_case_name(base_name, None) == base_name
-            assert sweep.make_mesh_qualified_case_name(base_name, "") == base_name
+        assert "__" not in derived_base
 
     def test_resolve_case_names_explicit_case_name(self, sweep):
         base, case = sweep.resolve_case_names(
@@ -84,7 +77,7 @@ class TestBatchSolverSweepNaming:
         assert base == "ignored_base"
         assert case == "custom_case"
 
-    def test_resolve_case_names_from_base_and_mesh(self, sweep):
+    def test_resolve_case_names_from_base_without_mesh_suffix(self, sweep):
         base, case = sweep.resolve_case_names(
             {
                 "base_case_name": "u0p1_p4M",
@@ -92,7 +85,7 @@ class TestBatchSolverSweepNaming:
             }
         )
         assert base == "u0p1_p4M"
-        assert case == f"u0p1_p4M__{SIN_MESH}"
+        assert case == "u0p1_p4M"
 
     def test_resolve_case_names_from_operating_values(self, sweep):
         base, case = sweep.resolve_case_names(
@@ -103,7 +96,7 @@ class TestBatchSolverSweepNaming:
             }
         )
         assert base == "u0p2_p6M"
-        assert case == f"u0p2_p6M__{SIN_MESH}"
+        assert case == "u0p2_p6M"
 
     def test_resolve_case_names_legacy_plain_entry(self, sweep):
         base, case = sweep.resolve_case_names(
@@ -124,7 +117,7 @@ class TestBatchReportExtractNaming:
     def test_make_case_name_matches_solver_sweep(self, sweep, report_batch, velocity, pressure, base_name, mesh_name):
         assert report_batch.make_case_name(velocity, pressure) == sweep.make_base_case_name(velocity, pressure)
 
-    def test_resolve_post_case_mesh_qualified(self, report_batch):
+    def test_resolve_post_case_uses_run_id_not_mesh_suffix(self, report_batch):
         resolved = report_batch.resolve_post_case(
             {
                 "geo_name": "Sin_ST",
@@ -133,6 +126,6 @@ class TestBatchReportExtractNaming:
                 "mesh_case_name": SIN_MESH,
             }
         )
-        assert resolved["case_name"] == f"u0p1_p4M__{SIN_MESH}"
+        assert resolved["case_name"] == "u0p1_p4M"
         assert resolved["base_case_name"] == "u0p1_p4M"
 

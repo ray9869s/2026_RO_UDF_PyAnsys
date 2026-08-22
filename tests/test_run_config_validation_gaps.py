@@ -29,6 +29,7 @@ def cfg():
     module = load_run_config()
     populate_valid_meshing_config(module)
     populate_valid_solver_config(module)
+    module.mesh_id = "max085_min005_cpg5_bl4_peel2"
     module.allow_legacy_mesh_case_name_mismatch = True
     return module
 
@@ -85,15 +86,16 @@ class TestMeshingValidation:
             cfg.validate_for_meshing()
 
     @pytest.mark.parametrize(
-        ("m_max", "m_min"),
+        ("m_max", "m_min", "mesh_id"),
         [
-            (0.085, 0.005),
-            (0.1, 0.006),
+            (0.085, 0.005, "max085_min005_cpg5_bl4_peel2"),
+            (0.1, 0.006, "max100_min006_cpg5_bl4_peel2"),
         ],
     )
-    def test_campaign_mesh_size_pairs_are_accepted(self, cfg, m_max, m_min):
+    def test_campaign_mesh_size_pairs_are_accepted(self, cfg, m_max, m_min, mesh_id):
         cfg.m_max = m_max
         cfg.m_min = m_min
+        cfg.mesh_id = mesh_id
         cfg.validate_for_meshing()
 
 
@@ -404,6 +406,7 @@ class TestRunConfigOverrideApplication:
         overrides = {
             "m_max": 0.1,
             "m_min": 0.006,
+            "mesh_id": "max100_min006_cpg5_bl4_peel2",
             "max_iterations": 1000,
             "run_label": "preliminary_deadline_1000iter",
         }

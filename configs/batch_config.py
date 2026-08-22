@@ -1,4 +1,4 @@
-# Solver sweep on D2450_a45_7c_brg110: u = 0.1/0.2/0.3 m/s x outlet gauge
+# Solver sweep on D2450_a45: u = 0.1/0.2/0.3 m/s x outlet gauge
 # p = 4/6/8 MPa. 9 cases, Fluent relaunched per case.
 #
 # operating_pressure 101325.0 matches the 260615 campaign, so absolute outlet
@@ -16,6 +16,8 @@
 # wrong pressure-drop baseline. Handle it in post_config.py later.
 #
 # Mesh lists left empty so this file cannot accidentally trigger a remesh.
+# Artifact names are {geo_id}_{run_id} and {geo_id}_{mesh_id}; mesh identity
+# lives in the path and the mesh manifest, not in the filename suffix.
 
 from ro.solver_common import make_base_case_name
 
@@ -42,20 +44,18 @@ common_solver_settings = {
 _FAMILY = "diamond"
 _GEO_ID = "D2450_a45"
 _MESH_ID = "max085_min006_cpg5_bl4_peel2"
-_GEO = "D2450_a45_7c_brg110"
-_MESH = "mesh_max085_min006_cpg5_bl4"
 
 solver_sweep_cases = []
 for _u in (0.1, 0.2, 0.3):
     for _p in (4.0e6, 6.0e6, 8.0e6):
+        _run_id = make_base_case_name(_u, _p)
         solver_sweep_cases.append({
             "family": _FAMILY,
             "geo_id": _GEO_ID,
             "mesh_id": _MESH_ID,
-            "run_id": make_base_case_name(_u, _p),
-            "geo_name": _GEO,
-            "mesh_case_name": _MESH,
+            "run_id": _run_id,
+            "geo_name": _GEO_ID,
+            "case_name": _run_id,
             "inlet_velocity_value": _u,       # m/s
             "outlet_gauge_pressure": _p,      # Pa gauge
-            # case_name omitted -> u0p1_p4M__mesh_max085_min006_cpg5_bl4
         })

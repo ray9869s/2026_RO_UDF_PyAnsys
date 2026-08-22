@@ -724,8 +724,19 @@ def resolve_final_cas_dat(
     dat_files = sorted(
         path for path in case_dir.glob("*.dat.h5") if path.name.endswith("_final.dat.h5")
     )
-    if len(cas_files) == 1 and len(dat_files) == 1:
-        return cas_files[0], dat_files[0]
+    expected_names = {expected_cas.name, expected_dat.name}
+    mismatched = [
+        path.name
+        for path in cas_files + dat_files
+        if path.name not in expected_names
+    ]
+    if mismatched:
+        raise FileNotFoundError(
+            f"Expected {expected_cas.name} and {expected_dat.name} in {case_dir}; "
+            f"found mismatched finals: {mismatched}. "
+            "Artifact names must be {geo_id}_{run_id}_final.{cas,dat}.h5; "
+            "refusing a glob fallback."
+        )
     return expected_cas, expected_dat
 
 
@@ -968,7 +979,7 @@ def execute_case(
     layout_settings["mesh_case_name"] = run_payload["mesh_id"]
     layout_settings["mesh_resolution_source"] = "mesh_manifest"
     paths = case_paths(case_dir)
-    cas_path, dat_path = resolve_final_cas_dat(case_dir, geo_name, case_name)
+    cas_path, dat_path = resolve_final_cas_dat(case_dir, geo_id, run_id)
 
     report_log = stage_log_path(log_dir, geo_name, case_name, "report")
     contour_log = stage_log_path(log_dir, geo_name, case_name, "pyensight_contours")

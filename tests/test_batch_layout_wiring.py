@@ -189,3 +189,30 @@ class TestBatchReportOverridesLayoutKeys:
         assert error is not None
         assert "case_dir or mesh_directory" in error
         assert "LAYOUT_UNKNOWN" not in error
+
+
+class TestResolveFinalCasDatNames:
+    def test_expected_pair_is_used(self, batch_post, tmp_path: Path):
+        case_dir = tmp_path / "run"
+        case_dir.mkdir()
+        cas = case_dir / f"{GEO_ID}_u0p2_p6M_final.cas.h5"
+        dat = case_dir / f"{GEO_ID}_u0p2_p6M_final.dat.h5"
+        cas.write_bytes(b"cas")
+        dat.write_bytes(b"dat")
+        assert batch_post.resolve_final_cas_dat(
+            case_dir, GEO_ID, "u0p2_p6M"
+        ) == (cas, dat)
+
+    def test_mismatched_finals_raise(self, batch_post, tmp_path: Path):
+        case_dir = tmp_path / "run"
+        case_dir.mkdir()
+        (
+            case_dir
+            / "D2450_a45_7c_brg110_u0p2_p6M__mesh_max085_min006_cpg5_bl4_final.cas.h5"
+        ).write_bytes(b"cas")
+        (
+            case_dir
+            / "D2450_a45_7c_brg110_u0p2_p6M__mesh_max085_min006_cpg5_bl4_final.dat.h5"
+        ).write_bytes(b"dat")
+        with pytest.raises(FileNotFoundError, match="refusing a glob fallback"):
+            batch_post.resolve_final_cas_dat(case_dir, GEO_ID, "u0p2_p6M")

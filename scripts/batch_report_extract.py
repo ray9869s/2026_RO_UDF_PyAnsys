@@ -164,37 +164,36 @@ def make_case_name(u, p):
     return f"{u_str}_{p_str}"
 
 
-def make_mesh_qualified_case_name(base_case_name, mesh_case_name):
-    if mesh_case_name:
-        return f"{base_case_name}__{mesh_case_name}"
-    return base_case_name
-
-
 def resolve_post_case(entry):
     """Normalize a post case entry into the fields the batch loop needs.
 
     case_name priority:
-      1. Explicit "case_name" is used as-is.
-      2. Explicit "base_case_name", mesh-qualified with mesh_case_name if given.
-      3. Derived base_case_name from inlet_velocity_value + outlet_gauge_pressure,
-         mesh-qualified with mesh_case_name if given.
+      1. Explicit "run_id".
+      2. Explicit "case_name" (must not be mesh-qualified).
+      3. Derived from inlet_velocity_value + outlet_gauge_pressure or
+         base_case_name. Mesh identity is not encoded in the filename.
     """
-    geo_name = entry["geo_name"]
+    geo_name = entry.get("geo_id") or entry["geo_name"]
     inlet_velocity_value = entry.get("inlet_velocity_value")
     outlet_gauge_pressure = entry.get("outlet_gauge_pressure")
     base_case_name = entry.get("base_case_name")
     mesh_case_name = entry.get("mesh_case_name")
-    case_name = entry.get("case_name")
+    case_name = entry.get("run_id") or entry.get("case_name")
+
+    if isinstance(case_name, str) and "__" in case_name:
+        raise ValueError(
+            "mesh-qualified names are not used for artifacts: "
+            f"{case_name!r}. Use run_id; mesh_id lives in the path."
+        )
 
     if not case_name:
         if not base_case_name and inlet_velocity_value is not None and outlet_gauge_pressure is not None:
             base_case_name = make_case_name(inlet_velocity_value, outlet_gauge_pressure)
-        if base_case_name:
-            case_name = make_mesh_qualified_case_name(base_case_name, mesh_case_name)
+        case_name = base_case_name
     if not case_name:
         raise ValueError(
-            f"post case entry for geo '{geo_name}' needs 'case_name', 'base_case_name', "
-            "or inlet_velocity_value + outlet_gauge_pressure."
+            f"post case entry for geo '{geo_name}' needs 'run_id', 'case_name', "
+            "'base_case_name', or inlet_velocity_value + outlet_gauge_pressure."
         )
 
     return {
