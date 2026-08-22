@@ -53,3 +53,5 @@ libudf/
 # Local scratch (Fluent dumps, leftover pre-restructure trees)
 /_archive/
 _scratch/
+
+notebooks/
