@@ -16,21 +16,16 @@ MAX_CASES = None
 WRITE_AGGREGATE_OUTPUTS = False
 
 # --- Paths ---
-# Derived from this file's location (C:/PyFluent/My_CFD_Project on the server,
-# the local copy in WSL). Override the root with PYFLUENT_PROJECT_ROOT if needed.
+# Sibling scripts only. Aggregate CSV paths are resolved by
+# 01_batch_report_extract.py under RO_DATA_ROOT/inventory.
 
-import os
 from pathlib import Path
 
 _here = Path(__file__).resolve().parent
 
-project_root = os.environ.get("PYFLUENT_PROJECT_ROOT", str(_here.parents[1]))
 post_processing_dir = str(_here)
 single_case_worker = str(_here / "01_pyfluent_report_extract.py")
 base_post_config = str(_here / "00_post_config.py")
-
-merged_summary_csv = str(Path(project_root) / "03_Results" / "all_cases_post_summary.csv")
-status_csv = str(Path(project_root) / "03_Results" / "all_cases_post_status.csv")
 
 # --- Case definitions ---
 

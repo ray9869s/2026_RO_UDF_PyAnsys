@@ -459,6 +459,8 @@ class TestPostConfigOverrideAllowlist:
             "project_root",
             "geo_name",
             "case_name",
+            "results_dir",
+            "case_path",
             "rho",
             "mu",
             "c_inlet_ref",
@@ -491,6 +493,7 @@ class TestPostConfigOverrideAllowlist:
         excluded = {
             "os": "imported module",
             "Path": "imported callable type",
+            "_discover_project_root": "imported callable",
             "apply_post_config_overrides": "public function",
             "post_config_override_keys": "public function",
             "_is_blocked_override_target": "private function",
@@ -502,6 +505,8 @@ class TestPostConfigOverrideAllowlist:
             "inlet_velocity_value",
             "outlet_gauge_pressure",
             "channel_height_m",
+            "results_dir",
+            "case_path",
         }
         assert admitted_config_fields <= allowed
         assert extensions <= allowed

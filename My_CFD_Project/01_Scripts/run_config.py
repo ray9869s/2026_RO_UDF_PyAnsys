@@ -15,7 +15,6 @@
 
 import os
 import types
-from pathlib import Path
 
 from ro.mesh_common import (
     assert_mesh_case_name_matches as _assert_mesh_case_name_matches,
@@ -54,10 +53,7 @@ RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
 
 # Frozen config value retained for override compatibility. Worker data locations
 # come from RO_DATA_ROOT builders and do not read this value.
-project_root = os.environ.get(
-    "PYFLUENT_PROJECT_ROOT",
-    str(Path(__file__).resolve().parents[1]),
-)
+project_root = str(ro_paths.project_root())
 
 family = REQUIRED
 geo_id = REQUIRED

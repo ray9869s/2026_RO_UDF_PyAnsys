@@ -4,11 +4,11 @@
 # geometry performance comparison.
 #
 # Reads:
-#   03_Results/all_cases_post_summary.csv
-#   03_Results/all_cases_post_status.csv  (optional but recommended)
+#   RO_DATA_ROOT/inventory/all_cases_post_summary.csv
+#   RO_DATA_ROOT/inventory/all_cases_post_status.csv  (optional but recommended)
 #
 # Writes to:
-#   03_Results/post_summary_figures/
+#   RO_DATA_ROOT/inventory/post_summary_figures/
 #
 # Does NOT launch Fluent or modify any existing CSVs.
 #
@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 import textwrap
 import warnings
@@ -30,17 +31,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
-
-# ----------------------------------------------------------
-# Paths
-# ----------------------------------------------------------
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parents[1]
-
-SUMMARY_CSV = PROJECT_ROOT / "03_Results" / "all_cases_post_summary.csv"
-STATUS_CSV  = PROJECT_ROOT / "03_Results" / "all_cases_post_status.csv"
-OUT_DIR     = PROJECT_ROOT / "03_Results" / "post_summary_figures"
+from ro.paths import data_root
 
 
 # ----------------------------------------------------------
@@ -623,13 +614,50 @@ def write_analysis_summary(
 # Main
 # ----------------------------------------------------------
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build comparison tables and figures from aggregate post CSVs."
+    )
+    parser.add_argument(
+        "--summary-csv",
+        type=Path,
+        default=None,
+        help="Default: RO_DATA_ROOT/inventory/all_cases_post_summary.csv.",
+    )
+    parser.add_argument(
+        "--status-csv",
+        type=Path,
+        default=None,
+        help="Default: RO_DATA_ROOT/inventory/all_cases_post_status.csv.",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Default: RO_DATA_ROOT/inventory/post_summary_figures.",
+    )
+    return parser.parse_args(argv)
+
+
+def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    inventory = data_root() / "inventory"
+    args.summary_csv = (args.summary_csv or inventory / "all_cases_post_summary.csv")
+    args.status_csv = args.status_csv or inventory / "all_cases_post_status.csv"
+    args.out_dir = args.out_dir or inventory / "post_summary_figures"
+    return args
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = resolve_path_defaults(parse_args(argv))
+    summary_csv = args.summary_csv
+    status_csv = args.status_csv
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
     output_files: list[Path] = []
 
     # ---- Load data ----
-    summary = load_summary(SUMMARY_CSV)
-    status_df = load_status(STATUS_CSV)
+    summary = load_summary(summary_csv)
+    status_df = load_status(status_csv)
     n_total = len(summary)
 
     check_required_columns(summary, REQUIRED_ID_COLS, "all_cases_post_summary.csv")
@@ -665,21 +693,21 @@ def main() -> None:
         cond_pairs = []
 
     # ---- Output 1: cleaned CSV ----
-    output_files.append(write_cleaned_csv(valid_df, OUT_DIR))
+    output_files.append(write_cleaned_csv(valid_df, out_dir))
 
     # ---- Output 2: representative condition table ----
-    output_files.append(write_representative_table(valid_df, OUT_DIR))
+    output_files.append(write_representative_table(valid_df, out_dir))
 
     # ---- Output 3: metric ranges ----
     if not valid_df.empty:
-        ranges_path, range_df = write_metric_ranges(valid_df, OUT_DIR)
+        ranges_path, range_df = write_metric_ranges(valid_df, out_dir)
         output_files.append(ranges_path)
     else:
         range_df = pd.DataFrame()
 
     # ---- Output 4: range figure ----
     if not valid_df.empty and not range_df.empty:
-        png, pdf = make_range_figure(valid_df, range_df, OUT_DIR)
+        png, pdf = make_range_figure(valid_df, range_df, out_dir)
         output_files.extend([png, pdf])
 
     # ---- Output 5: performance ranking heatmap ----
@@ -688,7 +716,7 @@ def main() -> None:
             df=valid_df,
             geos=geos,
             conditions=cond_pairs,
-            out_dir=OUT_DIR,
+            out_dir=out_dir,
             stem="performance_ranking_heatmap",
             main_title="Performance Ranking Heatmap\n(rank 1 = best performance per metric)",
             performance_mode=True,
@@ -701,7 +729,7 @@ def main() -> None:
             df=valid_df,
             geos=geos,
             conditions=cond_pairs,
-            out_dir=OUT_DIR,
+            out_dir=out_dir,
             stem="value_ranking_heatmap",
             main_title="Value Ranking Heatmap\n(rank 1 = largest numerical value for all metrics)",
             performance_mode=False,
@@ -713,7 +741,7 @@ def main() -> None:
         png, pdf = make_scatter(
             df=valid_df,
             geos=geos,
-            out_dir=OUT_DIR,
+            out_dir=out_dir,
             x_col="pressure_drop_spacer_per_m_kPa_m",
             y_col="lmh_mass_balance",
             x_label="Spacer ΔP per length [kPa/m]",
@@ -728,7 +756,7 @@ def main() -> None:
         png, pdf = make_scatter(
             df=valid_df,
             geos=geos,
-            out_dir=OUT_DIR,
+            out_dir=out_dir,
             x_col="pressure_drop_spacer_per_m_kPa_m",
             y_col="cp_inlet_avg",
             x_label="Spacer ΔP per length [kPa/m]",
@@ -745,11 +773,11 @@ def main() -> None:
         excluded_counts=excluded_counts,
         valid_df=valid_df,
         output_files=output_files,
-        out_dir=OUT_DIR,
+        out_dir=out_dir,
     )
     output_files.append(summary_path)
 
-    print(f"\nDone. Outputs written to:\n  {OUT_DIR}")
+    print(f"\nDone. Outputs written to:\n  {out_dir}")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,55 @@ def load_python_config(config_path):
     return module
 
 
+def resolve_report_case_paths(cfg):
+    """Locate the case directory without a 03_Results fallback.
+
+    Preference: cfg.case_path, then cfg.results_dir/<geo>/<case>, then the
+    parent of cfg.final_case_file. Missing all three is an error — joining
+    project_root/03_Results would silently miss the data tree.
+    """
+    geo_name = cfg.geo_name
+    case_name = cfg.case_name
+    configured_case_path = getattr(cfg, "case_path", None)
+    results_dir = getattr(cfg, "results_dir", None)
+    configured_final_case = getattr(cfg, "final_case_file", None)
+    configured_final_data = getattr(cfg, "final_data_file", None)
+
+    if configured_case_path:
+        case_path = Path(configured_case_path)
+    elif results_dir:
+        case_path = Path(results_dir) / str(geo_name) / str(case_name)
+    elif configured_final_case:
+        case_path = Path(configured_final_case).parent
+    else:
+        raise ValueError(
+            "Cannot locate the case directory. Set case_path, results_dir, "
+            "or final_case_file in the post config."
+        )
+
+    final_case_file = Path(
+        configured_final_case
+        if configured_final_case
+        else case_path / f"{geo_name}_{case_name}_final.cas.h5"
+    )
+    final_data_file = Path(
+        configured_final_data
+        if configured_final_data
+        else case_path / f"{geo_name}_{case_name}_final.dat.h5"
+    )
+    post_path = case_path / "post"
+    report_path = post_path / "reports"
+    return {
+        "geo_name": geo_name,
+        "case_name": case_name,
+        "case_path": case_path,
+        "final_case_file": final_case_file,
+        "final_data_file": final_data_file,
+        "post_path": post_path,
+        "report_path": report_path,
+    }
+
+
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
@@ -123,30 +172,15 @@ if __name__ == "__main__":
     # Cell 2. Build paths and create output folders
     # ==========================================================
 
-    project_root = Path(cfg.project_root)
     geo_name = cfg.geo_name
     case_name = cfg.case_name
 
-    case_path = project_root / "03_Results" / geo_name / case_name
-
-    final_case_file = Path(
-        getattr(
-            cfg,
-            "final_case_file",
-            case_path / f"{geo_name}_{case_name}_final.cas.h5",
-        )
-    )
-
-    final_data_file = Path(
-        getattr(
-            cfg,
-            "final_data_file",
-            case_path / f"{geo_name}_{case_name}_final.dat.h5",
-        )
-    )
-
-    post_path = case_path / "post"
-    report_path = post_path / "reports"
+    paths = resolve_report_case_paths(cfg)
+    case_path = paths["case_path"]
+    final_case_file = paths["final_case_file"]
+    final_data_file = paths["final_data_file"]
+    post_path = paths["post_path"]
+    report_path = paths["report_path"]
 
     post_path.mkdir(parents=True, exist_ok=True)
     report_path.mkdir(parents=True, exist_ok=True)

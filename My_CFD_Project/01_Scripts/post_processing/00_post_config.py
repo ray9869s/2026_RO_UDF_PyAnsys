@@ -1,6 +1,6 @@
-import os
 import types
-from pathlib import Path
+
+from ro.paths import project_root as _discover_project_root
 
 # Batch/worker keys not declared as module-level settings in this file.
 POST_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
@@ -9,6 +9,8 @@ POST_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
     "inlet_velocity_value",
     "outlet_gauge_pressure",
     "channel_height_m",
+    "results_dir",
+    "case_path",
 })
 
 
@@ -56,18 +58,16 @@ def apply_post_config_overrides(cfg_module, overrides):
             )
         setattr(cfg_module, key, value)
 
-# My_CFD_Project directory, derived from this file's location
-# (C:/PyFluent/My_CFD_Project on the server, the local copy in WSL).
-# Override with the PYFLUENT_PROJECT_ROOT environment variable if needed.
-project_root = os.environ.get(
-    "PYFLUENT_PROJECT_ROOT",
-    str(Path(__file__).resolve().parents[2]),
-)
+# Repo root via PYFLUENT_PROJECT_ROOT or pyproject.toml walk. Do not recover
+# this from a fixed __file__ depth — that depth is wrong after reshuffle.
+project_root = str(_discover_project_root())
 
 REQUIRED = "===== Edit here ====="
 
 geo_name = REQUIRED
 case_name = REQUIRED
+results_dir = None
+case_path = None
 
 rho = 998.2
 mu = 8.93e-4

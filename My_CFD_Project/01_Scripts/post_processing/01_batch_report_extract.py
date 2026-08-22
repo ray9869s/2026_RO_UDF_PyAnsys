@@ -16,6 +16,7 @@ from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
     resolve_mesh_case_name,
 )
+from ro.paths import data_root, runs_root  # noqa: E402
 
 
 # ============================================================
@@ -209,6 +210,22 @@ def resolve_post_case(entry):
         "final_data_file": entry.get("final_data_file"),
     }
 
+
+def resolve_batch_results_dir(bcfg) -> Path:
+    configured = getattr(bcfg, "results_dir", None)
+    if configured:
+        return Path(configured)
+    return runs_root()
+
+
+def aggregate_output_paths() -> tuple[Path, Path]:
+    inventory = data_root() / "inventory"
+    return (
+        inventory / "all_cases_post_summary.csv",
+        inventory / "all_cases_post_status.csv",
+    )
+
+
 # The batch run below executes only when this file is run directly.
 # Importing this module must not run the batch or write any files.
 if __name__ == "__main__":
@@ -272,13 +289,12 @@ if __name__ == "__main__":
     # Paths
     # ============================================================
 
-    results_dir = Path(bcfg.project_root) / "03_Results"
+    results_dir = resolve_batch_results_dir(bcfg)
     worker_script = Path(bcfg.single_case_worker)
-    merged_summary_csv = Path(bcfg.merged_summary_csv)
-    status_csv_path = Path(bcfg.status_csv)
+    merged_summary_csv, status_csv_path = aggregate_output_paths()
 
-    # Cross-case aggregate CSVs live outside the per-case folders, so writing
-    # them is opt-in (see 00_batch_post_config.py).
+    # Cross-case aggregate CSVs live under RO_DATA_ROOT/inventory, so writing
+    # them is opt-in (see WRITE_AGGREGATE_OUTPUTS in 00_batch_post_config.py).
     write_aggregate_outputs = getattr(bcfg, "WRITE_AGGREGATE_OUTPUTS", False)
 
 
