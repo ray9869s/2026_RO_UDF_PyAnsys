@@ -74,6 +74,8 @@ import traceback
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from ro.paths import project_root
+
 # ---------------------------------------------------------------------------
 # PyEnSight import guard — only required for a real run (not for dry runs)
 # ---------------------------------------------------------------------------
@@ -104,11 +106,6 @@ except ImportError as _exc:
 # Paths — relative to this script; never hard-code C:\ or Windows paths
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = Path(
-    os.environ.get("PYFLUENT_PROJECT_ROOT", str(SCRIPT_DIR.parents[1]))
-).resolve()
-
 # ===========================================================================
 # ===== Edit here: CONFIG ===================================================
 # ===========================================================================
@@ -117,6 +114,8 @@ CONFIG: dict = {
     # --- case selection ---
     "geo_name": "Diamond_Spacer",
     "case_name": "u0p2_p6M",
+    # Required. No 03_Results fallback — a missing key must error.
+    "results_dir": None,
 
     # --- safety: dry run by default (no EnSight launch, no files written) ---
     "dry_run": True,
@@ -266,7 +265,7 @@ CONFIG: dict = {
 # variable (JSON object), mirroring PYFLUENT_POST_OVERRIDES elsewhere.
 OVERRIDES_ENV_VAR = "PYFLUENT_EXTRA_FIGURES_OVERRIDES"
 OVERRIDABLE_KEYS = {
-    "geo_name", "case_name", "dry_run",
+    "geo_name", "case_name", "results_dir", "dry_run",
     "active_x_min", "active_x_max", "slice_x_fractions",
     "include_concentration", "include_velocity_magnitude",
     "include_x_velocity", "include_vorticity", "include_qcriterion",
@@ -419,6 +418,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--geo-name", type=str, default=None, help="Override geo_name.")
     parser.add_argument("--case-name", type=str, default=None, help="Override case_name.")
     parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=None,
+        help="Root that contains <geo_name>/<case_name> (required if unset in config).",
+    )
+    parser.add_argument(
         "--run", action="store_true",
         help="Actually launch PyEnSight and export images (dry_run=False).",
     )
@@ -443,6 +448,8 @@ def build_config(args: argparse.Namespace) -> dict:
         cfg["geo_name"] = args.geo_name
     if args.case_name is not None:
         cfg["case_name"] = args.case_name
+    if args.results_dir is not None:
+        cfg["results_dir"] = args.results_dir
     if args.run:
         cfg["dry_run"] = False
     if args.dry_run:
@@ -457,9 +464,16 @@ def build_config(args: argparse.Namespace) -> dict:
 def build_paths(cfg: dict) -> dict:
     geo_name = str(cfg["geo_name"])
     case_name = str(cfg["case_name"])
-    case_path = PROJECT_ROOT / "03_Results" / geo_name / case_name
+    results_raw = cfg.get("results_dir")
+    if not results_raw:
+        raise ValueError(
+            "results_dir is unset. Set it in CONFIG, "
+            "PYFLUENT_EXTRA_FIGURES_OVERRIDES, or --results-dir."
+        )
+    case_path = Path(results_raw) / geo_name / case_name
     extra_dir = case_path / "post" / "figures" / "extra"
     return {
+        "project_root": project_root(),
         "case_path": case_path,
         "final_case_file": case_path / f"{geo_name}_{case_name}_final.cas.h5",
         "final_data_file": case_path / f"{geo_name}_{case_name}_final.dat.h5",
@@ -2526,11 +2540,11 @@ def main() -> int:
         cfg = build_config(args)
         manual_extents(cfg)  # validate early (raises on min >= max)
         validate_presentation_ranges(cfg)  # validate *_range pairs early
+        paths = build_paths(cfg)
     except ValueError as exc:
         print(f"ERROR: {exc}")
         return 1
 
-    paths = build_paths(cfg)
     print_plan(cfg, paths)
 
     if cfg["dry_run"]:

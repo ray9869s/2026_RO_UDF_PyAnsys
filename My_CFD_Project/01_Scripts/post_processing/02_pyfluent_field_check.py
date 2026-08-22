@@ -52,7 +52,6 @@ import pandas as pd
 # ----------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT_DEFAULT = SCRIPT_DIR.parents[1]
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
@@ -60,6 +59,7 @@ _SCRIPTS_DIR = SCRIPT_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+from ro.paths import project_root  # noqa: E402
 from ro.udm_layout import (  # noqa: E402
     expected_udm_fields_from_enum,
     find_case_udf_path,
@@ -195,7 +195,10 @@ def safe_float(value: Any) -> float | None:
 
 
 def get_project_root(cfg: Any) -> Path:
-    return as_path(cfg_get(cfg, "project_root", PROJECT_ROOT_DEFAULT)).resolve()
+    configured = cfg_get(cfg, "project_root")
+    if configured:
+        return as_path(configured).resolve()
+    return project_root()
 
 
 def get_case_paths(
@@ -213,7 +216,10 @@ def get_case_paths(
     if not case_name:
         raise ValueError("case_name is not defined in config and was not provided by --case-name.")
 
-    results_dir = as_path(cfg_get(cfg, "results_dir", project_root / "03_Results"))
+    results_raw = cfg_get(cfg, "results_dir")
+    if not results_raw:
+        raise ValueError("results_dir is unset. Set it in the post config.")
+    results_dir = as_path(results_raw)
     case_path = as_path(cfg_get(cfg, "case_path", results_dir / str(geo_name) / str(case_name)))
 
     final_case_file = as_path(

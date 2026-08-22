@@ -37,6 +37,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, FrozenSet, List, Optional, Tuple
 
+from ro.paths import project_root
+
 # ---------------------------------------------------------------------------
 # PyEnSight import guard — fail early with a clear message if not installed
 # ---------------------------------------------------------------------------
@@ -55,7 +57,6 @@ except ImportError as _exc:
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT_DEFAULT = SCRIPT_DIR.parents[1]
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "00_post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
@@ -382,7 +383,10 @@ def get_case_paths(
     geo_name_override: Optional[str] = None,
     case_name_override: Optional[str] = None,
 ) -> dict:
-    project_root = as_path(cfg_get(cfg, "project_root", PROJECT_ROOT_DEFAULT)).resolve()
+    configured_root = cfg_get(cfg, "project_root")
+    resolved_project_root = (
+        as_path(configured_root).resolve() if configured_root else project_root()
+    )
     geo_name = geo_name_override or str(cfg_get(cfg, "geo_name", ""))
     case_name = case_name_override or str(cfg_get(cfg, "case_name", ""))
 
@@ -391,7 +395,10 @@ def get_case_paths(
     if not case_name or case_name == "===== Edit here =====":
         raise ValueError("case_name is unset. Pass --case-name or edit 00_post_config.py.")
 
-    results_root = as_path(cfg_get(cfg, "results_dir", project_root / "03_Results"))
+    results_raw = cfg_get(cfg, "results_dir")
+    if not results_raw:
+        raise ValueError("results_dir is unset. Set it in the post config.")
+    results_root = as_path(results_raw)
     case_path = results_root / geo_name / case_name
 
     final_case_file = as_path(
@@ -404,7 +411,7 @@ def get_case_paths(
     figures_dir = case_path / "post" / "figures" / "contours"
 
     return {
-        "project_root": project_root,
+        "project_root": resolved_project_root,
         "geo_name": geo_name,
         "case_name": case_name,
         "case_path": case_path,
