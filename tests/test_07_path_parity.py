@@ -14,7 +14,6 @@ from helpers import REPO_ROOT, SCRIPTS_DIR, load_module, load_solver_common
 PROJECT_ROOT = REPO_ROOT / "My_CFD_Project"
 RESULTS_ROOT = PROJECT_ROOT / "03_Results"
 SIN_MESH = "mesh_max100_min006_cpg3_bl3"
-SIN_MESH_CPG5 = "mesh_max100_min006_cpg5_bl4"
 
 FIXTURE_CASES = [
     ("Sin_ST", "u0p2_p4M__mesh_max100_min006_cpg5_bl4"),
@@ -22,21 +21,6 @@ FIXTURE_CASES = [
     ("Sin_SL", "u0p3_p8M__mesh_max100_min006_cpg5_bl4"),
     ("Sin_ST", "u0p2_p4M"),
     ("Sin_ST", f"u0p1_p4M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p3_p8M__{SIN_MESH}"),
-]
-
-CAMPAIGN_CASES = [
-    ("Sin_ST", "u0p3_p4M"),
-    ("Sin_ST", "u0p3_p6M"),
-    ("Sin_ST", "u0p3_p8M"),
-    ("Sin_ST", f"u0p1_p4M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p1_p6M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p1_p8M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p2_p4M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p2_p6M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p2_p8M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p3_p4M__{SIN_MESH}"),
-    ("Sin_ST", f"u0p3_p6M__{SIN_MESH}"),
     ("Sin_ST", f"u0p3_p8M__{SIN_MESH}"),
 ]
 
@@ -60,14 +44,6 @@ def _can_create_symlinks() -> bool:
 def legacy_fluent_path(path) -> str:
     """Inline copy of 07_batch_solver_rerun.fluent_path before phase 5."""
     return str(Path(path).resolve()).replace("\\", "/")
-
-
-def legacy_final_pair_for_case(results_root, geo_name: str, case_name: str) -> tuple[str, str, str]:
-    """Inline copy of 07 final_pair_for_case string forms (os.path.join semantics)."""
-    case_dir = os.path.join(results_root, geo_name, case_name)
-    final_case_file = os.path.join(case_dir, f"{geo_name}_{case_name}_final.cas.h5")
-    final_data_file = final_case_file.replace(".cas.h5", ".dat.h5")
-    return case_dir, final_case_file, final_data_file
 
 
 def legacy_attempt_pair_for_case(
@@ -136,29 +112,7 @@ def rerun07():
     return load_module("batch_solver_rerun_path_parity", SCRIPTS_DIR / "batch_solver_rerun.py")
 
 
-class TestFinalPairForCaseParity:
-    @pytest.mark.parametrize("geo_name,case_name", CAMPAIGN_CASES)
-    def test_matches_under_root_default_results_root(self, common, geo_name, case_name):
-        results_root = str(RESULTS_ROOT)
-        legacy = legacy_final_pair_for_case(results_root, geo_name, case_name)
-        shared = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
-        assert shared == legacy
-
-    @pytest.mark.parametrize("geo_name,case_name", FIXTURE_CASES)
-    def test_matches_under_root_fixture_cases(self, common, geo_name, case_name):
-        results_root = str(RESULTS_ROOT)
-        legacy = legacy_final_pair_for_case(results_root, geo_name, case_name)
-        shared = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
-        assert shared == legacy
-
-    def test_custom_results_root(self, common, tmp_path):
-        custom_root = str(tmp_path / "alternate_results")
-        geo_name = "Sin_ST"
-        case_name = "u0p2_p4M__mesh_max100_min006_cpg5_bl4"
-        legacy = legacy_final_pair_for_case(custom_root, geo_name, case_name)
-        shared = common.final_case_data_paths_under_root(custom_root, geo_name, case_name)
-        assert shared == legacy
-
+class TestFinalPairForRun:
     @pytest.mark.parametrize("geo_name,case_name", FIXTURE_CASES[:2])
     def test_rerun07_final_pair_uses_supplied_run_directory(
         self,

@@ -138,15 +138,7 @@ class TestResolveCaseNamesParity:
 
 
 class TestF05MatrixBaseCaseNameHelpers:
-    """strip_mesh_suffix / is_matrix_base_case_name used by 07 select_candidates."""
-
-    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_strip_mesh_suffix_round_trip(self, common, velocity, pressure, base_name, mesh_name):
-        if mesh_name:
-            qualified = f"{base_name}__{mesh_name}"
-            assert common.strip_mesh_suffix(qualified) == (base_name, mesh_name)
-        else:
-            assert common.strip_mesh_suffix(base_name) == (base_name, None)
+    """is_matrix_base_case_name used by 07 select_candidates."""
 
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
     def test_is_matrix_base_case_name_on_base_token(

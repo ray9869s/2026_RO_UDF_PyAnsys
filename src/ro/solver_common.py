@@ -42,35 +42,6 @@ def normalize_path(path: Any) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
-def final_case_data_paths_under_root(
-    results_root: Any,
-    geo_name: str,
-    case_name: str,
-) -> tuple[str, str, str]:
-    """Return (case_dir, final_case_path, final_data_path) under results_root."""
-    case_dir = os.path.join(results_root, geo_name, case_name)
-    final_case = os.path.join(case_dir, f"{geo_name}_{case_name}_final.cas.h5")
-    final_data = final_case.replace(".cas.h5", ".dat.h5")
-    return case_dir, final_case, final_data
-
-
-def final_case_data_paths(
-    project_root: Any,
-    geo_name: str,
-    case_name: str,
-) -> tuple[str, str, str]:
-    """Return (case_dir, final_case_path, final_data_path) as strings.
-
-    Layout matches batch_solver_sweep.py expected_final_case/expected_final_data
-    construction (project_root/03_Results/<geo>/<case>/...).
-    """
-    return final_case_data_paths_under_root(
-        os.path.join(project_root, "03_Results"),
-        geo_name,
-        case_name,
-    )
-
-
 def find_windows_drive_paths(paths: Iterable[Any]) -> list[str]:
     """Return inputs whose string form starts with a Windows drive letter."""
     unsafe: list[str] = []
@@ -159,14 +130,6 @@ def resolve_case_names(case_dict) -> tuple[Any, str]:
 
     # Legacy behavior: an explicit case_name is required when it cannot be derived.
     return base_case_name, case_dict["case_name"]
-
-
-def strip_mesh_suffix(case_name: str) -> tuple[str, str | None]:
-    """Split a mesh-qualified case name into (base_case_name, mesh_suffix)."""
-    if "__" not in case_name:
-        return case_name, None
-    base, mesh = case_name.split("__", 1)
-    return base, mesh
 
 
 def is_matrix_base_case_name(case_name: str) -> bool:

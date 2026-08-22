@@ -348,7 +348,7 @@ Do not reopen these.
 | item | decision |
 |---|---|
 | `D0817_*` | `family=diamond`. It is a regular spacing code in the 9-case matrix (D2450/D1225/D0817 × a30/a45/a60), not a diagnostic. No `diag` family. |
-| `Sin_ST`, `Sin_SL`, `Hole_Pillar`, `Multi_Layer_*`, `Diamond_ov020`, `D2450_a45_ov060` | **Archive-only names.** No code reads them. Do NOT widen any regex or add schema fields to accommodate them. New pillar and sinusoidal geometries will be regenerated under the same parametric scheme as diamond. |
+| `Sin_ST`, `Sin_SL`, `Hole_Pillar`, `Multi_Layer_*`, `Diamond_ov020`, `D2450_a45_ov060` | **Archive-only names.** No code reads them. Do NOT widen any regex or add schema fields to accommodate them. New pillar and sinusoidal geometries will be regenerated under the same parametric scheme as diamond. See the channel-geometry note below. |
 | `Empty` | Stays active. `family=empty`, `geo_id=Empty`. |
 | bridge radius | Fixed at 1.10e-4 for all current diamond geometries. Not in `geo_id`; required in the manifest. |
 | overlap | Not in `geo_id`. Required in the manifest as `overlap_m`. |
@@ -359,6 +359,14 @@ Do not reopen these.
 | dated filenames | `meshing_code_260616.py`, `solver_code_260616.py`, and all dated `*_RO_UDF.c` keep their names. Directory `git mv` only. |
 | pytest dependency | `requirements-dev.txt`, not `requirements.txt` (the latter is the server's Ansys/jupyter pin list). |
 | `max_iterations` | Code is consistently 2000. `DEPLOY_RUNBOOK.md:65` saying 1000 is stale documentation. `07`'s 3000 is a different knob (rerun budget). Fix the doc in step 10. |
+
+**When regenerating pillar / sinusoidal families.** The dated UDF hardcodes
+`INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, and `INLET_AREA_EXPECTED_M2` for the current
+diamond channel geometry. All nine diamond geometries share that channel, so the
+constants are safe today. A Pillar or Sinusoidal family with a different channel
+height would silently invalidate them — the same class of failure as reusing
+`inlet_profile_G` on a different mesh. Do not fold a per-family fix into the
+260822 comment/marker pass; handle it when those families are regenerated.
 
 ---
 
@@ -384,11 +392,12 @@ answer, listed roughly by how much damage they do.
 3. **Manifest missing or stale while code falls back to dirname parsing.** Refuse
    to process a leaf without a valid manifest; refuse if the JSON ids disagree with
    the path; no registry fallback anywhere.
-4. **Name-parsing leftovers.** `parse_case_operating_values`, `strip_mesh_suffix`,
-   `mesh_case_name_candidates_from_dirname`, `make_mesh_qualified_case_name` used
-   for *paths*, the 2-level `geo/case` walk in inventory and `09`. After step 6b,
+4. **Name-parsing leftovers.** `mesh_case_name_candidates_from_dirname`,
+   `make_mesh_qualified_case_name` used for *paths*, the 2-level `geo/case` walk
+   in inventory and `09`. After step 6b,
    `grep -r "__mesh_\|03_Results"` must be empty in production code. Tokens like
-   `u0p2_p6M` survive only as `run_id` labels.
+   `u0p2_p6M` survive only as `run_id` labels. `parse_case_operating_values` and
+   `strip_mesh_suffix` are gone.
 5. **Monkeypatching through a shim.** Patching a name on a shim module does not
    affect the implementation's globals. This already bit
    `test_shear_cff_mu_guard.py` in step 2. Any other test doing this is latent
@@ -445,10 +454,10 @@ project-root locator in the same commit as the file it lives in.
 manifests. `layout_from_mesh_manifest(mesh_directory) -> GeometryLayoutRecord`
 already exists (step 9); remaining 6b work is to **call it** from inventory and
 post instead of `resolve_layout`. Delete
-`parse_case_operating_values` and the `write_report_config` identity. Replace
-the remaining path callers with `run_dir`; then delete the now-uncalled
-`final_case_data_paths` wrapper and its characterization tests at
-`tests/test_solver_common_paths.py:148,158,172`.
+`parse_case_operating_values` and the `write_report_config` identity. 6b-3
+deleted the uncalled `final_case_data_paths` /
+`final_case_data_paths_under_root` wrappers and `strip_mesh_suffix`; 06 and 07
+already resolve cas/dat from the run directory locally.
 
 Inventory currently walks two levels (`geo/case`) and then `os.walk`s logs
 from whatever directory that walk picked. Under

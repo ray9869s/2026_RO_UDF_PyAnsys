@@ -35,7 +35,6 @@ from ro.solver_common import (
     is_matrix_base_case_name,
     parse_residuals_from_transcript_text,
     path_to_fluent_str_resolved,
-    strip_mesh_suffix,
 )
 
 
@@ -933,8 +932,7 @@ def select_candidates(
             stats["missing_required"] += 1
             continue
 
-        base_case_name, _mesh_suffix = strip_mesh_suffix(case_name)
-        if not is_matrix_base_case_name(base_case_name):
+        if not is_matrix_base_case_name(case_name):
             stats["non_matrix_case_name"] += 1
             continue
 

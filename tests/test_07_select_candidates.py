@@ -67,22 +67,14 @@ def load_fixture_rows(path: Path) -> list[dict[str, str]]:
 
 
 class TestSelectCandidatesMatrixFilter:
-    @pytest.mark.parametrize(
-        "case_name",
-        [
-            "u0p2_p4M",
-            f"u0p2_p4M__{SIN_MESH_CPG5_BL4}",
-            f"u0p3_p8M__{SIN_MESH_CPG5_BL4}",
-        ],
-    )
-    def test_plain_and_mesh_qualified_matrix_names_are_selected(self, rerun07, case_name):
+    def test_plain_matrix_run_id_is_selected(self, rerun07):
         selected, stats = rerun07.select_candidates(
-            [candidate_row("Sin_ST", case_name)],
+            [candidate_row("Sin_ST", "u0p2_p4M")],
             make_select_args(),
         )
         assert stats["selected"] == 1
         assert stats["non_matrix_case_name"] == 0
-        assert selected[0]["case_name"] == case_name
+        assert selected[0]["case_name"] == "u0p2_p4M"
 
     @pytest.mark.parametrize(
         "case_name",
@@ -91,6 +83,8 @@ class TestSelectCandidatesMatrixFilter:
             "__mesh_only",
             "u0p2_p4",
             "attempt_20260705_161718",
+            f"u0p2_p4M__{SIN_MESH_CPG5_BL4}",
+            f"u0p3_p8M__{SIN_MESH_CPG5_BL4}",
         ],
     )
     def test_non_matrix_names_are_rejected(self, rerun07, case_name):
@@ -101,28 +95,6 @@ class TestSelectCandidatesMatrixFilter:
         assert selected == []
         assert stats["selected"] == 0
         assert stats["non_matrix_case_name"] == 1
-
-    def test_mesh_qualified_name_preserved_in_candidate_dict(self, rerun07):
-        qualified = f"u0p2_p6M__{SIN_MESH_CPG5_BL4}"
-        selected, _stats = rerun07.select_candidates(
-            [candidate_row("Sin_SL", qualified)],
-            make_select_args(),
-        )
-        assert len(selected) == 1
-        assert selected[0]["case_name"] == qualified
-        assert selected[0]["geo_name"] == "Sin_SL"
-
-    def test_legacy_regex_rejected_mesh_qualified_but_new_filter_accepts(self, rerun07):
-        qualified = f"u0p2_p4M__{SIN_MESH_CPG5_BL4}"
-        assert LEGACY_MATRIX_CASE_RE.match(qualified) is None
-
-        selected, stats = rerun07.select_candidates(
-            [candidate_row("Sin_ST", qualified)],
-            make_select_args(),
-        )
-        assert stats["non_matrix_case_name"] == 0
-        assert stats["selected"] == 1
-        assert selected[0]["case_name"] == qualified
 
 
 class TestSelectCandidatesFixtureCsv:
@@ -141,7 +113,7 @@ class TestSelectCandidatesFixtureCsv:
             "suggested_next_action",
         ]
 
-    def test_fixture_rows_select_all_after_f05_fix(self, rerun07):
+    def test_fixture_rows_reject_mesh_qualified_names(self, rerun07):
         rows = load_fixture_rows(F05_FIXTURE_CSV)
         assert len(rows) == 4
 
@@ -154,14 +126,10 @@ class TestSelectCandidatesFixtureCsv:
 
         selected, stats = rerun07.select_candidates(rows, make_select_args())
         assert stats["input_rows"] == 4
-        assert stats["non_matrix_case_name"] == 0
-        assert stats["selected"] == 4
+        assert stats["non_matrix_case_name"] == 3
+        assert stats["selected"] == 1
         assert {row["latest_log_file"] for row in selected} == {"/tmp/fake.log"}
-
-        selected_names = {row["case_name"] for row in selected}
-        assert selected_names == {row["case_name"] for row in rows}
-        assert f"u0p2_p4M__{SIN_MESH_CPG5_BL4}" in selected_names
-        assert "u0p2_p4M" in selected_names
+        assert selected[0]["case_name"] == "u0p2_p4M"
 
     def test_legacy_regex_would_drop_mesh_qualified_fixture_rows(self):
         rows = load_fixture_rows(F05_FIXTURE_CSV)

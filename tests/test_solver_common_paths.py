@@ -39,29 +39,6 @@ def legacy_normalize_path(path) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
-def legacy_batch_final_paths(project_root, geo_name: str, case_name: str) -> tuple[str, str, str]:
-    """Inline copy of batch_solver_sweep.py lines 166-173 before extraction."""
-    target_case_folder = os.path.join(project_root, "03_Results", geo_name, case_name)
-    expected_final_case = os.path.join(
-        target_case_folder,
-        f"{geo_name}_{case_name}_final.cas.h5",
-    )
-    expected_final_data = expected_final_case.replace(".cas.h5", ".dat.h5")
-    return target_case_folder, expected_final_case, expected_final_data
-
-
-def legacy_07_final_pair(results_root, geo_name: str, case_name: str) -> tuple[str, str, str]:
-    """Inline copy of 07_batch_solver_rerun.final_pair_for_case (phase 5 target).
-
-    Not wired in phase 1; documented equivalence when results_root is
-    project_root/03_Results.
-    """
-    case_dir = Path(results_root) / geo_name / case_name
-    final_case_file = case_dir / f"{geo_name}_{case_name}_final.cas.h5"
-    final_data_file = case_dir / f"{geo_name}_{case_name}_final.dat.h5"
-    return str(case_dir), str(final_case_file), str(final_data_file)
-
-
 def mesh_qualified_case_name(base_name: str, mesh_name: str | None) -> str:
     if mesh_name:
         return f"{base_name}__{mesh_name}"
@@ -109,69 +86,6 @@ class TestNormalizePathParity:
     )
     def test_matches_legacy_normalize_path(self, common, path_input):
         assert common.normalize_path(path_input) == legacy_normalize_path(path_input)
-
-
-class TestFinalCaseDataPathsUnderRootParity:
-    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_matches_batch_inline_logic(self, common, velocity, pressure, base_name, mesh_name):
-        geo_name = "Sin_ST"
-        case_name = mesh_qualified_case_name(base_name, mesh_name)
-        project_root = str(PROJECT_ROOT)
-        results_root = os.path.join(project_root, "03_Results")
-
-        expected = legacy_batch_final_paths(project_root, geo_name, case_name)
-        actual = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
-        assert actual == expected
-
-    def test_custom_results_root(self, common):
-        custom_root = "/data/alternate_results"
-        geo_name = "Sin_ST"
-        case_name = "u0p2_p4M__mesh_max100_min006_cpg5_bl4"
-        case_dir, final_case, final_data = common.final_case_data_paths_under_root(
-            custom_root,
-            geo_name,
-            case_name,
-        )
-        assert case_dir == os.path.join(custom_root, geo_name, case_name)
-        assert final_case.endswith(f"{geo_name}_{case_name}_final.cas.h5")
-        assert final_data.endswith(f"{geo_name}_{case_name}_final.dat.h5")
-
-
-class TestFinalCaseDataPathsParity:
-    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_matches_batch_inline_logic(self, common, velocity, pressure, base_name, mesh_name):
-        geo_name = "Sin_ST"
-        case_name = mesh_qualified_case_name(base_name, mesh_name)
-        project_root = str(PROJECT_ROOT)
-
-        expected = legacy_batch_final_paths(project_root, geo_name, case_name)
-        actual = common.final_case_data_paths(project_root, geo_name, case_name)
-        assert actual == expected
-
-    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_delegation_byte_identical_to_under_root(self, common, velocity, pressure, base_name, mesh_name):
-        geo_name = "Sin_ST"
-        case_name = mesh_qualified_case_name(base_name, mesh_name)
-        project_root = str(PROJECT_ROOT)
-        results_root = os.path.join(project_root, "03_Results")
-
-        delegated = common.final_case_data_paths(project_root, geo_name, case_name)
-        direct = common.final_case_data_paths_under_root(results_root, geo_name, case_name)
-        assert delegated == direct
-
-    @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
-    def test_matches_07_layout_when_results_root_is_under_project(
-        self, common, velocity, pressure, base_name, mesh_name
-    ):
-        """Phase 5 note: same filenames as 07.final_pair_for_case, different root arg."""
-        geo_name = "Sin_ST"
-        case_name = mesh_qualified_case_name(base_name, mesh_name)
-        project_root = str(PROJECT_ROOT)
-        results_root = os.path.join(project_root, "03_Results")
-
-        batch_paths = common.final_case_data_paths(project_root, geo_name, case_name)
-        seven_paths = legacy_07_final_pair(results_root, geo_name, case_name)
-        assert batch_paths == seven_paths
 
 
 class TestRejectWindowsDrivePaths:
