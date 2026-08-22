@@ -46,6 +46,7 @@ from ro.fluent_report_helpers import (  # noqa: E402
     mass_fraction_to_molar_concentration,
     segmented_membrane_cp_metrics,
     molar_concentration_to_mass_fraction,
+    resolve_evaluation_window_from_config,
     resolve_scoring_layout_from_config,
     summary_rows_to_wide_record,
     unit_cell_areaavg_molar_concentration_name,
@@ -147,6 +148,18 @@ def require_explicit_scoring_layout(cfg):
         ) from exc
 
 
+def require_explicit_evaluation_window(cfg):
+    """Refuse to score when evaluation-window keys are still the stock unset defaults."""
+    try:
+        return resolve_evaluation_window_from_config(cfg)
+    except AttributeError as exc:
+        raise ValueError(
+            "Evaluation window is unset. Set n_lead_excluded and "
+            "n_trail_excluded in the post config or PYFLUENT_POST_OVERRIDES. "
+            "Stock post_config has no window default."
+        ) from exc
+
+
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
@@ -165,10 +178,12 @@ if __name__ == "__main__":
         cfg.apply_post_config_overrides(cfg, _overrides)
         print(f"Applied config overrides: {sorted(_overrides)}")
 
-    # Refuse before Fluent if layout was not explicitly supplied. Stock
-    # post_config leaves n_buffer_in/n_active/n_buffer_out/cell_length_x_m
-    # unset so a direct run cannot silently score a 1+7+2 mesh as 1+3+1.
-    require_explicit_scoring_layout(cfg)
+    # Refuse before Fluent if layout or evaluation window were not
+    # explicitly supplied. Stock post_config leaves those keys unset so a
+    # direct run cannot silently score a 1+7+2 mesh as 1+3+1 / lead=1.
+    scoring_layout = require_explicit_scoring_layout(cfg)
+    evaluation_window = require_explicit_evaluation_window(cfg)
+    evaluation_window.evaluation_local_indices(scoring_layout.layout)
 
     print("Config loaded from:")
     print(CONFIG_PATH)
@@ -740,12 +755,21 @@ if __name__ == "__main__":
         spacer_x_out_m = scoring_layout.spacer_x_out_m
         spacer_length_m = scoring_layout.spacer_length_m
         n_unit_cells = layout.n_total
-        n_inlet_spacer_cells_excluded = cfg.n_inlet_spacer_cells_excluded
+        evaluation_window = require_explicit_evaluation_window(cfg)
+        n_inlet_spacer_cells_excluded = evaluation_window.n_lead_excluded
 
         print("\nSpacer plane locations:")
         print(
             f"  layout = {layout.n_buffer_in}+{layout.n_active}+{layout.n_buffer_out}"
             f" (cell_length_x_m={layout.cell_length_x_m})"
+        )
+        print(
+            f"  evaluation_window = lead={evaluation_window.n_lead_excluded}, "
+            f"trail={evaluation_window.n_trail_excluded}"
+        )
+        print(
+            f"  evaluation cells = "
+            f"{evaluation_window.evaluation_cell_numbers(layout)}"
         )
         print(f"  spacer_x_in_m   = {spacer_x_in_m:.6e} m")
         print(f"  spacer_x_out_m  = {spacer_x_out_m:.6e} m")
@@ -1393,7 +1417,7 @@ if __name__ == "__main__":
             derive_periodic_spacer_pressure_metrics_for_layout(
                 unit_cell_derived_metrics,
                 layout,
-                n_inlet_spacer_cells_excluded,
+                evaluation_window,
             )
         )
 
@@ -1805,6 +1829,8 @@ if __name__ == "__main__":
                 "spacer_cell_numbers": spacer_cells,
                 "unit_cell_metrics": unit_cell_derived_metrics,
                 "n_inlet_spacer_cells_excluded": n_inlet_spacer_cells_excluded,
+                "n_lead_excluded": evaluation_window.n_lead_excluded,
+                "n_trail_excluded": evaluation_window.n_trail_excluded,
                 "periodic_pressure_metrics": periodic_pressure_metrics,
                 "wall_shear_rate_avg": wall_shear_rate_avg,
                 "wall_shear_rate_max": wall_shear_rate_max,

@@ -11,12 +11,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from ro.domain_layout import CELL_LENGTH_X_M, CURRENT_LAYOUT, DomainLayout, LEGACY_LAYOUT
+from ro.domain_layout import CELL_LENGTH_X_M, CURRENT_LAYOUT, DomainLayout, EvaluationWindow, LEGACY_LAYOUT
 from ro.fluent_report_helpers import (
     derive_periodic_spacer_pressure_metrics,
     derive_periodic_spacer_pressure_metrics_for_layout,
     derive_spacer_cell_metrics,
     derive_spacer_cell_metrics_for_layout,
+    resolve_evaluation_window_from_config,
     resolve_scoring_layout_from_config,
     scoring_geometry_from_layout,
     spacer_cell_numbers,
@@ -91,7 +92,7 @@ class TestScoringGeometryParityLegacy:
         new_periodic = derive_periodic_spacer_pressure_metrics_for_layout(
             new_derived,
             LEGACY_LAYOUT,
-            n_inlet_spacer_cells_excluded=1,
+            EvaluationWindow(n_lead_excluded=1, n_trail_excluded=0),
         )
         assert new_periodic.keys() == old_periodic.keys()
         for key in old_periodic:
@@ -139,6 +140,31 @@ class TestScoringGeometryCurrentLayout:
             fake_symmetric_out,
             rel_tol=1.0e-9,
             abs_tol=0.0,
+        )
+
+    def test_periodic_uses_manifest_lead_window(self):
+        layout = CURRENT_LAYOUT
+        window = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
+        assert window.evaluation_cell_numbers(layout) == [5, 6, 7, 8]
+
+        metrics = {
+            f"pp_pressure_drop_cell_{cell}": 100.0 + cell for cell in range(2, 9)
+        }
+        derived = derive_periodic_spacer_pressure_metrics_for_layout(
+            metrics, layout, window
+        )
+        expected = (105.0 + 106.0 + 107.0 + 108.0) / (4 * CELL_LENGTH_X_M)
+        assert derived["pp_pressure_drop_periodic_per_m"] == pytest.approx(
+            expected
+        )
+
+        lead_one = derive_periodic_spacer_pressure_metrics_for_layout(
+            metrics,
+            layout,
+            EvaluationWindow(n_lead_excluded=1, n_trail_excluded=0),
+        )
+        assert lead_one["pp_pressure_drop_periodic_per_m"] != pytest.approx(
+            expected
         )
 
 
@@ -218,3 +244,42 @@ class TestResolveScoringLayoutFromConfig:
         geo = resolve_scoring_layout_from_config(cfg)
         assert geo.spacer_cells == list(range(2, 9))
         assert len(geo.unit_cell_boundary_x_m) == 11
+
+
+class TestResolveEvaluationWindowFromConfig:
+    def test_stock_post_config_has_no_window_default(self):
+        from helpers import load_post_config
+
+        cfg = load_post_config()
+        with pytest.raises(AttributeError, match="n_lead_excluded"):
+            resolve_evaluation_window_from_config(cfg)
+
+    def test_accepts_explicit_window_overrides(self):
+        from helpers import load_post_config
+
+        cfg = load_post_config()
+        cfg.apply_post_config_overrides(
+            cfg,
+            {
+                "n_lead_excluded": 3,
+                "n_trail_excluded": 0,
+                "n_inlet_spacer_cells_excluded": 3,
+            },
+        )
+        window = resolve_evaluation_window_from_config(cfg)
+        assert window.n_lead_excluded == 3
+        assert window.n_trail_excluded == 0
+
+    def test_inlet_alias_without_lead_is_not_enough(self):
+        cfg = SimpleNamespace(n_inlet_spacer_cells_excluded=3)
+        with pytest.raises(AttributeError, match="n_lead_excluded"):
+            resolve_evaluation_window_from_config(cfg)
+
+    def test_contradictory_inlet_alias_raises(self):
+        cfg = SimpleNamespace(
+            n_lead_excluded=3,
+            n_trail_excluded=0,
+            n_inlet_spacer_cells_excluded=1,
+        )
+        with pytest.raises(ValueError, match="n_inlet_spacer_cells_excluded contradicts"):
+            resolve_evaluation_window_from_config(cfg)

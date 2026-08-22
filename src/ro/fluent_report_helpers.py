@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from ro.domain_layout import DomainLayout
+from ro.domain_layout import DomainLayout, EvaluationWindow
 
 
 def list_named_object_names(named_object, object_label=""):
@@ -229,6 +229,32 @@ def _require_config_attr(cfg: Any, name: str) -> Any:
     if value is None:
         raise AttributeError(f"Missing required layout config key: {name!r}.")
     return value
+
+
+def resolve_evaluation_window_from_config(cfg: Any) -> EvaluationWindow:
+    """Build the scoring window from post-config keys.
+
+    ``n_lead_excluded`` and ``n_trail_excluded`` are required (no silent
+    lead=1 default). If ``n_inlet_spacer_cells_excluded`` is also set it
+    must equal ``n_lead_excluded`` — neither name is preferred silently.
+    """
+    window = EvaluationWindow(
+        int(_require_config_attr(cfg, "n_lead_excluded")),
+        int(_require_config_attr(cfg, "n_trail_excluded")),
+    )
+    if _config_has_layout_value(cfg, "n_inlet_spacer_cells_excluded"):
+        n_inlet = cfg.n_inlet_spacer_cells_excluded
+        if isinstance(n_inlet, bool) or not isinstance(n_inlet, int):
+            raise TypeError(
+                "n_inlet_spacer_cells_excluded must be an integer."
+            )
+        if n_inlet != window.n_lead_excluded:
+            raise ValueError(
+                "n_inlet_spacer_cells_excluded contradicts n_lead_excluded: "
+                f"n_inlet_spacer_cells_excluded={n_inlet!r}, "
+                f"n_lead_excluded={window.n_lead_excluded!r}."
+            )
+    return window
 
 
 def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
@@ -759,23 +785,10 @@ def derive_periodic_spacer_pressure_metrics(
 def derive_periodic_spacer_pressure_metrics_for_layout(
     unit_cell_metrics: Mapping[str, Any],
     layout: DomainLayout,
-    n_inlet_spacer_cells_excluded: int,
+    evaluation_window: EvaluationWindow,
 ) -> dict[str, Optional[float]]:
     """Asymmetric DomainLayout variant of periodic spacer pressure metrics."""
-    if (
-        isinstance(n_inlet_spacer_cells_excluded, bool)
-        or not isinstance(n_inlet_spacer_cells_excluded, int)
-    ):
-        raise TypeError(
-            "n_inlet_spacer_cells_excluded must be an integer."
-        )
-    if n_inlet_spacer_cells_excluded < 0:
-        raise ValueError(
-            "n_inlet_spacer_cells_excluded must be non-negative."
-        )
-
-    all_spacer_cells = layout.active_cell_numbers()
-    periodic_cells = all_spacer_cells[n_inlet_spacer_cells_excluded:]
+    periodic_cells = evaluation_window.evaluation_cell_numbers(layout)
     if not periodic_cells:
         raise ValueError(
             "At least one spacer cell must remain for the periodic average."

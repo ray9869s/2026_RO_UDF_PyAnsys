@@ -54,6 +54,9 @@ class TestBuildReportOverrides:
         assert overrides["n_buffer_in"] == 1
         assert overrides["n_active"] == 7
         assert overrides["n_buffer_out"] == 2
+        assert overrides["n_lead_excluded"] == 3
+        assert overrides["n_trail_excluded"] == 0
+        assert overrides["n_inlet_spacer_cells_excluded"] == 3
         assert overrides["inlet_velocity_value"] == 0.2
         assert overrides["outlet_gauge_pressure"] == 6.0e6
         assert overrides["project_root"] == str(project_root())
@@ -175,6 +178,9 @@ class TestBatchReportOverridesLayoutKeys:
         assert error is None
         assert overrides is not None
         assert overrides["n_buffer_out"] == 2
+        assert overrides["n_lead_excluded"] == 3
+        assert overrides["n_trail_excluded"] == 0
+        assert overrides["n_inlet_spacer_cells_excluded"] == 3
         assert overrides["inlet_velocity_value"] == 0.2
         assert overrides["mesh_resolution_source"] == "mesh_manifest"
 

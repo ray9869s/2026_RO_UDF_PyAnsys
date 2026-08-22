@@ -491,6 +491,8 @@ class TestPostConfigOverrideAllowlist:
             "buffer_length_m",
             "n_unit_cells",
             "n_buffer_cells_each_end",
+            "n_lead_excluded",
+            "n_trail_excluded",
             "n_inlet_spacer_cells_excluded",
             "mesh_case_name",
             "mesh_resolution_source",

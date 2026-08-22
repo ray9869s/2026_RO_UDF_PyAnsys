@@ -168,6 +168,28 @@ def test_report_extract_accepts_explicit_layout_overrides():
     assert geo.layout.n_buffer_out == 2
 
 
+def test_report_extract_refuses_stock_window_default():
+    extract = load_report_extract()
+    cfg = load_post_config()
+    with pytest.raises(ValueError, match="Evaluation window is unset"):
+        extract.require_explicit_evaluation_window(cfg)
+
+
+def test_report_extract_accepts_explicit_window_overrides():
+    extract = load_report_extract()
+    cfg = load_post_config()
+    cfg.apply_post_config_overrides(
+        cfg,
+        {
+            "n_lead_excluded": 3,
+            "n_trail_excluded": 0,
+        },
+    )
+    window = extract.require_explicit_evaluation_window(cfg)
+    assert window.n_lead_excluded == 3
+    assert window.n_trail_excluded == 0
+
+
 def test_batch_report_aggregate_paths_use_inventory(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     batch = load_batch_report_extract()

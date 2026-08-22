@@ -275,6 +275,9 @@ class TestLayoutFromMeshManifest:
         assert values["domain_length_m"] == 0.03465
         assert values["n_unit_cells"] == 10
         assert values["n_buffer_cells_each_end"] is None
+        assert values["n_lead_excluded"] == 3
+        assert values["n_trail_excluded"] == 0
+        assert values["n_inlet_spacer_cells_excluded"] == 3
         assert values["active_membrane_base_names"] == [
             "wall_top_mem",
             "wall_bottom_mem",

@@ -120,7 +120,14 @@ domain_length_m = None
 buffer_length_m = None
 n_unit_cells = None
 n_buffer_cells_each_end = None
-n_inlet_spacer_cells_excluded = 1
+# Evaluation window. No stock default — lead=1 disagreed with every current
+# campaign mesh (manifest lead=3) and silently scored periodic ΔP ~2% high.
+# Supply via PYFLUENT_POST_OVERRIDES from the mesh manifest. The worker
+# refuses if these are unset. n_inlet_spacer_cells_excluded is the legacy
+# alias of n_lead_excluded; if set it must equal n_lead_excluded.
+n_lead_excluded = None
+n_trail_excluded = None
+n_inlet_spacer_cells_excluded = None
 # Provenance keys written by 01_batch_report_extract / 06 layout resolution.
 mesh_case_name = None
 mesh_resolution_source = None

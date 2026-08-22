@@ -273,12 +273,11 @@ D0817_LAYOUT = DomainLayout(
     cell_length_x_m=CELL_LENGTH_X_D0817_M,
 )
 
-# Lead/trail windows: legacy matches post_config n_inlet_spacer_cells_excluded=1.
-# CURRENT / D0817 use lead=3 so aggregate metrics compare on the same physical
-# entrance exclusion (D2450 spacer cells 4-7). Open item (do not fix here):
-# post_config still has n_inlet_spacer_cells_excluded=1, which makes
-# pp_pressure_drop_periodic_per_m ~2% high on D2450 (cell 2 still +9.4% and
-# cell 3 +2.5% vs the cells 4-7 mean of 114.68 Pa).
+# Lead/trail windows: legacy matches the old post_config alias
+# n_inlet_spacer_cells_excluded=1. CURRENT / D0817 use lead=3 so aggregate
+# metrics compare on the same physical entrance exclusion (D2450 local
+# active cells 4-7). layout_post_config_values emits the window; stock
+# post_config leaves it unset so a direct run cannot silently score lead=1.
 LEGACY_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=1, n_trail_excluded=0)
 CURRENT_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
 D0817_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
@@ -344,8 +343,14 @@ def layout_post_config_values(record: GeometryLayoutRecord) -> dict[str, object]
     legacy length defaults. For asymmetric layouts ``n_buffer_cells_each_end``
     is set to ``None`` to clear the inapplicable symmetric key (never a fake
     each-end count).
+
+    Evaluation-window keys ``n_lead_excluded`` and ``n_trail_excluded`` come
+    from the mesh manifest. ``n_inlet_spacer_cells_excluded`` is the post-config
+    alias of lead exclusion and is set to the same value so leftover readers
+    cannot keep the stock default of 1.
     """
     layout = record.layout
+    window = record.evaluation_window
     values: dict[str, object] = {
         "n_buffer_in": layout.n_buffer_in,
         "n_active": layout.n_active,
@@ -356,6 +361,9 @@ def layout_post_config_values(record: GeometryLayoutRecord) -> dict[str, object]
         "domain_length_m": layout.total_length_m,
         "buffer_length_m": layout.n_buffer_in * float(layout.cell_length_x_m),
         "n_unit_cells": layout.n_total,
+        "n_lead_excluded": window.n_lead_excluded,
+        "n_trail_excluded": window.n_trail_excluded,
+        "n_inlet_spacer_cells_excluded": window.n_lead_excluded,
     }
     if layout.n_buffer_in == layout.n_buffer_out:
         values["n_buffer_cells_each_end"] = layout.n_buffer_in

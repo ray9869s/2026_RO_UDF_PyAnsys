@@ -522,7 +522,9 @@ def test_invalid_concentration_thresholds_are_rejected(
 
 def test_default_concentration_thresholds():
     cfg = load_post_config()
-    assert cfg.n_inlet_spacer_cells_excluded == 1
+    assert cfg.n_lead_excluded is None
+    assert cfg.n_trail_excluded is None
+    assert cfg.n_inlet_spacer_cells_excluded is None
     assert cfg.salt_molecular_weight_kg_per_mol == 0.05844
     assert cfg.salt_permeability_m_per_s == 2.50e-8
     assert cfg.salt_mass_fraction_upper_threshold == 0.99
