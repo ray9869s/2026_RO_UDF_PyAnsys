@@ -478,9 +478,14 @@ tree. `REVIEW.md` is left as the July 2026 historical record.
 ## 11. Verification gate
 
 The naming remesh checkpoint has passed (cell count and quality match the
-archive ledger). Before starting the 495-run campaign, re-run one case
-(`D2450_a45`) **to completion** (not `max_iterations=1`) and confirm LMH,
-evaluation-window ΔP, and CP against the pre-restructure figures. The legacy
-`03_Results` tree is frozen under `RO_DATA_ROOT/archive/` and the `_scratch`
-logs are archived at `archive/logs/scratch_20260820.tgz` if a number needs to
-be recovered for comparison.
+archive ledger). The 495 figure is ~55 geometries across Diamond, Multi-Layer,
+Sinusoidal, and Pillar, times nine operating points. Diamond/81 is phase one
+because it is the only family with CAD today; the other families need CAD
+regeneration under the same parametric scheme.
+
+Before starting that campaign, re-run one case (`D2450_a45`) **to completion**
+(not `max_iterations=1`) and confirm LMH, evaluation-window ΔP, and CP against
+the pre-restructure figures. The legacy `03_Results` tree is frozen under
+`RO_DATA_ROOT/archive/` and the `_scratch` logs are archived at
+`archive/logs/scratch_20260820.tgz` if a number needs to be recovered for
+comparison.
