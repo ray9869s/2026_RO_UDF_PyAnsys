@@ -39,6 +39,9 @@ common_solver_settings = {
         "wall_top_buffer_in", "wall_top_buffer_out",
         "wall_bottom_buffer_in", "wall_bottom_buffer_out",
     ],
+    # Campaign BC is parabolic. Omitting this key falls through to
+    # run_config's False (plug). batch_solver_sweep refuses to start if unset.
+    "use_inlet_velocity_profile": True,
 }
 
 _FAMILY = "diamond"

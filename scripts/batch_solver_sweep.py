@@ -36,6 +36,42 @@ def _load_module(name, path):
     return mod
 
 
+_INLET_PROFILE_FLAG = "use_inlet_velocity_profile"
+
+
+def require_explicit_inlet_velocity_profile(
+    common_solver_settings,
+    solver_sweep_cases=None,
+):
+    """Refuse a sweep that would inherit run_config's plug default.
+
+    The flag must be present in common_solver_settings, or on every case
+    after merge. An explicit False is allowed (deliberate plug). Missing
+    is not: that used to launch nine plug runs against a parabolic campaign.
+    """
+    common = common_solver_settings if hasattr(common_solver_settings, "keys") else {}
+    if _INLET_PROFILE_FLAG in common:
+        return
+    cases = list(solver_sweep_cases or [])
+    missing = []
+    for case_dict in cases:
+        merged = merge_batch_case_overrides(common, case_dict)
+        if _INLET_PROFILE_FLAG not in merged:
+            label = f"{case_dict.get('geo_id', '?')}/{case_dict.get('run_id', '?')}"
+            missing.append(label)
+    if missing or not cases:
+        raise ValueError(
+            "batch_config must set use_inlet_velocity_profile explicitly "
+            "(common_solver_settings or every solver_sweep_cases entry). "
+            "Omitting it falls through to run_config's plug default. "
+            + (
+                f"Unset in: {missing}."
+                if missing
+                else "common_solver_settings does not set it."
+            )
+        )
+
+
 def main():
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
@@ -44,6 +80,10 @@ def main():
     skip_existing_final_data = getattr(batchcfg, "skip_existing_final_data", True)
     common_solver_settings = getattr(batchcfg, "common_solver_settings", {})
     solver_sweep_cases = getattr(batchcfg, "solver_sweep_cases", [])
+    require_explicit_inlet_velocity_profile(
+        common_solver_settings,
+        solver_sweep_cases,
+    )
 
     successes = []
     failures = []
