@@ -217,13 +217,13 @@ outlet_gauge_pressure = REQUIRED
 
 # Template/UDF file names relative to project_root.
 template_case_file_name = "template_RO_setup.cas.h5"
-# 260816 = ASCII-only production copy of 260815 for Windows UDF compilation.
-# RO_ANALYTIC_CWALL=1, FACE diagnostics off (unreadable in Fluent 25.1),
-# y1 stored on the cell path.
+# 260822 = production. ASCII, RO_ANALYTIC_CWALL=1, FACE diagnostics off,
+# y1 on the cell path, RO_UDF_INLET_PROFILE_G marker from ensure_inlet_G.
+# 260816 = ASCII-only copy of 260815; frozen after the Windows compile fix.
 # 260815 = same UDF behavior, retained as the UTF-8 regression reference.
 # 260814 = reconstruction ON, FACE still on (results sibling).
 # 260813 = cell-centre (flag off) sibling.
-udf_source_file_name = "260816_RO_UDF.c"
+udf_source_file_name = "260822_RO_UDF.c"
 udf_library_name = "libudf"
 
 # Inlet velocity profile (DEFINE_PROFILE inlet_x_velocity_profile).
@@ -231,7 +231,9 @@ udf_library_name = "libudf"
 # True  = Components + UDF on x-velocity (needs-live-verification on Fluent 25.1).
 use_inlet_velocity_profile = False
 # After UDF load, execute probe_inlet_profile on-demand and assert its marker
-# in the solver transcript. Independent of the BC method (read-only probe).
+# in the solver transcript. The solver always runs the probe so a False
+# value cannot silently skip RO_UDF_INLET_PROFILE_G; the flag is retained
+# for config compatibility.
 run_inlet_profile_probe = False
 # Verbose settings-API probes + allowed-value trials when applying the
 # Components+UDF inlet BC. Default False after Fluent 25.1.0 confirmed

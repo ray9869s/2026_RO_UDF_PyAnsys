@@ -1,4 +1,4 @@
-"""Lock Python UDM indices to the enum in 260813_RO_UDF.c.
+"""Lock Python UDM indices to the enum in 260822_RO_UDF.c.
 
 Parses the C enum rather than duplicating numbers, so Python and UDF cannot
 silently drift after a renumber.
@@ -47,10 +47,12 @@ from ro.udm_layout import (
 from helpers import REPO_ROOT, SCRIPTS_DIR, load_post_config, load_run_config
 
 UDF_DIR = REPO_ROOT / "udfs"
-UDF_PATH = UDF_DIR / "260813_RO_UDF.c"
+UDF_PATH = UDF_DIR / "260822_RO_UDF.c"
+UDF_260822_PATH = UDF_PATH
 UDF_260816_PATH = UDF_DIR / "260816_RO_UDF.c"
 UDF_260815_PATH = UDF_DIR / "260815_RO_UDF.c"
 UDF_260814_PATH = UDF_DIR / "260814_RO_UDF.c"
+UDF_260813_PATH = UDF_DIR / "260813_RO_UDF.c"
 UDF_260810_PATH = UDF_DIR / "260810_RO_UDF.c"
 UDF_260612_PATH = UDF_DIR / "260612_RO_UDF.c"
 
@@ -150,13 +152,13 @@ def test_expected_udm_fields_cover_valid_range_only():
         assert 0 <= index < UDM_COUNT, field_name
 
 
-def test_module_expected_fields_match_parsed_260813(c_udm_enum):
+def test_module_expected_fields_match_parsed_260822(c_udm_enum):
     assert EXPECTED_UDM_FIELDS == expected_udm_fields_from_enum(c_udm_enum)
 
 
 def test_case_udf_fields_follow_dated_layouts():
     fields_813 = expected_udm_fields_from_enum(
-        parse_udm_enum_from_c(UDF_PATH.read_text(encoding="utf-8"))
+        parse_udm_enum_from_c(UDF_260813_PATH.read_text(encoding="utf-8"))
     )
     fields_810 = expected_udm_fields_from_enum(
         parse_udm_enum_from_c(UDF_260810_PATH.read_text(encoding="utf-8"))
@@ -223,9 +225,10 @@ def test_d_salt_matches_run_config_mass_diffusivity():
     run_cfg = load_run_config()
     expected = float(run_cfg.mass_diffusivity)
     for label, path in (
-        ("260813_RO_UDF.c", UDF_PATH),
+        ("260813_RO_UDF.c", UDF_260813_PATH),
         ("260815_RO_UDF.c", UDF_260815_PATH),
         ("260816_RO_UDF.c", UDF_260816_PATH),
+        ("260822_RO_UDF.c", UDF_260822_PATH),
     ):
         source = path.read_text(encoding="utf-8")
         match = re.search(
@@ -238,7 +241,7 @@ def test_d_salt_matches_run_config_mass_diffusivity():
 
 
 def test_analytic_cwall_defaults_off():
-    source = UDF_PATH.read_text(encoding="utf-8")
+    source = UDF_260813_PATH.read_text(encoding="utf-8")
     assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+0", source)
 
 
@@ -249,7 +252,7 @@ def test_260814_analytic_cwall_on():
 
 def test_260814_matches_260813_except_analytic_cwall_and_date():
     """260814 is 260813 with reconstruction ON; no other drift."""
-    text_813 = UDF_PATH.read_text(encoding="utf-8")
+    text_813 = UDF_260813_PATH.read_text(encoding="utf-8")
     text_814 = UDF_260814_PATH.read_text(encoding="utf-8")
     norm_813 = (
         text_813.replace("260813", "DATE").replace(
@@ -289,6 +292,64 @@ def test_260816_matches_260815_except_ascii_comments_and_date():
     assert normalized_816 == normalized_815
 
 
+def _udf_macro(source: str, name: str) -> str:
+    match = re.search(rf"^\s*#define\s+{name}\s+(.+)$", source, flags=re.MULTILINE)
+    assert match is not None, f"missing #define {name}"
+    return match.group(1).strip()
+
+
+def test_260822_production_flags_and_cell_y1():
+    source = UDF_260822_PATH.read_text(encoding="ascii")
+    assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+1", source)
+    assert re.search(r"#define\s+RO_UDM_FACE_DIAGNOSTICS\s+0", source)
+    assert re.search(r"#define\s+RO_UDM_CELL_DIAGNOSTICS\s+1", source)
+    assert "C_UDMI(c, c_thread, UDM_Y1)        += y1 * dAm;" in source
+    assert "C_UDMI(c, c_thread, UDM_Y1)        /= Aacc;" in source
+    parsed = parse_udm_enum_from_c(source)
+    assert parsed == REQUIRED_C_SYMBOLS
+    assert parsed["UDM_COUNT"] == 13
+    assert parsed["UDM_Y1"] == 12
+
+
+def test_260822_emits_profile_g_only_on_accepted_path():
+    source = UDF_260822_PATH.read_text(encoding="ascii")
+    assert 'Message0("RO_UDF_INLET_PROFILE_G=%.12g\\n", G);' in source
+    assert "WARNING: RO_UDF_INLET_G_OUT_OF_RANGE" in source
+    accepted = source.split("RO_UDF_INLET_G_OUT_OF_RANGE", 1)[1]
+    assert "RO_UDF_INLET_PROFILE_G=" in accepted
+    fallback = source.split("RO_UDF_INLET_G_OUT_OF_RANGE", 1)[0]
+    assert "RO_UDF_INLET_PROFILE_G=" not in fallback
+
+
+def test_260822_keeps_frozen_physics_from_260816():
+    source_816 = UDF_260816_PATH.read_text(encoding="ascii")
+    source_822 = UDF_260822_PATH.read_text(encoding="ascii")
+    for name in (
+        "D_SALT",
+        "RO_ANALYTIC_CWALL",
+        "INLET_Z_BOTTOM",
+        "CHANNEL_HEIGHT",
+        "INLET_AREA_EXPECTED_M2",
+        "U_TARGET",
+        "INLET_G_MIN",
+        "INLET_G_MAX",
+    ):
+        assert _udf_macro(source_822, name) == _udf_macro(source_816, name), name
+    assert parse_udm_enum_from_c(source_822) == parse_udm_enum_from_c(source_816)
+    shape_816 = source_816.split("static real inlet_poiseuille_shape", 1)[1]
+    shape_816 = shape_816.split("static void ensure_inlet_G", 1)[0]
+    shape_822 = source_822.split("static real inlet_poiseuille_shape", 1)[1]
+    shape_822 = shape_822.split("static void ensure_inlet_G", 1)[0]
+    assert shape_822 == shape_816
+
+
+def test_solver_udm_print_does_not_name_260813():
+    solver = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    assert "260813_RO_UDF.c" not in solver
+    assert "run_inlet_profile_probe or use_inlet_velocity_profile" not in solver
+    assert "execute-on-demand" in solver
+
+
 def test_new_udf_sources_are_ascii_with_exact_frozen_legacy_exceptions():
     for path in sorted(UDF_DIR.glob("*.c")):
         source = path.read_text(encoding="utf-8")
@@ -306,12 +367,12 @@ def test_new_udf_sources_are_ascii_with_exact_frozen_legacy_exceptions():
 
 def test_run_config_selects_ascii_production_udf():
     run_cfg = load_run_config()
-    assert run_cfg.udf_source_file_name == UDF_260816_PATH.name
-    assert UDF_260816_PATH.read_bytes().isascii()
+    assert run_cfg.udf_source_file_name == UDF_260822_PATH.name
+    assert UDF_260822_PATH.read_bytes().isascii()
 
 
 def test_y1_first_adjust_print_omits_cp_comparison():
-    source = UDF_PATH.read_text(encoding="utf-8")
+    source = UDF_260813_PATH.read_text(encoding="utf-8")
     y1_header = source.find("=== RO_UDF membrane wall y1 ===")
     assert y1_header != -1
     probe_header = source.find("=== RO_UDF probe_cp_reconstruction ===")

@@ -203,9 +203,6 @@ if __name__ == "__main__":
     use_inlet_velocity_profile = bool(
         getattr(cfg, "use_inlet_velocity_profile", False)
     )
-    run_inlet_profile_probe = bool(
-        getattr(cfg, "run_inlet_profile_probe", False)
-    )
     debug_inlet_bc_api = bool(getattr(cfg, "debug_inlet_bc_api", False))
     inlet_profile_function_name = f"inlet_x_velocity_profile::{udf_library_name}"
     inlet_probe_function_name = f"probe_inlet_profile::{udf_library_name}"
@@ -3007,7 +3004,10 @@ if __name__ == "__main__":
         # ======================================================
 
         print(f"UDF active membrane wall base names (hardcoded in UDF): {membrane_wall_base_names}")
-        print("UDF UDM layout (must match 260813_RO_UDF.c UDM_COUNT=13 default dual):")
+        print(
+            f"UDF UDM layout (must match {cfg.udf_source_file_name} "
+            "UDM_COUNT=13 default dual):"
+        )
         print("  0 SI, 1 TOTAL_S, 2-4 X/Y/ZMOM, 5 STRAIN_RATE (cell)")
         print("  6 JW, 7 CM, 8 LMH, 9 CP (film-theory), 10 SALT_FLUX (face+optional cell)")
         print("  11 AREA (cell-diag accumulator)")
@@ -3051,24 +3051,25 @@ if __name__ == "__main__":
 
         print("UDF library loaded.")
 
-        # Optional geometry probe (read-only; does not change BCs).
+        # Always-on geometry probe (read-only; does not change BCs).
         # Must run after libudf is loaded. Writes to the main solver transcript.
-        if run_inlet_profile_probe or use_inlet_velocity_profile:
-            probe_tui = (
-                f'/define/user-defined/execute-on-demand '
-                f'"{inlet_probe_function_name}"'
-            )
-            print("Executing inlet profile probe TUI command:")
-            print(probe_tui)
-            solver.execute_tui(probe_tui)
-            # Do not stop/restart the PyFluent transcript here: Transcript.start
-            # in ansys-fluent-core 0.38.0 truncates solver_log_*.txt.
-            assert_transcript_contains(
-                INLET_PROBE_MARKER,
-                "probe_inlet_profile",
-                case_dir=case_path,
-                solver_log_path=solver_log_path,
-            )
+        # Not gated on run_inlet_profile_probe / use_inlet_velocity_profile:
+        # a False probe flag must not skip RO_UDF_INLET_PROFILE_G.
+        probe_tui = (
+            f'/define/user-defined/execute-on-demand '
+            f'"{inlet_probe_function_name}"'
+        )
+        print("Executing inlet profile probe TUI command:")
+        print(probe_tui)
+        solver.execute_tui(probe_tui)
+        # Do not stop/restart the PyFluent transcript here: Transcript.start
+        # in ansys-fluent-core 0.38.0 truncates solver_log_*.txt.
+        assert_transcript_contains(
+            INLET_PROBE_MARKER,
+            "probe_inlet_profile",
+            case_dir=case_path,
+            solver_log_path=solver_log_path,
+        )
 
         if use_inlet_velocity_profile:
             print("\nRe-applying inlet BC as Components + UDF after libudf load...")

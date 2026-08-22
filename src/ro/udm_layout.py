@@ -1,4 +1,4 @@
-"""Canonical UDM indices matching 260813_RO_UDF.c (default dual build).
+"""Canonical UDM indices matching 260822_RO_UDF.c (default dual build).
 
 Keep this module in lockstep with the C enum. tests/test_udm_layout_parity.py
 parses the .c enum and fails if these integers drift.
@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Indices — must match 260813_RO_UDF.c with RO_UDM_CELL_DIAGNOSTICS=1.
+# Indices — must match 260822_RO_UDF.c with RO_UDM_CELL_DIAGNOSTICS=1.
 # 0–10 are unchanged from 260810. UDM_Y1 is appended; UDM_COUNT is 13.
 UDM_SI = 0
 UDM_TOTAL_S = 1
