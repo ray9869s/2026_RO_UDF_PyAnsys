@@ -75,6 +75,13 @@ archive/                        # frozen legacy; NO code reads this
 inventory/                      # aggregate CSVs, ledger
 ```
 
+`00_case_inventory.py` writes `inventory/rerun_candidates.csv`.
+`07_batch_solver_rerun.py` reads `inventory/active_solver_rerun_candidates.csv`.
+The latter is **manually promoted** from the former (mesh-qualified,
+current-matrix only). Nothing in the repo writes or refreshes `active_*`.
+A missing file is an error; a header-only file is the legitimate empty queue.
+The fact previously lived only in `REVIEW.md` backlog #4.
+
 Historical run data has been moved to `archive/` and will **not** be used for the
 paper. Everything is being re-run under the new scheme. There is no backward
 compatibility requirement — do not preserve old behaviour "just in case."
