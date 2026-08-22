@@ -104,19 +104,22 @@ fluent_start_timeout = 300
 fluent_health_timeout = 300
 
 domain_x_min_m = 0.0
-# Asymmetric layout keys (authoritative for 01_pyfluent_report_extract).
-# Default matches the legacy 1+3+1 generation; batch overrides replace these.
-n_buffer_in = 1
-n_active = 3
-n_buffer_out = 1
-cell_length_x_m = 0.003465
-# Legacy length/count keys — must stay consistent with the asymmetric keys above.
-# For asymmetric (n_buffer_in != n_buffer_out) overrides, n_buffer_cells_each_end
-# is cleared to None so it cannot contradict the layout.
-domain_length_m = 0.017325
-buffer_length_m = 0.003465
-n_unit_cells = 5
-n_buffer_cells_each_end = 1
+# Asymmetric layout keys (authoritative for pyfluent_report_extract).
+# No stock default. 1+3+1 was wrong for every campaign mesh; a direct run
+# that inherited it would score dP and CP on the wrong window with no error.
+# Supply via PYFLUENT_POST_OVERRIDES or an edited config. The worker refuses
+# to run if these are unset.
+n_buffer_in = None
+n_active = None
+n_buffer_out = None
+cell_length_x_m = None
+# Legacy length/count keys — must agree with the asymmetric keys when set.
+# Leave unset unless an override supplies a consistent set. For asymmetric
+# layouts n_buffer_cells_each_end is None (never a fake each-end count).
+domain_length_m = None
+buffer_length_m = None
+n_unit_cells = None
+n_buffer_cells_each_end = None
 n_inlet_spacer_cells_excluded = 1
 # Provenance keys written by 01_batch_report_extract / 06 layout resolution.
 mesh_case_name = None

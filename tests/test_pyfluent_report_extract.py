@@ -111,11 +111,15 @@ def test_shared_plane_helper_matches_extracted_inline_behavior():
 
 
 def test_default_unit_cell_layout_matches_existing_spacer_edges():
-    cfg = load_post_config()
+    domain_x_min_m = 0.0
+    domain_length_m = 0.017325
+    buffer_length_m = 0.003465
+    n_unit_cells = 5
+    n_buffer_cells_each_end = 1
     positions = unit_cell_boundary_positions(
-        cfg.domain_x_min_m,
-        cfg.domain_length_m,
-        cfg.n_unit_cells,
+        domain_x_min_m,
+        domain_length_m,
+        n_unit_cells,
     )
 
     assert positions == pytest.approx([
@@ -127,10 +131,10 @@ def test_default_unit_cell_layout_matches_existing_spacer_edges():
         0.017325,
     ])
     assert validate_unit_cell_layout(
-        cfg.domain_length_m,
-        cfg.buffer_length_m,
-        cfg.n_unit_cells,
-        cfg.n_buffer_cells_each_end,
+        domain_length_m,
+        buffer_length_m,
+        n_unit_cells,
+        n_buffer_cells_each_end,
     ) == [2, 3, 4]
 
 

@@ -135,6 +135,18 @@ def resolve_report_case_paths(cfg):
     }
 
 
+def require_explicit_scoring_layout(cfg):
+    """Refuse to score when layout keys are still the stock unset defaults."""
+    try:
+        return resolve_scoring_layout_from_config(cfg)
+    except AttributeError as exc:
+        raise ValueError(
+            "Layout is unset. Set n_buffer_in, n_active, n_buffer_out, and "
+            "cell_length_x_m in the post config or PYFLUENT_POST_OVERRIDES. "
+            "Stock post_config has no layout default."
+        ) from exc
+
+
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
@@ -152,6 +164,11 @@ if __name__ == "__main__":
             raise ValueError("PYFLUENT_POST_OVERRIDES must be a JSON object.")
         cfg.apply_post_config_overrides(cfg, _overrides)
         print(f"Applied config overrides: {sorted(_overrides)}")
+
+    # Refuse before Fluent if layout was not explicitly supplied. Stock
+    # post_config leaves n_buffer_in/n_active/n_buffer_out/cell_length_x_m
+    # unset so a direct run cannot silently score a 1+7+2 mesh as 1+3+1.
+    require_explicit_scoring_layout(cfg)
 
     print("Config loaded from:")
     print(CONFIG_PATH)

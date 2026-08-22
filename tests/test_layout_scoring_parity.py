@@ -143,14 +143,33 @@ class TestScoringGeometryCurrentLayout:
 
 
 class TestResolveScoringLayoutFromConfig:
-    def test_default_post_config_resolves_legacy(self):
+    def test_stock_post_config_has_no_layout_default(self):
         from helpers import load_post_config
 
         cfg = load_post_config()
+        with pytest.raises(AttributeError, match="n_buffer_in"):
+            resolve_scoring_layout_from_config(cfg)
+
+    def test_stock_post_config_accepts_explicit_layout_overrides(self):
+        from helpers import load_post_config
+
+        cfg = load_post_config()
+        cfg.apply_post_config_overrides(
+            cfg,
+            {
+                "n_buffer_in": 1,
+                "n_active": 7,
+                "n_buffer_out": 2,
+                "cell_length_x_m": CELL_LENGTH_X_M,
+                "domain_length_m": 0.03465,
+                "buffer_length_m": 0.003465,
+                "n_unit_cells": 10,
+                "n_buffer_cells_each_end": None,
+            },
+        )
         geo = resolve_scoring_layout_from_config(cfg)
-        assert geo.spacer_cells == [2, 3, 4]
-        assert len(geo.unit_cell_boundary_x_m) == 6
-        assert math.isclose(geo.domain_length_m, 0.017325, rel_tol=1.0e-12)
+        assert geo.spacer_cells == list(range(2, 9))
+        assert math.isclose(geo.domain_length_m, 0.03465, rel_tol=1.0e-12)
 
     def test_missing_asymmetric_keys_raise(self):
         cfg = SimpleNamespace(domain_x_min_m=0.0)

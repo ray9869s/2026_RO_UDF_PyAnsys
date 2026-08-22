@@ -144,6 +144,30 @@ def test_report_extract_uses_final_case_file_parent(tmp_path):
     assert paths["final_case_file"] == final_case
 
 
+def test_report_extract_refuses_stock_layout_default():
+    extract = load_report_extract()
+    cfg = load_post_config()
+    with pytest.raises(ValueError, match="Layout is unset"):
+        extract.require_explicit_scoring_layout(cfg)
+
+
+def test_report_extract_accepts_explicit_layout_overrides():
+    extract = load_report_extract()
+    cfg = load_post_config()
+    cfg.apply_post_config_overrides(
+        cfg,
+        {
+            "n_buffer_in": 1,
+            "n_active": 7,
+            "n_buffer_out": 2,
+            "cell_length_x_m": 0.003465,
+        },
+    )
+    geo = extract.require_explicit_scoring_layout(cfg)
+    assert geo.layout.n_active == 7
+    assert geo.layout.n_buffer_out == 2
+
+
 def test_batch_report_aggregate_paths_use_inventory(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     batch = load_batch_report_extract()
