@@ -1,10 +1,15 @@
 # Repository restructure — working plan
 
-**Audience:** an agent picking this up mid-sequence with no memory of the planning
-conversation. This file is the sole source of truth for the plan. Do not infer
-missing decisions; if something needed is not written here, stop and ask.
+**Status: complete.** Steps 1–10 are done. Remaining sections are reference:
+id grammar, path rules, manifest schemas, settled decisions, and the silent-risk
+list. Do not infer new work from the historical step detail in section 10.
 
 **Branch:** `feat/diagnostics-and-mesh-ledger`
+
+Server checkpoint after the artifact rename (`1ec3263`): full remesh of
+`D2450_a45` / `max085_min006_cpg5_bl4_peel2` produced 796,009 cells, ortho
+0.102087, AR 62.7715, skew 0.67063399 — matching the archive ledger. New
+filenames throughout. The restructure is physics-neutral.
 
 ---
 
@@ -14,32 +19,34 @@ missing decisions; if something needed is not written here, stop and ask.
 |---|---|---|
 | 1 | Package scaffold: `pyproject.toml`, `src/ro/__init__.py`, `requirements-dev.txt` | **DONE** — `580034e` |
 | 2 | `git mv` seven helpers to `src/ro/`, leave import shims | **DONE** — `293f8e2` |
-| 3 | Switch `from _x` → `from ro.x` everywhere | **NEXT** |
-| 4 | Delete shims; stop putting `01_Scripts` on `sys.path` | pending |
-| 5 | Add `src/ro/paths.py` + `src/ro/manifest.py` + their tests | pending |
-| 6a | Route every path construction through `ro.paths` builders | pending |
-| 6b | Manifests: write on creation, read in post; layout from manifest | pending |
-| 6c | CLI flags → `--family --geo-id --mesh-id --run-id` | **DONE** |
-| 6c+ | Artifact names `{geo_id}_{run_id}` / `{geo_id}_{mesh_id}` | **DONE** this commit |
-| 7 | Directory reshuffle by `git mv` (7a templates/udfs, 7b configs, 7c scripts, 7d docs) | pending |
-| 8 | Drop numeric prefixes on orchestration scripts | pending |
-| 9 | Remove the name-keyed domain-layout registry | **DONE** |
-| 10 | Docs: AGENTS.md, DEPLOY_RUNBOOK.md | pending |
+| 3 | Switch `from _x` → `from ro.x` everywhere | **DONE** — `b50026e` |
+| 4 | Delete shims; stop putting `01_Scripts` on `sys.path` | **DONE** — `229e469` |
+| 5 | Add `src/ro/paths.py` + `src/ro/manifest.py` + their tests | **DONE** — `fc7eb4f` |
+| 6a | Route every path construction through `ro.paths` builders | **DONE** — `5c3d81f` `25e68ac` `af723e1` `6a4be78` `b8b67f7` |
+| 6b | Manifests: write on creation, read in post; layout from manifest | **DONE** — `f1d0eb4` `69e6a78` `fd17b2b` `a4c6e0b` `0b9d76f` `1bd6159` `01e1941` |
+| 6c | CLI flags → `--family --geo-id --mesh-id --run-id` | **DONE** — `18a5a2c` |
+| 6c+ | Artifact names `{geo_id}_{run_id}` / `{geo_id}_{mesh_id}` | **DONE** — `1ec3263` |
+| 7 | Directory reshuffle by `git mv` (7a templates/udfs, 7b configs, 7c scripts, 7d docs) | **DONE** — `dbb9af1` `fc75641` `869680f` `0c3f0e5` |
+| 8 | Drop numeric prefixes on orchestration scripts | **DONE** — `2abc69e` |
+| 9 | Remove the name-keyed domain-layout registry | **DONE** — `5beb040` |
+| 10 | Docs: AGENTS.md, DEPLOY_RUNBOOK.md | **DONE** this commit |
 
-Both commits are pushed. Working tree clean and level with origin.
+Related: peel token mandatory in `mesh_id` (`fffd5fe`); refuse remesh while
+runs cite `mesh_sha256` (`cca62b2`); candidate CSV is manually promoted
+(`47bf993`).
 
 ### Test baseline
 
-`python -m pytest -q` → **784 passed** on WSL (0 skipped).
+`python -m pytest -q` → **784 passed** on WSL (0 skipped). Windows without
+symlink privilege: **783 passed, 1 skipped**.
 
 ---
 
-## 2. Target layout
+## 2. Layout
 
 ### Code repo (git-tracked)
 
-Server path becomes `C:\pyfluent` (lowercase; manual server-side rename, out of
-scope for the agent). The `My_CFD_Project/` level disappears entirely.
+Server path is `C:\pyfluent`. The `My_CFD_Project/` level is gone.
 
 ```
 <repo>/
@@ -56,7 +63,8 @@ scope for the agent). The `My_CFD_Project/` level disappears entirely.
   notebooks/
 ```
 
-`00_Geometries/` and `03_Results/` leave the repo entirely.
+`00_Geometries/` and `03_Results/` are not in the repo. CAD lives under
+`RO_DATA_ROOT/geometries/`; run artifacts under `RO_DATA_ROOT/runs/`.
 
 ### Data root (git-external, `RO_DATA_ROOT`, `C:\ro_data` on the server)
 
@@ -68,10 +76,10 @@ archive/                        # frozen legacy; NO code reads this
 inventory/                      # aggregate CSVs, ledger
 ```
 
-`00_case_inventory.py` writes `inventory/rerun_candidates.csv`.
-`07_batch_solver_rerun.py` reads `inventory/active_solver_rerun_candidates.csv`.
-The latter is **manually promoted** from the former (mesh-qualified,
-current-matrix only). Nothing in the repo writes or refreshes `active_*`.
+`case_inventory.py` writes `inventory/rerun_candidates.csv`.
+`batch_solver_rerun.py` reads `inventory/active_solver_rerun_candidates.csv`.
+The latter is **manually promoted** from the former (current-matrix only).
+Nothing in the repo writes or refreshes `active_*`.
 A missing file is an error; a header-only file is the legitimate empty queue.
 The fact previously lived only in `REVIEW.md` backlog #4.
 
@@ -165,9 +173,8 @@ asserts no exception.
   fresh venv without an editable install.
 - **CLI / subprocess workers:** require `pip install -e .`. Configs are loaded by
   `importlib` from `configs/`, which does not put `src/` on `sys.path`. Do not add
-  `sys.path.insert` to scripts.
-- One `ro.ensure_importable()` helper raising `ImportError` with the
-  `pip install -e .` hint, called at the top of `__main__` workers only.
+  `sys.path.insert` to scripts. There is no `ro.ensure_importable()` helper;
+  `ModuleNotFoundError: No module named 'ro'` is the failure.
 
 ---
 
@@ -238,8 +245,8 @@ final stop-reason enum emitted in the solver transcript. A manifest left at
 `RUNNING` after the worker exits means the run crashed or was killed; readers
 must not treat it as pending or successful.
 
-`06.parse_case_operating_values` currently recovers `u` and `p` by regex on the
-case name. That function is **deleted** in step 6b, not adapted.
+`06.parse_case_operating_values` recovered `u` and `p` by regex on the
+case name. That function was **deleted** in step 6b, not adapted.
 
 ### Reader/writer API
 
@@ -351,7 +358,7 @@ Do not reopen these.
 | `RO_DATA_ROOT` unset | Raises. Never falls back to the git tree. |
 | dated filenames | `meshing_code_260616.py`, `solver_code_260616.py`, and all dated `*_RO_UDF.c` keep their names. Directory `git mv` only. |
 | pytest dependency | `requirements-dev.txt`, not `requirements.txt` (the latter is the server's Ansys/jupyter pin list). |
-| `max_iterations` | Code is consistently 2000. `DEPLOY_RUNBOOK.md:65` saying 1000 is stale documentation. `07`'s 3000 is a different knob (rerun budget). Fix the doc in step 10. |
+| `max_iterations` | Code is consistently 2000. `07`'s 3000 is a different knob (rerun budget). |
 
 **When regenerating pillar / sinusoidal families.** The dated UDF hardcodes
 `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, and `INLET_AREA_EXPECTED_M2` for the current
@@ -406,7 +413,8 @@ answer, listed roughly by how much damage they do.
    That exact silent success is what motivated this whole restructure.
 9. **pytest green without `pip install -e .`, then the server fails at
    `import ro`.** `pythonpath=["src"]` covers pytest only. Runbook step 1 on the
-   server is `pip install -e .`; the `__main__` guard makes the omission loud.
+   server is `pip install -e .`. The failure is `ModuleNotFoundError: No module
+   named 'ro'` at import. There is no extra `__main__` guard.
 
 ---
 
@@ -423,97 +431,58 @@ answer, listed roughly by how much damage they do.
 
 ---
 
-## 10. Step detail for the remaining work
+## 10. Execution log (historical)
 
-**Step 3 — imports.** `from _x import ...` → `from ro.x import ...` across scripts,
-configs, tests, and the internal imports inside `src/ro/` itself. `03b` currently
-loads `_shear_cff_mu_guard` via `importlib` on a sibling path; that becomes a normal
-import. Shims stay. Nothing moves. No path or manifest work.
+These are the commits that closed each step. Do not treat this section as a
+todo list.
 
-**Step 4 — delete shims.** `conftest.py` keeps only `tests/` on `sys.path` for
-`helpers`. `helpers.load_solver_common()` imports `ro.solver_common`. This is the
-727/3 checkpoint after packaging.
+**Step 3 — imports.** `b50026e`. `from _x` → `from ro.x`. Shims stayed until
+step 4.
 
-**Step 5 — add `paths.py` and `manifest.py` plus tests.** Nothing in production
-imports them yet. Tests: env precedence, cwd independence, importlib-by-path load,
-`RO_DATA_ROOT` unset raises, relative raises, `min0006` raises, `_7c` geo_id
-raises, builder round-trip, manifest round-trip on `tmp_path`, stale-path check,
-overwrite guard.
+**Step 4 — delete shims.** `229e469`. `conftest.py` keeps only `tests/` on
+`sys.path` for `helpers`. 727/3 was the packaging checkpoint.
 
-**Step 6a — builders only.** Every path construction goes through `ro.paths`.
-Manifests not yet read. Layout registry untouched. Delete every `parents[N]`
-project-root locator in the same commit as the file it lives in.
+**Step 5 — paths and manifests.** `fc7eb4f`. Production did not import them yet.
 
-**Step 6b — manifests.** Write on mesh and run creation. Inventory and post glob
-manifests. `layout_from_mesh_manifest(mesh_directory) -> GeometryLayoutRecord`
-already exists (step 9); remaining 6b work is to **call it** from inventory and
-post instead of `resolve_layout`. Delete
-`parse_case_operating_values` and the `write_report_config` identity. 6b-3
-deleted the uncalled `final_case_data_paths` /
-`final_case_data_paths_under_root` wrappers and `strip_mesh_suffix`; 06 and 07
-already resolve cas/dat from the run directory locally.
+**Step 6a — builders.** `5c3d81f` diagnostics; `25e68ac` workers; `af723e1`
+`6a4be78` `b8b67f7` post locators and inventory under `data_root()`. Every
+`parents[N]` project-root locator was deleted with the file it lived in.
 
-Inventory currently walks two levels (`geo/case`) and then `os.walk`s logs
-from whatever directory that walk picked. Under
-`runs/{family}/{geo_id}/{mesh_id}/{run_id}` that directory is the geo_id, so
-one inventory "case" can merge transcripts from every run under that geo.
-Harmless at Total cases: 1; with 495 runs it would synthesize a single
-`stop_reason` from several transcripts — a genuine silent failure.
-Manifest-based identification (one record per run `manifest.json`) removes
-this structurally. Do not keep a recursive log walk from a parent of multiple
-runs.
+**Step 6b — manifests.** Writers `f1d0eb4` `69e6a78`. `07` reads ids from the
+run manifest `fd17b2b`. Inventory from manifests `a4c6e0b`. Post layout from
+the mesh manifest `0b9d76f`. Leftover two-level cas/dat helpers and
+`strip_mesh_suffix` deleted `1bd6159`. Report extraction refuses missing layout
+`01e1941`.
 
-**Execution-order amendment (2026-08-21).** Split 6b so writers populate metadata
-before readers migrate:
+**Step 6c — CLI.** `18a5a2c`. Orchestrator selectors are `--family --geo-id
+--mesh-id --run-id`. Worker `--geo-name` / `--case-name` remain filename
+labels, equal to `geo_id` / `run_id`.
 
-1. **6b-write:** mesh and solver workers write manifests. No downstream reader
-   consumes them yet.
-2. **6a-2b:** `07_batch_solver_rerun.py` reads the four ids from each candidate
-   run manifest and uses `run_dir()`. Missing manifests are fatal; there is no
-   name-parsing or legacy-path fallback.
-3. **6a-3:** migrate post-processing paths, including the previously omitted
-   `01_pyfluent_report_extract.py` and `rebuild_mesh_ledger_from_logs.py`.
-4. Continue the remaining 6b reader/inventory/layout work.
+**After 6c — artifact names.** `1ec3263`. Cas/dat are
+`{geo_id}_{run_id}_final.{cas,dat}.h5`. Mesh files are `{geo_id}_{mesh_id}.msh.h5`.
+Inventory and 06 refuse a glob fallback when the expected name is missing but
+another `*_final` file is present.
 
-**Step 6c — CLI.** `--family --geo-id --mesh-id --run-id` replace `--geo-name` /
-`--case-name` as selectors. Worker `--geo-name` / `--case-name` remain filename
-labels, now equal to `geo_id` / `run_id`. A complete four-id selection resolves
-through `run_dir()` and refuses a missing manifest.
+**Step 7 — reshuffle.** `dbb9af1` templates/udfs; `fc75641` configs; `869680f`
+scripts; `0c3f0e5` remaining `My_CFD_Project/` trees into `scripts/` and `docs/`.
 
-**After 6c — artifact names.** Cas/dat files are `{geo_id}_{run_id}_final.{cas,dat}.h5`.
-Mesh files are `{geo_id}_{mesh_id}.msh.h5`. Inventory and 06 refuse a glob fallback
-when the expected name is missing but another `*_final` file is present. The
-archive-era `geo_name` (`D2450_a45_7c_brg110`) is not used for artifact names.
+**Step 8 — prefixes.** `2abc69e`. `07_batch_solver_rerun.py` →
+`batch_solver_rerun.py`, and the rest of the orchestrators.
 
-**Step 7 — reshuffle**, one commit per tree: 7a `01_Templates`→`templates/` and
-`02_UDFs`→`udfs/` (update `test_udm_layout_parity.UDF_DIR`); 7b configs; 7c entry
-points to `scripts/` keeping numeric prefixes so subprocess-string churn is
-isolated; 7d docs/archive/analysis, remove the empty `My_CFD_Project/`, drop
-`03_Results` and `00_Geometries` from `.gitignore`.
+**Step 9 — registry.** `5beb040`. `layout_from_mesh_manifest` only.
+`resolve_layout(geo, mesh)` raises.
 
-**Step 8 — prefixes.** `git mv scripts/07_batch_solver_rerun.py
-scripts/batch_solver_rerun.py` etc. Update `06`'s subprocess constants, `07`'s
-`--report-script` default, and `AGENTS.md`'s filename freeze in the same commit so
-the freeze matches the tree.
-
-**Step 9 — registry removal.** `layout_from_mesh_manifest` only.
-`resolve_layout(geo, mesh)` raises `RuntimeError("layout comes from the mesh
-manifest")` — loud, never a silent fallback to 1+3+1. Delete the dirname parsers;
-keep the solver-log parser as a diagnostic that compares against the manifest
-and raises on mismatch. Also delete the empty
-`scripts/04_pyensight_streamline_export.py`.
-
-**Step 10 — docs.** `AGENTS.md` (amend the layout, tree, entry-point-name, and
-`00_Geometries` freezes), `DEPLOY_RUNBOOK.md` (`/c/pyfluent`,
-`RO_DATA_ROOT=C:\ro_data`, `pip install -e .`, the stale `max_iterations` line).
+**Step 10 — docs.** This commit. `AGENTS.md` and `DEPLOY_RUNBOOK.md` match the
+tree. `REVIEW.md` is left as the July 2026 historical record.
 
 ---
 
 ## 11. Verification gate
 
-Before starting the 495-run campaign, re-run one case (`D2450_a45`) end to end on
-the new tree and confirm LMH, evaluation-window ΔP, and CP are consistent with the
-pre-restructure figures. The legacy `03_Results` tree is frozen under
-`RO_DATA_ROOT/archive/` and the `_scratch` logs are archived at
-`archive/logs/scratch_20260820.tgz` if a number needs to be recovered for
-comparison.
+The naming remesh checkpoint has passed (cell count and quality match the
+archive ledger). Before starting the 495-run campaign, re-run one case
+(`D2450_a45`) **to completion** (not `max_iterations=1`) and confirm LMH,
+evaluation-window ΔP, and CP against the pre-restructure figures. The legacy
+`03_Results` tree is frozen under `RO_DATA_ROOT/archive/` and the `_scratch`
+logs are archived at `archive/logs/scratch_20260820.tgz` if a number needs to
+be recovered for comparison.
