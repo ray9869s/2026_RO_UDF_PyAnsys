@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from helpers import POST_DIR, load_batch_postprocess, load_case_inventory, load_module
+from helpers import (
+    POST_DIR,
+    SCRIPTS_DIR,
+    load_batch_postprocess,
+    load_case_inventory,
+    load_module,
+)
 
 
 CWD_BUG_SCRIPTS = (
@@ -117,6 +123,58 @@ def test_batch_post_resolves_inventory_under_data_root(
     assert args.inventory_csv == (
         tmp_path / "inventory" / "case_inventory_compact.csv"
     ).resolve()
+
+
+@pytest.fixture
+def rerun07():
+    return load_module(
+        "batch_solver_rerun_inventory_defaults",
+        SCRIPTS_DIR / "07_batch_solver_rerun.py",
+    )
+
+
+def test_07_script_has_no_legacy_results_root_default():
+    text = (SCRIPTS_DIR / "07_batch_solver_rerun.py").read_text(encoding="utf-8")
+    assert "DEFAULT_RESULTS_ROOT" not in text
+    assert "PROJECT_ROOT" not in text
+    assert ' / "03_Results"' not in text
+    assert "_inventory" not in text
+
+
+def test_07_parse_args_does_not_require_data_root(rerun07, monkeypatch):
+    monkeypatch.delenv("RO_DATA_ROOT", raising=False)
+    args = rerun07.parse_args([])
+    assert args.results_root is None
+    assert args.candidates_csv is None
+    assert args.output_dir is None
+    assert args.logs_dir is None
+
+
+def test_07_inventory_defaults_use_data_root(rerun07, monkeypatch, tmp_path):
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    monkeypatch.chdir(elsewhere)
+
+    args = rerun07.parse_args([])
+    rerun07.resolve_path_defaults(args)
+    inventory = (tmp_path / "inventory").resolve()
+    assert args.results_root == inventory
+    assert args.candidates_csv == inventory / "active_solver_rerun_candidates.csv"
+    assert args.output_dir == inventory / "solver_rerun"
+    assert args.logs_dir == inventory / "solver_rerun_logs"
+
+
+def test_07_results_root_override_wins(rerun07, monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path / "data"))
+    custom = tmp_path / "custom-inventory"
+    args = rerun07.parse_args(["--results-root", str(custom)])
+    rerun07.resolve_path_defaults(args)
+    custom = custom.resolve()
+    assert args.results_root == custom
+    assert args.candidates_csv == custom / "active_solver_rerun_candidates.csv"
+    assert args.output_dir == custom / "solver_rerun"
+    assert args.logs_dir == custom / "solver_rerun_logs"
 
 
 def test_batch_post_default_cff_template_uses_templates_dir(

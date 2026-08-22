@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ro.manifest import ManifestError, read_run_manifest
-from ro.paths import run_dir, runs_root
+from ro.paths import data_root, run_dir, runs_root
 from ro.solver_common import (
     assess_history,
     assess_residual_convergence,
@@ -40,8 +40,6 @@ from ro.solver_common import (
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "03_Results"
 DEFAULT_REPORT_SCRIPT = SCRIPT_DIR / "post_processing" / "01_pyfluent_report_extract.py"
 
 PLAN_FIELDS = [
@@ -326,6 +324,22 @@ def pseudo_time_verbosity_type(value: str) -> str | int:
     return parsed
 
 
+def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    inventory_root = args.results_root or (data_root() / "inventory")
+    args.results_root = Path(inventory_root).resolve()
+    args.candidates_csv = Path(
+        args.candidates_csv
+        or args.results_root / "active_solver_rerun_candidates.csv"
+    ).resolve()
+    args.output_dir = Path(
+        args.output_dir or args.results_root / "solver_rerun"
+    ).resolve()
+    args.logs_dir = Path(
+        args.logs_dir or args.results_root / "solver_rerun_logs"
+    ).resolve()
+    return args
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -341,7 +355,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "CSV of active solver rerun candidates. Defaults to "
-            "<results-root>/_inventory/active_solver_rerun_candidates.csv."
+            "RO_DATA_ROOT/inventory/active_solver_rerun_candidates.csv."
         ),
     )
     parser.add_argument(
@@ -349,21 +363,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Legacy root for inventory/control outputs. Candidate run data is "
-            "resolved from its manifest under RO_DATA_ROOT/runs."
+            "Inventory/control output root (default: RO_DATA_ROOT/inventory). "
+            "Candidate run data is resolved from its manifest under "
+            "RO_DATA_ROOT/runs."
         ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Central folder for solver_rerun_plan/results/summary outputs.",
+        help=(
+            "Central folder for solver_rerun_plan/results/summary outputs "
+            "(default: RO_DATA_ROOT/inventory/solver_rerun)."
+        ),
     )
     parser.add_argument(
         "--logs-dir",
         type=Path,
         default=None,
-        help="Central folder for per-case solver rerun logs.",
+        help=(
+            "Central folder for per-case solver rerun logs "
+            "(default: RO_DATA_ROOT/inventory/solver_rerun_logs)."
+        ),
     )
     parser.add_argument(
         "--report-script",
@@ -753,27 +774,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "flow_second_order_species_first_order",
         }
 
-    args.results_root = args.results_root or DEFAULT_RESULTS_ROOT
-    args.candidates_csv = (
-        args.candidates_csv
-        or args.results_root / "_inventory" / "active_solver_rerun_candidates.csv"
-    )
-    args.output_dir = args.output_dir or args.results_root / "_inventory" / "solver_rerun"
-    args.logs_dir = args.logs_dir or args.results_root / "_inventory" / "solver_rerun_logs"
-
     unsafe_paths = [
-        args.results_root,
-        args.candidates_csv,
-        args.output_dir,
-        args.logs_dir,
-        args.report_script,
+        path
+        for path in (
+            args.results_root,
+            args.candidates_csv,
+            args.output_dir,
+            args.logs_dir,
+            args.report_script,
+        )
+        if path is not None
     ]
     reject_windows_drive_paths_on_non_windows(unsafe_paths, parser)
 
-    args.results_root = args.results_root.resolve()
-    args.candidates_csv = args.candidates_csv.resolve()
-    args.output_dir = args.output_dir.resolve()
-    args.logs_dir = args.logs_dir.resolve()
+    if args.results_root is not None:
+        args.results_root = args.results_root.resolve()
+    if args.candidates_csv is not None:
+        args.candidates_csv = args.candidates_csv.resolve()
+    if args.output_dir is not None:
+        args.output_dir = args.output_dir.resolve()
+    if args.logs_dir is not None:
+        args.logs_dir = args.logs_dir.resolve()
     args.report_script = args.report_script.resolve()
 
     report_cli_safe, report_cli_reason = report_worker_has_safe_direct_cli(args.report_script)
@@ -5948,6 +5969,7 @@ def write_summary(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    resolve_path_defaults(args)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.logs_dir.mkdir(parents=True, exist_ok=True)
