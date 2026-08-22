@@ -5,6 +5,8 @@ Inventory RO CFD result cases without opening Fluent, PyFluent, or PyEnSight.
 
 The scanner is read-only with respect to case directories. It only writes the
 inventory artifacts requested through --output-dir, unless --dry-run is used.
+Default scan root is RO_DATA_ROOT/runs; default output is RO_DATA_ROOT/inventory.
+Those paths are resolved after argument parsing.
 """
 from __future__ import annotations
 
@@ -30,10 +32,7 @@ from ro.solver_common import (  # noqa: E402
     max_iterations_from_common_solver_settings,
     parse_stop_reason_from_text,
 )
-
-
-DEFAULT_RESULTS_ROOT = Path("My_CFD_Project") / "03_Results"
-DEFAULT_OUTPUT_DIR = DEFAULT_RESULTS_ROOT / "_inventory"
+from ro.paths import data_root, runs_root  # noqa: E402
 
 CONVERGED = "CONVERGED"
 MAX_ITER_REACHED = "MAX_ITER_REACHED"
@@ -429,14 +428,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--results-root",
         type=Path,
-        default=DEFAULT_RESULTS_ROOT,
-        help=f"Root results directory (default: {DEFAULT_RESULTS_ROOT.as_posix()})",
+        default=None,
+        help="Root results directory (default: RO_DATA_ROOT/runs).",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Directory for inventory outputs (default: {DEFAULT_OUTPUT_DIR.as_posix()})",
+        default=None,
+        help="Directory for inventory outputs (default: RO_DATA_ROOT/inventory).",
     )
     parser.add_argument("--geo-name", type=str, default=None, help="Optional geometry filter.")
     parser.add_argument("--case-name", type=str, default=None, help="Optional case-name filter.")
@@ -461,6 +460,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Scan and print planned writes, but do not write inventory files.",
     )
     return parser.parse_args(argv)
+
+
+def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    args.results_root = (args.results_root or runs_root()).resolve()
+    if not args.results_root.is_dir():
+        raise NotADirectoryError(
+            f"Runs root is not an existing directory: {args.results_root}"
+        )
+    args.output_dir = (args.output_dir or data_root() / "inventory").resolve()
+    return args
 
 
 def path_to_str(path: Optional[Path]) -> str:
@@ -514,11 +523,6 @@ def discover_cases(
     verbose: bool,
 ) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    if not results_root.exists():
-        if verbose:
-            print(f"Results root does not exist: {results_root}")
-        return cases
-
     if not results_root.is_dir():
         raise NotADirectoryError(f"Results root is not a directory: {results_root}")
 
@@ -2025,6 +2029,7 @@ def run_inventory(args: argparse.Namespace) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     try:
+        resolve_path_defaults(args)
         return run_inventory(args)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

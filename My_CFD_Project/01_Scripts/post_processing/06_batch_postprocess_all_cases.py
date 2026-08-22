@@ -5,7 +5,7 @@ Batch runner for RO CFD post-processing.
 
 This script orchestrates existing one-case post-processing scripts. It does
 not open, edit, delete, or rewrite case/data files itself. Batch artifacts are
-written under 03_Results/_inventory.
+written under RO_DATA_ROOT/inventory.
 """
 from __future__ import annotations
 
@@ -34,11 +34,7 @@ from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
     resolve_mesh_case_name,
 )
-
-PROJECT_ROOT_DEFAULT = Path("My_CFD_Project")
-DEFAULT_RESULTS_ROOT = PROJECT_ROOT_DEFAULT / "03_Results"
-DEFAULT_INVENTORY_CSV = DEFAULT_RESULTS_ROOT / "_inventory" / "case_inventory_compact.csv"
-DEFAULT_CFF_TEMPLATE = PROJECT_ROOT_DEFAULT / "01_Templates" / "cff_wall_shear_rate.scm"
+from ro.paths import data_root, runs_root, templates_dir  # noqa: E402
 
 CFF_SOURCE_TEMPLATE = "template"
 CFF_SOURCE_CASE_SPECIFIC = "case_specific"
@@ -132,8 +128,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Batch post-process eligible RO CFD cases from case_inventory_compact.csv."
     )
-    parser.add_argument("--inventory-csv", type=Path, default=DEFAULT_INVENTORY_CSV)
-    parser.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
+    parser.add_argument(
+        "--inventory-csv",
+        type=Path,
+        default=None,
+        help="Inventory CSV (default: RO_DATA_ROOT/inventory/case_inventory_compact.csv).",
+    )
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        default=None,
+        help="Root results directory (default: RO_DATA_ROOT/runs).",
+    )
     parser.add_argument("--python-exe", type=Path, default=Path(sys.executable))
     parser.add_argument("--geo-name", type=str, default=None)
     parser.add_argument("--case-name", type=str, default=None)
@@ -211,12 +217,22 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "Shared CFF template file for shear runs. "
-            f"Default: {DEFAULT_CFF_TEMPLATE} if it exists, otherwise falls back "
-            "to the case-specific <case_dir>/post/figures/contours/cff_wall_shear_rate.scm. "
+            "Default: <project>/My_CFD_Project/01_Templates/cff_wall_shear_rate.scm "
+            "if it exists, otherwise falls back to the case-specific "
+            "<case_dir>/post/figures/contours/cff_wall_shear_rate.scm. "
             "If explicitly passed, it must exist or the shear stage is skipped."
         ),
     )
     return parser.parse_args(argv)
+
+
+def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    args.results_root = (args.results_root or runs_root()).resolve()
+    args.inventory_csv = (
+        args.inventory_csv
+        or (data_root() / "inventory" / "case_inventory_compact.csv")
+    ).resolve()
+    return args
 
 
 def bool_from_cell(value: Any) -> bool:
@@ -894,8 +910,9 @@ def resolve_cff_file(args: argparse.Namespace, paths: dict[str, Path]) -> tuple[
             return args.cff_file_template, CFF_SOURCE_TEMPLATE
         return args.cff_file_template, CFF_SOURCE_MISSING
 
-    if DEFAULT_CFF_TEMPLATE.is_file():
-        return DEFAULT_CFF_TEMPLATE, CFF_SOURCE_TEMPLATE
+    default_template = templates_dir() / "cff_wall_shear_rate.scm"
+    if default_template.is_file():
+        return default_template, CFF_SOURCE_TEMPLATE
 
     if case_specific_file.is_file():
         return case_specific_file, CFF_SOURCE_CASE_SPECIFIC
@@ -1387,7 +1404,7 @@ def run(args: argparse.Namespace) -> int:
     selected = slice_cases(selected_all, args.start_index, args.limit)
     print_selected_cases(selected)
 
-    inventory_root = args.results_root / "_inventory"
+    inventory_root = data_root() / "inventory"
     batch_dir = inventory_root / "batch_postprocess"
     log_dir = inventory_root / "batch_postprocess_logs"
     ensure_safe_write_root(batch_dir)
@@ -1428,6 +1445,7 @@ def run(args: argparse.Namespace) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     try:
+        resolve_path_defaults(args)
         return run(args)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

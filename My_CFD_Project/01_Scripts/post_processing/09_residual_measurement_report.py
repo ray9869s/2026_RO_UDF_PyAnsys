@@ -3,7 +3,7 @@
 """
 Measure residual / QoI stationarity from solve transcripts (SAFE, no Fluent).
 
-Writes a NEW report under 03_Results/_inventory/:
+Writes a NEW report under RO_DATA_ROOT/inventory/:
   residual_measurement.csv
   residual_measurement_summary.txt
 
@@ -31,16 +31,13 @@ from ro.residual_transcript import (  # noqa: E402
     measure_case_dir,
     write_measurement_csv,
 )
+from ro.paths import data_root, runs_root  # noqa: E402
 from ro.solver_common import (  # noqa: E402
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     DEFAULT_RESIDUAL_TARGET_FALLBACK,
     max_iterations_from_common_solver_settings,
     residual_target_from_common_solver_settings,
 )
-
-DEFAULT_RESULTS_ROOT = Path("My_CFD_Project") / "03_Results"
-DEFAULT_OUTPUT_DIR = DEFAULT_RESULTS_ROOT / "_inventory"
-
 SKIP_DIR_NAMES = {
     "_inventory",
     "__pycache__",
@@ -120,7 +117,9 @@ def discover_cases(
 ) -> list[tuple[str, str, Path]]:
     cases: list[tuple[str, str, Path]] = []
     if not results_root.is_dir():
-        return cases
+        raise NotADirectoryError(
+            f"Results root is not an existing directory: {results_root}"
+        )
     for geo_dir in sorted(
         (p for p in results_root.iterdir() if p.is_dir()),
         key=lambda p: p.name.lower(),
@@ -151,14 +150,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--results-root",
         type=Path,
-        default=DEFAULT_RESULTS_ROOT,
-        help=f"Root results directory (default: {DEFAULT_RESULTS_ROOT.as_posix()})",
+        default=None,
+        help="Root results directory (default: RO_DATA_ROOT/runs).",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Output directory (default: {DEFAULT_OUTPUT_DIR.as_posix()})",
+        default=None,
+        help="Output directory (default: RO_DATA_ROOT/inventory).",
     )
     parser.add_argument("--geo-name", type=str, default=None)
     parser.add_argument("--case-name", type=str, default=None)
@@ -194,6 +193,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
+
+
+def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    args.results_root = (args.results_root or runs_root()).resolve()
+    if not args.results_root.is_dir():
+        raise NotADirectoryError(
+            f"Runs root is not an existing directory: {args.results_root}"
+        )
+    args.output_dir = (args.output_dir or data_root() / "inventory").resolve()
+    return args
 
 
 def run_report(args: argparse.Namespace) -> int:
@@ -262,7 +271,13 @@ def run_report(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    return run_report(parse_args(argv))
+    args = parse_args(argv)
+    try:
+        resolve_path_defaults(args)
+        return run_report(args)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
