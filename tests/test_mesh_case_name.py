@@ -10,7 +10,7 @@ from ro.mesh_common import (
     mesh_case_name_provenance,
 )
 from helpers import (
-    SCRIPTS_DIR,
+    FIXTURES_DIR,
     load_module,
     load_run_config,
     populate_valid_meshing_config,
@@ -107,7 +107,7 @@ def test_current_mesh_batch_names_match_parameters():
     merge_batch_case_overrides = load_solver_common().merge_batch_case_overrides
     batch = load_module(
         "mesh_batch_name_validation",
-        SCRIPTS_DIR / "batch_config_before_sin_3mesh_20260716_231030.py",
+        FIXTURES_DIR / "batch_config_before_sin_3mesh_20260716_231030.py",
     )
     for case in batch.mesh_batch_cases:
         merged = merge_batch_case_overrides(batch.common_mesh_settings, case)

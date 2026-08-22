@@ -10,7 +10,7 @@ import pytest
 
 from helpers import (
     CONFIGS_DIR,
-    SCRIPTS_DIR,
+    FIXTURES_DIR,
     apply_json_overrides,
     apply_post_json_overrides,
     load_post_config,
@@ -172,7 +172,7 @@ def _load_batch_config_module(filename: str):
     path = (
         CONFIGS_DIR / filename
         if filename == "batch_config.py"
-        else SCRIPTS_DIR / filename
+        else FIXTURES_DIR / filename
     )
     spec = importlib.util.spec_from_file_location(f"batch_{filename}", path)
     module = importlib.util.module_from_spec(spec)
@@ -416,7 +416,7 @@ class TestRunConfigOverrideApplication:
         cfg.validate_for_solver()
 
     def test_campaign_override_keys_are_all_allowed(self, cfg):
-        backup_path = SCRIPTS_DIR / "batch_config_before_sin_3mesh_20260716_231030.py"
+        backup_path = FIXTURES_DIR / "batch_config_before_sin_3mesh_20260716_231030.py"
         spec = importlib.util.spec_from_file_location("_backup_batch_config", backup_path)
         backup = importlib.util.module_from_spec(spec)
         assert spec.loader is not None

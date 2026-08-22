@@ -203,10 +203,10 @@ def test_expected_udm_fields_from_case_multiple_copies_raise(tmp_path):
 def test_no_legacy_udm_13_in_active_post_scripts():
     """udm-13 is out of range when UDM_COUNT=13 (valid 0..12). udm-12 is Y1."""
     active_roots = [
-        SCRIPTS_DIR / "post_processing" / "01_pyfluent_report_extract.py",
-        SCRIPTS_DIR / "post_processing" / "02_pyfluent_field_check.py",
-        SCRIPTS_DIR / "post_processing" / "03_pyensight_contour_export.py",
-        SCRIPTS_DIR / "post_processing" / "03b_pyfluent_shear_contour_export.py",
+        SCRIPTS_DIR / "01_pyfluent_report_extract.py",
+        SCRIPTS_DIR / "02_pyfluent_field_check.py",
+        SCRIPTS_DIR / "03_pyensight_contour_export.py",
+        SCRIPTS_DIR / "03b_pyfluent_shear_contour_export.py",
         REPO_ROOT / "src" / "ro" / "udm_layout.py",
         REPO_ROOT / "src" / "ro" / "fluent_report_helpers.py",
     ]

@@ -78,10 +78,10 @@ def load_rebuild_ledger():
         CONFIGS_DIR / "00_post_config.py",
         CONFIGS_DIR / "00_batch_post_config.py",
         CONFIGS_DIR / "run_config.py",
-        SCRIPTS_DIR / "post_processing/05_make_summary_figures.py",
+        SCRIPTS_DIR / "05_make_summary_figures.py",
         SCRIPTS_DIR / "rebuild_mesh_ledger_from_logs.py",
-        SCRIPTS_DIR / "post_processing/01_pyfluent_report_extract.py",
-        SCRIPTS_DIR / "post_processing/01_batch_report_extract.py",
+        SCRIPTS_DIR / "01_pyfluent_report_extract.py",
+        SCRIPTS_DIR / "01_batch_report_extract.py",
     ],
 )
 def test_6a3c_scripts_have_no_parents_n_project_root_locator(path):

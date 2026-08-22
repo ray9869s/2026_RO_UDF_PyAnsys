@@ -11,9 +11,10 @@ from types import ModuleType
 from ro import solver_common
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = REPO_ROOT / "My_CFD_Project" / "01_Scripts"
-POST_DIR = SCRIPTS_DIR / "post_processing"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+POST_DIR = SCRIPTS_DIR  # flatten alias; post_processing/ merged into scripts/
 CONFIGS_DIR = REPO_ROOT / "configs"
+FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
 
 def load_module(name: str, path: Path) -> ModuleType:

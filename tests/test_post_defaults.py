@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from helpers import load_module
-
-SCRIPTS_DIR = __import__("pathlib").Path(__file__).resolve().parents[1] / "My_CFD_Project" / "01_Scripts"
-POST_DIR = SCRIPTS_DIR / "post_processing"
+from helpers import POST_DIR, load_module
 
 INVENTORY_BASIC_FIELDS = ["cp_inlet", "water_flux", "lmh", "salt_flux"]
 BATCH_POST_DEFAULT_FIELDS = "cp_inlet,water_flux,lmh,salt_flux"

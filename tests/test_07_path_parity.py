@@ -13,7 +13,6 @@ from helpers import REPO_ROOT, SCRIPTS_DIR, load_module, load_solver_common
 
 PROJECT_ROOT = REPO_ROOT / "My_CFD_Project"
 RESULTS_ROOT = PROJECT_ROOT / "03_Results"
-SCRIPT_DIR = PROJECT_ROOT / "01_Scripts"
 SIN_MESH = "mesh_max100_min006_cpg3_bl3"
 SIN_MESH_CPG5 = "mesh_max100_min006_cpg5_bl4"
 
@@ -92,7 +91,7 @@ def build_fluent_path_golden_inputs() -> list[tuple[str, Path | str]]:
     inputs.append(
         (
             "DEFAULT_REPORT_SCRIPT",
-            SCRIPT_DIR / "post_processing" / "01_pyfluent_report_extract.py",
+            SCRIPTS_DIR / "01_pyfluent_report_extract.py",
         )
     )
     inputs.append(("PROJECT_ROOT/03_Results", RESULTS_ROOT))

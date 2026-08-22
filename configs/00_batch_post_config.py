@@ -16,7 +16,7 @@ MAX_CASES = None
 WRITE_AGGREGATE_OUTPUTS = False
 
 # --- Paths ---
-# Worker scripts stay under 01_Scripts/post_processing until step 7c.
+# Worker scripts live under scripts/ (post_processing/ flattened in step 7c).
 # Aggregate CSV paths are resolved by 01_batch_report_extract.py under
 # RO_DATA_ROOT/inventory.
 
@@ -25,10 +25,10 @@ from pathlib import Path
 from ro.paths import project_root as _discover_project_root
 
 _here = Path(__file__).resolve().parent
-_post_dir = _discover_project_root() / "My_CFD_Project" / "01_Scripts" / "post_processing"
+_scripts_dir = _discover_project_root() / "scripts"
 
-post_processing_dir = str(_post_dir)
-single_case_worker = str(_post_dir / "01_pyfluent_report_extract.py")
+post_processing_dir = str(_scripts_dir)
+single_case_worker = str(_scripts_dir / "01_pyfluent_report_extract.py")
 base_post_config = str(_here / "00_post_config.py")
 
 # --- Case definitions ---
