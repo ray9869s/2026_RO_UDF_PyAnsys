@@ -15,6 +15,7 @@ from ro.domain_layout import (
     LEGACY_LAYOUT,
     assert_replace_log_matches_mesh_manifest,
     layout_from_mesh_manifest,
+    layout_from_run_directory,
     layout_post_config_values,
     mesh_case_name_from_solver_replace_log,
     parse_solver_log_domain_extents_m,
@@ -26,8 +27,8 @@ from ro.fluent_report_helpers import (
     unit_cell_boundary_positions,
 )
 from ro.manifest import ManifestError, write_mesh_manifest
-from ro.paths import mesh_dir
-from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
+from ro.paths import mesh_dir, run_dir
+from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload, run_payload, write_test_run
 
 
 CURRENT_BOUNDARIES = [
@@ -278,6 +279,30 @@ class TestLayoutFromMeshManifest:
             "wall_top_mem",
             "wall_bottom_mem",
         ]
+
+
+class TestLayoutFromRunDirectory:
+    def test_reads_mesh_layout_via_run_manifest(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        mesh_directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        mesh_directory.mkdir(parents=True)
+        mesh = mesh_payload()
+        mesh["n_buffer_out"] = 2
+        write_mesh_manifest(mesh_directory, mesh)
+        run_directory = write_test_run(stop_reason="max_iter_reached")
+
+        record, payload = layout_from_run_directory(run_directory)
+        assert payload["run_id"] == "u0p2_p6M"
+        assert record.layout.n_buffer_in == 1
+        assert record.layout.n_active == 7
+        assert record.layout.n_buffer_out == 2
+
+    def test_missing_run_manifest_raises(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = run_dir(FAMILY, GEO_ID, MESH_ID, "u0p2_p6M")
+        directory.mkdir(parents=True)
+        with pytest.raises(ManifestError):
+            layout_from_run_directory(directory)
 
 
 class TestResolveLayoutRaises:

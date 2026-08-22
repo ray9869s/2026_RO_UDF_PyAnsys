@@ -10,8 +10,8 @@ import pytest
 from helpers import load_batch_postprocess, load_batch_report_extract
 from ro.domain_layout import layout_from_mesh_manifest, layout_post_config_values
 from ro.manifest import write_mesh_manifest
-from ro.paths import mesh_dir
-from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
+from ro.paths import mesh_dir, project_root
+from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload, run_payload, write_test_run
 
 
 @pytest.fixture
@@ -24,95 +24,45 @@ def batch_report():
     return load_batch_report_extract()
 
 
-def _current_layout_settings(monkeypatch, tmp_path: Path) -> dict:
+def _write_mesh_and_run(monkeypatch, tmp_path: Path, *, n_buffer_out: int = 2):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
     directory.mkdir(parents=True)
     payload = mesh_payload()
-    payload["n_buffer_out"] = 2
+    payload["n_buffer_out"] = n_buffer_out
     write_mesh_manifest(directory, payload)
-    return layout_post_config_values(layout_from_mesh_manifest(directory))
+    run_directory = write_test_run(stop_reason="max_iter_reached")
+    return run_directory, layout_post_config_values(layout_from_mesh_manifest(directory))
 
 
-def _legacy_layout_settings() -> dict:
-    from ro.domain_layout import (
-        EvaluationWindow,
-        GeometryLayoutRecord,
-        LEGACY_BUFFER_WALL_BASE_NAMES,
-        LEGACY_LAYOUT,
-        MEMBRANE_WALL_BASE_NAMES,
-        layout_post_config_values,
-    )
-
-    record = GeometryLayoutRecord(
-        layout=LEGACY_LAYOUT,
-        membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
-        buffer_wall_base_names=LEGACY_BUFFER_WALL_BASE_NAMES,
-        evaluation_window=EvaluationWindow(1, 0),
-    )
-    return layout_post_config_values(record)
-
-
-class TestWriteReportConfigLayoutKeys:
-    def test_current_geometry_writes_layout_and_buffer_names(
+class TestBuildReportOverrides:
+    def test_overrides_include_layout_and_run_operating_values(
         self, batch_post, monkeypatch, tmp_path: Path
     ):
-        case_dir = tmp_path / "D2450_a45" / "u0p2_p6M"
-        case_dir.mkdir(parents=True)
-        config_path = tmp_path / "report_config.py"
-        layout_settings = _current_layout_settings(monkeypatch, tmp_path)
-
-        batch_post.write_report_config(
-            config_path,
-            tmp_path,
-            "D2450_a45",
-            "u0p2_p6M",
-            {"case_dir": case_dir},
+        run_directory, layout_settings = _write_mesh_and_run(monkeypatch, tmp_path)
+        cas = run_directory / f"{GEO_ID}_u0p2_p6M_final.cas.h5"
+        dat = run_directory / f"{GEO_ID}_u0p2_p6M_final.dat.h5"
+        payload = run_payload()
+        payload["stop_reason"] = "max_iter_reached"
+        overrides = batch_post.build_report_overrides(
+            payload,
             layout_settings,
+            run_directory,
+            cas,
+            dat,
         )
-        text = config_path.read_text(encoding="utf-8")
-
-        assert "n_buffer_in = 1" in text
-        assert "n_active = 7" in text
-        assert "n_buffer_out = 2" in text
-        assert "cell_length_x_m = 0.003465" in text
-        assert "wall_top_buffer_in" in text
-        assert "wall_top_buffer_out" in text
-        assert "wall_bottom_buffer_in" in text
-        assert "wall_bottom_buffer_out" in text
-        assert "wall_top_mem" in text
-        assert "domain_length_m = 0.03465" in text
-        assert "buffer_length_m = 0.003465" in text
-        assert "n_unit_cells = 10" in text
-        assert "n_buffer_cells_each_end = None" in text
-        assert "0.017325" not in text
-
-    def test_legacy_record_writes_legacy_buffer_names(
-        self, batch_post, tmp_path: Path
-    ):
-        case_dir = tmp_path / "Sin_ST" / "u0p1_p4M"
-        case_dir.mkdir(parents=True)
-        config_path = tmp_path / "report_config.py"
-        layout_settings = _legacy_layout_settings()
-        batch_post.write_report_config(
-            config_path,
-            tmp_path,
-            "Sin_ST",
-            "u0p1_p4M",
-            {"case_dir": case_dir},
-            layout_settings,
-        )
-        text = config_path.read_text(encoding="utf-8")
-        assert "n_buffer_in = 1" in text
-        assert "n_active = 3" in text
-        assert "n_buffer_out = 1" in text
-        assert "domain_length_m = 0.017325" in text
-        assert "n_unit_cells = 5" in text
-        assert "n_buffer_cells_each_end = 1" in text
-        assert "buffer_wall_base_names = ['wall_top_buffer', 'wall_bottom_buffer']" in text
+        assert overrides["n_buffer_in"] == 1
+        assert overrides["n_active"] == 7
+        assert overrides["n_buffer_out"] == 2
+        assert overrides["inlet_velocity_value"] == 0.2
+        assert overrides["outlet_gauge_pressure"] == 6.0e6
+        assert overrides["project_root"] == str(project_root())
+        assert overrides["case_path"] == str(run_directory)
+        assert overrides["mesh_resolution_source"] == "mesh_manifest"
+        assert "wall_top_buffer_in" in overrides["buffer_wall_base_names"]
 
 
-class TestBatchPostLayoutUnknown:
+class TestBatchPostLayoutFromManifest:
     def _minimal_args(self, batch_post, results_root: Path, *, dry_run: bool):
         return SimpleNamespace(
             results_root=results_root,
@@ -142,7 +92,7 @@ class TestBatchPostLayoutUnknown:
             retry_shear_fallback_on_failure=False,
         )
 
-    def test_name_keyed_lookup_is_layout_unknown_and_does_not_raise(
+    def test_row_without_run_identity_fails_loudly(
         self, batch_post, tmp_path: Path
     ):
         results_root = tmp_path / "runs"
@@ -168,30 +118,30 @@ class TestBatchPostLayoutUnknown:
             log_dir=log_dir,
         )
 
-        assert plan["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert result["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert result["pyensight_contour_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert result["shear_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert "layout comes from the mesh manifest" in result["error_summary"]
-        assert result["report_stage_status"] != batch_post.STATUS_FAILED
+        assert plan["report_stage_status"] == batch_post.STATUS_FAILED
+        assert result["report_stage_status"] == batch_post.STATUS_FAILED
+        assert "family/geo_id/mesh_id/run_id" in result["error_summary"]
+        assert result["report_stage_status"] != batch_post.STATUS_LAYOUT_UNKNOWN
 
-    def test_dry_run_does_not_write_config_when_layout_unknown(
-        self, batch_post, tmp_path: Path
+    def test_dry_run_uses_manifest_layout(
+        self, batch_post, monkeypatch, tmp_path: Path
     ):
-        results_root = tmp_path / "runs"
-        case_name = "u0p1_p4M"
-        case_dir = results_root / "Sin_ST" / case_name
-        case_dir.mkdir(parents=True)
+        run_directory, _layout = _write_mesh_and_run(monkeypatch, tmp_path)
         batch_dir = tmp_path / "batch"
         log_dir = tmp_path / "logs"
         batch_dir.mkdir()
         log_dir.mkdir()
 
-        args = self._minimal_args(batch_post, results_root, dry_run=True)
-        _plan, result = batch_post.execute_case(
+        args = self._minimal_args(batch_post, tmp_path / "runs", dry_run=True)
+        plan, result = batch_post.execute_case(
             row={
-                "geo_name": "Sin_ST",
-                "case_name": case_name,
+                "geo_name": GEO_ID,
+                "case_name": "u0p2_p6M",
+                "case_dir": str(run_directory),
+                "family": FAMILY,
+                "geo_id": GEO_ID,
+                "mesh_id": MESH_ID,
+                "run_id": "u0p2_p6M",
                 "case_status": "READY_FOR_POSTPROCESSING",
                 "convergence_status": "MAX_ITER_REACHED",
             },
@@ -201,27 +151,34 @@ class TestBatchPostLayoutUnknown:
             batch_dir=batch_dir,
             log_dir=log_dir,
         )
-        assert result["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        config_dir = batch_dir / "report_configs"
-        assert not config_dir.exists() or not any(config_dir.iterdir())
+        assert result["report_stage_status"] == batch_post.STATUS_DRY_RUN
+        assert result["error_summary"] == ""
+        assert not (batch_dir / "report_configs").exists() or not any(
+            (batch_dir / "report_configs").iterdir()
+        )
 
 
 class TestBatchReportOverridesLayoutKeys:
-    def test_name_keyed_overrides_are_layout_unknown(self, batch_report):
+    def test_overrides_from_run_directory(
+        self, batch_report, monkeypatch, tmp_path: Path
+    ):
+        run_directory, _layout = _write_mesh_and_run(monkeypatch, tmp_path)
+        cas = run_directory / "final.cas.h5"
+        dat = run_directory / "final.dat.h5"
         overrides, error = batch_report.build_post_case_overrides(
-            geo_name="D2450_a45_7c_brg110",
-            case_name="u0p2_p6M__mesh_max085_min006_cpg5_bl4",
-            final_case_file="final.cas.h5",
-            final_data_file="final.dat.h5",
-            inlet_velocity_value=0.2,
-            outlet_gauge_pressure=6.0e6,
-            mesh_case_name="mesh_max085_min006_cpg5_bl4",
+            geo_name=GEO_ID,
+            case_name="u0p2_p6M",
+            final_case_file=cas,
+            final_data_file=dat,
+            case_dir=run_directory,
         )
-        assert overrides is None
-        assert error is not None
-        assert "layout comes from the mesh manifest" in error
+        assert error is None
+        assert overrides is not None
+        assert overrides["n_buffer_out"] == 2
+        assert overrides["inlet_velocity_value"] == 0.2
+        assert overrides["mesh_resolution_source"] == "mesh_manifest"
 
-    def test_unregistered_overrides_are_layout_unknown(self, batch_report):
+    def test_missing_case_dir_and_mesh_directory_is_error(self, batch_report):
         overrides, error = batch_report.build_post_case_overrides(
             geo_name="UnknownGeo",
             case_name="u0p1_p4M",
@@ -230,5 +187,5 @@ class TestBatchReportOverridesLayoutKeys:
         )
         assert overrides is None
         assert error is not None
-        assert "layout comes from the mesh manifest" in error
-
+        assert "case_dir or mesh_directory" in error
+        assert "LAYOUT_UNKNOWN" not in error

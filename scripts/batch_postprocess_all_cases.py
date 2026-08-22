@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import json
 import os
 import platform
@@ -28,10 +27,11 @@ from typing import Any, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 from ro.domain_layout import (  # noqa: E402
+    layout_from_run_directory,
     layout_post_config_values,
-    resolve_layout,
 )
-from ro.paths import data_root, project_root, runs_root, templates_dir  # noqa: E402
+from ro.manifest import ManifestError  # noqa: E402
+from ro.paths import data_root, project_root, run_dir, runs_root, templates_dir  # noqa: E402
 
 CFF_SOURCE_TEMPLATE = "template"
 CFF_SOURCE_CASE_SPECIFIC = "case_specific"
@@ -489,8 +489,7 @@ def slice_cases(rows: list[dict[str, str]], start_index: int, limit: Optional[in
     return sliced
 
 
-def case_paths(results_root: Path, geo_name: str, case_name: str) -> dict[str, Path]:
-    case_dir = results_root / geo_name / case_name
+def case_paths(case_dir: Path) -> dict[str, Path]:
     post_dir = case_dir / "post"
     reports_dir = post_dir / "reports"
     contours_dir = post_dir / "figures" / "contours"
@@ -680,133 +679,69 @@ def skipped_stage(stage: str, status: str, log_path: Path, note: str = "") -> St
     return StageResult(status=status, runtime_seconds=0.0, log_file=log_path.as_posix())
 
 
-def load_base_config() -> Any:
-    if not BASE_POST_CONFIG.is_file():
-        return None
-    spec = importlib.util.spec_from_file_location("base_post_config", str(BASE_POST_CONFIG))
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def try_resolve_post_layout_settings(
-    geo_name: str,
-    mesh_case_name: Optional[str],
-    *,
-    mesh_resolution_source: Optional[str] = None,
-) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """Resolve additive layout keys. Name-keyed lookup always fails.
-
-    Layout comes from the mesh manifest (step 6b). This wrapper still calls
-    :func:`resolve_layout` so leftover (geo, mesh) callers fail loudly with
-    LAYOUT_UNKNOWN instead of guessing 1+3+1.
-    """
-    try:
-        record = resolve_layout(geo_name, mesh_case_name or "")
-    except RuntimeError as exc:
-        return None, str(exc)
-    settings = layout_post_config_values(record)
-    if mesh_resolution_source:
-        settings = {
-            **settings,
-            "mesh_case_name": mesh_case_name,
-            "mesh_resolution_source": mesh_resolution_source,
-        }
-    return settings, None
-
-
-def resolve_case_dir_for_layout(
-    row: dict[str, str],
-    results_root: Path,
-    geo_name: str,
-    case_name: str,
-) -> Path:
-    """Prefer the inventory case_dir when it exists on disk.
-
-    ``case_paths(results_root, …)`` rebuilds a CWD-relative path from
-    ``--results-root``. When the inventory was scanned from a different
-    working directory (or stores an absolute path), that rebuild can miss a
-    real case directory and the solver replace log inside it. Use the
-    inventory path when it is an existing directory.
-    """
-    rebuilt = results_root / geo_name / case_name
+def resolve_run_directory(row: dict[str, str]) -> Path:
+    """Return the run directory from inventory columns. Never rebuild geo/case."""
     raw = (row.get("case_dir") or "").strip()
     if raw:
         inventory_dir = Path(raw)
-        if inventory_dir.is_dir():
-            return inventory_dir
-    return rebuilt
+        if not inventory_dir.is_dir():
+            raise FileNotFoundError(
+                f"Inventory case_dir is not a directory: {inventory_dir}"
+            )
+        return inventory_dir
+    family = (row.get("family") or "").strip()
+    geo_id = (row.get("geo_id") or "").strip()
+    mesh_id = (row.get("mesh_id") or "").strip()
+    run_id = (row.get("run_id") or "").strip()
+    if family and geo_id and mesh_id and run_id:
+        return run_dir(family, geo_id, mesh_id, run_id)
+    raise ValueError(
+        "Inventory row has no case_dir and no family/geo_id/mesh_id/run_id. "
+        "Re-run case_inventory so the CSV includes those columns."
+    )
 
 
+def resolve_final_cas_dat(
+    case_dir: Path, geo_id: str, run_id: str
+) -> tuple[Path, Path]:
+    expected_cas = case_dir / f"{geo_id}_{run_id}_final.cas.h5"
+    expected_dat = case_dir / f"{geo_id}_{run_id}_final.dat.h5"
+    if expected_cas.is_file() and expected_dat.is_file():
+        return expected_cas, expected_dat
+    cas_files = sorted(
+        path for path in case_dir.glob("*.cas.h5") if path.name.endswith("_final.cas.h5")
+    )
+    dat_files = sorted(
+        path for path in case_dir.glob("*.dat.h5") if path.name.endswith("_final.dat.h5")
+    )
+    if len(cas_files) == 1 and len(dat_files) == 1:
+        return cas_files[0], dat_files[0]
+    return expected_cas, expected_dat
 
-def write_report_config(
-    config_path: Path,
-    results_root: Path,
-    geo_name: str,
-    case_name: str,
-    paths: dict[str, Path],
+
+def build_report_overrides(
+    run_payload: dict[str, Any],
     layout_settings: dict[str, Any],
-) -> None:
-    base_cfg = load_base_config()
-    inlet_velocity = None
-    outlet_pressure = 6.0e6
-
-    def cfg_get(name: str, default: Any) -> Any:
-        return getattr(base_cfg, name, default) if base_cfg is not None else default
-
-    project_root = results_root.parent
-    n_buffer_in = int(layout_settings["n_buffer_in"])
-    n_active = int(layout_settings["n_active"])
-    n_buffer_out = int(layout_settings["n_buffer_out"])
-    cell_length_x_m = float(layout_settings["cell_length_x_m"])
-    n_total = n_buffer_in + n_active + n_buffer_out
-    domain_length_m = n_total * cell_length_x_m
-    buffer_length_m = n_buffer_in * cell_length_x_m
-    lines = [
-        f"project_root = {str(project_root)!r}",
-        "",
-        f"geo_name = {geo_name!r}",
-        f"case_name = {case_name!r}",
-        f"inlet_velocity_value = {inlet_velocity!r}",
-        f"outlet_gauge_pressure = {outlet_pressure!r}",
-        "",
-        f"final_case_file = {str(paths['case_dir'] / f'{geo_name}_{case_name}_final.cas.h5')!r}",
-        f"final_data_file = {str(paths['case_dir'] / f'{geo_name}_{case_name}_final.dat.h5')!r}",
-        "",
-        f"active_membrane_base_names = {layout_settings['active_membrane_base_names']!r}",
-        f"buffer_wall_base_names = {layout_settings['buffer_wall_base_names']!r}",
-        "",
-        f"rho = {cfg_get('rho', 998.2)!r}",
-        f"mu = {cfg_get('mu', 8.93e-4)!r}",
-        f"c_inlet_ref = {cfg_get('c_inlet_ref', 597.8268309)!r}",
-        "",
-        f"product_version = {cfg_get('product_version', '25.1.0')!r}",
-        f"processor_count = {cfg_get('processor_count', 1)!r}",
-        f"graphics_driver = {cfg_get('graphics_driver', 'dx11')!r}",
-        f"fluent_start_timeout = {cfg_get('fluent_start_timeout', 600)!r}",
-        f"fluent_health_timeout = {cfg_get('fluent_health_timeout', 600)!r}",
-        "",
-        f"domain_x_min_m = {cfg_get('domain_x_min_m', 0.0)!r}",
-        f"domain_length_m = {domain_length_m!r}",
-        f"buffer_length_m = {buffer_length_m!r}",
-        f"channel_height_m = {cfg_get('channel_height_m', 0.00077)!r}",
-        f"n_unit_cells = {n_total!r}",
-        f"n_inlet_spacer_cells_excluded = {cfg_get('n_inlet_spacer_cells_excluded', 1)!r}",
-        "",
-        f"n_buffer_in = {n_buffer_in!r}",
-        f"n_active = {n_active!r}",
-        f"n_buffer_out = {n_buffer_out!r}",
-        f"cell_length_x_m = {cell_length_x_m!r}",
-    ]
-    if n_buffer_in == n_buffer_out:
-        lines.append(f"n_buffer_cells_each_end = {n_buffer_in!r}")
-    else:
-        # Asymmetric: do not invent a fake each-end count.
-        lines.append("n_buffer_cells_each_end = None")
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    case_dir: Path,
+    cas_path: Path,
+    dat_path: Path,
+) -> dict[str, Any]:
+    geo_id = str(run_payload["geo_id"])
+    run_id = str(run_payload["run_id"])
+    overrides: dict[str, Any] = {
+        "geo_name": geo_id,
+        "case_name": run_id,
+        "project_root": str(project_root()),
+        "case_path": str(case_dir),
+        "final_case_file": str(cas_path),
+        "final_data_file": str(dat_path),
+        "inlet_velocity_value": run_payload["u_target_ms"],
+        "outlet_gauge_pressure": run_payload["p_gauge_pa"],
+        "mesh_case_name": run_payload["mesh_id"],
+        "mesh_resolution_source": "mesh_manifest",
+    }
+    overrides.update(layout_settings)
+    return overrides
 
 
 def build_report_command(args: argparse.Namespace) -> list[str]:
@@ -918,41 +853,22 @@ def execute_case(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     geo_name = row["geo_name"]
     case_name = row["case_name"]
-    paths = case_paths(args.results_root, geo_name, case_name)
-    case_dir = resolve_case_dir_for_layout(
-        row, args.results_root, geo_name, case_name
-    )
-    paths["case_dir"] = case_dir
-    config_dir = batch_dir / "report_configs"
-
-    report_log = stage_log_path(log_dir, geo_name, case_name, "report")
-    contour_log = stage_log_path(log_dir, geo_name, case_name, "pyensight_contours")
-    shear_log = stage_log_path(log_dir, geo_name, case_name, "shear")
-
-    report_command = build_report_command(args)
-    contour_command = build_pyensight_command(args, geo_name, case_name)
-    cff_file, cff_source = resolve_cff_file(args, paths)
-
-    # Name-keyed layout lookup is gone; this raises via resolve_layout until
-    # step 6b reads the mesh manifest. Never fall back to 1+3+1.
-    layout_settings, layout_error = try_resolve_post_layout_settings(
-        geo_name,
-        None,
-    )
-    if layout_error is not None:
+    try:
+        case_dir = resolve_run_directory(row)
+        layout_record, run_payload = layout_from_run_directory(case_dir)
+    except (ValueError, FileNotFoundError, ManifestError, OSError) as exc:
         print(f"[{selected_index}] {geo_name}/{case_name}")
-        print(f"  layout: {STATUS_LAYOUT_UNKNOWN} :: {layout_error}")
-        print(f"  case_dir: {case_dir.as_posix()}")
+        print(f"  layout: {STATUS_FAILED} :: {exc}")
         plan = {
             "selected_index": selected_index,
             "geo_name": geo_name,
             "case_name": case_name,
-            "case_dir": case_dir.as_posix(),
+            "case_dir": (row.get("case_dir") or ""),
             "case_status": row.get("case_status", ""),
             "convergence_status": row.get("convergence_status", ""),
-            "report_stage_status": STATUS_LAYOUT_UNKNOWN,
-            "pyensight_contour_stage_status": STATUS_LAYOUT_UNKNOWN,
-            "shear_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "report_stage_status": STATUS_FAILED,
+            "pyensight_contour_stage_status": STATUS_FAILED,
+            "shear_stage_status": STATUS_FAILED,
             "report_command": "",
             "contour_command": "",
             "shear_command": "",
@@ -961,17 +877,17 @@ def execute_case(
         result = {
             "geo_name": geo_name,
             "case_name": case_name,
-            "case_dir": case_dir.as_posix(),
+            "case_dir": (row.get("case_dir") or ""),
             "selected_index": selected_index,
-            "report_stage_status": STATUS_LAYOUT_UNKNOWN,
-            "pyensight_contour_stage_status": STATUS_LAYOUT_UNKNOWN,
-            "shear_stage_status": STATUS_LAYOUT_UNKNOWN,
+            "report_stage_status": STATUS_FAILED,
+            "pyensight_contour_stage_status": STATUS_FAILED,
+            "shear_stage_status": STATUS_FAILED,
             "report_returncode": None,
             "contour_returncode": None,
             "shear_returncode": None,
             "missing_cff_file": "",
-            "cff_file_used": cff_file.as_posix(),
-            "cff_source": cff_source,
+            "cff_file_used": "",
+            "cff_source": "",
             "shear_export_mode": args.shear_export_mode,
             "shear_retry_attempted": False,
             "shear_retry_mode": "",
@@ -979,12 +895,11 @@ def execute_case(
             "shear_retry_returncode": None,
             "shear_retry_log_file": "",
             "output_files_detected": "",
-            "error_summary": layout_error,
+            "error_summary": str(exc),
             "runtime_seconds_total": 0.0,
             "suggested_next_action": (
-                "Layout comes from the mesh manifest. Wait for step 6b to "
-                "read layout_from_mesh_manifest(mesh_directory); do not "
-                "guess 1+3+1 from geo/case names."
+                "Layout comes from the mesh manifest via the run directory. "
+                "Provide a valid run manifest.json; do not guess 1+3+1."
             ),
             "stage_details": {
                 "report": None,
@@ -995,7 +910,21 @@ def execute_case(
         }
         return plan, result
 
-    assert layout_settings is not None
+    geo_name = str(run_payload["geo_id"])
+    case_name = str(run_payload["run_id"])
+    layout_settings = layout_post_config_values(layout_record)
+    layout_settings["mesh_case_name"] = run_payload["mesh_id"]
+    layout_settings["mesh_resolution_source"] = "mesh_manifest"
+    paths = case_paths(case_dir)
+    cas_path, dat_path = resolve_final_cas_dat(case_dir, geo_name, case_name)
+
+    report_log = stage_log_path(log_dir, geo_name, case_name, "report")
+    contour_log = stage_log_path(log_dir, geo_name, case_name, "pyensight_contours")
+    shear_log = stage_log_path(log_dir, geo_name, case_name, "shear")
+
+    report_command = build_report_command(args)
+    contour_command = build_pyensight_command(args, geo_name, case_name)
+    cff_file, cff_source = resolve_cff_file(args, paths)
 
     report_status_planned = STATUS_PLANNED
     contour_status_planned = STATUS_PLANNED if args.run_pyensight_contours else STATUS_SKIPPED_DISABLED
@@ -1047,8 +976,8 @@ def execute_case(
 
     print(f"[{selected_index}] {geo_name}/{case_name}")
     print(
-        f"  mesh_case_name: {mesh_case_name!r} "
-        f"(via {mesh_resolution_source})"
+        f"  mesh_id: {run_payload['mesh_id']!r} "
+        f"(via mesh_manifest)"
     )
     for stage_name, planned_status, command in (
         ("report", report_status_planned, report_command),
@@ -1063,17 +992,15 @@ def execute_case(
     start_total = time.monotonic()
 
     if report_status_planned == STATUS_PLANNED:
-        report_config = config_dir / f"{safe_name(geo_name)}__{safe_name(case_name)}__post_config.py"
-        env = build_subprocess_env({"PYFLUENT_POST_CONFIG": str(report_config)})
-        if not args.dry_run:
-            write_report_config(
-                report_config,
-                args.results_root,
-                geo_name,
-                case_name,
-                paths,
-                layout_settings,
-            )
+        overrides = build_report_overrides(
+            run_payload, layout_settings, case_dir, cas_path, dat_path
+        )
+        env = build_subprocess_env(
+            {
+                "PYFLUENT_POST_CONFIG": str(BASE_POST_CONFIG),
+                "PYFLUENT_POST_OVERRIDES": json.dumps(overrides),
+            }
+        )
         report_result = run_stage_command("report", report_command, report_log, args.dry_run, env=env)
     else:
         report_result = skipped_stage("report", report_status_planned, report_log)

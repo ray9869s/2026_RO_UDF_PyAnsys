@@ -8,10 +8,12 @@ from pathlib import Path
 import pandas as pd
 
 from ro.domain_layout import (
+    layout_from_mesh_manifest,
+    layout_from_run_directory,
     layout_post_config_values,
-    resolve_layout,
 )
-from ro.paths import data_root, project_root, runs_root
+from ro.manifest import ManifestError, iter_run_manifests
+from ro.paths import data_root, project_root, run_dir, runs_root
 
 
 # ============================================================
@@ -30,14 +32,11 @@ CRITICAL_SUMMARY_COLUMNS = [
 ]
 
 
-def try_resolve_post_layout_overrides(geo_name, mesh_case_name):
-    """Return (layout_overrides, None) or (None, error_summary).
-
-    Name-keyed lookup always fails; layout comes from the mesh manifest.
-    """
+def try_resolve_post_layout_overrides(mesh_directory):
+    """Return (layout_overrides, None) or (None, error_summary)."""
     try:
-        record = resolve_layout(geo_name, mesh_case_name or "")
-    except RuntimeError as exc:
+        record = layout_from_mesh_manifest(Path(mesh_directory))
+    except (ManifestError, OSError, ValueError) as exc:
         return None, str(exc)
     return layout_post_config_values(record), None
 
@@ -51,32 +50,56 @@ def build_post_case_overrides(
     outlet_gauge_pressure=None,
     mesh_case_name=None,
     case_dir=None,
+    mesh_directory=None,
 ):
     """Build PYFLUENT_POST_OVERRIDES including additive layout keys.
 
-    Returns (overrides, None) on success, or (None, error_summary). Never
-    substitutes a default layout. Until step 6b reads the mesh manifest,
-    :func:`resolve_layout` raises and this returns LAYOUT_UNKNOWN.
+    Layout comes from the mesh manifest. Requires ``case_dir`` (run
+    directory) or ``mesh_directory``. Missing manifests are an error, not
+    LAYOUT_UNKNOWN.
     """
     overrides = {
         "geo_name": geo_name,
         "case_name": case_name,
         "final_case_file": str(final_case_file),
         "final_data_file": str(final_data_file),
+        "project_root": str(project_root()),
     }
+    if case_dir is not None:
+        overrides["case_path"] = str(case_dir)
     if inlet_velocity_value is not None:
         overrides["inlet_velocity_value"] = inlet_velocity_value
     if outlet_gauge_pressure is not None:
         overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
 
-    layout_overrides, layout_error = try_resolve_post_layout_overrides(
-        geo_name, mesh_case_name
-    )
-    if layout_error is not None:
-        return None, layout_error
+    run_payload = None
+    if case_dir is not None:
+        try:
+            record, run_payload = layout_from_run_directory(Path(case_dir))
+        except (ManifestError, OSError, ValueError) as exc:
+            return None, str(exc)
+        layout_overrides = layout_post_config_values(record)
+        if inlet_velocity_value is None:
+            overrides["inlet_velocity_value"] = run_payload["u_target_ms"]
+        if outlet_gauge_pressure is None:
+            overrides["outlet_gauge_pressure"] = run_payload["p_gauge_pa"]
+        mesh_case_name = run_payload["mesh_id"]
+    elif mesh_directory is not None:
+        layout_overrides, layout_error = try_resolve_post_layout_overrides(
+            mesh_directory
+        )
+        if layout_error is not None:
+            return None, layout_error
+        mesh_case_name = Path(mesh_directory).name
+    else:
+        return None, (
+            "Layout requires case_dir or mesh_directory; "
+            "layout comes from the mesh manifest."
+        )
+
     overrides.update(layout_overrides)
     overrides["mesh_case_name"] = mesh_case_name
-    overrides["mesh_resolution_source"] = "manifest"
+    overrides["mesh_resolution_source"] = "mesh_manifest"
     return overrides, None
 
 
@@ -193,7 +216,50 @@ def resolve_batch_results_dir(bcfg) -> Path:
     return runs_root()
 
 
+def cases_from_run_manifests():
+    """One post case per validated run manifest under runs_root()."""
+    cases = []
+    for manifest_path, payload in iter_run_manifests():
+        run_directory = manifest_path.parent
+        cases.append(
+            {
+                "geo_name": payload["geo_id"],
+                "case_name": payload["run_id"],
+                "base_case_name": payload["run_id"],
+                "mesh_case_name": payload["mesh_id"],
+                "family": payload["family"],
+                "geo_id": payload["geo_id"],
+                "mesh_id": payload["mesh_id"],
+                "run_id": payload["run_id"],
+                "inlet_velocity_value": payload["u_target_ms"],
+                "outlet_gauge_pressure": payload["p_gauge_pa"],
+                "final_case_file": None,
+                "final_data_file": None,
+                "case_dir": run_directory,
+            }
+        )
+    return cases
+
+
+def resolve_case_run_directory(case):
+    raw = case.get("case_dir")
+    if raw:
+        return Path(raw)
+    family = case.get("family")
+    geo_id = case.get("geo_id")
+    mesh_id = case.get("mesh_id")
+    run_id = case.get("run_id")
+    if family and geo_id and mesh_id and run_id:
+        return run_dir(family, geo_id, mesh_id, run_id)
+    return None
+
+
 def aggregate_output_paths() -> tuple[Path, Path]:
+    inventory = data_root() / "inventory"
+    return (
+        inventory / "all_cases_post_summary.csv",
+        inventory / "all_cases_post_status.csv",
+    )
     inventory = data_root() / "inventory"
     return (
         inventory / "all_cases_post_summary.csv",
@@ -227,17 +293,8 @@ if __name__ == "__main__":
         all_cases_full = [resolve_post_case(entry) for entry in explicit_post_cases]
         case_source = "explicit post_cases"
     else:
-        all_cases_full = [
-            resolve_post_case({
-                "geo_name": geo,
-                "inlet_velocity_value": u,
-                "outlet_gauge_pressure": p,
-            })
-            for geo in bcfg.geometries
-            for u in bcfg.inlet_velocities
-            for p in bcfg.outlet_gauge_pressures
-        ]
-        case_source = "geometries x velocities x pressures"
+        all_cases_full = cases_from_run_manifests()
+        case_source = "run manifests"
 
     total_defined = len(all_cases_full)
 
@@ -286,8 +343,33 @@ if __name__ == "__main__":
         inlet_velocity_value  = case["inlet_velocity_value"]
         outlet_gauge_pressure = case["outlet_gauge_pressure"]
         case_idx = idx + 1
+        case_result_dir = resolve_case_run_directory(case)
+        if case_result_dir is None:
+            print(f"\n[{case_idx}/{case_count}] {geo_name} / {case_name}")
+            print("  FAILED: need case_dir or family/geo_id/mesh_id/run_id")
+            status_records.append(
+                {
+                    "case_index": case_idx,
+                    "total_cases": case_count,
+                    "geo_name": geo_name,
+                    "case_name": case_name,
+                    "base_case_name": base_case_name,
+                    "mesh_case_name": mesh_case_name,
+                    "inlet_velocity_value": inlet_velocity_value,
+                    "outlet_gauge_pressure": outlet_gauge_pressure,
+                    "final_case_file": "",
+                    "final_data_file": "",
+                    "summary_wide_csv": "",
+                    "status": "FAILED",
+                    "return_code": None,
+                    "message": (
+                        "Need case_dir or family/geo_id/mesh_id/run_id; "
+                        "layout comes from the mesh manifest."
+                    ),
+                }
+            )
+            continue
 
-        case_result_dir  = results_dir / geo_name / case_name
         final_case_file  = (
             Path(case["final_case_file"]) if case["final_case_file"]
             else case_result_dir / f"{geo_name}_{case_name}_final.cas.h5"
@@ -329,8 +411,8 @@ if __name__ == "__main__":
             case_dir=case_result_dir,
         )
         if layout_error is not None:
-            print(f"  LAYOUT_UNKNOWN: {layout_error}")
-            record["status"] = "LAYOUT_UNKNOWN"
+            print(f"  FAILED: {layout_error}")
+            record["status"] = "FAILED"
             record["message"] = layout_error
             status_records.append(record)
             continue

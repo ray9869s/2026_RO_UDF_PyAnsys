@@ -1765,6 +1765,11 @@ RERUN_FIELDNAMES = [
 COMPACT_FIELDNAMES = [
     "geo_name",
     "case_name",
+    "family",
+    "geo_id",
+    "mesh_id",
+    "run_id",
+    "case_dir",
     "convergence_status",
     "stop_reason",
     "case_status",

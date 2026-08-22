@@ -40,7 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from ro.manifest import read_mesh_manifest
+from ro.manifest import read_mesh_manifest, read_run_manifest
+from ro.paths import mesh_dir
 
 # Constants harvested from mesh_ledger.csv (legacy + current 10-cell families
 # share this cell length) and from CURRENT / LEGACY buffer-active splits.
@@ -304,6 +305,21 @@ def layout_from_mesh_manifest(mesh_directory: Path) -> GeometryLayoutRecord:
             n_trail_excluded=int(payload["n_trail_excluded"]),
         ),
     )
+
+
+def layout_from_run_directory(
+    run_directory: Path,
+) -> tuple[GeometryLayoutRecord, dict]:
+    """Layout for a run: read the run manifest, then its mesh manifest.
+
+    Missing or stale manifests raise ManifestError. Identification is the
+    manifest payload, not directory-name parsing.
+    """
+    payload = read_run_manifest(run_directory)
+    mesh_directory = mesh_dir(
+        payload["family"], payload["geo_id"], payload["mesh_id"]
+    )
+    return layout_from_mesh_manifest(mesh_directory), payload
 
 
 def resolve_layout(geo_name: str, mesh_case_name: str) -> GeometryLayoutRecord:
