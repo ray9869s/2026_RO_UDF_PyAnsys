@@ -46,7 +46,7 @@ from ro.udm_layout import (
 )
 from helpers import REPO_ROOT, SCRIPTS_DIR, load_post_config, load_run_config
 
-UDF_DIR = REPO_ROOT / "My_CFD_Project" / "02_UDFs"
+UDF_DIR = REPO_ROOT / "udfs"
 UDF_PATH = UDF_DIR / "260813_RO_UDF.c"
 UDF_260816_PATH = UDF_DIR / "260816_RO_UDF.c"
 UDF_260815_PATH = UDF_DIR / "260815_RO_UDF.c"

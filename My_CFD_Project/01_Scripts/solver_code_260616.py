@@ -519,7 +519,7 @@ def copy_and_patch_udf_to_case_folder(
     """Copy UDF to the case folder and patch SALT_YI_INDEX and U_TARGET.
 
     Rewrites only destination_path (the case-local copy). The master under
-    02_UDFs is never modified.
+    udfs/ is never modified.
 
     MEMB_THREAD_BASE_NAME_TOP and MEMB_THREAD_BASE_NAME_BOTTOM are hardcoded in
     the UDF as "wall_top_mem" and "wall_bottom_mem" and do not require runtime patching.

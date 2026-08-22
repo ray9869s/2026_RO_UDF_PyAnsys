@@ -1,6 +1,6 @@
 ================================================================================
 REFERENCE ONLY — NOT COMPILED
-File: My_CFD_Project/02_UDFs/reference_rp_var_umean_pattern.txt
+File: udfs/reference_rp_var_umean_pattern.txt
 ================================================================================
 
 Audited-safe pattern for per-case inlet u_mean without recompiling the UDF:

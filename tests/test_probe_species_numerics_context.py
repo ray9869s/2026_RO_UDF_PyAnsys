@@ -33,8 +33,7 @@ def test_path_defaults_resolve_after_parse(monkeypatch, tmp_path):
 
     assert args.template_case == (
         REPO_ROOT
-        / "My_CFD_Project"
-        / "01_Templates"
+        / "templates"
         / "template_RO_setup.cas.h5"
     )
     assert args.mesh_file == (

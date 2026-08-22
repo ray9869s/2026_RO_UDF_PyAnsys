@@ -159,7 +159,7 @@ def find_case_udf_path(case_dir) -> Path:
     """Return the single `*_RO_UDF.c` in a case folder.
 
     Raises if the copy is missing or if more than one dated UDF is present.
-    Does not fall back to 02_UDFs/.
+    Does not fall back to udfs/.
     """
     case_path = Path(case_dir)
     matches = sorted(

@@ -104,13 +104,11 @@ def test_run_override_project_root_cannot_relocate_worker_paths(
     )
     assert after["template_case"] == (
         repository
-        / "My_CFD_Project"
-        / "01_Templates"
+        / "templates"
         / cfg.template_case_file_name
     )
     assert after["udf_master"] == (
         repository
-        / "My_CFD_Project"
-        / "02_UDFs"
+        / "udfs"
         / cfg.udf_source_file_name
     )

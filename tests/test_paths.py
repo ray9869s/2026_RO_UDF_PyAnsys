@@ -83,8 +83,8 @@ def test_builders_form_canonical_hierarchy(monkeypatch, tmp_path):
     assert geometry == tmp_path / "geometries" / FAMILY / GEO_ID
     assert mesh == tmp_path / "meshes" / FAMILY / GEO_ID / MESH_ID
     assert run == tmp_path / "runs" / FAMILY / GEO_ID / MESH_ID / RUN_ID
-    assert paths.templates_dir() == REPO_ROOT / "My_CFD_Project" / "01_Templates"
-    assert paths.udfs_dir() == REPO_ROOT / "My_CFD_Project" / "02_UDFs"
+    assert paths.templates_dir() == REPO_ROOT / "templates"
+    assert paths.udfs_dir() == REPO_ROOT / "udfs"
 
 
 def test_no_results_root_api():

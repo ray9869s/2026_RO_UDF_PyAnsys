@@ -217,7 +217,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "Shared CFF template file for shear runs. "
-            "Default: <project>/My_CFD_Project/01_Templates/cff_wall_shear_rate.scm "
+            "Default: <project>/templates/cff_wall_shear_rate.scm "
             "if it exists, otherwise falls back to the case-specific "
             "<case_dir>/post/figures/contours/cff_wall_shear_rate.scm. "
             "If explicitly passed, it must exist or the shear stage is skipped."
