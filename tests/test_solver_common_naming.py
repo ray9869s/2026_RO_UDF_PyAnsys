@@ -128,3 +128,8 @@ class TestF05MatrixBaseCaseNameHelpers:
         if mesh_name:
             qualified = f"{base_name}__{mesh_name}"
             assert common.is_matrix_base_case_name(qualified) is False
+
+    def test_optional_run_id_suffix_is_not_a_matrix_case(self, common):
+        assert common.MATRIX_BASE_CASE_RE.pattern == r"^u\d+p\d+_p\d+M$"
+        assert common.is_matrix_base_case_name("u0p2_p6M") is True
+        assert common.is_matrix_base_case_name("u0p2_p6M_plug") is False

@@ -12,7 +12,9 @@ from typing import Any
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
 MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+_peel\d+$")
-RUN_ID_RE = re.compile(r"^u\d+p\d+_p\d+M$")
+# Optional _label suffix (letter-led). Bare u0p2_p6M remains the campaign form.
+# A digits-only suffix is rejected so u0p2_p6M_20 cannot look like a new u or p.
+RUN_ID_RE = re.compile(r"^u\d+p\d+_p\d+M(?:_[a-z][a-z0-9]*)?$")
 _GEO_ID_FORBIDDEN = re.compile(r"(?:_brg\d+|_\d+c)(?:_|$)")
 
 _PROJECT_ROOT_ENV = "PYFLUENT_PROJECT_ROOT"

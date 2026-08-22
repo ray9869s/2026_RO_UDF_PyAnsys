@@ -100,6 +100,7 @@ class TestSelectCandidatesMatrixFilter:
             "attempt_20260705_161718",
             f"u0p2_p4M__{SIN_MESH_CPG5_BL4}",
             f"u0p3_p8M__{SIN_MESH_CPG5_BL4}",
+            "u0p2_p6M_plug",
         ],
     )
     def test_non_matrix_names_are_rejected(self, rerun07, case_name):
@@ -110,6 +111,14 @@ class TestSelectCandidatesMatrixFilter:
         assert selected == []
         assert stats["selected"] == 0
         assert stats["non_matrix_case_name"] == 1
+
+    def test_optional_run_id_suffix_is_not_a_matrix_case(self, rerun07):
+        row = candidate_row("D2450_a45", "u0p2_p6M_plug")
+        row["run_id"] = "u0p2_p6M_plug"
+        selected, stats = rerun07.select_candidates([row], make_select_args())
+        assert selected == []
+        assert stats["non_matrix_case_name"] == 1
+        assert stats["selected"] == 0
 
 
 class TestSelectCandidatesFixtureCsv:

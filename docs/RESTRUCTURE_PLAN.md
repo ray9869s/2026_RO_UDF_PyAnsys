@@ -95,8 +95,17 @@ compatibility requirement — do not preserve old behaviour "just in case."
 family  = diamond | ml | pillar | sin | empty
 geo_id  = D2450_a45
 mesh_id = max085_min006_cpg5_bl4_peel2 (no "mesh_" prefix; peel is mandatory)
-run_id  = u0p2_p6M
+run_id  = u0p2_p6M                 # campaign form (parabolic)
+          u0p2_p6M_plug            # optional letter-led label; not parsed
 ```
+
+The `_plug` suffix is optional. Peel is mandatory because two peel variants
+coexisted and a bare name meant "peel on". Inlet BC is not like that:
+parabolic is the campaign standard, plug is a one-off comparison. Do not put
+`_para` on the 495 matrix run_ids. `inlet_bc_type` in the run manifest is
+authoritative; nothing reads the BC from `run_id`. `MATRIX_BASE_CASE_RE` in
+`solver_common` stays `^u\d+p\d+_p\d+M$` so 07 does not treat `u0p2_p6M_plug`
+as a matrix case.
 
 Compiled once in `src/ro/paths.py`, validated at every builder call:
 
@@ -104,7 +113,7 @@ Compiled once in `src/ro/paths.py`, validated at every builder call:
 FAMILY_RE  = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE  = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")   # <=64 chars
 MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+_peel\d+$")   # min0006/bare peel must FAIL
-RUN_ID_RE  = re.compile(r"^u\d+p\d+_p\d+M$")
+RUN_ID_RE  = re.compile(r"^u\d+p\d+_p\d+M(?:_[a-z][a-z0-9]*)?$")
 _GEO_ID_FORBIDDEN = re.compile(r"(?:_brg\d+|_\d+c)(?:_|$)")            # loud reject
 ```
 
@@ -413,6 +422,40 @@ answer, listed roughly by how much damage they do.
    `import ro`.** `pythonpath=["src"]` covers pytest only. Runbook step 1 on the
    server is `pip install -e .`. The failure is `ModuleNotFoundError: No module
    named 'ro'` at import. There is no extra `__main__` guard.
+
+---
+
+## Known limitations
+
+### `segmented_membrane_cp_metrics` uses a broken `reduction.sum_if`
+
+Not a restructure regression. Added in `0cb3e55` (2026-08-02); the 2026-08-11
+server probe (`2bc4726`) established two independent defects in
+`reduction.sum_if`:
+
+1. Species/UDM expressions throw
+   `api-checks-before-command-or-query: command/query is not active` on
+   `setup/named-expressions/temp_expr_1/get-value`. PyFluent implements
+   `sum_if` via that temporary named-expression path.
+2. `weight="Area"` is ignored even when the call does not throw.
+   `expression="1"` returned a face count (2213) where the iso-clip area is
+   \(1.126\times10^{-5}\,\mathrm{m}^2\).
+
+Production `segmented_membrane_cp_metrics` still calls `sum_if`. The proven
+replacement is `results.surfaces.iso_clip` on the membrane walls plus
+`surface-area` / `surface-areaavg` reports, already working in
+`scripts/_tmp_cell_profile.py`. Do not treat this as blocking: the paper CP is
+whole-membrane `cp_inlet_avg` (UDM-9 surface report); per-cell profiles come
+from `_tmp_cell_profile.py`.
+
+The report worker catches the exception and writes
+`segmented_cp_diagnostic_error`. Every campaign run will therefore carry a
+populated field. That is expected, not a failure. Inventory classifies on
+artifact presence, `stop_reason`, and a handful of log patterns
+(`Expression Error UsedIn`, graphics/UDF/launch). It does not read this
+column. Batch post `report_stage_status` is the worker return code; the catch
+keeps that at success. Leave those classifiers as they are until the helper
+is rewritten.
 
 ---
 

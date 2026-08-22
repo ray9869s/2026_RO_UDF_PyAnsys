@@ -158,6 +158,32 @@ def test_iter_run_manifests_refuses_ids_that_disagree_with_path(monkeypatch, tmp
         list(iter_run_manifests())
 
 
+def test_optional_run_id_suffix_round_trip_and_stale_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    plug_id = "u0p2_p6M_plug"
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, plug_id)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    payload["run_id"] = plug_id
+    payload["inlet_bc_type"] = "plug"
+    payload["u_mean_ms"] = 0.2
+
+    write_run_manifest(directory, payload)
+
+    read_back = read_run_manifest(directory)
+    assert read_back["run_id"] == plug_id
+    assert read_back["inlet_bc_type"] == "plug"
+    assert directory.resolve() == run_dir(FAMILY, GEO_ID, MESH_ID, plug_id).resolve()
+
+    payload["run_id"] = RUN_ID
+    (directory / "manifest.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    with pytest.raises(ManifestError, match="ids do not match"):
+        list(iter_run_manifests())
+
+
 def test_parabolic_run_allows_null_mean_until_profile_g_is_known(
     monkeypatch,
     tmp_path,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,59 @@ def test_invalid_ids_raise(monkeypatch, tmp_path, family, geo_id, mesh_id, messa
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     with pytest.raises(ValueError, match=message):
         paths.mesh_dir(family, geo_id, mesh_id)
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "u0p2_p6M",
+        "u0p2_p6M_plug",
+        "u0p20_p6M",
+        "u0p2_p6M_abc123",
+    ],
+)
+def test_run_dir_accepts_optional_letter_led_suffix(monkeypatch, tmp_path, run_id):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    assert paths.RUN_ID_RE.fullmatch(run_id)
+    run = paths.run_dir(FAMILY, GEO_ID, MESH_ID, run_id)
+    assert run == tmp_path / "runs" / FAMILY / GEO_ID / MESH_ID / run_id
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "u0p2_p6M_20",
+        "u0p2_p6M_0",
+        "u0p2_p6M_",
+        "u0p2_p6M_Plug",
+        "u0p2_p6M__plug",
+    ],
+)
+def test_run_dir_rejects_digit_or_empty_suffix(monkeypatch, tmp_path, run_id):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    assert paths.RUN_ID_RE.fullmatch(run_id) is None
+    with pytest.raises(ValueError, match="run_id"):
+        paths.run_dir(FAMILY, GEO_ID, MESH_ID, run_id)
+
+
+def test_optional_suffix_cannot_shift_operating_point_tokens():
+    """A suffix cannot rewrite u or p; extra digits belong in the base token.
+
+    u0p20_p6M is a legitimate bare id (0.20 m/s-shaped token). u0p2_p6M_20
+    is a digits-only suffix and is rejected, so it cannot masquerade as a
+    different velocity.
+    """
+    operating_point = re.compile(r"^u\d+p\d+_p\d+M$")
+    assert paths.RUN_ID_RE.fullmatch("u0p20_p6M")
+    assert operating_point.fullmatch("u0p20_p6M")
+    assert paths.RUN_ID_RE.fullmatch("u0p2_p6M_20") is None
+    for run_id in ("u0p2_p6M", "u0p2_p6M_plug"):
+        prefix = re.fullmatch(
+            r"(u\d+p\d+_p\d+M)(?:_[a-z][a-z0-9]*)?",
+            run_id,
+        )
+        assert prefix is not None
+        assert operating_point.fullmatch(prefix.group(1))
 
 
 def test_builders_form_canonical_hierarchy(monkeypatch, tmp_path):
