@@ -16,6 +16,7 @@ from pathlib import Path
 from ro.manifest import (
     read_mesh_manifest,
     read_run_manifest,
+    write_mesh_manifest,
     write_run_manifest,
 )
 from ro.solver_common import normalize_path, path_to_fluent_str as as_fluent_path
@@ -80,12 +81,27 @@ def write_worker_run_manifest(
         mesh_manifest,
         created_utc=created_utc,
     )
+    existing_path = Path(run_directory) / "manifest.json"
+    if existing_path.is_file():
+        existing = read_run_manifest(run_directory)
+        if existing["u_mean_ms"] is not None and payload["u_mean_ms"] is None:
+            payload["u_mean_ms"] = existing["u_mean_ms"]
     return write_run_manifest(run_directory, payload)
 
 
-def finalize_worker_run_manifest(run_directory, stop_reason):
+def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=None):
     payload = read_run_manifest(run_directory)
     payload["stop_reason"] = stop_reason
+    if payload["inlet_bc_type"] == "parabolic":
+        if inlet_profile_g is None:
+            raise RuntimeError(
+                "Cannot finalize a parabolic run manifest without "
+                "inlet_profile_G from fluent-*.trn."
+            )
+        if payload["u_mean_ms"] is None:
+            payload["u_mean_ms"] = (
+                float(payload["u_target_ms"]) / float(inlet_profile_g)
+            )
     return write_run_manifest(run_directory, payload)
 
 
@@ -800,6 +816,115 @@ def assert_transcript_contains(
             )
 
         time.sleep(float(poll_interval_s))
+
+
+INLET_PROFILE_G_TOKEN_RE = re.compile(r"RO_UDF_INLET_PROFILE_G=([^\s]+)")
+INLET_PROFILE_G_REL_TOL = 1e-6
+
+
+def list_fluent_trn_paths(case_dir, solver_log_path):
+    """Return fluent-*.trn only. Never solver_log_*.txt."""
+    return [
+        path
+        for path in list_solver_transcript_paths(case_dir, solver_log_path)
+        if path.name.startswith("fluent-") and path.suffix == ".trn"
+    ]
+
+
+def collect_inlet_profile_g_tokens(case_dir, solver_log_path):
+    """All RO_UDF_INLET_PROFILE_G tokens from fluent-*.trn, never solver_log."""
+    tokens = []
+    for path in list_fluent_trn_paths(case_dir, solver_log_path):
+        text = _marker_in_transcript_file(path)
+        if text is None:
+            continue
+        tokens.extend(INLET_PROFILE_G_TOKEN_RE.findall(text))
+    return tokens
+
+
+def agreed_inlet_profile_g(tokens):
+    """Require at least one token; all tokens must be identical strings."""
+    if not tokens:
+        raise RuntimeError(
+            "Missing required transcript marker RO_UDF_INLET_PROFILE_G in "
+            "fluent-*.trn. UDF may not have loaded, or G fell back to 1."
+        )
+    unique = list(dict.fromkeys(tokens))
+    if len(unique) != 1:
+        raise RuntimeError(
+            "Disagreeing RO_UDF_INLET_PROFILE_G values in fluent-*.trn: "
+            f"{tokens!r}. The inlet profile changed mid-session."
+        )
+    try:
+        value = float(unique[0])
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Could not parse RO_UDF_INLET_PROFILE_G token {unique[0]!r}."
+        ) from exc
+    if not (value > 0.0) or value != value:
+        raise RuntimeError(
+            f"RO_UDF_INLET_PROFILE_G token {unique[0]!r} is not a positive finite G."
+        )
+    return value
+
+
+def wait_for_agreed_inlet_profile_g(
+    *,
+    case_dir,
+    solver_log_path,
+    poll_interval_s=0.5,
+    timeout_s=30.0,
+):
+    """Poll fluent-*.trn for G. Raise on disagreement immediately; missing is an error."""
+    deadline = time.monotonic() + float(timeout_s)
+    while True:
+        tokens = collect_inlet_profile_g_tokens(case_dir, solver_log_path)
+        if tokens:
+            value = agreed_inlet_profile_g(tokens)
+            print(
+                f"Transcript marker OK for inlet_profile_G: "
+                f"RO_UDF_INLET_PROFILE_G={value:.12g} "
+                f"({len(tokens)} occurrence(s) in fluent-*.trn)"
+            )
+            return value
+        if time.monotonic() >= deadline:
+            search_paths = list_fluent_trn_paths(case_dir, solver_log_path)
+            diag_lines = [_transcript_path_diag(p) for p in search_paths]
+            if not diag_lines:
+                diag_lines = ["(no fluent-*.trn files)"]
+            raise RuntimeError(
+                "Missing required transcript marker RO_UDF_INLET_PROFILE_G in "
+                f"fluent-*.trn after {timeout_s:g}s. solver_log_*.txt is not "
+                "searched. Searched:\n  "
+                + "\n  ".join(diag_lines)
+                + ". UDF may not have loaded, or G fell back to 1."
+            )
+        time.sleep(float(poll_interval_s))
+
+
+def apply_parsed_inlet_profile_g(mesh_directory, g):
+    """Lazy-fill mesh inlet_profile_G once; later runs compare at 1e-6 relative."""
+    payload = read_mesh_manifest(mesh_directory)
+    stored = payload["inlet_profile_G"]
+    g = float(g)
+    if stored is None:
+        payload["inlet_profile_G"] = g
+        write_mesh_manifest(mesh_directory, payload)
+        print(f"Mesh manifest inlet_profile_G filled: {g:.12g}")
+        return g
+    stored = float(stored)
+    relative = abs(g - stored) / abs(stored)
+    if relative > INLET_PROFILE_G_REL_TOL:
+        raise RuntimeError(
+            f"inlet_profile_G mismatch: transcript {g:.12g} vs mesh manifest "
+            f"{stored:.12g} (relative {relative:.3g} > {INLET_PROFILE_G_REL_TOL}). "
+            "Aborting before iterate."
+        )
+    print(
+        f"Mesh manifest inlet_profile_G matches transcript "
+        f"({stored:.12g}, relative {relative:.3g})."
+    )
+    return stored
 
 
 def apply_inlet_velocity_boundary(
@@ -2519,6 +2644,7 @@ if __name__ == "__main__":
     solution = None
     transcript_is_running = False
     original_working_directory = os.getcwd()
+    inlet_profile_g = None
 
     try:
         os.chdir(case_path)
@@ -3070,6 +3196,11 @@ if __name__ == "__main__":
             case_dir=case_path,
             solver_log_path=solver_log_path,
         )
+        inlet_profile_g = wait_for_agreed_inlet_profile_g(
+            case_dir=case_path,
+            solver_log_path=solver_log_path,
+        )
+        apply_parsed_inlet_profile_g(mesh_case_path, inlet_profile_g)
 
         if use_inlet_velocity_profile:
             print("\nRe-applying inlet BC as Components + UDF after libudf load...")
@@ -3524,6 +3655,11 @@ if __name__ == "__main__":
                     solver_log_path=solver_log_path,
                 )
 
+            inlet_profile_g = wait_for_agreed_inlet_profile_g(
+                case_dir=case_path,
+                solver_log_path=solver_log_path,
+            )
+
         else:
             print("Run calculation is disabled. Skipping solver iterations.")
             try:
@@ -3548,6 +3684,7 @@ if __name__ == "__main__":
             run_manifest_path = finalize_worker_run_manifest(
                 case_path,
                 solver_stop_reason,
+                inlet_profile_g=inlet_profile_g,
             )
             print(
                 f"Run manifest finalized with stop_reason={solver_stop_reason}: "
