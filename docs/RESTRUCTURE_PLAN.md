@@ -280,6 +280,18 @@ processed with defaults.
 
 ## 6. `inlet_profile_G`
 
+**Status: done.** Marker UDF `c16ac68` (`260822_RO_UDF.c`); parse-and-assert
+`c9510af`. Lazy-fill and comparison are both server-verified on
+`D2450_a45` / `max085_min006_cpg5_bl4_peel2`:
+
+| run | path | result |
+|---|---|---|
+| `u0p1_p6M` | lazy fill | mesh `inlet_profile_G` **1.00360939613**, `u_mean_ms` 0.0996403584757259 |
+| `u0p3_p6M` | comparison | matches transcript (relative 0), no refill, `u_mean_ms` 0.29892107542717766 |
+
+That G is the measured quadrature for this mesh only. Do not copy it onto
+another `mesh_id`. `U_MEAN = U_TARGET / G` is closed.
+
 ### Why
 
 The inlet BC is a self-normalizing parabolic profile. `U_MEAN = U_TARGET / G` where
@@ -289,51 +301,37 @@ The inlet BC is a self-normalizing parabolic profile. `U_MEAN = U_TARGET / G` wh
 G = Σ 6·η_i·(1 − η_i)·dA_i / Σ dA_i,    η = (z − z_bottom) / H
 ```
 
-On the D2450 family `G ≈ 1.003609`, giving `U_MEAN = 0.199281` for a 0.2 m/s
-target — a +0.3609% discrete-integration bias. That constant is **mesh-specific**.
-Reusing it on a mesh with different inflation or z-discretization silently corrupts
-LMH with no error at all. Cross-geometry LMH comparisons are the entire point of
-the campaign, so this must be caught mechanically.
+On this D2450 peel2 mesh `G = 1.00360939613`, giving `U_MEAN = 0.199281` for a
+0.2 m/s target — a +0.3609% discrete-integration bias. That constant is
+**mesh-specific**. Reusing it on a mesh with different inflation or
+z-discretization silently corrupts LMH with no error at all. Cross-geometry LMH
+comparisons are the entire point of the campaign, so this must be caught
+mechanically.
 
 **`G` is the mesh invariant, not `U_MEAN`.** `U_MEAN` depends on the target
 velocity and therefore differs across the 0.1 / 0.2 / 0.3 sweep on the same mesh.
 Store `G` in the mesh manifest; store `u_target_ms` in the run manifest.
 
-### Design — solver-side, lazy fill, no second Fluent start
+### Design — solver-side, lazy fill, no second Fluent start (as implemented)
 
-`260815_RO_UDF.c` already computes `G` at runtime in `ensure_inlet_G`. Parse that
-value rather than recomputing it mesh-side. This avoids a second Fluent product
-start (~300 s), and more importantly the asserted value is the one actually used —
-an independent mesh-side quadrature could diverge from the UDF's, creating a new
-silent failure mode in place of the one being closed.
+`ensure_inlet_G` in `260822_RO_UDF.c` computes `G` at runtime. The solver parses
+that value rather than recomputing it mesh-side, so the asserted number is the
+one the profile actually used.
 
-1. **New dated UDF.** Copy `260815_RO_UDF.c` to `260816_RO_UDF.c` and point
-   `run_config.udf_source_file_name` at it. Do **not** edit `260815` in place —
-   there is a frozen-UDF regression test, and it has already produced one false
-   alarm via CRLF.
-2. **Marker line.** `print_inlet_profile_stats` prints `G = %.6g`, which is only
-   ~1e-6 relative and not uniquely greppable. Add a dedicated single-token line:
-   ```
-   RO_UDF_INLET_PROFILE_G=1.0036090123
-   ```
-   `%.12g` or `%.10f`, emitted with `Message0` so it is not repeated 50× under MPI.
-   Print it from `ensure_inlet_G` after `G` is accepted — not from the `G = 1`
-   fallback path, which must remain distinguishable as a failure.
-3. **Timing.** The check must abort *before* `iterate`, so `G` has to be emitted by
-   the execute-on-demand probe after `libudf` loads, not by the profile hook.
-   That probe is currently gated on `run_inlet_profile_probe or
-   use_inlet_velocity_profile`. The gate becomes always-on, otherwise a run with
-   the probe off never emits the marker.
-4. **Parse.** In `solver_code_260616.py`, after the probe TUI and
-   `assert_transcript_contains(INLET_PROBE_MARKER, ...)`. Read from
-   `list_solver_transcript_paths` / `fluent-*.trn` — **not** `solver_log_*.txt`.
-   This is the same transcript-bounce rule already documented at the existing
-   comment near that call site.
-5. **Lazy fill.** If the mesh manifest's `inlet_profile_G` is null, write it once.
-   Never overwrite. Every later run compares and aborts before iterating if the
-   relative difference exceeds 1e-6.
-6. **Missing marker is an error**, both before and after iterate. Do not silently
-   skip the check.
+1. **Dated UDF.** `260822_RO_UDF.c` (not an in-place edit of `260816`).
+2. **Marker.** `Message0("RO_UDF_INLET_PROFILE_G=%.12g\n", G)` after G is
+   accepted; not on the `G = 1` fallback. Probe plus `DEFINE_INIT` reset plus
+   the first profile-hook call can emit the token twice; all `fluent-*.trn`
+   occurrences must be identical strings or the solver raises.
+3. **Timing.** The execute-on-demand probe runs after every `libudf` load
+   (always-on). Parse-and-assert runs after the probe and **before** `iterate`.
+   After iterate, tokens are collected again so a mid-session change cannot pass.
+4. **Parse.** `fluent-*.trn` only, never `solver_log_*.txt`. Missing marker is
+   an error.
+5. **Lazy fill.** Null `inlet_profile_G` is written once. Later runs compare at
+   1e-6 relative and abort before iterate on mismatch. Never overwrite.
+6. **`u_mean_ms`.** Parabolic finalization writes `u_target_ms / G`. Plug writes
+   `u_target_ms` at start.
 
 The first run on a new mesh has nothing to compare against. That is acceptable:
 the failure being prevented is reuse of one mesh's constant on a different mesh,
