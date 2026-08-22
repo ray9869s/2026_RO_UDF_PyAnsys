@@ -24,7 +24,15 @@ from pathlib import Path
 from typing import Any
 
 from ro.manifest import ManifestError, read_run_manifest
-from ro.paths import data_root, run_dir, runs_root
+from ro.paths import (
+    any_id_filter,
+    complete_run_identity,
+    data_root,
+    record_matches_id_filters,
+    require_existing_run,
+    run_dir,
+    runs_root,
+)
 from ro.solver_common import (
     assess_history,
     assess_residual_convergence,
@@ -393,16 +401,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--geo-name",
+        "--family",
         action="append",
         default=[],
-        help="Only include matching geometry name. May be passed more than once.",
+        help="Only include matching family. May be passed more than once.",
     )
     parser.add_argument(
-        "--case-name",
+        "--geo-id",
         action="append",
         default=[],
-        help="Only include matching case name. May be passed more than once.",
+        help="Only include matching geo_id. May be passed more than once.",
+    )
+    parser.add_argument(
+        "--mesh-id",
+        action="append",
+        default=[],
+        help="Only include matching mesh_id. May be passed more than once.",
+    )
+    parser.add_argument(
+        "--run-id",
+        action="append",
+        default=[],
+        help="Only include matching run_id. May be passed more than once.",
     )
     parser.add_argument(
         "--convergence-status",
@@ -887,10 +907,16 @@ def first_value(row: dict[str, str], keys: list[str]) -> str:
 
 
 def normalize_candidate_row(row: dict[str, str]) -> dict[str, str]:
+    geo_name = first_value(row, ["geo_name", "geometry", "geometry_name"])
+    case_name = first_value(row, ["case_name", "case"])
     return {
         "source_row_number": row.get("_source_row_number", ""),
-        "geo_name": first_value(row, ["geo_name", "geometry", "geometry_name"]),
-        "case_name": first_value(row, ["case_name", "case"]),
+        "geo_name": geo_name,
+        "case_name": case_name,
+        "family": first_value(row, ["family"]),
+        "geo_id": first_value(row, ["geo_id", "geo_name"]),
+        "mesh_id": first_value(row, ["mesh_id"]),
+        "run_id": first_value(row, ["run_id", "case_name"]),
         "convergence_status_before": first_value(
             row,
             ["convergence_status", "convergence_status_before"],
@@ -911,37 +937,68 @@ def select_candidates(
         "input_rows": len(rows),
         "missing_required": 0,
         "non_matrix_case_name": 0,
-        "filtered_geo_name": 0,
-        "filtered_case_name": 0,
+        "filtered_family": 0,
+        "filtered_geo_id": 0,
+        "filtered_mesh_id": 0,
+        "filtered_run_id": 0,
         "filtered_convergence_status": 0,
         "before_start_limit": 0,
         "selected": 0,
     }
 
     filtered: list[dict[str, str]] = []
-    geo_filter = set(args.geo_name)
-    case_filter = set(args.case_name)
+    family_filter = set(args.family)
+    geo_id_filter = set(args.geo_id)
+    mesh_id_filter = set(args.mesh_id)
+    run_id_filter = set(args.run_id)
     convergence_filter = set(args.convergence_status)
 
     for row in rows:
         candidate = normalize_candidate_row(row)
         geo_name = candidate["geo_name"]
         case_name = candidate["case_name"]
+        family = candidate["family"]
+        geo_id = candidate["geo_id"]
+        mesh_id = candidate["mesh_id"]
+        run_id = candidate["run_id"]
+        matrix_token = run_id or case_name
 
         if not geo_name or not case_name:
             stats["missing_required"] += 1
             continue
 
-        if not is_matrix_base_case_name(case_name):
+        if not is_matrix_base_case_name(matrix_token):
             stats["non_matrix_case_name"] += 1
             continue
 
-        if geo_filter and geo_name not in geo_filter:
-            stats["filtered_geo_name"] += 1
+        if family_filter and not family:
+            stats["missing_required"] += 1
+            continue
+        if geo_id_filter and not geo_id:
+            stats["missing_required"] += 1
+            continue
+        if mesh_id_filter and not mesh_id:
+            stats["missing_required"] += 1
+            continue
+        if run_id_filter and not run_id:
+            stats["missing_required"] += 1
             continue
 
-        if case_filter and case_name not in case_filter:
-            stats["filtered_case_name"] += 1
+        if not record_matches_id_filters(
+            candidate,
+            family=family_filter,
+            geo_id=geo_id_filter,
+            mesh_id=mesh_id_filter,
+            run_id=run_id_filter,
+        ):
+            if family_filter and family not in family_filter:
+                stats["filtered_family"] += 1
+            elif geo_id_filter and geo_id not in geo_id_filter:
+                stats["filtered_geo_id"] += 1
+            elif mesh_id_filter and mesh_id not in mesh_id_filter:
+                stats["filtered_mesh_id"] += 1
+            else:
+                stats["filtered_run_id"] += 1
             continue
 
         if (
@@ -969,6 +1026,17 @@ def resolve_candidate_run_directory(candidate: dict[str, str]) -> Path:
     cached = candidate.get("_run_directory", "")
     if cached:
         return Path(cached)
+
+    identity = complete_run_identity(
+        candidate.get("family"),
+        candidate.get("geo_id"),
+        candidate.get("mesh_id"),
+        candidate.get("run_id"),
+    )
+    if identity is not None:
+        canonical_directory = require_existing_run(*identity)
+        candidate["_run_directory"] = str(canonical_directory)
+        return canonical_directory
 
     geo_name = candidate["geo_name"]
     case_name = candidate["case_name"]
@@ -5906,8 +5974,10 @@ def write_summary(
         f"  before_start_limit: {stats['before_start_limit']}",
         f"  non_matrix_case_name: {stats['non_matrix_case_name']}",
         f"  missing_required: {stats['missing_required']}",
-        f"  filtered_geo_name: {stats['filtered_geo_name']}",
-        f"  filtered_case_name: {stats['filtered_case_name']}",
+        f"  filtered_family: {stats['filtered_family']}",
+        f"  filtered_geo_id: {stats['filtered_geo_id']}",
+        f"  filtered_mesh_id: {stats['filtered_mesh_id']}",
+        f"  filtered_run_id: {stats['filtered_run_id']}",
         f"  filtered_convergence_status: {stats['filtered_convergence_status']}",
         "",
         "Solver settings:",
@@ -5979,7 +6049,35 @@ def main(argv: list[str] | None = None) -> int:
     summary_txt = args.output_dir / "solver_rerun_summary.txt"
 
     rows, fieldnames = read_candidates(args.candidates_csv)
+    try:
+        identity = complete_run_identity(
+            args.family[0] if len(args.family) == 1 else None,
+            args.geo_id[0] if len(args.geo_id) == 1 else None,
+            args.mesh_id[0] if len(args.mesh_id) == 1 else None,
+            args.run_id[0] if len(args.run_id) == 1 else None,
+        )
+        if identity is not None:
+            require_existing_run(*identity)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     candidates, stats = select_candidates(rows, args)
+    if (
+        any_id_filter(
+            family=args.family,
+            geo_id=args.geo_id,
+            mesh_id=args.mesh_id,
+            run_id=args.run_id,
+        )
+        and not candidates
+    ):
+        print(
+            "ERROR: No candidate matched "
+            f"family={args.family!r} geo_id={args.geo_id!r} "
+            f"mesh_id={args.mesh_id!r} run_id={args.run_id!r}.",
+            file=sys.stderr,
+        )
+        return 2
     plan_rows = build_plan_rows(candidates, args)
 
     write_csv(plan_csv, plan_rows, PLAN_FIELDS)

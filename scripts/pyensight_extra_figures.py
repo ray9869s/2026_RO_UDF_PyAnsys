@@ -74,7 +74,7 @@ import traceback
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from ro.paths import project_root
+from ro.paths import project_root, resolve_selected_run_directory
 
 # ---------------------------------------------------------------------------
 # PyEnSight import guard — only required for a real run (not for dry runs)
@@ -112,9 +112,14 @@ except ImportError as _exc:
 
 CONFIG: dict = {
     # --- case selection ---
+    "family": None,
+    "geo_id": None,
+    "mesh_id": None,
+    "run_id": None,
+    "case_path": None,
     "geo_name": "Diamond_Spacer",
     "case_name": "u0p2_p6M",
-    # Required. No 03_Results fallback — a missing key must error.
+    # Unused as a selector; kept for override compatibility.
     "results_dir": None,
 
     # --- safety: dry run by default (no EnSight launch, no files written) ---
@@ -265,6 +270,7 @@ CONFIG: dict = {
 # variable (JSON object), mirroring PYFLUENT_POST_OVERRIDES elsewhere.
 OVERRIDES_ENV_VAR = "PYFLUENT_EXTRA_FIGURES_OVERRIDES"
 OVERRIDABLE_KEYS = {
+    "family", "geo_id", "mesh_id", "run_id", "case_path",
     "geo_name", "case_name", "results_dir", "dry_run",
     "active_x_min", "active_x_max", "slice_x_fractions",
     "include_concentration", "include_velocity_magnitude",
@@ -415,8 +421,12 @@ def parse_args() -> argparse.Namespace:
             "yz slices + vortex figures) from one final case via PyEnSight."
         ),
     )
-    parser.add_argument("--geo-name", type=str, default=None, help="Override geo_name.")
-    parser.add_argument("--case-name", type=str, default=None, help="Override case_name.")
+    parser.add_argument("--family", type=str, default=None, help="Run family selector.")
+    parser.add_argument("--geo-id", type=str, default=None, help="geo_id selector.")
+    parser.add_argument("--mesh-id", type=str, default=None, help="mesh_id selector.")
+    parser.add_argument("--run-id", type=str, default=None, help="run_id selector.")
+    parser.add_argument("--geo-name", type=str, default=None, help="Override geo_name (filename label).")
+    parser.add_argument("--case-name", type=str, default=None, help="Override case_name (filename label).")
     parser.add_argument(
         "--results-dir",
         type=Path,
@@ -444,6 +454,14 @@ def parse_args() -> argparse.Namespace:
 
 def build_config(args: argparse.Namespace) -> dict:
     cfg = apply_env_overrides(dict(CONFIG))
+    if args.family is not None:
+        cfg["family"] = args.family
+    if args.geo_id is not None:
+        cfg["geo_id"] = args.geo_id
+    if args.mesh_id is not None:
+        cfg["mesh_id"] = args.mesh_id
+    if args.run_id is not None:
+        cfg["run_id"] = args.run_id
     if args.geo_name is not None:
         cfg["geo_name"] = args.geo_name
     if args.case_name is not None:
@@ -464,13 +482,13 @@ def build_config(args: argparse.Namespace) -> dict:
 def build_paths(cfg: dict) -> dict:
     geo_name = str(cfg["geo_name"])
     case_name = str(cfg["case_name"])
-    results_raw = cfg.get("results_dir")
-    if not results_raw:
-        raise ValueError(
-            "results_dir is unset. Set it in CONFIG, "
-            "PYFLUENT_EXTRA_FIGURES_OVERRIDES, or --results-dir."
-        )
-    case_path = Path(results_raw) / geo_name / case_name
+    case_path = resolve_selected_run_directory(
+        family=cfg.get("family"),
+        geo_id=cfg.get("geo_id"),
+        mesh_id=cfg.get("mesh_id"),
+        run_id=cfg.get("run_id"),
+        case_path=cfg.get("case_path"),
+    )
     extra_dir = case_path / "post" / "figures" / "extra"
     return {
         "project_root": project_root(),

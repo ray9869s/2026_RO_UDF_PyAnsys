@@ -31,7 +31,16 @@ from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
 )
 from ro.manifest import ManifestError  # noqa: E402
-from ro.paths import data_root, project_root, run_dir, runs_root, templates_dir  # noqa: E402
+from ro.paths import (  # noqa: E402
+    any_id_filter,
+    complete_run_identity,
+    data_root,
+    project_root,
+    record_matches_id_filters,
+    require_existing_run,
+    runs_root,
+    templates_dir,
+)
 
 CFF_SOURCE_TEMPLATE = "template"
 CFF_SOURCE_CASE_SPECIFIC = "case_specific"
@@ -138,8 +147,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Root results directory (default: RO_DATA_ROOT/runs).",
     )
     parser.add_argument("--python-exe", type=Path, default=Path(sys.executable))
-    parser.add_argument("--geo-name", type=str, default=None)
-    parser.add_argument("--case-name", type=str, default=None)
+    parser.add_argument("--family", type=str, default=None)
+    parser.add_argument("--geo-id", type=str, default=None)
+    parser.add_argument("--mesh-id", type=str, default=None)
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument(
         "--case-status",
         action="append",
@@ -449,16 +460,22 @@ def row_status_requested(row: dict[str, str], statuses: set[str]) -> bool:
 def select_cases(
     rows: list[dict[str, str]],
     statuses: set[str],
-    geo_name: Optional[str],
-    case_name: Optional[str],
+    family: Optional[str],
+    geo_id: Optional[str],
+    mesh_id: Optional[str],
+    run_id: Optional[str],
 ) -> list[dict[str, str]]:
     allow_solver_risk = is_explicit_solver_status_requested(statuses)
     selected: list[dict[str, str]] = []
 
     for row in rows:
-        if geo_name and row.get("geo_name") != geo_name:
-            continue
-        if case_name and row.get("case_name") != case_name:
+        if not record_matches_id_filters(
+            row,
+            family=family,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            run_id=run_id,
+        ):
             continue
         if not row_status_requested(row, statuses):
             continue
@@ -680,23 +697,16 @@ def skipped_stage(stage: str, status: str, log_path: Path, note: str = "") -> St
 
 
 def resolve_run_directory(row: dict[str, str]) -> Path:
-    """Return the run directory from inventory columns. Never rebuild geo/case."""
-    raw = (row.get("case_dir") or "").strip()
-    if raw:
-        inventory_dir = Path(raw)
-        if not inventory_dir.is_dir():
-            raise FileNotFoundError(
-                f"Inventory case_dir is not a directory: {inventory_dir}"
-            )
-        return inventory_dir
+    """Return the run directory from inventory ids via run_dir()."""
     family = (row.get("family") or "").strip()
     geo_id = (row.get("geo_id") or "").strip()
     mesh_id = (row.get("mesh_id") or "").strip()
     run_id = (row.get("run_id") or "").strip()
-    if family and geo_id and mesh_id and run_id:
-        return run_dir(family, geo_id, mesh_id, run_id)
+    identity = complete_run_identity(family, geo_id, mesh_id, run_id)
+    if identity is not None:
+        return require_existing_run(*identity)
     raise ValueError(
-        "Inventory row has no case_dir and no family/geo_id/mesh_id/run_id. "
+        "Inventory row has no family/geo_id/mesh_id/run_id. "
         "Re-run case_inventory so the CSV includes those columns."
     )
 
@@ -748,10 +758,27 @@ def build_report_command(args: argparse.Namespace) -> list[str]:
     return [str(args.python_exe), str(REPORT_SCRIPT)]
 
 
-def build_pyensight_command(args: argparse.Namespace, geo_name: str, case_name: str) -> list[str]:
+def build_pyensight_command(
+    args: argparse.Namespace,
+    *,
+    family: str,
+    geo_id: str,
+    mesh_id: str,
+    run_id: str,
+    geo_name: str,
+    case_name: str,
+) -> list[str]:
     command = [
         str(args.python_exe),
         str(PYENSIGHT_CONTOUR_SCRIPT),
+        "--family",
+        family,
+        "--geo-id",
+        geo_id,
+        "--mesh-id",
+        mesh_id,
+        "--run-id",
+        run_id,
         "--geo-name",
         geo_name,
         "--case-name",
@@ -780,6 +807,11 @@ def build_pyensight_command(args: argparse.Namespace, geo_name: str, case_name: 
 
 def build_shear_command(
     args: argparse.Namespace,
+    *,
+    family: str,
+    geo_id: str,
+    mesh_id: str,
+    run_id: str,
     geo_name: str,
     case_name: str,
     cff_file: Path,
@@ -789,6 +821,14 @@ def build_shear_command(
     command = [
         str(args.python_exe),
         str(SHEAR_CONTOUR_SCRIPT),
+        "--family",
+        family,
+        "--geo-id",
+        geo_id,
+        "--mesh-id",
+        mesh_id,
+        "--run-id",
+        run_id,
         "--geo-name",
         geo_name,
         "--case-name",
@@ -910,8 +950,20 @@ def execute_case(
         }
         return plan, result
 
-    geo_name = str(run_payload["geo_id"])
-    case_name = str(run_payload["run_id"])
+    family = str(run_payload["family"])
+    geo_id = str(run_payload["geo_id"])
+    mesh_id = str(run_payload["mesh_id"])
+    run_id = str(run_payload["run_id"])
+    geo_name = geo_id
+    case_name = run_id
+    worker_ids = {
+        "family": family,
+        "geo_id": geo_id,
+        "mesh_id": mesh_id,
+        "run_id": run_id,
+        "geo_name": geo_name,
+        "case_name": case_name,
+    }
     layout_settings = layout_post_config_values(layout_record)
     layout_settings["mesh_case_name"] = run_payload["mesh_id"]
     layout_settings["mesh_resolution_source"] = "mesh_manifest"
@@ -923,7 +975,7 @@ def execute_case(
     shear_log = stage_log_path(log_dir, geo_name, case_name, "shear")
 
     report_command = build_report_command(args)
-    contour_command = build_pyensight_command(args, geo_name, case_name)
+    contour_command = build_pyensight_command(args, **worker_ids)
     cff_file, cff_source = resolve_cff_file(args, paths)
 
     report_status_planned = STATUS_PLANNED
@@ -955,7 +1007,7 @@ def execute_case(
                 missing_cff_file = cff_file.as_posix()
 
     shear_command = build_shear_command(
-        args, geo_name, case_name, cff_file, shear_export_mode=effective_shear_export_mode
+        args, cff_file=cff_file, shear_export_mode=effective_shear_export_mode, **worker_ids
     )
 
     plan = {
@@ -1036,7 +1088,10 @@ def execute_case(
         shear_retry_attempted = True
         shear_retry_mode = SHEAR_EXPORT_MODE_FALLBACK
         retry_command = build_shear_command(
-            args, geo_name, case_name, cff_file, shear_export_mode=SHEAR_EXPORT_MODE_FALLBACK
+            args,
+            cff_file=cff_file,
+            shear_export_mode=SHEAR_EXPORT_MODE_FALLBACK,
+            **worker_ids,
         )
         retry_log = stage_log_path(log_dir, geo_name, case_name, "shear_retry_fallback")
         print(f"  shear: FAILED, retrying with --shear-export-mode fallback :: {command_to_string(retry_command)}")
@@ -1307,7 +1362,31 @@ def run(args: argparse.Namespace) -> int:
         print(error, file=sys.stderr)
         return 2
 
-    selected_all = select_cases(rows, statuses, args.geo_name, args.case_name)
+    identity = complete_run_identity(args.family, args.geo_id, args.mesh_id, args.run_id)
+    if identity is not None:
+        require_existing_run(*identity)
+
+    selected_all = select_cases(
+        rows,
+        statuses,
+        args.family,
+        args.geo_id,
+        args.mesh_id,
+        args.run_id,
+    )
+    if any_id_filter(
+        family=args.family,
+        geo_id=args.geo_id,
+        mesh_id=args.mesh_id,
+        run_id=args.run_id,
+    ) and not selected_all:
+        print(
+            "ERROR: No inventory row matched "
+            f"family={args.family!r} geo_id={args.geo_id!r} "
+            f"mesh_id={args.mesh_id!r} run_id={args.run_id!r}.",
+            file=sys.stderr,
+        )
+        return 2
     selected = slice_cases(selected_all, args.start_index, args.limit)
     print_selected_cases(selected)
 

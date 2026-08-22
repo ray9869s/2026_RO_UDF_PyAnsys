@@ -27,8 +27,10 @@ def rerun07():
 
 def make_select_args(**overrides) -> argparse.Namespace:
     defaults = {
-        "geo_name": [],
-        "case_name": [],
+        "family": [],
+        "geo_id": [],
+        "mesh_id": [],
+        "run_id": [],
         "convergence_status": [],
         "start_index": 0,
         "limit": None,
@@ -67,6 +69,19 @@ def load_fixture_rows(path: Path) -> list[dict[str, str]]:
 
 
 class TestSelectCandidatesMatrixFilter:
+    def test_geo_id_filter_selects_matching_row(self, rerun07):
+        rows = [
+            candidate_row("D2450_a45", "u0p2_p6M"),
+            candidate_row("D1225_a45", "u0p2_p6M"),
+        ]
+        selected, stats = rerun07.select_candidates(
+            rows,
+            make_select_args(geo_id=["D2450_a45"]),
+        )
+        assert stats["selected"] == 1
+        assert stats["filtered_geo_id"] == 1
+        assert selected[0]["geo_name"] == "D2450_a45"
+
     def test_plain_matrix_run_id_is_selected(self, rerun07):
         selected, stats = rerun07.select_candidates(
             [candidate_row("Sin_ST", "u0p2_p4M")],
@@ -98,7 +113,7 @@ class TestSelectCandidatesMatrixFilter:
 
 
 class TestSelectCandidatesFixtureCsv:
-    def test_fixture_csv_header_matches_inventory_rerun_fields(self):
+    def test_fixture_csv_header_is_pre_id_f05_schema(self):
         with F05_FIXTURE_CSV.open("r", encoding="utf-8-sig", newline="") as handle:
             fieldnames = csv.DictReader(handle).fieldnames
         assert fieldnames == [

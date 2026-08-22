@@ -19,7 +19,7 @@ missing decisions; if something needed is not written here, stop and ask.
 | 5 | Add `src/ro/paths.py` + `src/ro/manifest.py` + their tests | pending |
 | 6a | Route every path construction through `ro.paths` builders | pending |
 | 6b | Manifests: write on creation, read in post; layout from manifest | pending |
-| 6c | CLI flags → `--family --geo-id --mesh-id --run-id` | pending |
+| 6c | CLI flags → `--family --geo-id --mesh-id --run-id` | **DONE** |
 | 7 | Directory reshuffle by `git mv` (7a templates/udfs, 7b configs, 7c scripts, 7d docs) | pending |
 | 8 | Drop numeric prefixes on orchestration scripts | pending |
 | 9 | Remove the name-keyed domain-layout registry | **DONE** |
@@ -402,8 +402,9 @@ answer, listed roughly by how much damage they do.
    affect the implementation's globals. This already bit
    `test_shear_cff_mu_guard.py` in step 2. Any other test doing this is latent
    until step 4 deletes the shims — check for it during step 3.
-6. **CLI still `--geo-name` / `--case-name` while disks use four ids.** Change the
-   flags in the same commit as the builders (6c).
+6. **CLI still `--geo-name` / `--case-name` while disks use four ids.** Done in
+   6c. Orchestrator selectors are `--family --geo-id --mesh-id --run-id`.
+   Worker `--geo-name` / `--case-name` remain filename labels only.
 7. **`RO_DATA_ROOT` accidentally set to the repo on the dev machine.** Tests would
    write into git. Tests use `tmp_path` only and `monkeypatch.delenv` in the
    defaults case; they never read the developer's env.
@@ -482,7 +483,9 @@ before readers migrate:
 4. Continue the remaining 6b reader/inventory/layout work.
 
 **Step 6c — CLI.** `--family --geo-id --mesh-id --run-id` replace `--geo-name` /
-`--case-name`.
+`--case-name` as selectors. Worker `--geo-name` / `--case-name` remain filename
+labels. A complete four-id selection resolves through `run_dir()` and refuses a
+missing manifest.
 
 **Step 7 — reshuffle**, one commit per tree: 7a `01_Templates`→`templates/` and
 `02_UDFs`→`udfs/` (update `test_udm_layout_parity.UDF_DIR`); 7b configs; 7c entry

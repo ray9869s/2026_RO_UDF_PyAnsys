@@ -66,7 +66,7 @@ import matplotlib.tri as mtri
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
-from ro.paths import project_root
+from ro.paths import project_root, resolve_selected_run_directory
 from ro.shear_cff_mu_guard import emit_scm_mu_guard_message
 
 DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
@@ -158,6 +158,10 @@ def get_case_paths(
     cfg: Any,
     geo_name_override: Optional[str] = None,
     case_name_override: Optional[str] = None,
+    family: Optional[str] = None,
+    geo_id: Optional[str] = None,
+    mesh_id: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> dict:
     configured_root = cfg_get(cfg, "project_root")
     resolved_project_root = (
@@ -171,11 +175,13 @@ def get_case_paths(
     if not case_name or case_name == "===== Edit here =====":
         raise ValueError("case_name is unset. Pass --case-name or edit post_config.py.")
 
-    results_raw = cfg_get(cfg, "results_dir")
-    if not results_raw:
-        raise ValueError("results_dir is unset. Set it in the post config.")
-    results_root = as_path(results_raw)
-    case_path = results_root / geo_name / case_name
+    case_path = resolve_selected_run_directory(
+        family=family or cfg_get(cfg, "family"),
+        geo_id=geo_id or cfg_get(cfg, "geo_id"),
+        mesh_id=mesh_id or cfg_get(cfg, "mesh_id"),
+        run_id=run_id or cfg_get(cfg, "run_id"),
+        case_path=cfg_get(cfg, "case_path"),
+    )
 
     final_case_file = as_path(
         cfg_get(cfg, "final_case_file", case_path / f"{geo_name}_{case_name}_final.cas.h5")
@@ -3118,6 +3124,10 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
         help="Post-processing config path (default: PYFLUENT_POST_CONFIG or <project>/configs/post_config.py).",
     )
+    parser.add_argument("--family", type=str, default=None)
+    parser.add_argument("--geo-id", type=str, default=None)
+    parser.add_argument("--mesh-id", type=str, default=None)
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--geo-name",  type=str, default=None)
     parser.add_argument("--case-name", type=str, default=None)
     parser.add_argument(
@@ -3319,6 +3329,10 @@ def main() -> int:
             cfg,
             geo_name_override=args.geo_name,
             case_name_override=args.case_name,
+            family=args.family,
+            geo_id=args.geo_id,
+            mesh_id=args.mesh_id,
+            run_id=args.run_id,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}")

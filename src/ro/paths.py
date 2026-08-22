@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Collection, Mapping
 from pathlib import Path
+from typing import Any
 
 
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
@@ -105,3 +107,96 @@ def run_dir(family: str, geo_id: str, mesh_id: str, run_id: str) -> Path:
     _validate_mesh_id(mesh_id)
     _validate_run_id(run_id)
     return runs_root() / family / geo_id / mesh_id / run_id
+
+
+def complete_run_identity(
+    family: str | None,
+    geo_id: str | None,
+    mesh_id: str | None,
+    run_id: str | None,
+) -> tuple[str, str, str, str] | None:
+    """Return the four ids when every selector is a non-empty string."""
+    if family and geo_id and mesh_id and run_id:
+        return family, geo_id, mesh_id, run_id
+    return None
+
+
+def require_existing_run(
+    family: str, geo_id: str, mesh_id: str, run_id: str
+) -> Path:
+    """Return ``run_dir(...)`` or raise if that leaf has no manifest."""
+    directory = run_dir(family, geo_id, mesh_id, run_id)
+    manifest = directory / "manifest.json"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"No run manifest at {manifest}.")
+    return directory
+
+
+def resolve_selected_run_directory(
+    *,
+    family: str | None = None,
+    geo_id: str | None = None,
+    mesh_id: str | None = None,
+    run_id: str | None = None,
+    case_path: str | Path | None = None,
+) -> Path:
+    """Locate a run from the four ids or an explicit ``case_path``.
+
+    ``geo_name`` / ``case_name`` are filename labels and are not accepted here.
+    """
+    if case_path not in (None, ""):
+        return Path(case_path)
+    identity = complete_run_identity(family, geo_id, mesh_id, run_id)
+    if identity is None:
+        raise ValueError(
+            "Cannot locate the run directory. Pass --family --geo-id "
+            "--mesh-id --run-id, or set case_path. --geo-name/--case-name "
+            "are filename labels only."
+        )
+    return require_existing_run(*identity)
+
+
+def _filter_values(value: str | Collection[str] | None) -> set[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return {value} if value else None
+    filtered = {item for item in value if item}
+    return filtered or None
+
+
+def record_matches_id_filters(
+    record: Mapping[str, Any],
+    *,
+    family: str | Collection[str] | None = None,
+    geo_id: str | Collection[str] | None = None,
+    mesh_id: str | Collection[str] | None = None,
+    run_id: str | Collection[str] | None = None,
+) -> bool:
+    """True when ``record`` matches every provided id filter."""
+    checks = (
+        ("family", family),
+        ("geo_id", geo_id),
+        ("mesh_id", mesh_id),
+        ("run_id", run_id),
+    )
+    for key, wanted in checks:
+        allowed = _filter_values(wanted)
+        if allowed is None:
+            continue
+        if str(record.get(key, "")) not in allowed:
+            return False
+    return True
+
+
+def any_id_filter(
+    *,
+    family: str | Collection[str] | None = None,
+    geo_id: str | Collection[str] | None = None,
+    mesh_id: str | Collection[str] | None = None,
+    run_id: str | Collection[str] | None = None,
+) -> bool:
+    return any(
+        _filter_values(value) is not None
+        for value in (family, geo_id, mesh_id, run_id)
+    )

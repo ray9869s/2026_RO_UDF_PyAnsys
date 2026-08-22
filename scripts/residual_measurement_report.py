@@ -17,8 +17,16 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from ro.manifest import iter_run_manifests
-from ro.paths import data_root, project_root, runs_root
+from ro.manifest import iter_run_manifests, read_run_manifest
+from ro.paths import (
+    any_id_filter,
+    complete_run_identity,
+    data_root,
+    project_root,
+    record_matches_id_filters,
+    require_existing_run,
+    runs_root,
+)
 from ro.residual_transcript import (
     PARSE_OK,
     build_summary_text,
@@ -81,21 +89,46 @@ def default_residual_target() -> float:
 def discover_cases(
     results_root: Path,
     *,
-    geo_name_filter: Optional[str],
-    case_name_filter: Optional[str],
+    family_filter: Optional[str],
+    geo_id_filter: Optional[str],
+    mesh_id_filter: Optional[str],
+    run_id_filter: Optional[str],
     include_hidden: bool,
 ) -> list[tuple[str, str, Path]]:
     cases: list[tuple[str, str, Path]] = []
+    identity = complete_run_identity(
+        family_filter, geo_id_filter, mesh_id_filter, run_id_filter
+    )
+    if identity is not None:
+        directory = require_existing_run(*identity)
+        payload = read_run_manifest(directory)
+        return [(str(payload["geo_id"]), str(payload["run_id"]), directory)]
+
     for manifest_path, payload in iter_run_manifests(
         results_root, include_hidden=include_hidden
     ):
-        geo_id = str(payload["geo_id"])
-        run_id = str(payload["run_id"])
-        if geo_name_filter and geo_id != geo_name_filter:
+        if not record_matches_id_filters(
+            payload,
+            family=family_filter,
+            geo_id=geo_id_filter,
+            mesh_id=mesh_id_filter,
+            run_id=run_id_filter,
+        ):
             continue
-        if case_name_filter and run_id != case_name_filter:
-            continue
-        cases.append((geo_id, run_id, manifest_path.parent))
+        cases.append(
+            (str(payload["geo_id"]), str(payload["run_id"]), manifest_path.parent)
+        )
+    if any_id_filter(
+        family=family_filter,
+        geo_id=geo_id_filter,
+        mesh_id=mesh_id_filter,
+        run_id=run_id_filter,
+    ) and not cases:
+        raise FileNotFoundError(
+            "No run matched "
+            f"family={family_filter!r} geo_id={geo_id_filter!r} "
+            f"mesh_id={mesh_id_filter!r} run_id={run_id_filter!r}."
+        )
     return cases
 
 
@@ -118,8 +151,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Output directory (default: RO_DATA_ROOT/inventory).",
     )
-    parser.add_argument("--geo-name", type=str, default=None)
-    parser.add_argument("--case-name", type=str, default=None)
+    parser.add_argument("--family", type=str, default=None)
+    parser.add_argument("--geo-id", type=str, default=None)
+    parser.add_argument("--mesh-id", type=str, default=None)
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument(
         "--window",
         type=int,
@@ -179,8 +214,10 @@ def run_report(args: argparse.Namespace) -> int:
     output_dir = args.output_dir
     cases = discover_cases(
         results_root,
-        geo_name_filter=args.geo_name,
-        case_name_filter=args.case_name,
+        family_filter=args.family,
+        geo_id_filter=args.geo_id,
+        mesh_id_filter=args.mesh_id,
+        run_id_filter=args.run_id,
         include_hidden=args.include_hidden,
     )
     print(f"Results root : {results_root}")

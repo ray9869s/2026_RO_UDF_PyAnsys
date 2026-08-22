@@ -48,77 +48,76 @@ def test_scripts_have_no_parents_n_project_root_locator(name):
     assert 'PROJECT_ROOT / "03_Results"' not in text
 
 
-def test_field_check_requires_results_dir(field_check):
+def test_field_check_requires_run_selection(field_check):
     cfg = SimpleNamespace(geo_name="Sin_ST", case_name="u0p1_p4M")
-    with pytest.raises(ValueError, match="results_dir"):
+    with pytest.raises(ValueError, match="filename labels only"):
         field_check.get_case_paths(cfg)
 
 
-def test_field_check_uses_config_results_dir(field_check, tmp_path, monkeypatch):
+def test_field_check_uses_config_case_path(field_check, tmp_path, monkeypatch):
     monkeypatch.delenv("PYFLUENT_PROJECT_ROOT", raising=False)
-    results_dir = tmp_path / "runs"
+    case_path = tmp_path / "runs" / "canonical"
     cfg = SimpleNamespace(
         geo_name="Sin_ST",
         case_name="u0p1_p4M",
-        results_dir=results_dir,
+        case_path=case_path,
     )
     paths = field_check.get_case_paths(cfg)
-    assert paths["results_dir"] == results_dir
-    assert paths["case_path"] == results_dir / "Sin_ST" / "u0p1_p4M"
+    assert paths["case_path"] == case_path
     assert paths["project_root"] == REPO_ROOT
 
 
-def test_contour_export_requires_results_dir(contour_export):
+def test_contour_export_requires_run_selection(contour_export):
     cfg = SimpleNamespace(geo_name="Sin_ST", case_name="u0p1_p4M")
-    with pytest.raises(ValueError, match="results_dir"):
+    with pytest.raises(ValueError, match="filename labels only"):
         contour_export.get_case_paths(cfg)
 
 
-def test_contour_export_uses_config_results_dir(contour_export, tmp_path, monkeypatch):
+def test_contour_export_uses_config_case_path(contour_export, tmp_path, monkeypatch):
     monkeypatch.delenv("PYFLUENT_PROJECT_ROOT", raising=False)
-    results_dir = tmp_path / "runs"
+    case_path = tmp_path / "runs" / "canonical"
     cfg = SimpleNamespace(
         geo_name="Sin_ST",
         case_name="u0p1_p4M",
-        results_dir=results_dir,
+        case_path=case_path,
     )
     paths = contour_export.get_case_paths(cfg)
-    assert paths["case_path"] == results_dir / "Sin_ST" / "u0p1_p4M"
+    assert paths["case_path"] == case_path
     assert paths["project_root"] == REPO_ROOT
 
 
-def test_shear_export_requires_results_dir():
+def test_shear_export_requires_run_selection():
     mod = load_shear_export()
     cfg = SimpleNamespace(geo_name="Sin_ST", case_name="u0p1_p4M")
-    with pytest.raises(ValueError, match="results_dir"):
+    with pytest.raises(ValueError, match="filename labels only"):
         mod.get_case_paths(cfg)
 
 
-def test_shear_export_uses_config_results_dir(tmp_path, monkeypatch):
+def test_shear_export_uses_config_case_path(tmp_path, monkeypatch):
     monkeypatch.delenv("PYFLUENT_PROJECT_ROOT", raising=False)
     mod = load_shear_export()
-    results_dir = tmp_path / "runs"
+    case_path = tmp_path / "runs" / "canonical"
     cfg = SimpleNamespace(
         geo_name="Sin_ST",
         case_name="u0p1_p4M",
-        results_dir=results_dir,
+        case_path=case_path,
     )
     paths = mod.get_case_paths(cfg)
-    assert paths["case_path"] == results_dir / "Sin_ST" / "u0p1_p4M"
+    assert paths["case_path"] == case_path
     assert paths["project_root"] == REPO_ROOT
 
 
-def test_extra_figures_requires_results_dir(extra_figures):
-    cfg = {"geo_name": "Sin_ST", "case_name": "u0p1_p4M", "results_dir": None}
-    with pytest.raises(ValueError, match="results_dir"):
+def test_extra_figures_requires_run_selection(extra_figures):
+    cfg = {"geo_name": "Sin_ST", "case_name": "u0p1_p4M"}
+    with pytest.raises(ValueError, match="filename labels only"):
         extra_figures.build_paths(cfg)
 
 
-def test_extra_figures_uses_config_results_dir(extra_figures, tmp_path, monkeypatch):
+def test_extra_figures_uses_config_case_path(extra_figures, tmp_path, monkeypatch):
     monkeypatch.delenv("PYFLUENT_PROJECT_ROOT", raising=False)
-    results_dir = tmp_path / "runs"
+    case_path = tmp_path / "runs" / "canonical"
     paths = extra_figures.build_paths(
-        {"geo_name": "Sin_ST", "case_name": "u0p1_p4M", "results_dir": results_dir}
+        {"geo_name": "Sin_ST", "case_name": "u0p1_p4M", "case_path": case_path}
     )
-    assert paths["case_path"] == results_dir / "Sin_ST" / "u0p1_p4M"
+    assert paths["case_path"] == case_path
     assert paths["project_root"] == REPO_ROOT

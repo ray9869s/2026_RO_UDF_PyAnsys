@@ -87,5 +87,21 @@ def test_builders_form_canonical_hierarchy(monkeypatch, tmp_path):
     assert paths.udfs_dir() == REPO_ROOT / "udfs"
 
 
+def test_require_existing_run_raises_without_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    with pytest.raises(FileNotFoundError, match="No run manifest"):
+        paths.require_existing_run(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+
+
+def test_resolve_selected_run_directory_needs_ids_or_case_path():
+    with pytest.raises(ValueError, match="filename labels only"):
+        paths.resolve_selected_run_directory()
+
+
+def test_resolve_selected_run_directory_uses_case_path(tmp_path):
+    case_path = tmp_path / "explicit-run"
+    assert paths.resolve_selected_run_directory(case_path=case_path) == case_path
+
+
 def test_no_results_root_api():
     assert not hasattr(paths, "results_root")

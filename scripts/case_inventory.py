@@ -23,8 +23,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from ro.manifest import iter_run_manifests
-from ro.paths import data_root, project_root, runs_root
+from ro.manifest import iter_run_manifests, read_run_manifest
+from ro.paths import (
+    any_id_filter,
+    complete_run_identity,
+    data_root,
+    project_root,
+    record_matches_id_filters,
+    require_existing_run,
+    runs_root,
+)
 from ro.solver_common import (
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     max_iterations_from_common_solver_settings,
@@ -418,8 +426,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Directory for inventory outputs (default: RO_DATA_ROOT/inventory).",
     )
-    parser.add_argument("--geo-name", type=str, default=None, help="Optional geometry filter.")
-    parser.add_argument("--case-name", type=str, default=None, help="Optional case-name filter.")
+    parser.add_argument("--family", type=str, default=None, help="Optional family filter.")
+    parser.add_argument("--geo-id", type=str, default=None, help="Optional geo_id filter.")
+    parser.add_argument("--mesh-id", type=str, default=None, help="Optional mesh_id filter.")
+    parser.add_argument("--run-id", type=str, default=None, help="Optional run_id filter.")
     parser.add_argument(
         "--max-iter",
         type=int,
@@ -508,22 +518,51 @@ def convergence_status_from_stop_reason(stop_reason: str) -> str:
 
 def discover_cases(
     results_root: Path,
-    geo_name_filter: Optional[str],
-    case_name_filter: Optional[str],
+    family_filter: Optional[str],
+    geo_id_filter: Optional[str],
+    mesh_id_filter: Optional[str],
+    run_id_filter: Optional[str],
     include_hidden: bool,
     verbose: bool,
 ) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    for manifest_path, payload in iter_run_manifests(
-        results_root, include_hidden=include_hidden
-    ):
+    identity = complete_run_identity(
+        family_filter, geo_id_filter, mesh_id_filter, run_id_filter
+    )
+    if identity is not None:
+        directory = require_existing_run(*identity)
+        manifests = [(directory / "manifest.json", read_run_manifest(directory))]
+    else:
+        manifests = list(
+            iter_run_manifests(results_root, include_hidden=include_hidden)
+        )
+        if any_id_filter(
+            family=family_filter,
+            geo_id=geo_id_filter,
+            mesh_id=mesh_id_filter,
+            run_id=run_id_filter,
+        ):
+            manifests = [
+                item
+                for item in manifests
+                if record_matches_id_filters(
+                    item[1],
+                    family=family_filter,
+                    geo_id=geo_id_filter,
+                    mesh_id=mesh_id_filter,
+                    run_id=run_id_filter,
+                )
+            ]
+            if not manifests:
+                raise FileNotFoundError(
+                    "No run matched "
+                    f"family={family_filter!r} geo_id={geo_id_filter!r} "
+                    f"mesh_id={mesh_id_filter!r} run_id={run_id_filter!r}."
+                )
+
+    for manifest_path, payload in manifests:
         geo_id = str(payload["geo_id"])
         run_id = str(payload["run_id"])
-        if geo_name_filter and geo_id != geo_name_filter:
-            continue
-        if case_name_filter and run_id != case_name_filter:
-            continue
-
         case_dir = manifest_path.parent
         post_dir = case_dir / "post"
         reports_dir = post_dir / "reports"
@@ -1752,6 +1791,10 @@ CASE_INVENTORY_FIELDNAMES = [
 RERUN_FIELDNAMES = [
     "geo_name",
     "case_name",
+    "family",
+    "geo_id",
+    "mesh_id",
+    "run_id",
     "max_iteration_detected",
     "convergence_status",
     "stop_reason",
@@ -1986,15 +2029,19 @@ def run_inventory(args: argparse.Namespace) -> int:
     if args.verbose:
         print(f"Results root : {results_root}")
         print(f"Output dir   : {output_dir}")
-        print(f"Geo filter   : {args.geo_name or '(none)'}")
-        print(f"Case filter  : {args.case_name or '(none)'}")
+        print(f"Family filter: {args.family or '(none)'}")
+        print(f"Geo-id filter: {args.geo_id or '(none)'}")
+        print(f"Mesh-id filter: {args.mesh_id or '(none)'}")
+        print(f"Run-id filter: {args.run_id or '(none)'}")
         print(f"Max iter     : {args.max_iter}")
         print(f"Dry run      : {args.dry_run}")
 
     discovered = discover_cases(
         results_root=results_root,
-        geo_name_filter=args.geo_name,
-        case_name_filter=args.case_name,
+        family_filter=args.family,
+        geo_id_filter=args.geo_id,
+        mesh_id_filter=args.mesh_id,
+        run_id_filter=args.run_id,
         include_hidden=args.include_hidden,
         verbose=args.verbose,
     )

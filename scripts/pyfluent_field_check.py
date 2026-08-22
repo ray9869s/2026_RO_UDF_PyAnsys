@@ -52,7 +52,7 @@ import pandas as pd
 
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
-from ro.paths import project_root  # noqa: E402
+from ro.paths import project_root, resolve_selected_run_directory  # noqa: E402
 from ro.udm_layout import (  # noqa: E402
     expected_udm_fields_from_enum,
     find_case_udf_path,
@@ -200,6 +200,10 @@ def get_case_paths(
     cfg: Any,
     geo_name_override: str | None = None,
     case_name_override: str | None = None,
+    family: str | None = None,
+    geo_id: str | None = None,
+    mesh_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Path | str]:
     project_root = get_project_root(cfg)
 
@@ -211,11 +215,15 @@ def get_case_paths(
     if not case_name:
         raise ValueError("case_name is not defined in config and was not provided by --case-name.")
 
+    case_path = resolve_selected_run_directory(
+        family=family or cfg_get(cfg, "family"),
+        geo_id=geo_id or cfg_get(cfg, "geo_id"),
+        mesh_id=mesh_id or cfg_get(cfg, "mesh_id"),
+        run_id=run_id or cfg_get(cfg, "run_id"),
+        case_path=cfg_get(cfg, "case_path"),
+    )
     results_raw = cfg_get(cfg, "results_dir")
-    if not results_raw:
-        raise ValueError("results_dir is unset. Set it in the post config.")
-    results_dir = as_path(results_raw)
-    case_path = as_path(cfg_get(cfg, "case_path", results_dir / str(geo_name) / str(case_name)))
+    results_dir = as_path(results_raw) if results_raw else case_path.parent
 
     final_case_file = as_path(
         cfg_get(
@@ -861,6 +869,10 @@ def run_field_check(
     config_path: Path,
     geo_name_override: str | None = None,
     case_name_override: str | None = None,
+    family: str | None = None,
+    geo_id: str | None = None,
+    mesh_id: str | None = None,
+    run_id: str | None = None,
     with_fluent: bool = False,
     fail_on_warn: bool = False,
 ) -> int:
@@ -871,6 +883,10 @@ def run_field_check(
         cfg=cfg,
         geo_name_override=geo_name_override,
         case_name_override=case_name_override,
+        family=family,
+        geo_id=geo_id,
+        mesh_id=mesh_id,
+        run_id=run_id,
     )
 
     add_check(records, "config", "config_path", "INFO", "Loaded config.", config_path)
@@ -936,17 +952,41 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--family",
+        type=str,
+        default=None,
+        help="Run family selector (with --geo-id --mesh-id --run-id).",
+    )
+    parser.add_argument(
+        "--geo-id",
+        type=str,
+        default=None,
+        help="geo_id selector.",
+    )
+    parser.add_argument(
+        "--mesh-id",
+        type=str,
+        default=None,
+        help="mesh_id selector.",
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="run_id selector.",
+    )
+    parser.add_argument(
         "--geo-name",
         type=str,
         default=None,
-        help="Override geo_name from config.",
+        help="Override geo_name from config (filename label).",
     )
 
     parser.add_argument(
         "--case-name",
         type=str,
         default=None,
-        help="Override case_name from config.",
+        help="Override case_name from config (filename label).",
     )
 
     parser.add_argument(
@@ -974,6 +1014,10 @@ def main() -> int:
             config_path=config_path,
             geo_name_override=args.geo_name,
             case_name_override=args.case_name,
+            family=args.family,
+            geo_id=args.geo_id,
+            mesh_id=args.mesh_id,
+            run_id=args.run_id,
             with_fluent=args.with_fluent,
             fail_on_warn=args.fail_on_warn,
         )
