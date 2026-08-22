@@ -37,10 +37,10 @@ CFF_SOURCE_TEMPLATE = "template"
 CFF_SOURCE_CASE_SPECIFIC = "case_specific"
 CFF_SOURCE_MISSING = "missing"
 
-REPORT_SCRIPT = SCRIPT_DIR / "01_pyfluent_report_extract.py"
-PYENSIGHT_CONTOUR_SCRIPT = SCRIPT_DIR / "03_pyensight_contour_export.py"
-SHEAR_CONTOUR_SCRIPT = SCRIPT_DIR / "03b_pyfluent_shear_contour_export.py"
-BASE_POST_CONFIG = project_root() / "configs" / "00_post_config.py"
+REPORT_SCRIPT = SCRIPT_DIR / "pyfluent_report_extract.py"
+PYENSIGHT_CONTOUR_SCRIPT = SCRIPT_DIR / "pyensight_contour_export.py"
+SHEAR_CONTOUR_SCRIPT = SCRIPT_DIR / "pyfluent_shear_contour_export.py"
+BASE_POST_CONFIG = project_root() / "configs" / "post_config.py"
 
 STATUS_PLANNED = "PLANNED"
 STATUS_SKIPPED_EXISTING = "SKIPPED_EXISTING"
@@ -195,7 +195,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--shear-export-mode", type=str, default=SHEAR_EXPORT_MODE_AUTO,
         choices=[SHEAR_EXPORT_MODE_AUTO, SHEAR_EXPORT_MODE_NATIVE, SHEAR_EXPORT_MODE_FALLBACK],
         help=(
-            "Passed through to 03b_pyfluent_shear_contour_export.py --shear-export-mode "
+            "Passed through to pyfluent_shear_contour_export.py --shear-export-mode "
             "(default: auto). 'fallback' skips native Fluent graphics entirely."
         ),
     )

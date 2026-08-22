@@ -10,7 +10,7 @@ from helpers import POST_DIR, load_module
 def load_extra_figures():
     return load_module(
         "extra_figures_under_test",
-        POST_DIR / "08_pyensight_extra_figures.py",
+        POST_DIR / "pyensight_extra_figures.py",
     )
 
 

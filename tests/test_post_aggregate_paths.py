@@ -31,7 +31,7 @@ def load_report_extract():
     try:
         return load_module(
             "report_extract_under_test",
-            POST_DIR / "01_pyfluent_report_extract.py",
+            POST_DIR / "pyfluent_report_extract.py",
         )
     finally:
         for name, previous in saved.items():
@@ -55,7 +55,7 @@ def load_summary_figures():
     try:
         return load_module(
             "summary_figures_under_test",
-            POST_DIR / "05_make_summary_figures.py",
+            POST_DIR / "make_summary_figures.py",
         )
     finally:
         for name, previous in saved.items():
@@ -75,13 +75,13 @@ def load_rebuild_ledger():
 @pytest.mark.parametrize(
     "path",
     [
-        CONFIGS_DIR / "00_post_config.py",
-        CONFIGS_DIR / "00_batch_post_config.py",
+        CONFIGS_DIR / "post_config.py",
+        CONFIGS_DIR / "batch_post_config.py",
         CONFIGS_DIR / "run_config.py",
-        SCRIPTS_DIR / "05_make_summary_figures.py",
+        SCRIPTS_DIR / "make_summary_figures.py",
         SCRIPTS_DIR / "rebuild_mesh_ledger_from_logs.py",
-        SCRIPTS_DIR / "01_pyfluent_report_extract.py",
-        SCRIPTS_DIR / "01_batch_report_extract.py",
+        SCRIPTS_DIR / "pyfluent_report_extract.py",
+        SCRIPTS_DIR / "batch_report_extract.py",
     ],
 )
 def test_6a3c_scripts_have_no_parents_n_project_root_locator(path):
@@ -93,7 +93,7 @@ def test_6a3c_scripts_have_no_parents_n_project_root_locator(path):
 
 
 def test_batch_post_config_does_not_declare_aggregate_csv_paths():
-    text = (CONFIGS_DIR / "00_batch_post_config.py").read_text(encoding="utf-8")
+    text = (CONFIGS_DIR / "batch_post_config.py").read_text(encoding="utf-8")
     assert "merged_summary_csv" not in text
     assert "status_csv" not in text
     assert "project_root =" not in text

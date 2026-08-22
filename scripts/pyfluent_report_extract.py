@@ -32,7 +32,7 @@ except Exception:
 # ----------------------------------------------------------
 from ro.paths import project_root  # noqa: E402
 
-DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
 
 from ro.fluent_report_helpers import (  # noqa: E402

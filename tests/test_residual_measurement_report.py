@@ -26,7 +26,7 @@ def residual_mod():
 def report_mod():
     return load_module(
         "residual_measurement_report_under_test",
-        POST_DIR / "09_residual_measurement_report.py",
+        POST_DIR / "residual_measurement_report.py",
     )
 
 
@@ -547,6 +547,6 @@ class TestCliEndToEnd:
         assert "continuity_iter_of_min" in content
         assert "mass_imbalance" not in content
         assert "m_in_is_constant_monitor" in content
-        cli_src = (POST_DIR / "09_residual_measurement_report.py").read_text(encoding="utf-8")
+        cli_src = (POST_DIR / "residual_measurement_report.py").read_text(encoding="utf-8")
         assert "ENDPOINT window" in cli_src
         assert ">=500" in cli_src

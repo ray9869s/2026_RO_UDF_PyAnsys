@@ -25,7 +25,7 @@ differences of 2.7%. The grid-convergence question is closed.
 - Sync is via `git push` / `git pull`. A fix takes effect on the server only
   after the user explicitly pulls, on their schedule.
 - **You cannot run Fluent or EnSight.** Verify only via static analysis,
-  pure-Python tests, and `07 --dry-run` (which the user runs on the server).
+  pure-Python tests, and `batch_solver_rerun --dry-run` (which the user runs on the server).
   Never install, mock-invoke, or simulate Ansys tooling.
 
 ## Cross-platform: tests MUST pass on WSL (Linux) AND the Windows server
@@ -66,7 +66,7 @@ tests that pass on both from the start.
 - **Do not modify** the `.scm` template's computed values, or anything in
   `00_Geometries/`.
 - **Refactor by extraction, not rewrite.** Keep entry-point script names
-  stable (no renames of `07_batch_solver_rerun.py`, `solver_code_*.py`, etc.).
+  stable (no renames of `batch_solver_rerun.py`, `solver_code_*.py`, etc.).
 - Validators are **input-only**: never change behavior for valid inputs, only
   reject genuinely bad input.
 

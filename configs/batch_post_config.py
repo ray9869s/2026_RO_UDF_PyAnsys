@@ -1,7 +1,7 @@
 # ============================================================
 # Batch post-processing control file
 # Edit this file to configure the batch run.
-# This file is read by 01_batch_report_extract.py.
+# This file is read by batch_report_extract.py.
 # ============================================================
 
 # --- Run control flags ---
@@ -17,7 +17,7 @@ WRITE_AGGREGATE_OUTPUTS = False
 
 # --- Paths ---
 # Worker scripts live under scripts/ (post_processing/ flattened in step 7c).
-# Aggregate CSV paths are resolved by 01_batch_report_extract.py under
+# Aggregate CSV paths are resolved by batch_report_extract.py under
 # RO_DATA_ROOT/inventory.
 
 from pathlib import Path
@@ -28,8 +28,8 @@ _here = Path(__file__).resolve().parent
 _scripts_dir = _discover_project_root() / "scripts"
 
 post_processing_dir = str(_scripts_dir)
-single_case_worker = str(_scripts_dir / "01_pyfluent_report_extract.py")
-base_post_config = str(_here / "00_post_config.py")
+single_case_worker = str(_scripts_dir / "pyfluent_report_extract.py")
+base_post_config = str(_here / "post_config.py")
 
 # --- Case definitions ---
 
@@ -51,7 +51,7 @@ outlet_gauge_pressures = [4.0e6, 6.0e6, 8.0e6]
 case_prefix = ""
 
 # --- Explicit post cases (mesh-qualified or custom case names) ---
-# When post_cases is non-empty, 01_batch_report_extract.py processes these
+# When post_cases is non-empty, batch_report_extract.py processes these
 # entries directly instead of generating geometries x velocities x pressures.
 #
 # Each entry may include:

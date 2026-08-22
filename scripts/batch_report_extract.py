@@ -224,7 +224,7 @@ def aggregate_output_paths() -> tuple[Path, Path]:
 # The batch run below executes only when this file is run directly.
 # Importing this module must not run the batch or write any files.
 if __name__ == "__main__":
-    BATCH_CONFIG_PATH = project_root() / "configs" / "00_batch_post_config.py"
+    BATCH_CONFIG_PATH = project_root() / "configs" / "batch_post_config.py"
     bcfg = load_python_config(BATCH_CONFIG_PATH, "batch_post_config")
 
     BASE_CONFIG_PATH = Path(bcfg.base_post_config)
@@ -287,7 +287,7 @@ if __name__ == "__main__":
     merged_summary_csv, status_csv_path = aggregate_output_paths()
 
     # Cross-case aggregate CSVs live under RO_DATA_ROOT/inventory, so writing
-    # them is opt-in (see WRITE_AGGREGATE_OUTPUTS in 00_batch_post_config.py).
+    # them is opt-in (see WRITE_AGGREGATE_OUTPUTS in batch_post_config.py).
     write_aggregate_outputs = getattr(bcfg, "WRITE_AGGREGATE_OUTPUTS", False)
 
 

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-03b_pyfluent_shear_contour_export.py
+pyfluent_shear_contour_export.py
 
 Export a membrane wall shear-rate contour image using PyFluent (Fluent solver).
 
 WHY THIS SCRIPT EXISTS:
   wall-shear is not present in the EnSight variable inventory for this case.
-  03_pyensight_contour_export.py records STATUS_WARN with
+  pyensight_contour_export.py records STATUS_WARN with
   derived_variable_mode="wall_shear_unavailable" when shear_rate is requested.
   This script accesses the Fluent solver directly, where wall-shear is always
   available as a built-in wall boundary result.
@@ -14,7 +14,7 @@ WHY THIS SCRIPT EXISTS:
 Formula:
   wall_shear_rate [1/s] = wall-shear [Pa] / mu [Pa·s]
   - wall-shear : Fluent built-in wall shear stress magnitude
-  - mu         : dynamic viscosity from 00_post_config.py (default 8.93e-4 Pa·s)
+  - mu         : dynamic viscosity from post_config.py (default 8.93e-4 Pa·s)
 
   UDM_5 (cell_strain_rate) is NOT used.  Cell strain rate is NOT used.
   UDM_5 is cell-centered strain rate magnitude and is intentionally not used
@@ -26,16 +26,16 @@ Paths:
   Status JSON:     <figures_dir>/shear_contour_status.json
 
 Usage:
-  python 03b_pyfluent_shear_contour_export.py \\
+  python pyfluent_shear_contour_export.py \\
       --geo-name Diamond_Spacer --case-name u0p2_p6M \\
       --membrane-surface top --background white \\
       --view-margin 1.20 --width 1600 --height 1200
-  python 03b_pyfluent_shear_contour_export.py --dry-run \\
+  python pyfluent_shear_contour_export.py --dry-run \\
       --geo-name Diamond_Spacer --case-name u0p2_p6M
-  python 03b_pyfluent_shear_contour_export.py --membrane-surface both
-  python 03b_pyfluent_shear_contour_export.py --shear-range 0,5000
-  python 03b_pyfluent_shear_contour_export.py --print-cff-manual-steps
-  python 03b_pyfluent_shear_contour_export.py --cff-file C:/path/to/shear_rate.cff
+  python pyfluent_shear_contour_export.py --membrane-surface both
+  python pyfluent_shear_contour_export.py --shear-range 0,5000
+  python pyfluent_shear_contour_export.py --print-cff-manual-steps
+  python pyfluent_shear_contour_export.py --cff-file C:/path/to/shear_rate.cff
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 from ro.paths import project_root
 from ro.shear_cff_mu_guard import emit_scm_mu_guard_message
 
-DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 
 # Fluent CFF and contour object names
 DEFAULT_CFF_NAME = "cff_wall_shear_rate"
@@ -167,9 +167,9 @@ def get_case_paths(
     case_name = case_name_override or str(cfg_get(cfg, "case_name", ""))
 
     if not geo_name or geo_name == "===== Edit here =====":
-        raise ValueError("geo_name is unset. Pass --geo-name or edit 00_post_config.py.")
+        raise ValueError("geo_name is unset. Pass --geo-name or edit post_config.py.")
     if not case_name or case_name == "===== Edit here =====":
-        raise ValueError("case_name is unset. Pass --case-name or edit 00_post_config.py.")
+        raise ValueError("case_name is unset. Pass --case-name or edit post_config.py.")
 
     results_raw = cfg_get(cfg, "results_dir")
     if not results_raw:
@@ -899,9 +899,9 @@ def _default_scene_cleanup_diag(
         "logo_hidden": None,
         "background_used": background,
         "view_margin_used": view_margin,
-        # PyEnSight reference (03_pyensight_contour_export.py::export_contour)
+        # PyEnSight reference (pyensight_contour_export.py::export_contour)
         "pyensight_reference_view_function": (
-            "03_pyensight_contour_export.py:export_contour():"
+            "pyensight_contour_export.py:export_contour():"
             "view_transf.fit(0)+view_transf.zoom(1/margin)"
         ),
         "pyensight_reference_view_summary": (
@@ -1596,7 +1596,7 @@ def setup_fluent_clean_scene(
         if effective_view == "match_pyensight":
             diag["match_pyensight_attempted"] = True
             diag["pyensight_reference_view_function"] = (
-                "03_pyensight_contour_export.py:export_contour():"
+                "pyensight_contour_export.py:export_contour():"
                 "view_transf.fit(0)+view_transf.zoom(1/margin)"
             )
             diag["pyensight_reference_view_summary"] = (
@@ -1828,7 +1828,7 @@ def setup_fluent_clean_scene(
 
 # ---------------------------------------------------------------------------
 # Fluent-native colorbar/legend hiding (--legend-mode) — mirrors the approach
-# taken in 03_pyensight_contour_export.py::hide_legend_annotation, adapted to
+# taken in pyensight_contour_export.py::hide_legend_annotation, adapted to
 # Fluent's settings API. Never allowed to fail the contour export itself.
 # ---------------------------------------------------------------------------
 
@@ -3116,7 +3116,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config", type=str,
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
-        help="Post-processing config path (default: PYFLUENT_POST_CONFIG or <project>/configs/00_post_config.py).",
+        help="Post-processing config path (default: PYFLUENT_POST_CONFIG or <project>/configs/post_config.py).",
     )
     parser.add_argument("--geo-name",  type=str, default=None)
     parser.add_argument("--case-name", type=str, default=None)

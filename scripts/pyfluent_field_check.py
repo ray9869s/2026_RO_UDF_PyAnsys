@@ -1,5 +1,5 @@
 # ==========================================================
-# 02_pyfluent_field_check.py
+# pyfluent_field_check.py
 # Field/report sanity checker for PyFluent post-processing
 # Location: My_CFD_Project/01_Scripts/post_processing/
 # ==========================================================
@@ -16,14 +16,14 @@
 #   - Does NOT launch Fluent.
 #
 # Typical usage:
-#   python My_CFD_Project/01_Scripts/post_processing/02_pyfluent_field_check.py
+#   python My_CFD_Project/01_Scripts/post_processing/pyfluent_field_check.py
 #
 # Optional PyFluent live check:
-#   python My_CFD_Project/01_Scripts/post_processing/02_pyfluent_field_check.py --with-fluent
+#   python My_CFD_Project/01_Scripts/post_processing/pyfluent_field_check.py --with-fluent
 #
 # Config loading:
 #   - Uses PYFLUENT_POST_CONFIG if set.
-#   - Otherwise falls back to <project>/configs/00_post_config.py.
+#   - Otherwise falls back to <project>/configs/post_config.py.
 #
 # Outputs:
 #   03_Results/<geo_name>/<case_name>/post/checks/field_check_summary.csv
@@ -59,7 +59,7 @@ from ro.udm_layout import (  # noqa: E402
     parse_udm_enum_from_c,
 )
 
-DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 
 
 # ----------------------------------------------------------
@@ -932,7 +932,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=str,
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
-        help="Path to post config file. Defaults to PYFLUENT_POST_CONFIG or <project>/configs/00_post_config.py.",
+        help="Path to post config file. Defaults to PYFLUENT_POST_CONFIG or <project>/configs/post_config.py.",
     )
 
     parser.add_argument(

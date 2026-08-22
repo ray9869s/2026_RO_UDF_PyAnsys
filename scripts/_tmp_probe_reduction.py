@@ -650,7 +650,7 @@ def main():
                 if not clip_ready:
                     try:
                         # Uses solver.execute_tui — same helper style as
-                        # solver_code_260616.py / 07_batch_solver_rerun.py.
+                        # solver_code_260616.py / batch_solver_rerun.py.
                         try_create_iso_clip_tui(
                             solver,
                             clip_name,

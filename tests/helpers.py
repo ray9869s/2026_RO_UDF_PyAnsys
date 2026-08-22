@@ -63,19 +63,19 @@ def load_solver_code(module_name: str = "solver_code_under_test") -> ModuleType:
 
 
 def load_batch_report_extract() -> ModuleType:
-    return load_module("batch_report_extract_under_test", POST_DIR / "01_batch_report_extract.py")
+    return load_module("batch_report_extract_under_test", POST_DIR / "batch_report_extract.py")
 
 
 def load_batch_postprocess() -> ModuleType:
-    return load_module("batch_postprocess_under_test", POST_DIR / "06_batch_postprocess_all_cases.py")
+    return load_module("batch_postprocess_under_test", POST_DIR / "batch_postprocess_all_cases.py")
 
 
 def load_case_inventory() -> ModuleType:
-    return load_module("case_inventory_under_test", POST_DIR / "00_case_inventory.py")
+    return load_module("case_inventory_under_test", POST_DIR / "case_inventory.py")
 
 
 def load_post_config() -> ModuleType:
-    return load_module("post_config_under_test", CONFIGS_DIR / "00_post_config.py")
+    return load_module("post_config_under_test", CONFIGS_DIR / "post_config.py")
 
 
 def apply_json_overrides(cfg: ModuleType, overrides: dict) -> None:

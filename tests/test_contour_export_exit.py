@@ -8,7 +8,7 @@ from helpers import POST_DIR, load_module
 def load_contour_export():
     return load_module(
         "contour_export_under_test",
-        POST_DIR / "03_pyensight_contour_export.py",
+        POST_DIR / "pyensight_contour_export.py",
     )
 
 

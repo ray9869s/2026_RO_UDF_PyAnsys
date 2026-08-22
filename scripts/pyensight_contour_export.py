@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-03_pyensight_contour_export.py
+pyensight_contour_export.py
 
 Export presentation-quality contour images from a solved Fluent case using
 PyEnSight (ansys.pyensight.core v0.11+, EnSight 25.1).
@@ -15,11 +15,11 @@ Fields exported (membrane wall unless noted):
   velocity_midplane- velocity-magnitude on best-available plane/fluid surface
 
 Usage:
-  python 03_pyensight_contour_export.py --geo-name Diamond_Spacer --case-name u0p2_p6M
-  python 03_pyensight_contour_export.py --dry-run --fields cp_inlet,water_flux,lmh,salt_flux,shear_rate
-  python 03_pyensight_contour_export.py --cp-range 1.00,1.15 --lmh-range 20,30
-  python 03_pyensight_contour_export.py --auto-range --membrane-surface both
-  python 03_pyensight_contour_export.py --skip-existing --image-width 2560 --image-height 1440
+  python pyensight_contour_export.py --geo-name Diamond_Spacer --case-name u0p2_p6M
+  python pyensight_contour_export.py --dry-run --fields cp_inlet,water_flux,lmh,salt_flux,shear_rate
+  python pyensight_contour_export.py --cp-range 1.00,1.15 --lmh-range 20,30
+  python pyensight_contour_export.py --auto-range --membrane-surface both
+  python pyensight_contour_export.py --skip-existing --image-width 2560 --image-height 1440
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ except ImportError as _exc:
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = project_root() / "configs" / "00_post_config.py"
+DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
 # ---------------------------------------------------------------------------
@@ -391,9 +391,9 @@ def get_case_paths(
     case_name = case_name_override or str(cfg_get(cfg, "case_name", ""))
 
     if not geo_name or geo_name == "===== Edit here =====":
-        raise ValueError("geo_name is unset. Pass --geo-name or edit 00_post_config.py.")
+        raise ValueError("geo_name is unset. Pass --geo-name or edit post_config.py.")
     if not case_name or case_name == "===== Edit here =====":
-        raise ValueError("case_name is unset. Pass --case-name or edit 00_post_config.py.")
+        raise ValueError("case_name is unset. Pass --case-name or edit post_config.py.")
 
     results_raw = cfg_get(cfg, "results_dir")
     if not results_raw:
@@ -465,11 +465,11 @@ def parse_args() -> argparse.Namespace:
             "  wall_shear_rate:   auto\n"
             "  velocity_midplane: 0.0  - 0.7\n\n"
             "Examples:\n"
-            "  python 03_pyensight_contour_export.py "
+            "  python pyensight_contour_export.py "
             "--geo-name Diamond_Spacer --case-name u0p2_p6M\n"
-            "  python 03_pyensight_contour_export.py --dry-run "
+            "  python pyensight_contour_export.py --dry-run "
             "--fields cp_inlet,water_flux,lmh,salt_flux,shear_rate\n"
-            "  python 03_pyensight_contour_export.py "
+            "  python pyensight_contour_export.py "
             "--cp-range 1.00,1.15 --membrane-surface top\n"
         ),
     )
@@ -478,7 +478,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config", type=str,
         default=os.environ.get(CONFIG_ENV_VAR, str(DEFAULT_CONFIG_PATH)),
-        help=f"Post-processing config Python file. Defaults to ${CONFIG_ENV_VAR} or <project>/configs/00_post_config.py.",
+        help=f"Post-processing config Python file. Defaults to ${CONFIG_ENV_VAR} or <project>/configs/post_config.py.",
     )
     parser.add_argument("--geo-name", type=str, default=None, help="Override geo_name from config.")
     parser.add_argument("--case-name", type=str, default=None, help="Override case_name from config.")
@@ -3360,7 +3360,7 @@ def _read_pyfluent_bulk_center_avg(
     """Read c_bulk_center_area_avg from the PyFluent summary_metrics_wide.csv.
 
     Returns (value, units_or_type, diag). value is None when unavailable.
-    units_or_type is 'mass_fraction' or 'molar_mol_m3' as written by 01_pyfluent_report_extract.py.
+    units_or_type is 'mass_fraction' or 'molar_mol_m3' as written by pyfluent_report_extract.py.
     """
     import csv as _csv
 
@@ -3671,7 +3671,7 @@ def export_contour(
                 STATUS_WARN, surface_desc,
                 f"Wall shear stress not found in EnSight inventory (candidates: {var_candidates}). "
                 f"EnSight variable inventory written to: {_inv_written}. "
-                "Use 03b_pyfluent_shear_contour_export.py to export shear_rate via PyFluent (wall-shear / mu)."
+                "Use pyfluent_shear_contour_export.py to export shear_rate via PyFluent (wall-shear / mu)."
             )
         else:
             _record(

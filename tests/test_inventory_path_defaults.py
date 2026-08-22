@@ -14,9 +14,9 @@ from helpers import (
 
 
 CWD_BUG_SCRIPTS = (
-    "00_case_inventory.py",
-    "06_batch_postprocess_all_cases.py",
-    "09_residual_measurement_report.py",
+    "case_inventory.py",
+    "batch_postprocess_all_cases.py",
+    "residual_measurement_report.py",
 )
 
 
@@ -34,7 +34,7 @@ def batch_post():
 def residual_report():
     return load_module(
         "residual_measurement_report_under_test",
-        POST_DIR / "09_residual_measurement_report.py",
+        POST_DIR / "residual_measurement_report.py",
     )
 
 
@@ -47,8 +47,8 @@ def test_scripts_do_not_use_cwd_relative_results_defaults(name):
 
 def test_inventory_and_residual_load_batch_config_from_configs_dir():
     expected = 'project_root() / "configs" / "batch_config.py"'
-    inventory = (POST_DIR / "00_case_inventory.py").read_text(encoding="utf-8")
-    residual = (POST_DIR / "09_residual_measurement_report.py").read_text(
+    inventory = (POST_DIR / "case_inventory.py").read_text(encoding="utf-8")
+    residual = (POST_DIR / "residual_measurement_report.py").read_text(
         encoding="utf-8"
     )
     assert expected in inventory
@@ -141,12 +141,12 @@ def test_batch_post_resolves_inventory_under_data_root(
 def rerun07():
     return load_module(
         "batch_solver_rerun_inventory_defaults",
-        SCRIPTS_DIR / "07_batch_solver_rerun.py",
+        SCRIPTS_DIR / "batch_solver_rerun.py",
     )
 
 
 def test_07_script_has_no_legacy_results_root_default():
-    text = (SCRIPTS_DIR / "07_batch_solver_rerun.py").read_text(encoding="utf-8")
+    text = (SCRIPTS_DIR / "batch_solver_rerun.py").read_text(encoding="utf-8")
     assert "DEFAULT_RESULTS_ROOT" not in text
     assert "PROJECT_ROOT" not in text
     assert ' / "03_Results"' not in text

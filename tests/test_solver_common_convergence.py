@@ -338,7 +338,7 @@ def common():
 
 @pytest.fixture(scope="module")
 def rerun07():
-    return load_module("batch_solver_rerun_under_test", SCRIPTS_DIR / "07_batch_solver_rerun.py")
+    return load_module("batch_solver_rerun_under_test", SCRIPTS_DIR / "batch_solver_rerun.py")
 
 
 class TestBlendingRampValuesParity:

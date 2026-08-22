@@ -91,7 +91,7 @@ def build_fluent_path_golden_inputs() -> list[tuple[str, Path | str]]:
     inputs.append(
         (
             "DEFAULT_REPORT_SCRIPT",
-            SCRIPTS_DIR / "01_pyfluent_report_extract.py",
+            SCRIPTS_DIR / "pyfluent_report_extract.py",
         )
     )
     inputs.append(("PROJECT_ROOT/03_Results", RESULTS_ROOT))
@@ -133,7 +133,7 @@ def common():
 
 @pytest.fixture(scope="module")
 def rerun07():
-    return load_module("batch_solver_rerun_path_parity", SCRIPTS_DIR / "07_batch_solver_rerun.py")
+    return load_module("batch_solver_rerun_path_parity", SCRIPTS_DIR / "batch_solver_rerun.py")
 
 
 class TestFinalPairForCaseParity:
@@ -230,7 +230,7 @@ class TestRejectWindowsDriveWrapper:
         "/data/PyFluent/My_CFD_Project/03_Results/_inventory/active_solver_rerun_candidates.csv",
         "/data/PyFluent/My_CFD_Project/03_Results/_inventory/solver_rerun",
         "/data/PyFluent/My_CFD_Project/03_Results/_inventory/solver_rerun_logs",
-        "/data/PyFluent/My_CFD_Project/01_Scripts/post_processing/01_pyfluent_report_extract.py",
+        "/data/PyFluent/My_CFD_Project/01_Scripts/post_processing/pyfluent_report_extract.py",
     ]
 
     @pytest.mark.parametrize(

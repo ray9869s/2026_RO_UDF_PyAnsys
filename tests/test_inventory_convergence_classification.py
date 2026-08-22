@@ -1,7 +1,7 @@
 """Characterization tests for inventory convergence classification (F-02 / F-02c).
 
 parse_logs() is the pure function behind detect_logs_and_convergence() in
-00_case_inventory.py. These tests avoid filesystem scans and Ansys imports.
+case_inventory.py. These tests avoid filesystem scans and Ansys imports.
 
 Max-iter default resolution is tested against injected common_solver_settings
 (and optional tmp batch_config files), not against whatever live batch_config.py

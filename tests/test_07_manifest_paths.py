@@ -23,7 +23,7 @@ CASE_NAME = "u0p2_p6M__mesh_max085_min006_cpg5_bl4"
 def rerun07():
     return load_module(
         "batch_solver_rerun_manifest_paths",
-        SCRIPTS_DIR / "07_batch_solver_rerun.py",
+        SCRIPTS_DIR / "batch_solver_rerun.py",
     )
 
 

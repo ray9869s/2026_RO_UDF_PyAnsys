@@ -416,7 +416,7 @@ def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, o
     if layout.n_buffer_in == layout.n_buffer_out:
         values["n_buffer_cells_each_end"] = layout.n_buffer_in
     else:
-        # Clear stale symmetric key from 00_post_config; do not invent a fake.
+        # Clear stale symmetric key from post_config; do not invent a fake.
         values["n_buffer_cells_each_end"] = None
     return values
 

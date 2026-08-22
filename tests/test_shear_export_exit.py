@@ -25,7 +25,7 @@ def load_shear_export():
     try:
         return load_module(
             "shear_export_under_test",
-            POST_DIR / "03b_pyfluent_shear_contour_export.py",
+            POST_DIR / "pyfluent_shear_contour_export.py",
         )
     finally:
         for name, previous in saved.items():

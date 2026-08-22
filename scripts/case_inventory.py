@@ -1441,12 +1441,12 @@ def suggested_action(record: dict[str, Any]) -> str:
             return (
                 "Basic PyEnSight contours are complete; the shear stage crashed during "
                 "post-processing graphics (not a solver failure). Rerun "
-                "03b_pyfluent_shear_contour_export.py with --shear-export-mode fallback "
-                "(or 06_batch_postprocess_all_cases.py --retry-shear-fallback-on-failure)."
+                "pyfluent_shear_contour_export.py with --shear-export-mode fallback "
+                "(or batch_postprocess_all_cases.py --retry-shear-fallback-on-failure)."
             )
         return (
             "Basic PyEnSight contours are complete; shear contour export is missing or "
-            "failed. Rerun 03b_pyfluent_shear_contour_export.py "
+            "failed. Rerun pyfluent_shear_contour_export.py "
             "(--shear-export-mode fallback avoids native Fluent graphics)."
         )
     if record.get("convergence_status") == MAX_ITER_REACHED:

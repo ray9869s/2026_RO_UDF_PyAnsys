@@ -13,7 +13,7 @@
 # post-processing keys and the current code derives spacer_x_in/out from a
 # single symmetric buffer_length_m, which cannot express this domain
 # (1 inlet buffer cell, 2 outlet buffer cells). Setting them would produce a
-# wrong pressure-drop baseline. Handle it in 00_post_config.py later.
+# wrong pressure-drop baseline. Handle it in post_config.py later.
 #
 # Mesh lists left empty so this file cannot accidentally trigger a remesh.
 

@@ -1,6 +1,6 @@
 """Pure helpers: parse Fluent solve residual tables and measure window stats.
 
-SAFE — no PyFluent / Fluent. Used by 09_residual_measurement_report.py.
+SAFE — no PyFluent / Fluent. Used by residual_measurement_report.py.
 Does not change convergence_status or case_status.
 """
 from __future__ import annotations

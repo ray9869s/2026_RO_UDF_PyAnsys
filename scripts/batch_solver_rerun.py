@@ -40,7 +40,7 @@ from ro.solver_common import (
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_REPORT_SCRIPT = SCRIPT_DIR / "01_pyfluent_report_extract.py"
+DEFAULT_REPORT_SCRIPT = SCRIPT_DIR / "pyfluent_report_extract.py"
 
 PLAN_FIELDS = [
     "selected_index",

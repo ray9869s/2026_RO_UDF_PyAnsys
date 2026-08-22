@@ -1,5 +1,5 @@
 # ==========================================================
-# 05_make_summary_figures.py
+# make_summary_figures.py
 # Presentation-ready comparison tables and figures for
 # geometry performance comparison.
 #
@@ -13,7 +13,7 @@
 # Does NOT launch Fluent or modify any existing CSVs.
 #
 # Usage (from project root):
-#   python My_CFD_Project/01_Scripts/post_processing/05_make_summary_figures.py
+#   python My_CFD_Project/01_Scripts/post_processing/make_summary_figures.py
 # ==========================================================
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def load_summary(path: Path) -> pd.DataFrame:
     if not path.is_file():
         sys.exit(
             f"\nERROR: Summary CSV not found:\n  {path}\n"
-            "Run 01_batch_report_extract.py first to produce this file."
+            "Run batch_report_extract.py first to produce this file."
         )
     df = pd.read_csv(path, encoding="utf-8-sig")
     return df
@@ -143,7 +143,7 @@ def filter_valid_cases(
     else:
         sys.exit(
             "\nERROR: 'use_for_final_comparison' column not found in summary CSV.\n"
-            "This column is written by 01_batch_report_extract.py — "
+            "This column is written by batch_report_extract.py — "
             "check that the correct merged file is being read."
         )
 

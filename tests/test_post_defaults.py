@@ -9,11 +9,11 @@ BATCH_POST_DEFAULT_FIELDS = "cp_inlet,water_flux,lmh,salt_flux"
 
 
 def load_contour_export():
-    return load_module("contour_export_under_test", POST_DIR / "03_pyensight_contour_export.py")
+    return load_module("contour_export_under_test", POST_DIR / "pyensight_contour_export.py")
 
 
 def load_batch_postprocess():
-    return load_module("batch_postprocess_under_test", POST_DIR / "06_batch_postprocess_all_cases.py")
+    return load_module("batch_postprocess_under_test", POST_DIR / "batch_postprocess_all_cases.py")
 
 
 def test_contour_default_fields_match_inventory_basic_set():

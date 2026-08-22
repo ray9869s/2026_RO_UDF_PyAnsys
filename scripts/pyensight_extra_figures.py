@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-08_pyensight_extra_figures.py
+pyensight_extra_figures.py
 
 Optional, standalone PyEnSight script that exports extra presentation figures
 for fouling/mixing analysis from ONE solved final case:
@@ -57,10 +57,10 @@ It only ever writes PNG images under:
     presentation_{slices,vortex,colorbars}/         (presentation mode)
 
 Usage:
-  python 08_pyensight_extra_figures.py                       # dry run (default)
-  python 08_pyensight_extra_figures.py --geo-name Diamond_Spacer --case-name u0p2_p6M --run
+  python pyensight_extra_figures.py                       # dry run (default)
+  python pyensight_extra_figures.py --geo-name Diamond_Spacer --case-name u0p2_p6M --run
   PYFLUENT_EXTRA_FIGURES_OVERRIDES='{"geo_name":"Diamond_Spacer","case_name":"u0p2_p6M","dry_run":false}' \
-      python 08_pyensight_extra_figures.py
+      python pyensight_extra_figures.py
 """
 from __future__ import annotations
 
@@ -486,7 +486,7 @@ def build_paths(cfg: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Small shared helpers (same conventions as 03_pyensight_contour_export.py)
+# Small shared helpers (same conventions as pyensight_contour_export.py)
 # ---------------------------------------------------------------------------
 
 def _normalize(name: str) -> str:
@@ -669,7 +669,7 @@ def print_variable_inventory(session: Any) -> None:
 
 # ---------------------------------------------------------------------------
 # Part extents (bounding box) — compact multi-API attempt, same layouts as
-# 03_pyensight_contour_export.py accepts
+# pyensight_contour_export.py accepts
 # ---------------------------------------------------------------------------
 
 _BOUNDS_ATTEMPTS: List[Tuple[str, str]] = [
@@ -971,7 +971,7 @@ def set_view(session: Any, direction: Tuple[float, float, float],
     except Exception as exc:
         print(f"WARNING: view fit failed: {exc}")
     if fit_margin and fit_margin > 0.0:
-        # Server testing of 03_pyensight_contour_export.py empirically
+        # Server testing of pyensight_contour_export.py empirically
         # confirmed that on this EnSight build view_transf.zoom(v) zooms OUT
         # for v > 1 — so 1.0 + margin adds whitespace around the fitted view.
         try:

@@ -110,7 +110,7 @@ AREA_MEM_FALLBACK_BY_GEO = {
     "D2450_a45_7c_brg110": 1.5766e-04,
 }
 
-# UDM field names — copied from 01_pyfluent_report_extract.py / UDF enum.
+# UDM field names — copied from pyfluent_report_extract.py / UDF enum.
 # udm-6 = Jw [m/s] (water flux); udm-8 = Jw in LMH; udm-0 = salt mass source
 # (volumetric sink) — NOT used for membrane flux averages.
 FIELD_UDM_JW = "udm-6"
@@ -120,7 +120,7 @@ FIELD_UDM_SI = "udm-0"  # salt sink — listed only to document exclusion
 FIELD_SALT_MASS_FRACTION = "nacl"
 FIELD_PRESSURE = "pressure"
 
-# LMH conversion used by 01_pyfluent_report_extract.py for mass-balance LMH:
+# LMH conversion used by pyfluent_report_extract.py for mass-balance LMH:
 #   lmh_definition = f"abs(pp_m_in + pp_m_out) / ({rho} * pp_area_mem) * 3.6e6"
 # UDF uses the same factor: MS_TO_LMH = 3600000.0 (= 3.6e6).
 MS_TO_LMH = 3.6e6
@@ -143,7 +143,7 @@ def as_fluent_path(path):
 
 def zone_matches_base_name(zone_name, base_name):
     """Return True for base, base.1, base.2, ... zone naming."""
-    # Copied from solver_code_260616.py / 01_pyfluent_report_extract.py.
+    # Copied from solver_code_260616.py / pyfluent_report_extract.py.
     return zone_name == base_name or zone_name.startswith(base_name + ".")
 
 
@@ -172,7 +172,7 @@ def find_zones_by_base_names(zone_names, base_names):
 
 def collect_boundary_zones(setup):
     """Collect boundary zone names grouped by boundary type."""
-    # Copied from 01_pyfluent_report_extract.py.
+    # Copied from pyfluent_report_extract.py.
     boundary_type_names = [
         "velocity_inlet",
         "pressure_outlet",
@@ -608,7 +608,7 @@ def main():
     print(
         f"  LMH UDM        = {FIELD_UDM_LMH!r} (UDF UDM_LMH = Jw * MS_TO_LMH; "
         f"MS_TO_LMH = {MS_TO_LMH} matches "
-        "01_pyfluent_report_extract.py '* 3.6e6')"
+        "pyfluent_report_extract.py '* 3.6e6')"
     )
     print(
         f"  CP inlet UDM   = {FIELD_UDM_CP_INLET!r} "

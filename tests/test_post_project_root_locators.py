@@ -11,23 +11,23 @@ from test_shear_export_exit import load_shear_export
 
 
 LOCATOR_SCRIPTS = (
-    "02_pyfluent_field_check.py",
-    "03_pyensight_contour_export.py",
-    "03b_pyfluent_shear_contour_export.py",
-    "08_pyensight_extra_figures.py",
+    "pyfluent_field_check.py",
+    "pyensight_contour_export.py",
+    "pyfluent_shear_contour_export.py",
+    "pyensight_extra_figures.py",
 )
 
 
 @pytest.fixture
 def field_check():
-    return load_module("field_check_under_test", POST_DIR / "02_pyfluent_field_check.py")
+    return load_module("field_check_under_test", POST_DIR / "pyfluent_field_check.py")
 
 
 @pytest.fixture
 def contour_export():
     return load_module(
         "contour_export_under_test",
-        POST_DIR / "03_pyensight_contour_export.py",
+        POST_DIR / "pyensight_contour_export.py",
     )
 
 
@@ -35,7 +35,7 @@ def contour_export():
 def extra_figures():
     return load_module(
         "extra_figures_under_test",
-        POST_DIR / "08_pyensight_extra_figures.py",
+        POST_DIR / "pyensight_extra_figures.py",
     )
 
 

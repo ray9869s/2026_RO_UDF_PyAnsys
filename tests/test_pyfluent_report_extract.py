@@ -264,7 +264,7 @@ def test_contour_reader_prefers_explicit_bulk_concentration_units(tmp_path):
     )
     contour = load_module(
         "contour_explicit_bulk_units",
-        POST_DIR / "03_pyensight_contour_export.py",
+        POST_DIR / "pyensight_contour_export.py",
     )
 
     value, units, diagnostic = contour._read_pyfluent_bulk_center_avg(
