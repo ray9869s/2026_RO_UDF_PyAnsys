@@ -17,22 +17,14 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-_SCRIPTS_DIR = SCRIPT_DIR.parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from ro.residual_transcript import (  # noqa: E402
+from ro.residual_transcript import (
     PARSE_OK,
     build_summary_text,
     measure_case_dir,
     write_measurement_csv,
 )
-from ro.paths import data_root, project_root, runs_root  # noqa: E402
-from ro.solver_common import (  # noqa: E402
+from ro.paths import data_root, project_root, runs_root
+from ro.solver_common import (
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     DEFAULT_RESIDUAL_TARGET_FALLBACK,
     max_iterations_from_common_solver_settings,

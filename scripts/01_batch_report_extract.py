@@ -7,16 +7,11 @@ from pathlib import Path
 
 import pandas as pd
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_SCRIPTS_DIR = _SCRIPT_DIR.parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from ro.domain_layout import (  # noqa: E402
+from ro.domain_layout import (
     layout_post_config_values,
     resolve_mesh_case_name,
 )
-from ro.paths import data_root, project_root, runs_root  # noqa: E402
+from ro.paths import data_root, project_root, runs_root
 
 
 # ============================================================

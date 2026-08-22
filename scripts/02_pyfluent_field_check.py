@@ -38,7 +38,6 @@ import json
 import math
 import os
 import platform
-import sys
 import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -51,12 +50,7 @@ import pandas as pd
 # Paths and config defaults
 # ----------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
-
-_SCRIPTS_DIR = SCRIPT_DIR.parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from ro.paths import project_root  # noqa: E402
 from ro.udm_layout import (  # noqa: E402
