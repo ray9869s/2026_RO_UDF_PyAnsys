@@ -27,11 +27,9 @@ wrong.
 ``(n_sacrificial, n_evaluation)`` so the same window remains valid when
 ``n_active`` changes; a fixed evaluation count would become invalid.
 
-The registry is keyed by ``(geo_name, mesh_case_name)``. Geo alone is
-insufficient: every legacy family has both 3-cell (x extent 0.010395 m) and
-5-cell (0.017325 m) meshes. Only 5-cell, 10-cell, and the 30-cell D0817
-diagnostic with a known buffer/active split are registered; 3-cell meshes
-stay LAYOUT_UNKNOWN.
+Layout for a live mesh comes only from that mesh's ``manifest.json`` via
+:func:`layout_from_mesh_manifest`. Name-keyed lookup is gone;
+:func:`resolve_layout` raises rather than guessing 1+3+1.
 """
 
 from __future__ import annotations
@@ -40,7 +38,9 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Mapping, Optional
+from typing import Optional
+
+from ro.manifest import read_mesh_manifest
 
 # Constants harvested from mesh_ledger.csv (legacy + current 10-cell families
 # share this cell length) and from CURRENT / LEGACY buffer-active splits.
@@ -61,8 +61,6 @@ CURRENT_BUFFER_WALL_BASE_NAMES = (
     "wall_bottom_buffer_out",
 )
 
-_MATRIX_BASE_TAIL_RE = re.compile(r"^(?P<mesh>.+)_(?P<base>u\d+p\d+_p\d+M)$")
-_MATRIX_BASE_ONLY_RE = re.compile(r"^u\d+p\d+_p\d+M$")
 # Mesh identity comes from .msh.h5 paths only (.cas.h5 / .dat.h5 are ignored).
 # Real Fluent mesh-replace logs always read the template .cas.h5 first, then the
 # mesh; quoted paths may wrap across lines with indented continuations.
@@ -70,14 +68,6 @@ _MSH_H5_QUOTED_PATH_RE = re.compile(
     r'"(?P<path>[^"]+\.msh\.h5)"',
     re.IGNORECASE,
 )
-# Trailing case-dir noise that is never part of a mesh_case_name.
-_TRAILING_CASE_NOISE_RE = re.compile(
-    r"(?:_BAD_UNSTABLE|_BAD_HIGH_CONT_OLD|"
-    r"_rerun_attempt_[0-9]+|_attempt_[0-9]+(?:_[0-9]+)*)+$"
-)
-
-MESH_RESOLUTION_LOG = "log"
-MESH_RESOLUTION_NAME = "name"
 _FLOAT_TOKEN = r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
 # Solver mesh-replace / transcript block: header "Domain Extents:" and each
 # axis line MUST carry an explicit "(m)" unit marker. Values are already metres.
@@ -242,7 +232,7 @@ class EvaluationWindow:
 
 @dataclass(frozen=True)
 class GeometryLayoutRecord:
-    """Layout plus wall base names and evaluation window for one (geo, mesh) pair."""
+    """Layout plus wall base names and evaluation window from a mesh manifest."""
 
     layout: DomainLayout
     membrane_wall_base_names: tuple[str, ...]
@@ -292,104 +282,43 @@ LEGACY_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=1, n_trail_excluded=
 CURRENT_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
 D0817_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
 
-_LEGACY_RECORD = GeometryLayoutRecord(
-    layout=LEGACY_LAYOUT,
-    membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
-    buffer_wall_base_names=LEGACY_BUFFER_WALL_BASE_NAMES,
-    evaluation_window=LEGACY_EVALUATION_WINDOW,
-)
-_CURRENT_RECORD = GeometryLayoutRecord(
-    layout=CURRENT_LAYOUT,
-    membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
-    buffer_wall_base_names=CURRENT_BUFFER_WALL_BASE_NAMES,
-    evaluation_window=CURRENT_EVALUATION_WINDOW,
-)
-_D0817_RECORD = GeometryLayoutRecord(
-    layout=D0817_LAYOUT,
-    membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
-    buffer_wall_base_names=CURRENT_BUFFER_WALL_BASE_NAMES,
-    evaluation_window=D0817_EVALUATION_WINDOW,
-)
+def layout_from_mesh_manifest(mesh_directory: Path) -> GeometryLayoutRecord:
+    """Build a layout record from ``mesh_directory/manifest.json``.
 
-# 5-cell generation (1 + 3 + 1), extent 0.017325 m — from mesh_ledger.csv.
-# 3-cell meshes (extent 0.010395 m) are intentionally NOT registered: their
-# buffer/active split is recorded nowhere, and no 3-cell case has ever been
-# successfully post-processed. They remain LAYOUT_UNKNOWN.
-_LEGACY_5CELL_PAIRS: tuple[tuple[str, str], ...] = (
-    ("Diamond_Spacer", "260615_u0p2_p6M"),
-    ("Diamond_Spacer", "mesh_max085_min005_cpg5_bl4"),
-    ("Diamond_Spacer", "mesh_max085_min006_cpg5_bl4"),
-    ("Empty", "260616_u0p2_p6M"),
-    ("Empty", "mesh_max085_min005_cpg5_bl4"),
-    ("Empty", "mesh_max085_min006_cpg5_bl4"),
-    ("Hole_Pillar", "mesh_max085_min005_cpg5_bl4"),
-    ("Hole_Pillar", "mesh_max085_min006_cpg5_bl4"),
-    ("Multi_Layer_diff", "mesh_max085_min005_cpg5_bl3"),
-    ("Multi_Layer_equal", "mesh_max085_min005_cpg5_bl3"),
-    ("Multi_Layer_equal", "mesh_max085_min005_cpg5_bl4"),
-    ("Pillar", "mesh_max085_min005_cpg5_bl4"),
-    ("Pillar", "mesh_max085_min006_cpg5_bl4"),
-    ("Sin_SL", "mesh_max085_min005_cpg5_bl4"),
-    ("Sin_SL", "mesh_max085_min006_cpg5_bl4"),
-    ("Sin_SL", "mesh_max100_min006_cpg3_bl3"),
-    ("Sin_SL", "mesh_max100_min006_cpg5_bl4"),
-    ("Sin_ST", "mesh_max085_min005_cpg5_bl4"),
-    ("Sin_ST", "mesh_max085_min006_cpg5_bl4"),
-    ("Sin_ST", "mesh_max100_min006_cpg3_bl3"),
-    ("Sin_ST", "mesh_max100_min006_cpg5_bl4"),
-    ("Diamond_ov020", "mesh_max085_min006_cpg5_bl4"),
-    ("Diamond_ov020", "mesh_max085_min006_cpg7_bl4"),
-)
-
-# 10-cell generation (1 + 7 + 2), extent 0.03465 m.
-_CURRENT_10CELL_PAIRS: tuple[tuple[str, str], ...] = (
-    ("D2450_a45_7c_brg110", "mesh_max085_min006_cpg5_bl4"),
-    ("D2450_a45_ov060", "mesh_max085_min006_cpg5_bl4"),
-)
-
-# 30-cell entrance-decay diagnostic (3 + 21 + 6) at cell pitch 0.001155 m.
-# Same physical extent / buffer lengths as D2450_a45_7c_brg110; not production.
-_D0817_30CELL_PAIRS: tuple[tuple[str, str], ...] = (
-    ("D0817_a45_21c_brg110", "mesh_max085_min006_cpg5_bl4"),
-)
-
-
-def _build_geometry_layout_registry() -> dict[tuple[str, str], GeometryLayoutRecord]:
-    registry: dict[tuple[str, str], GeometryLayoutRecord] = {}
-    for geo_name, mesh_case_name in _LEGACY_5CELL_PAIRS:
-        registry[(geo_name, mesh_case_name)] = _LEGACY_RECORD
-    for geo_name, mesh_case_name in _CURRENT_10CELL_PAIRS:
-        registry[(geo_name, mesh_case_name)] = _CURRENT_RECORD
-    for geo_name, mesh_case_name in _D0817_30CELL_PAIRS:
-        registry[(geo_name, mesh_case_name)] = _D0817_RECORD
-    return registry
-
-
-GEOMETRY_LAYOUT_REGISTRY: Mapping[tuple[str, str], GeometryLayoutRecord] = (
-    _build_geometry_layout_registry()
-)
+    The mesh manifest is the only source of layout. Missing or invalid JSON
+    raises :class:`ro.manifest.ManifestError` via :func:`read_mesh_manifest`.
+    """
+    payload = read_mesh_manifest(mesh_directory)
+    layout = DomainLayout(
+        n_buffer_in=int(payload["n_buffer_in"]),
+        n_active=int(payload["n_active_cells"]),
+        n_buffer_out=int(payload["n_buffer_out"]),
+        cell_length_x_m=float(payload["cell_length_x_m"]),
+    )
+    return GeometryLayoutRecord(
+        layout=layout,
+        membrane_wall_base_names=tuple(payload["membrane_wall_base_names"]),
+        buffer_wall_base_names=tuple(payload["buffer_wall_base_names"]),
+        evaluation_window=EvaluationWindow(
+            n_lead_excluded=int(payload["n_lead_excluded"]),
+            n_trail_excluded=int(payload["n_trail_excluded"]),
+        ),
+    )
 
 
 def resolve_layout(geo_name: str, mesh_case_name: str) -> GeometryLayoutRecord:
-    """Return the layout record for ``(geo_name, mesh_case_name)``, or raise KeyError."""
-    key = (geo_name, mesh_case_name)
-    try:
-        return GEOMETRY_LAYOUT_REGISTRY[key]
-    except KeyError as exc:
-        known = ", ".join(
-            f"{g!r}/{m!r}" for g, m in sorted(GEOMETRY_LAYOUT_REGISTRY)
-        )
-        raise KeyError(
-            f"Unknown geometry/mesh pair geo_name={geo_name!r}, "
-            f"mesh_case_name={mesh_case_name!r} for domain layout. "
-            f"Known pairs: {known}."
-        ) from exc
+    """Name-keyed layout lookup is gone. Always raises.
+
+    Call :func:`layout_from_mesh_manifest` with the mesh directory instead.
+    ``geo_name`` and ``mesh_case_name`` are unused; they remain in the
+    signature so leftover callers fail here instead of guessing 1+3+1.
+    """
+    raise RuntimeError("layout comes from the mesh manifest")
 
 
-def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, object]:
-    """Return additive post-config keys for ``(geo_name, mesh_case_name)``.
+def layout_post_config_values(record: GeometryLayoutRecord) -> dict[str, object]:
+    """Return additive post-config keys for a layout record.
 
-    Raises KeyError via :func:`resolve_layout` when the pair is unknown.
     Keys use the existing post-config names ``active_membrane_base_names`` and
     ``buffer_wall_base_names`` (not a new membrane_wall_base_names alias).
 
@@ -400,7 +329,6 @@ def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, o
     is set to ``None`` to clear the inapplicable symmetric key (never a fake
     each-end count).
     """
-    record = resolve_layout(geo_name, mesh_case_name)
     layout = record.layout
     values: dict[str, object] = {
         "n_buffer_in": layout.n_buffer_in,
@@ -419,61 +347,6 @@ def layout_post_config_values(geo_name: str, mesh_case_name: str) -> dict[str, o
         # Clear stale symmetric key from post_config; do not invent a fake.
         values["n_buffer_cells_each_end"] = None
     return values
-
-
-def mesh_case_name_from_case_dirname(case_name: str) -> Optional[str]:
-    """Best-effort single parse of a case directory name (heuristic only).
-
-    Prefer :func:`resolve_mesh_case_name`, which validates candidates against
-    the registry and prefers the solver replace log.
-    """
-    candidates = mesh_case_name_candidates_from_dirname(case_name)
-    return candidates[0] if candidates else None
-
-
-def strip_trailing_case_noise(name: str) -> str:
-    """Strip known trailing markers (_BAD_UNSTABLE, _attempt_*, …)."""
-    return _TRAILING_CASE_NOISE_RE.sub("", name)
-
-
-def mesh_case_name_candidates_from_dirname(case_name: str) -> list[str]:
-    """Generate ordered mesh_case_name candidates from a case directory name.
-
-    Includes the full name (needed for Diamond_Spacer/260615_u0p2_p6M), the
-    suffix after ``__``, the prefix before ``_u0p…``, and variants with known
-    trailing markers stripped. Does not validate against the registry.
-    """
-    ordered: list[str] = []
-    seen: set[str] = set()
-
-    def add(value: Optional[str]) -> None:
-        if not value or value in seen:
-            return
-        seen.add(value)
-        ordered.append(value)
-
-    add(case_name)
-    stripped = strip_trailing_case_noise(case_name)
-    add(stripped)
-
-    if "__" in case_name:
-        _base, suffix = case_name.split("__", 1)
-        add(suffix)
-        add(strip_trailing_case_noise(suffix))
-    if "__" in stripped:
-        _base, suffix = stripped.split("__", 1)
-        add(suffix)
-        add(strip_trailing_case_noise(suffix))
-
-    for variant in (case_name, stripped):
-        prefix_match = _MATRIX_BASE_TAIL_RE.match(variant)
-        if prefix_match is not None:
-            mesh = prefix_match.group("mesh")
-            add(mesh)
-            add(strip_trailing_case_noise(mesh))
-
-    # Drop plain matrix tokens — they are not mesh identities.
-    return [c for c in ordered if not _MATRIX_BASE_ONLY_RE.match(c)]
 
 
 def _normalize_msh_path(raw_path: str) -> str:
@@ -515,42 +388,25 @@ def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
     return None
 
 
-def resolve_mesh_case_name(
+def assert_replace_log_matches_mesh_manifest(
     case_dir: Path,
-    geo_name: str,
-) -> tuple[Optional[str], Optional[str]]:
-    """Resolve a registry-validated mesh_case_name for ``geo_name``.
+    mesh_directory: Path,
+) -> None:
+    """Raise if a solver replace log names a different mesh than the manifest.
 
-    Priority:
-      1. ``solver_mesh_replace_log_*.txt`` (parent dir of the loaded ``.msh.h5``)
-      2. name-derived candidates from the case directory name
-
-    Returns ``(mesh_case_name, source)`` where ``source`` is ``\"log\"`` or
-    ``\"name\"``, or ``(None, None)`` when nothing hits the registry. Never
-    returns an unvalidated guess.
+    No replace log is not a mismatch. A quoted ``*.msh.h5`` parent directory
+    that differs from the manifest ``mesh_id`` is a mismatch.
     """
-    case_dir = Path(case_dir)
-    ordered: list[tuple[str, str]] = []
-    seen: set[str] = set()
-
-    def add(name: Optional[str], source: str) -> None:
-        if not name or name in seen:
-            return
-        seen.add(name)
-        ordered.append((name, source))
-
     log_name = mesh_case_name_from_solver_replace_log(case_dir)
-    if log_name:
-        add(log_name, MESH_RESOLUTION_LOG)
-        add(strip_trailing_case_noise(log_name), MESH_RESOLUTION_LOG)
-
-    for candidate in mesh_case_name_candidates_from_dirname(case_dir.name):
-        add(candidate, MESH_RESOLUTION_NAME)
-
-    for name, source in ordered:
-        if (geo_name, name) in GEOMETRY_LAYOUT_REGISTRY:
-            return name, source
-    return None, None
+    if log_name is None:
+        return
+    payload = read_mesh_manifest(mesh_directory)
+    mesh_id = payload["mesh_id"]
+    if log_name != mesh_id:
+        raise RuntimeError(
+            "solver replace log mesh parent "
+            f"{log_name!r} does not match manifest mesh_id {mesh_id!r}."
+        )
 
 
 def parse_solver_log_domain_extents_m(

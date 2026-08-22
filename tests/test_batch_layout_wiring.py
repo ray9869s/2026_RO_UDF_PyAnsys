@@ -8,9 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from helpers import load_batch_postprocess, load_batch_report_extract
-
-CURRENT_MESH = "mesh_max085_min006_cpg5_bl4"
-LEGACY_MESH = "mesh_max100_min006_cpg3_bl3"
+from ro.domain_layout import layout_from_mesh_manifest, layout_post_config_values
+from ro.manifest import write_mesh_manifest
+from ro.paths import mesh_dir
+from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
 
 
 @pytest.fixture
@@ -23,24 +24,49 @@ def batch_report():
     return load_batch_report_extract()
 
 
+def _current_layout_settings(monkeypatch, tmp_path: Path) -> dict:
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    payload["n_buffer_out"] = 2
+    write_mesh_manifest(directory, payload)
+    return layout_post_config_values(layout_from_mesh_manifest(directory))
+
+
+def _legacy_layout_settings() -> dict:
+    from ro.domain_layout import (
+        EvaluationWindow,
+        GeometryLayoutRecord,
+        LEGACY_BUFFER_WALL_BASE_NAMES,
+        LEGACY_LAYOUT,
+        MEMBRANE_WALL_BASE_NAMES,
+        layout_post_config_values,
+    )
+
+    record = GeometryLayoutRecord(
+        layout=LEGACY_LAYOUT,
+        membrane_wall_base_names=MEMBRANE_WALL_BASE_NAMES,
+        buffer_wall_base_names=LEGACY_BUFFER_WALL_BASE_NAMES,
+        evaluation_window=EvaluationWindow(1, 0),
+    )
+    return layout_post_config_values(record)
+
+
 class TestWriteReportConfigLayoutKeys:
-    def test_registered_current_geometry_writes_layout_and_buffer_names(
-        self, batch_post, tmp_path: Path
+    def test_current_geometry_writes_layout_and_buffer_names(
+        self, batch_post, monkeypatch, tmp_path: Path
     ):
-        case_dir = tmp_path / "D2450_a45_7c_brg110" / f"u0p2_p6M__{CURRENT_MESH}"
+        case_dir = tmp_path / "D2450_a45" / "u0p2_p6M"
         case_dir.mkdir(parents=True)
         config_path = tmp_path / "report_config.py"
-        layout_settings, error = batch_post.try_resolve_post_layout_settings(
-            "D2450_a45_7c_brg110", CURRENT_MESH
-        )
-        assert error is None
-        assert layout_settings is not None
+        layout_settings = _current_layout_settings(monkeypatch, tmp_path)
 
         batch_post.write_report_config(
             config_path,
             tmp_path,
-            "D2450_a45_7c_brg110",
-            f"u0p2_p6M__{CURRENT_MESH}",
+            "D2450_a45",
+            "u0p2_p6M",
             {"case_dir": case_dir},
             layout_settings,
         )
@@ -55,28 +81,24 @@ class TestWriteReportConfigLayoutKeys:
         assert "wall_bottom_buffer_in" in text
         assert "wall_bottom_buffer_out" in text
         assert "wall_top_mem" in text
-        # Length keys must match the asymmetric layout (1+7+2 → 0.03465 m).
         assert "domain_length_m = 0.03465" in text
         assert "buffer_length_m = 0.003465" in text
         assert "n_unit_cells = 10" in text
         assert "n_buffer_cells_each_end = None" in text
         assert "0.017325" not in text
 
-    def test_registered_legacy_geometry_writes_legacy_buffer_names(
+    def test_legacy_record_writes_legacy_buffer_names(
         self, batch_post, tmp_path: Path
     ):
-        case_dir = tmp_path / "Sin_ST" / f"u0p1_p4M__{LEGACY_MESH}"
+        case_dir = tmp_path / "Sin_ST" / "u0p1_p4M"
         case_dir.mkdir(parents=True)
         config_path = tmp_path / "report_config.py"
-        layout_settings, error = batch_post.try_resolve_post_layout_settings(
-            "Sin_ST", LEGACY_MESH
-        )
-        assert error is None
+        layout_settings = _legacy_layout_settings()
         batch_post.write_report_config(
             config_path,
             tmp_path,
             "Sin_ST",
-            f"u0p1_p4M__{LEGACY_MESH}",
+            "u0p1_p4M",
             {"case_dir": case_dir},
             layout_settings,
         )
@@ -120,11 +142,10 @@ class TestBatchPostLayoutUnknown:
             retry_shear_fallback_on_failure=False,
         )
 
-    def test_unregistered_geometry_is_layout_unknown_and_does_not_raise(
+    def test_name_keyed_lookup_is_layout_unknown_and_does_not_raise(
         self, batch_post, tmp_path: Path
     ):
-        results_root = tmp_path / "03_Results"
-        # Plain name, no replace log → mesh unresolved → LAYOUT_UNKNOWN.
+        results_root = tmp_path / "runs"
         case_dir = results_root / "UnknownGeo" / "u0p1_p4M"
         case_dir.mkdir(parents=True)
         batch_dir = tmp_path / "batch"
@@ -151,16 +172,14 @@ class TestBatchPostLayoutUnknown:
         assert result["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         assert result["pyensight_contour_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         assert result["shear_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
-        assert "registry mesh_case_name" in result["error_summary"]
-        assert "UnknownGeo" in result["error_summary"]
-        # Must not count as STATUS_FAILED (continue_on_error only stops on FAILED).
+        assert "layout comes from the mesh manifest" in result["error_summary"]
         assert result["report_stage_status"] != batch_post.STATUS_FAILED
 
-    def test_dry_run_still_resolves_registered_layout_without_writing_config(
+    def test_dry_run_does_not_write_config_when_layout_unknown(
         self, batch_post, tmp_path: Path
     ):
-        results_root = tmp_path / "03_Results"
-        case_name = f"u0p1_p4M__{LEGACY_MESH}"
+        results_root = tmp_path / "runs"
+        case_name = "u0p1_p4M"
         case_dir = results_root / "Sin_ST" / case_name
         case_dir.mkdir(parents=True)
         batch_dir = tmp_path / "batch"
@@ -182,41 +201,25 @@ class TestBatchPostLayoutUnknown:
             batch_dir=batch_dir,
             log_dir=log_dir,
         )
-        assert result["report_stage_status"] == batch_post.STATUS_DRY_RUN
+        assert result["report_stage_status"] == batch_post.STATUS_LAYOUT_UNKNOWN
         config_dir = batch_dir / "report_configs"
         assert not config_dir.exists() or not any(config_dir.iterdir())
 
 
 class TestBatchReportOverridesLayoutKeys:
-    def test_registered_overrides_include_layout_keys(self, batch_report):
+    def test_name_keyed_overrides_are_layout_unknown(self, batch_report):
         overrides, error = batch_report.build_post_case_overrides(
             geo_name="D2450_a45_7c_brg110",
-            case_name=f"u0p2_p6M__{CURRENT_MESH}",
+            case_name="u0p2_p6M__mesh_max085_min006_cpg5_bl4",
             final_case_file="final.cas.h5",
             final_data_file="final.dat.h5",
             inlet_velocity_value=0.2,
             outlet_gauge_pressure=6.0e6,
-            mesh_case_name=CURRENT_MESH,
+            mesh_case_name="mesh_max085_min006_cpg5_bl4",
         )
-        assert error is None
-        assert overrides["n_buffer_in"] == 1
-        assert overrides["n_active"] == 7
-        assert overrides["n_buffer_out"] == 2
-        assert overrides["cell_length_x_m"] == 0.003465
-        assert overrides["domain_length_m"] == 0.03465
-        assert overrides["buffer_length_m"] == 0.003465
-        assert overrides["n_unit_cells"] == 10
-        assert overrides["n_buffer_cells_each_end"] is None
-        assert overrides["buffer_wall_base_names"] == [
-            "wall_top_buffer_in",
-            "wall_top_buffer_out",
-            "wall_bottom_buffer_in",
-            "wall_bottom_buffer_out",
-        ]
-        assert overrides["active_membrane_base_names"] == [
-            "wall_top_mem",
-            "wall_bottom_mem",
-        ]
+        assert overrides is None
+        assert error is not None
+        assert "layout comes from the mesh manifest" in error
 
     def test_unregistered_overrides_are_layout_unknown(self, batch_report):
         overrides, error = batch_report.build_post_case_overrides(
@@ -227,5 +230,5 @@ class TestBatchReportOverridesLayoutKeys:
         )
         assert overrides is None
         assert error is not None
-        assert "registry mesh_case_name" in error
-        assert "UnknownGeo" in error
+        assert "layout comes from the mesh manifest" in error
+

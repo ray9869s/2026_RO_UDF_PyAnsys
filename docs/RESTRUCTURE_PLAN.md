@@ -22,7 +22,7 @@ missing decisions; if something needed is not written here, stop and ask.
 | 6c | CLI flags → `--family --geo-id --mesh-id --run-id` | pending |
 | 7 | Directory reshuffle by `git mv` (7a templates/udfs, 7b configs, 7c scripts, 7d docs) | pending |
 | 8 | Drop numeric prefixes on orchestration scripts | pending |
-| 9 | Remove the name-keyed domain-layout registry | pending |
+| 9 | Remove the name-keyed domain-layout registry | **DONE** |
 | 10 | Docs: AGENTS.md, DEPLOY_RUNBOOK.md | pending |
 
 Both commits are pushed. Working tree clean and level with origin.
@@ -204,7 +204,7 @@ mesh_sha256
 created_utc, generator_version
 ```
 
-The four wall-name and exclusion fields are what allow the name-keyed
+The four wall-name and exclusion fields are what allowed the name-keyed
 `GEOMETRY_LAYOUT_REGISTRY` to be deleted in step 9. Without them, post-processing
 still has to key on `(geo_name, mesh_case_name)`.
 
@@ -442,12 +442,23 @@ Manifests not yet read. Layout registry untouched. Delete every `parents[N]`
 project-root locator in the same commit as the file it lives in.
 
 **Step 6b — manifests.** Write on mesh and run creation. Inventory and post glob
-manifests. Add `layout_from_mesh_manifest(mesh_directory) -> GeometryLayoutRecord`
-(pure; unit-testable from a `tmp_path` JSON). Delete
+manifests. `layout_from_mesh_manifest(mesh_directory) -> GeometryLayoutRecord`
+already exists (step 9); remaining 6b work is to **call it** from inventory and
+post instead of `resolve_layout`. Delete
 `parse_case_operating_values` and the `write_report_config` identity. Replace
 the remaining path callers with `run_dir`; then delete the now-uncalled
 `final_case_data_paths` wrapper and its characterization tests at
 `tests/test_solver_common_paths.py:148,158,172`.
+
+Inventory currently walks two levels (`geo/case`) and then `os.walk`s logs
+from whatever directory that walk picked. Under
+`runs/{family}/{geo_id}/{mesh_id}/{run_id}` that directory is the geo_id, so
+one inventory "case" can merge transcripts from every run under that geo.
+Harmless at Total cases: 1; with 495 runs it would synthesize a single
+`stop_reason` from several transcripts — a genuine silent failure.
+Manifest-based identification (one record per run `manifest.json`) removes
+this structurally. Do not keep a recursive log walk from a parent of multiple
+runs.
 
 **Execution-order amendment (2026-08-21).** Split 6b so writers populate metadata
 before readers migrate:
@@ -477,9 +488,10 @@ the freeze matches the tree.
 
 **Step 9 — registry removal.** `layout_from_mesh_manifest` only.
 `resolve_layout(geo, mesh)` raises `RuntimeError("layout comes from the mesh
-manifest")` — loud, never a silent fallback to 1+3+1. Delete the dirname parsers,
-or keep the log parser as a diagnostic that compares against the manifest and
-raises on mismatch.
+manifest")` — loud, never a silent fallback to 1+3+1. Delete the dirname parsers;
+keep the solver-log parser as a diagnostic that compares against the manifest
+and raises on mismatch. Also delete the empty
+`scripts/04_pyensight_streamline_export.py`.
 
 **Step 10 — docs.** `AGENTS.md` (amend the layout, tree, entry-point-name, and
 `00_Geometries` freezes), `DEPLOY_RUNBOOK.md` (`/c/pyfluent`,

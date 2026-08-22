@@ -9,7 +9,7 @@ import pandas as pd
 
 from ro.domain_layout import (
     layout_post_config_values,
-    resolve_mesh_case_name,
+    resolve_layout,
 )
 from ro.paths import data_root, project_root, runs_root
 
@@ -31,17 +31,15 @@ CRITICAL_SUMMARY_COLUMNS = [
 
 
 def try_resolve_post_layout_overrides(geo_name, mesh_case_name):
-    """Return (layout_overrides, None) or (None, error_summary) for unknown pairs."""
-    if not mesh_case_name:
-        return None, (
-            f"Could not resolve a registry mesh_case_name for "
-            f"geo_name={geo_name!r} from solver_mesh_replace_log or the case "
-            "directory name (unregistered / 3-cell meshes stay LAYOUT_UNKNOWN)."
-        )
+    """Return (layout_overrides, None) or (None, error_summary).
+
+    Name-keyed lookup always fails; layout comes from the mesh manifest.
+    """
     try:
-        return layout_post_config_values(geo_name, mesh_case_name), None
-    except KeyError as exc:
+        record = resolve_layout(geo_name, mesh_case_name or "")
+    except RuntimeError as exc:
         return None, str(exc)
+    return layout_post_config_values(record), None
 
 
 def build_post_case_overrides(
@@ -56,13 +54,9 @@ def build_post_case_overrides(
 ):
     """Build PYFLUENT_POST_OVERRIDES including additive layout keys.
 
-    Returns (overrides, None) on success, or (None, error_summary) when the
-    (geo, mesh) pair is not registered. Never substitutes a default layout.
-
-    Mesh identity is resolved via :func:`resolve_mesh_case_name` (log first,
-    then validated name candidates). An explicit ``mesh_case_name`` is only
-    used when resolution returns nothing and that name is already in the
-    registry for ``geo_name``.
+    Returns (overrides, None) on success, or (None, error_summary). Never
+    substitutes a default layout. Until step 6b reads the mesh manifest,
+    :func:`resolve_layout` raises and this returns LAYOUT_UNKNOWN.
     """
     overrides = {
         "geo_name": geo_name,
@@ -75,28 +69,14 @@ def build_post_case_overrides(
     if outlet_gauge_pressure is not None:
         overrides["outlet_gauge_pressure"] = outlet_gauge_pressure
 
-    resolve_dir = Path(case_dir) if case_dir is not None else Path(case_name)
-    resolved_mesh, mesh_source = resolve_mesh_case_name(resolve_dir, geo_name)
-    if resolved_mesh is None and mesh_case_name:
-        # Explicit config mesh only if it is already a registered pair.
-        layout_overrides, layout_error = try_resolve_post_layout_overrides(
-            geo_name, mesh_case_name
-        )
-        if layout_error is None:
-            overrides.update(layout_overrides)
-            overrides["mesh_case_name"] = mesh_case_name
-            overrides["mesh_resolution_source"] = "config"
-            return overrides, None
-        return None, layout_error
-
     layout_overrides, layout_error = try_resolve_post_layout_overrides(
-        geo_name, resolved_mesh
+        geo_name, mesh_case_name
     )
     if layout_error is not None:
         return None, layout_error
     overrides.update(layout_overrides)
-    overrides["mesh_case_name"] = resolved_mesh
-    overrides["mesh_resolution_source"] = mesh_source
+    overrides["mesh_case_name"] = mesh_case_name
+    overrides["mesh_resolution_source"] = "manifest"
     return overrides, None
 
 

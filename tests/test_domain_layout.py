@@ -13,15 +13,21 @@ from ro.domain_layout import (
     DomainLayout,
     EvaluationWindow,
     LEGACY_LAYOUT,
+    assert_replace_log_matches_mesh_manifest,
+    layout_from_mesh_manifest,
+    layout_post_config_values,
+    mesh_case_name_from_solver_replace_log,
     parse_solver_log_domain_extents_m,
     resolve_layout,
-    resolve_mesh_case_name,
     validate_layout_against_x_extent,
 )
 from ro.fluent_report_helpers import (
     spacer_cell_numbers,
     unit_cell_boundary_positions,
 )
+from ro.manifest import ManifestError, write_mesh_manifest
+from ro.paths import mesh_dir
+from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
 
 
 CURRENT_BOUNDARIES = [
@@ -216,93 +222,94 @@ class TestEvaluationWindow:
         assert window.evaluation_cell_numbers(shorter) == [3, 4, 5, 6]
 
 
-class TestGeometryRegistry:
-    def test_resolve_registered_geo_mesh_pair(self):
-        record = resolve_layout(
-            "D2450_a45_7c_brg110", "mesh_max085_min006_cpg5_bl4"
+class TestLayoutFromMeshManifest:
+    def test_reads_layout_wall_names_and_window(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        payload = mesh_payload()
+        payload["n_buffer_out"] = 2
+        write_mesh_manifest(directory, payload)
+
+        record = layout_from_mesh_manifest(directory)
+        assert record.layout.n_buffer_in == 1
+        assert record.layout.n_active == 7
+        assert record.layout.n_buffer_out == 2
+        assert record.layout.cell_length_x_m == 0.003465
+        assert record.membrane_wall_base_names == (
+            "wall_top_mem",
+            "wall_bottom_mem",
         )
-        assert record.layout == CURRENT_LAYOUT
         assert record.buffer_wall_base_names == (
             "wall_top_buffer_in",
             "wall_top_buffer_out",
             "wall_bottom_buffer_in",
             "wall_bottom_buffer_out",
         )
-        assert record.membrane_wall_base_names == (
-            "wall_top_mem",
-            "wall_bottom_mem",
-        )
         assert record.evaluation_window.n_lead_excluded == 3
         assert record.evaluation_window.n_trail_excluded == 0
         assert record.evaluation_window.evaluation_local_indices(
-            CURRENT_LAYOUT
+            record.layout
         ) == [4, 5, 6, 7]
 
-    def test_resolve_d0817_entrance_decay_diagnostic(self):
-        from ro.domain_layout import (
-            CELL_LENGTH_X_D0817_M,
-            CURRENT_BUFFER_WALL_BASE_NAMES,
-            D0817_LAYOUT,
-        )
+    def test_missing_manifest_raises(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        with pytest.raises(ManifestError):
+            layout_from_mesh_manifest(directory)
 
-        record = resolve_layout(
-            "D0817_a45_21c_brg110", "mesh_max085_min006_cpg5_bl4"
-        )
-        assert record.layout == D0817_LAYOUT
-        assert record.layout.n_buffer_in == 3
-        assert record.layout.n_active == 21
-        assert record.layout.n_buffer_out == 6
-        assert record.layout.cell_length_x_m == CELL_LENGTH_X_D0817_M
-        assert abs(record.layout.total_length_m - 0.03465) < 1.0e-12
-        assert record.buffer_wall_base_names == CURRENT_BUFFER_WALL_BASE_NAMES
-        assert record.evaluation_window.n_lead_excluded == 3
-        assert record.evaluation_window.n_trail_excluded == 0
-        # Same physical entrance exclusion as D2450 cells 4-7 convention.
-        assert record.evaluation_window.evaluation_local_indices(
-            D0817_LAYOUT
-        ) == list(range(4, 22))
+    def test_post_config_values_from_record(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        payload = mesh_payload()
+        payload["n_buffer_out"] = 2
+        write_mesh_manifest(directory, payload)
 
-    def test_same_geo_with_3cell_mesh_raises_naming_both(self):
-        # 3-cell meshes are deliberately unregistered (LAYOUT_UNKNOWN).
-        with pytest.raises(KeyError, match="geo_name='Sin_ST'") as exc_info:
-            resolve_layout("Sin_ST", "mesh_max100_min006_cpg3_bl3_3cell_fake")
-        message = str(exc_info.value)
-        assert "mesh_case_name=" in message
-        assert "Sin_ST" in message
-        assert "mesh_max100_min006_cpg3_bl3_3cell_fake" in message
-
-    def test_registered_5cell_sin_st(self):
-        record = resolve_layout("Sin_ST", "mesh_max100_min006_cpg3_bl3")
-        assert record.layout == LEGACY_LAYOUT
+        values = layout_post_config_values(layout_from_mesh_manifest(directory))
+        assert values["n_buffer_in"] == 1
+        assert values["n_active"] == 7
+        assert values["n_buffer_out"] == 2
+        assert values["domain_length_m"] == 0.03465
+        assert values["n_unit_cells"] == 10
+        assert values["n_buffer_cells_each_end"] is None
+        assert values["active_membrane_base_names"] == [
+            "wall_top_mem",
+            "wall_bottom_mem",
+        ]
 
 
-class TestResolveMeshCaseName:
-    def test_log_resolves_to_msh_parent_directory(
-        self, tmp_path: Path
-    ):
+class TestResolveLayoutRaises:
+    def test_name_keyed_lookup_always_raises(self):
+        with pytest.raises(RuntimeError, match="layout comes from the mesh manifest"):
+            resolve_layout("D2450_a45_7c_brg110", "mesh_max085_min006_cpg5_bl4")
+        with pytest.raises(RuntimeError, match="layout comes from the mesh manifest"):
+            resolve_layout("Sin_ST", "mesh_max100_min006_cpg3_bl3")
+
+
+class TestMeshCaseNameFromSolverReplaceLog:
+    def test_log_resolves_to_msh_parent_directory(self, tmp_path: Path):
         case_dir = tmp_path / "Pillar" / "u0p2_p6M"
         case_dir.mkdir(parents=True)
         (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
             FIXTURE_REPLACE_LOG, encoding="utf-8"
         )
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "log"
+        assert (
+            mesh_case_name_from_solver_replace_log(case_dir)
+            == "mesh_max085_min005_cpg5_bl4"
+        )
 
-    def test_log_with_template_cas_then_msh_uses_msh_parent(
-        self, tmp_path: Path
-    ):
-        # Real logs always read template .cas.h5 before the .msh.h5 mesh.
+    def test_log_with_template_cas_then_msh_uses_msh_parent(self, tmp_path: Path):
         case_dir = tmp_path / "Pillar" / "u0p2_p6M"
         case_dir.mkdir(parents=True)
         (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
             FIXTURE_REPLACE_LOG_WITH_TEMPLATE, encoding="utf-8"
         )
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "log"
-        assert mesh_name != "01_Templates"
-        assert "template" not in mesh_name.lower()
+        parent = mesh_case_name_from_solver_replace_log(case_dir)
+        assert parent == "mesh_max085_min005_cpg5_bl4"
+        assert parent != "01_Templates"
+        assert "template" not in parent.lower()
 
     def test_log_with_two_msh_reads_uses_last(self, tmp_path: Path):
         case_dir = tmp_path / "Pillar" / "u0p2_p6M"
@@ -310,9 +317,10 @@ class TestResolveMeshCaseName:
         (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
             FIXTURE_REPLACE_LOG_TWO_MSH, encoding="utf-8"
         )
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "log"
+        assert (
+            mesh_case_name_from_solver_replace_log(case_dir)
+            == "mesh_max085_min005_cpg5_bl4"
+        )
 
     def test_multiline_host_path_still_resolves_via_log(self, tmp_path: Path):
         case_dir = tmp_path / "Pillar" / "u0p2_p6M"
@@ -325,66 +333,49 @@ class TestResolveMeshCaseName:
         (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
             multiline, encoding="utf-8"
         )
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "log"
-
-    def test_dated_case_dir_resolves_to_full_name(self, tmp_path: Path):
-        case_dir = tmp_path / "Diamond_Spacer" / "260615_u0p2_p6M"
-        case_dir.mkdir(parents=True)
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Diamond_Spacer")
-        assert mesh_name == "260615_u0p2_p6M"
-        assert source == "name"
-
-    def test_bad_unstable_suffix_strips_to_mesh_prefix(self, tmp_path: Path):
-        case_dir = (
-            tmp_path
-            / "Sin_ST"
-            / "mesh_max085_min005_cpg5_bl4_u0p2_p6M_BAD_UNSTABLE"
+        assert (
+            mesh_case_name_from_solver_replace_log(case_dir)
+            == "mesh_max085_min005_cpg5_bl4"
         )
-        case_dir.mkdir(parents=True)
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Sin_ST")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "name"
 
-    def test_attempt_suffix_without_log_returns_none(self, tmp_path: Path):
-        case_dir = tmp_path / "Diamond_Spacer" / "u0p1_p4M__attempt_20260705_161718"
-        case_dir.mkdir(parents=True)
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Diamond_Spacer")
-        assert mesh_name is None
-        assert source is None
 
-    def test_suffix_shape(self, tmp_path: Path):
-        case_dir = tmp_path / "Sin_ST" / "u0p1_p4M__mesh_max085_min006_cpg5_bl4"
-        case_dir.mkdir(parents=True)
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Sin_ST")
-        assert mesh_name == "mesh_max085_min006_cpg5_bl4"
-        assert source == "name"
+class TestReplaceLogMatchesMeshManifest:
+    def _write_mesh(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        write_mesh_manifest(directory, mesh_payload())
+        return directory
 
-    def test_prefix_shape(self, tmp_path: Path):
-        case_dir = tmp_path / "Pillar" / "mesh_max085_min005_cpg5_bl4_u0p1_p4M"
-        case_dir.mkdir(parents=True)
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "name"
+    def test_matching_parent_is_silent(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        case_dir = tmp_path / "run"
+        case_dir.mkdir()
+        matching_log = (
+            f'Reading from HOST:"C:/ro_data/meshes/{FAMILY}/{GEO_ID}/'
+            f'{MESH_ID}/{GEO_ID}_{MESH_ID}.msh.h5"\n'
+        )
+        (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
+            matching_log, encoding="utf-8"
+        )
+        assert_replace_log_matches_mesh_manifest(case_dir, mesh_directory)
 
-    def test_plain_shape_without_log_returns_none(self, tmp_path: Path):
-        case_dir = tmp_path / "Pillar" / "u0p2_p6M"
-        case_dir.mkdir(parents=True)
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name is None
-        assert source is None
-
-    def test_log_preferred_over_misleading_dirname(self, tmp_path: Path):
-        # Dirname would parse as 'attempt_…'; log is ground truth.
-        case_dir = tmp_path / "Pillar" / "u0p1_p4M__attempt_20260705_161718"
-        case_dir.mkdir(parents=True)
-        (case_dir / "solver_mesh_replace_log_u0p1_p4M__attempt_20260705_161718.txt").write_text(
+    def test_mismatch_raises(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        case_dir = tmp_path / "run"
+        case_dir.mkdir()
+        (case_dir / "solver_mesh_replace_log_u0p2_p6M.txt").write_text(
             FIXTURE_REPLACE_LOG, encoding="utf-8"
         )
-        mesh_name, source = resolve_mesh_case_name(case_dir, "Pillar")
-        assert mesh_name == "mesh_max085_min005_cpg5_bl4"
-        assert source == "log"
+        with pytest.raises(RuntimeError, match="does not match manifest mesh_id"):
+            assert_replace_log_matches_mesh_manifest(case_dir, mesh_directory)
+
+    def test_missing_log_is_not_a_mismatch(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        case_dir = tmp_path / "run"
+        case_dir.mkdir()
+        assert_replace_log_matches_mesh_manifest(case_dir, mesh_directory)
+
 
 class TestSolverLogDomainExtents:
     def test_returns_metres_without_1e3_scale(self):

@@ -27,17 +27,13 @@ from ro.fluent_report_helpers import (  # noqa: E402
     list_named_object_names,
 )
 from ro.domain_layout import (  # noqa: E402
-    CURRENT_EVALUATION_WINDOW,
-    CURRENT_LAYOUT,
-    GEOMETRY_LAYOUT_REGISTRY,
-    mesh_case_name_candidates_from_dirname,
-    resolve_layout,
+    layout_from_mesh_manifest,
 )
-from ro.paths import run_dir  # noqa: E402
+from ro.paths import mesh_dir, run_dir  # noqa: E402
 
 # ---- Case under test ----
-# Canonical directory ids select the external run leaf. The legacy
-# CELL_PROFILE_* labels remain overrideable for layout and artifact lookup.
+# Canonical directory ids select the external run leaf. GEO_NAME / CASE_NAME
+# remain overrideable for the Fluent artifact filename.
 FAMILY = "diamond"
 GEO_ID = "D2450_a45"
 MESH_ID = "max085_min006_cpg5_bl4_peel2"
@@ -47,61 +43,37 @@ CASE_NAME = os.environ.get(
     "CELL_PROFILE_CASE",
     "u0p2_p6M__mesh_max085_min006_cpg5_bl4",
 )
-_DEFAULT_MESH_CASE_NAME = "mesh_max085_min006_cpg5_bl4"
-
-
-def _resolve_cell_profile_mesh_case_name(geo_name: str, case_name: str) -> tuple[str, str]:
-    """Return (mesh_case_name, source) for layout lookup.
-
-    Priority: CELL_PROFILE_MESH env, then dirname candidates that hit the
-    registry, else the D2450 default mesh token.
-    """
-    env_mesh = os.environ.get("CELL_PROFILE_MESH", "").strip()
-    if env_mesh:
-        return env_mesh, "env:CELL_PROFILE_MESH"
-    for candidate in mesh_case_name_candidates_from_dirname(case_name):
-        if (geo_name, candidate) in GEOMETRY_LAYOUT_REGISTRY:
-            return candidate, "case_name"
-    return _DEFAULT_MESH_CASE_NAME, "default"
-
-
-MESH_CASE_NAME, MESH_CASE_NAME_SOURCE = _resolve_cell_profile_mesh_case_name(
-    GEO_NAME, CASE_NAME
-)
-
-# Geometry [m] — prefer registry layout for (GEO_NAME, MESH_CASE_NAME).
-# Fallback keeps the original D2450 1+7+2 / 0.003465 constants when the pair
-# is unregistered so the throwaway script still runs offline.
-_FALLBACK_CELL_LENGTH_M = 0.003465
-_FALLBACK_DOMAIN_X_MAX_M = 0.03465
-_FALLBACK_N_INLET_BUFFER_CELLS = 1
-_FALLBACK_N_SPACER_CELLS = 7
-_FALLBACK_N_OUTLET_BUFFER_CELLS = 2
 
 DOMAIN_X_MIN_M = 0.0
-LAYOUT_SOURCE = "fallback:D2450_1+7+2"
-LAYOUT = CURRENT_LAYOUT
-EVALUATION_WINDOW = CURRENT_EVALUATION_WINDOW
-try:
-    _layout_record = resolve_layout(GEO_NAME, MESH_CASE_NAME)
-    LAYOUT = _layout_record.layout
-    EVALUATION_WINDOW = _layout_record.evaluation_window
+
+LAYOUT = None
+EVALUATION_WINDOW = None
+CELL_LENGTH_M = None
+DOMAIN_X_MAX_M = None
+N_INLET_BUFFER_CELLS = None
+N_SPACER_CELLS = None
+N_OUTLET_BUFFER_CELLS = None
+LAYOUT_SOURCE = None
+N_TOTAL_CELLS = None
+MEMBRANE_BASE_NAMES = None
+
+
+def load_layout_from_mesh_manifest():
+    """Fill module layout globals from the mesh manifest. Not import-safe."""
+    global LAYOUT, EVALUATION_WINDOW, CELL_LENGTH_M, DOMAIN_X_MAX_M
+    global N_INLET_BUFFER_CELLS, N_SPACER_CELLS, N_OUTLET_BUFFER_CELLS
+    global LAYOUT_SOURCE, N_TOTAL_CELLS, MEMBRANE_BASE_NAMES
+    record = layout_from_mesh_manifest(mesh_dir(FAMILY, GEO_ID, MESH_ID))
+    LAYOUT = record.layout
+    EVALUATION_WINDOW = record.evaluation_window
     CELL_LENGTH_M = float(LAYOUT.cell_length_x_m)
     DOMAIN_X_MAX_M = float(LAYOUT.total_length_m)
     N_INLET_BUFFER_CELLS = int(LAYOUT.n_buffer_in)
     N_SPACER_CELLS = int(LAYOUT.n_active)
     N_OUTLET_BUFFER_CELLS = int(LAYOUT.n_buffer_out)
-    LAYOUT_SOURCE = f"resolve_layout({GEO_NAME!r}, {MESH_CASE_NAME!r})"
-except KeyError:
-    CELL_LENGTH_M = _FALLBACK_CELL_LENGTH_M
-    DOMAIN_X_MAX_M = _FALLBACK_DOMAIN_X_MAX_M
-    N_INLET_BUFFER_CELLS = _FALLBACK_N_INLET_BUFFER_CELLS
-    N_SPACER_CELLS = _FALLBACK_N_SPACER_CELLS
-    N_OUTLET_BUFFER_CELLS = _FALLBACK_N_OUTLET_BUFFER_CELLS
-
-N_TOTAL_CELLS = N_INLET_BUFFER_CELLS + N_SPACER_CELLS + N_OUTLET_BUFFER_CELLS
-
-MEMBRANE_BASE_NAMES = ["wall_top_mem", "wall_bottom_mem"]
+    LAYOUT_SOURCE = f"layout_from_mesh_manifest({FAMILY}/{GEO_ID}/{MESH_ID})"
+    N_TOTAL_CELLS = N_INLET_BUFFER_CELLS + N_SPACER_CELLS + N_OUTLET_BUFFER_CELLS
+    MEMBRANE_BASE_NAMES = list(record.membrane_wall_base_names)
 
 # Hardcoded area_mem fallbacks from campaign reports (used only if live
 # surface-area measurement is unavailable).
@@ -563,6 +535,7 @@ def print_table(title, rows, columns):
 
 
 def main():
+    load_layout_from_mesh_manifest()
     case_path = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
     final_case_file = case_path / f"{GEO_NAME}_{CASE_NAME}_final.cas.h5"
     final_data_file = case_path / f"{GEO_NAME}_{CASE_NAME}_final.dat.h5"
@@ -573,10 +546,7 @@ def main():
     print("Resolved paths:")
     print(f"  CELL_PROFILE_GEO  -> GEO_NAME  = {GEO_NAME}")
     print(f"  CELL_PROFILE_CASE -> CASE_NAME = {CASE_NAME}")
-    print(
-        f"  CELL_PROFILE_MESH -> MESH_CASE_NAME = {MESH_CASE_NAME} "
-        f"(source={MESH_CASE_NAME_SOURCE})"
-    )
+    print(f"  mesh_id           = {MESH_ID}")
     print(f"  layout source     = {LAYOUT_SOURCE}")
     print(
         f"  layout            = n_buffer_in={LAYOUT.n_buffer_in}, "

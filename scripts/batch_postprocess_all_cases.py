@@ -29,7 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
-    resolve_mesh_case_name,
+    resolve_layout,
 )
 from ro.paths import data_root, project_root, runs_root, templates_dir  # noqa: E402
 
@@ -706,22 +706,17 @@ def try_resolve_post_layout_settings(
     *,
     mesh_resolution_source: Optional[str] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """Resolve additive layout keys for a (geo, mesh) pair without aborting.
+    """Resolve additive layout keys. Name-keyed lookup always fails.
 
-    Returns (settings, None) on success, or (None, error_summary) when the mesh
-    cannot be resolved or the pair is not in the domain-layout registry. Never
-    substitutes a default layout.
+    Layout comes from the mesh manifest (step 6b). This wrapper still calls
+    :func:`resolve_layout` so leftover (geo, mesh) callers fail loudly with
+    LAYOUT_UNKNOWN instead of guessing 1+3+1.
     """
-    if not mesh_case_name:
-        return None, (
-            f"Could not resolve a registry mesh_case_name for "
-            f"geo_name={geo_name!r} from solver_mesh_replace_log or the case "
-            "directory name (unregistered / 3-cell meshes stay LAYOUT_UNKNOWN)."
-        )
     try:
-        settings = layout_post_config_values(geo_name, mesh_case_name)
-    except KeyError as exc:
+        record = resolve_layout(geo_name, mesh_case_name or "")
+    except RuntimeError as exc:
         return None, str(exc)
+    settings = layout_post_config_values(record)
     if mesh_resolution_source:
         settings = {
             **settings,
@@ -946,14 +941,11 @@ def execute_case(
     contour_command = build_pyensight_command(args, geo_name, case_name)
     cff_file, cff_source = resolve_cff_file(args, paths)
 
-    # Resolve layout for every case (including --dry-run) before any Fluent work.
-    mesh_case_name, mesh_resolution_source = resolve_mesh_case_name(
-        case_dir, geo_name
-    )
+    # Name-keyed layout lookup is gone; this raises via resolve_layout until
+    # step 6b reads the mesh manifest. Never fall back to 1+3+1.
     layout_settings, layout_error = try_resolve_post_layout_settings(
         geo_name,
-        mesh_case_name,
-        mesh_resolution_source=mesh_resolution_source,
+        None,
     )
     if layout_error is not None:
         print(f"[{selected_index}] {geo_name}/{case_name}")
@@ -998,10 +990,9 @@ def execute_case(
             "error_summary": layout_error,
             "runtime_seconds_total": 0.0,
             "suggested_next_action": (
-                "Register this (geo_name, mesh_case_name) in "
-                "_domain_layout.GEOMETRY_LAYOUT_REGISTRY, or ensure the case "
-                "directory name / solver_mesh_replace_log identifies the mesh, "
-                "then rerun."
+                "Layout comes from the mesh manifest. Wait for step 6b to "
+                "read layout_from_mesh_manifest(mesh_directory); do not "
+                "guess 1+3+1 from geo/case names."
             ),
             "stage_details": {
                 "report": None,
