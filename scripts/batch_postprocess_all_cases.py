@@ -691,15 +691,6 @@ def load_base_config() -> Any:
     return module
 
 
-def parse_case_operating_values(case_name: str) -> tuple[Optional[float], Optional[float]]:
-    match = re.fullmatch(r"u(\d+)p(\d+)_p(\d+)M(?:__.+)?", case_name)
-    if not match:
-        return None, None
-    inlet_velocity = float(f"{match.group(1)}.{match.group(2)}")
-    outlet_pressure = float(match.group(3)) * 1.0e6
-    return inlet_velocity, outlet_pressure
-
-
 def try_resolve_post_layout_settings(
     geo_name: str,
     mesh_case_name: Optional[str],
@@ -759,7 +750,8 @@ def write_report_config(
     layout_settings: dict[str, Any],
 ) -> None:
     base_cfg = load_base_config()
-    inlet_velocity, outlet_pressure = parse_case_operating_values(case_name)
+    inlet_velocity = None
+    outlet_pressure = 6.0e6
 
     def cfg_get(name: str, default: Any) -> Any:
         return getattr(base_cfg, name, default) if base_cfg is not None else default
@@ -778,7 +770,7 @@ def write_report_config(
         f"geo_name = {geo_name!r}",
         f"case_name = {case_name!r}",
         f"inlet_velocity_value = {inlet_velocity!r}",
-        f"outlet_gauge_pressure = {outlet_pressure if outlet_pressure is not None else 6.0e6!r}",
+        f"outlet_gauge_pressure = {outlet_pressure!r}",
         "",
         f"final_case_file = {str(paths['case_dir'] / f'{geo_name}_{case_name}_final.cas.h5')!r}",
         f"final_data_file = {str(paths['case_dir'] / f'{geo_name}_{case_name}_final.dat.h5')!r}",

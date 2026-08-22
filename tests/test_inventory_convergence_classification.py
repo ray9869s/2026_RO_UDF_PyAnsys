@@ -212,7 +212,15 @@ class TestInventoryConvergenceClassification:
 class TestClassifyCaseLikelyComplete:
     def test_inventory_csv_schema_unchanged(self, inventory):
         fieldnames = inventory.CASE_INVENTORY_FIELDNAMES
-        assert len(fieldnames) == 107
+        assert len(fieldnames) == 113
+        assert fieldnames[2:8] == [
+            "family",
+            "geo_id",
+            "mesh_id",
+            "run_id",
+            "u_target_ms",
+            "p_gauge_pa",
+        ]
         assert fieldnames.count("likely_complete") == 1
         assert fieldnames[fieldnames.index("likely_complete_from_logs") + 1] == "likely_complete"
         assert "stop_reason" in fieldnames
@@ -341,3 +349,46 @@ class TestClassifyCaseSolveTrustTable:
         assert record["case_status"] == inventory.NEEDS_SOLVER_RERUN
         assert record["needs_solver_rerun"] is False
         assert record["likely_complete"] is True
+
+
+class TestManifestStopReasonClassification:
+    @pytest.mark.parametrize(
+        ("stop_reason", "expected"),
+        [
+            ("residual_converged", "CONVERGED"),
+            ("qoi_converged", "CONVERGED"),
+            ("max_iter_reached", "MAX_ITER_REACHED"),
+            ("diverged", "FAILED_OR_DIVERGED"),
+            ("unknown_early_stop", "POSSIBLY_INCOMPLETE"),
+            ("qoi_report_unavailable", "POSSIBLY_INCOMPLETE"),
+            ("iteration_unknown", "POSSIBLY_INCOMPLETE"),
+            ("not_run", "POSSIBLY_INCOMPLETE"),
+            ("RUNNING", "POSSIBLY_INCOMPLETE"),
+        ],
+    )
+    def test_mapping(self, inventory, stop_reason, expected):
+        status = inventory.convergence_status_from_stop_reason(stop_reason)
+        assert status == getattr(inventory, expected)
+
+    def test_unknown_stop_reason_is_loud(self, inventory):
+        with pytest.raises(ValueError, match="Unsupported run manifest stop_reason"):
+            inventory.convergence_status_from_stop_reason("CONVERGED")
+
+    def test_manifest_stop_reason_overrides_log_parse(self, inventory, tmp_path):
+        case_dir = tmp_path / "run"
+        case_dir.mkdir()
+        (case_dir / "solver_log.txt").write_text(
+            "Solution is converged.\n", encoding="utf-8"
+        )
+        record = {
+            "geo_name": "D2450_a45",
+            "case_name": "u0p2_p6M",
+            "stop_reason": "max_iter_reached",
+            "_case_dir_path": case_dir,
+            "has_case_data_pair": True,
+            "has_summary_metrics_wide": False,
+        }
+        inventory.detect_logs_and_convergence(record, 2000)
+        assert record["stop_reason"] == "max_iter_reached"
+        assert record["convergence_status"] == inventory.MAX_ITER_REACHED
+        assert record["max_iter_only"] is True

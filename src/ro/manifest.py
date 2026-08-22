@@ -584,6 +584,76 @@ def iter_mesh_manifests() -> Iterator[tuple[Path, dict[str, Any]]]:
         yield manifest_path, read_mesh_manifest(manifest_path.parent)
 
 
-def iter_run_manifests() -> Iterator[tuple[Path, dict[str, Any]]]:
-    for manifest_path in sorted(runs_root().rglob("manifest.json")):
-        yield manifest_path, read_run_manifest(manifest_path.parent)
+_RUN_SCAN_SKIP_NAMES = {
+    "_inventory",
+    "__pycache__",
+    ".git",
+    ".hg",
+    ".svn",
+    "post",
+    "figures",
+    "reports",
+    "contours",
+    "plots",
+    "images",
+    "tmp",
+    "temp",
+}
+
+
+def _should_skip_run_scan_dir(name: str, include_hidden: bool) -> bool:
+    if name.lower() in _RUN_SCAN_SKIP_NAMES:
+        return True
+    if not include_hidden and (name.startswith(".") or name.startswith("_")):
+        return True
+    return False
+
+
+def _iter_child_dirs(parent: Path, *, include_hidden: bool) -> list[Path]:
+    try:
+        children = [path for path in parent.iterdir() if path.is_dir()]
+    except OSError:
+        return []
+    out: list[Path] = []
+    for child in sorted(children, key=lambda path: path.as_posix().lower()):
+        if _should_skip_run_scan_dir(child.name, include_hidden):
+            continue
+        out.append(child)
+    return out
+
+
+def _four_level_run_dirs(
+    results_root: Path,
+    *,
+    include_hidden: bool,
+) -> list[Path]:
+    """Return every ``family/geo_id/mesh_id/run_id`` leaf under results_root."""
+    if not results_root.is_dir():
+        raise NotADirectoryError(f"Results root is not a directory: {results_root}")
+    run_dirs: list[Path] = []
+    for family_dir in _iter_child_dirs(results_root, include_hidden=include_hidden):
+        for geo_dir in _iter_child_dirs(family_dir, include_hidden=include_hidden):
+            for mesh_directory in _iter_child_dirs(
+                geo_dir, include_hidden=include_hidden
+            ):
+                for run_directory in _iter_child_dirs(
+                    mesh_directory, include_hidden=include_hidden
+                ):
+                    run_dirs.append(run_directory)
+    return run_dirs
+
+
+def iter_run_manifests(
+    results_root: str | Path | None = None,
+    *,
+    include_hidden: bool = False,
+) -> Iterator[tuple[Path, dict[str, Any]]]:
+    """Yield ``(manifest_path, payload)`` for every four-level run directory.
+
+    Each leaf ``family/geo_id/mesh_id/run_id`` must have a valid manifest.
+    Missing, invalid, or stale manifests raise ManifestError; they are not
+    skipped. Identification is the manifest payload, not directory-name parsing.
+    """
+    root = Path(results_root) if results_root is not None else runs_root()
+    for directory in _four_level_run_dirs(root, include_hidden=include_hidden):
+        yield directory / "manifest.json", read_run_manifest(directory)

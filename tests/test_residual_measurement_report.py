@@ -10,6 +10,8 @@ import pytest
 
 from helpers import POST_DIR, load_module
 from ro import residual_transcript
+from ro.paths import run_dir
+from test_manifest import FAMILY, GEO_ID, MESH_ID, RUN_ID, write_test_run
 
 HEADER = (
     "iter  continuity  x-velocity  y-velocity  z-velocity  nacl  "
@@ -509,19 +511,18 @@ class TestSelectionAndRobustness:
 
 
 class TestCliEndToEnd:
-    def test_cli_writes_report(self, report_mod, residual_mod, tmp_path):
-        results = tmp_path / "03_Results"
-        case_dir = results / "Sin_ST" / "u0p1_p4M__mesh"
-        case_dir.mkdir(parents=True)
+    def test_cli_writes_report(self, report_mod, residual_mod, monkeypatch, tmp_path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        case_dir = write_test_run(stop_reason="max_iter_reached")
         values = [3.15e-7] * 60
         (case_dir / "solver_log_u0p1.txt").write_text(
             build_transcript(series_to_rows(values)), encoding="utf-8"
         )
-        out = tmp_path / "_inventory"
+        out = tmp_path / "inventory"
         rc = report_mod.main(
             [
                 "--results-root",
-                str(results),
+                str(tmp_path / "runs"),
                 "--output-dir",
                 str(out),
                 "--window",
@@ -540,6 +541,8 @@ class TestCliEndToEnd:
         assert "oscillating_coherent is a CANDIDATE" in text
         assert "Does NOT update convergence_status" in text
         content = csv_path.read_text(encoding="utf-8")
+        assert "D2450_a45" in content
+        assert "u0p2_p6M" in content
         assert "continuity_shortfall_factor" in content
         assert "continuity_trend_reason" in content
         assert "continuity_mean_crossings" in content
@@ -550,3 +553,22 @@ class TestCliEndToEnd:
         cli_src = (POST_DIR / "residual_measurement_report.py").read_text(encoding="utf-8")
         assert "ENDPOINT window" in cli_src
         assert ">=500" in cli_src
+
+    def test_cli_refuses_run_dir_without_manifest(
+        self, report_mod, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID).mkdir(parents=True)
+        rc = report_mod.main(
+            [
+                "--results-root",
+                str(tmp_path / "runs"),
+                "--output-dir",
+                str(tmp_path / "inventory"),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "Cases found  : 0" not in captured.out
+        assert "ERROR:" in captured.err
+        assert "manifest" in captured.err.lower()

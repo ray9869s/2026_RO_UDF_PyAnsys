@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -91,6 +93,17 @@ def run_payload():
     }
 
 
+def write_test_run(*, run_id: str = RUN_ID, **updates) -> Path:
+    """Write a valid run tree + manifest. Caller must set RO_DATA_ROOT first."""
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = run_payload()
+    payload["run_id"] = run_id
+    payload.update(updates)
+    write_run_manifest(directory, payload)
+    return directory
+
+
 def test_required_field_tuples_match_schema_payloads():
     assert set(MESH_MANIFEST_REQUIRED_FIELDS) == set(mesh_payload())
     assert set(RUN_MANIFEST_REQUIRED_FIELDS) == set(run_payload())
@@ -120,6 +133,29 @@ def test_run_manifest_round_trip(monkeypatch, tmp_path):
     assert path == directory / "manifest.json"
     assert read_run_manifest(directory) == payload
     assert list(iter_run_manifests()) == [(path, payload)]
+
+
+def test_iter_run_manifests_refuses_leaf_without_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+
+    with pytest.raises(ManifestError, match="Could not read manifest"):
+        list(iter_run_manifests())
+
+
+def test_iter_run_manifests_refuses_ids_that_disagree_with_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = write_test_run()
+    payload = run_payload()
+    payload["geo_id"] = "D1225_a45"
+    (directory / "manifest.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestError, match="ids do not match"):
+        list(iter_run_manifests())
 
 
 def test_parabolic_run_allows_null_mean_until_profile_g_is_known(

@@ -23,12 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from ro.manifest import iter_run_manifests
+from ro.paths import data_root, project_root, runs_root
 from ro.solver_common import (
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     max_iterations_from_common_solver_settings,
     parse_stop_reason_from_text,
 )
-from ro.paths import data_root, project_root, runs_root
 
 CONVERGED = "CONVERGED"
 MAX_ITER_REACHED = "MAX_ITER_REACHED"
@@ -50,22 +51,6 @@ UNKNOWN_REVIEW_REQUIRED = "UNKNOWN_REVIEW_REQUIRED"
 # happens during post-processing graphics (after the case was already
 # solved), it must not be mistaken for solver-run evidence.
 FLUENT_NODE_ERROR_LOG_PATTERN = re.compile(r"fluent-\d+-error\.log$", re.IGNORECASE)
-
-SKIP_DIR_NAMES = {
-    "_inventory",
-    "__pycache__",
-    ".git",
-    ".hg",
-    ".svn",
-    "post",
-    "figures",
-    "reports",
-    "contours",
-    "plots",
-    "images",
-    "tmp",
-    "temp",
-}
 
 LOG_WALK_SKIP_DIRS = {
     "__pycache__",
@@ -498,17 +483,27 @@ def ensure_safe_output_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def should_skip_dir_name(name: str, include_hidden: bool) -> bool:
-    lowered = name.lower()
-    if lowered in SKIP_DIR_NAMES:
-        return True
-    if not include_hidden and (name.startswith(".") or name.startswith("_")):
-        return True
-    return False
-
-
 def sort_paths(paths: Iterable[Path]) -> list[Path]:
     return sorted(paths, key=lambda p: p.as_posix().lower())
+
+
+def convergence_status_from_stop_reason(stop_reason: str) -> str:
+    """Map a run-manifest stop_reason onto inventory convergence_status."""
+    if stop_reason in {"residual_converged", "qoi_converged"}:
+        return CONVERGED
+    if stop_reason == "max_iter_reached":
+        return MAX_ITER_REACHED
+    if stop_reason == "diverged":
+        return FAILED_OR_DIVERGED
+    if stop_reason in {
+        "unknown_early_stop",
+        "qoi_report_unavailable",
+        "iteration_unknown",
+        "not_run",
+        "RUNNING",
+    }:
+        return POSSIBLY_INCOMPLETE
+    raise ValueError(f"Unsupported run manifest stop_reason: {stop_reason!r}")
 
 
 def discover_cases(
@@ -519,42 +514,43 @@ def discover_cases(
     verbose: bool,
 ) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    if not results_root.is_dir():
-        raise NotADirectoryError(f"Results root is not a directory: {results_root}")
-
-    geo_dirs = [p for p in results_root.iterdir() if p.is_dir()]
-    for geo_dir in sort_paths(geo_dirs):
-        geo_name = geo_dir.name
-        if should_skip_dir_name(geo_name, include_hidden):
+    for manifest_path, payload in iter_run_manifests(
+        results_root, include_hidden=include_hidden
+    ):
+        geo_id = str(payload["geo_id"])
+        run_id = str(payload["run_id"])
+        if geo_name_filter and geo_id != geo_name_filter:
             continue
-        if geo_name_filter and geo_name != geo_name_filter:
+        if case_name_filter and run_id != case_name_filter:
             continue
 
-        case_dirs = [p for p in geo_dir.iterdir() if p.is_dir()]
-        for case_dir in sort_paths(case_dirs):
-            case_name = case_dir.name
-            if should_skip_dir_name(case_name, include_hidden):
-                continue
-            if case_name_filter and case_name != case_name_filter:
-                continue
-
-            post_dir = case_dir / "post"
-            reports_dir = post_dir / "reports"
-            contours_dir = post_dir / "figures" / "contours"
-            cases.append(
-                {
-                    "geo_name": geo_name,
-                    "case_name": case_name,
-                    "case_dir": path_to_str(case_dir),
-                    "post_dir": path_to_str(post_dir),
-                    "reports_dir": path_to_str(reports_dir),
-                    "contours_dir": path_to_str(contours_dir),
-                    "_case_dir_path": case_dir,
-                    "_post_dir_path": post_dir,
-                    "_reports_dir_path": reports_dir,
-                    "_contours_dir_path": contours_dir,
-                }
-            )
+        case_dir = manifest_path.parent
+        post_dir = case_dir / "post"
+        reports_dir = post_dir / "reports"
+        contours_dir = post_dir / "figures" / "contours"
+        cases.append(
+            {
+                "geo_name": geo_id,
+                "case_name": run_id,
+                "family": payload["family"],
+                "geo_id": geo_id,
+                "mesh_id": payload["mesh_id"],
+                "run_id": run_id,
+                "u_target_ms": payload["u_target_ms"],
+                "p_gauge_pa": payload["p_gauge_pa"],
+                "stop_reason": payload["stop_reason"],
+                "case_dir": path_to_str(case_dir),
+                "post_dir": path_to_str(post_dir),
+                "reports_dir": path_to_str(reports_dir),
+                "contours_dir": path_to_str(contours_dir),
+                "_case_dir_path": case_dir,
+                "_post_dir_path": post_dir,
+                "_reports_dir_path": reports_dir,
+                "_contours_dir_path": contours_dir,
+            }
+        )
+        if verbose:
+            print(f"  manifest {manifest_path}: {geo_id}/{run_id}")
 
     return cases
 
@@ -614,6 +610,11 @@ def is_fluent_node_error_log(path: Path) -> bool:
 
 
 def find_log_files(case_dir: Path) -> tuple[list[Path], list[Path], Optional[Path]]:
+    """Collect log candidates under one run directory.
+
+    ``os.walk`` starts at the run_id leaf (the manifest parent). Sibling runs
+    are outside that tree, so transcripts cannot be merged across cases.
+    """
     candidates: list[Path] = []
     for root, dirs, files in os.walk(case_dir):
         dirs[:] = [
@@ -1033,10 +1034,6 @@ def reclassify_postprocessing_crash_logs(
     parsed.launch_error_evidence = _exclude_evidence_from_paths(parsed.launch_error_evidence, crash_paths)
     parsed.launch_error_files = _exclude_files(parsed.launch_error_files, crash_paths)
 
-    if not (parsed.failure_evidence or parsed.udf_compile_error_evidence or parsed.launch_error_evidence):
-        if has_pair and has_summary:
-            parsed.convergence_status = CONVERGED
-
     shear_status_upper = str(case_record.get("shear_export_status") or "").upper()
     failed_stage = ""
     if not case_record.get("has_shear_contour") or shear_status_upper in ("FAILED", "FAIL"):
@@ -1047,6 +1044,11 @@ def reclassify_postprocessing_crash_logs(
 
 def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: int) -> None:
     case_dir = case_record["_case_dir_path"]
+    stop_reason = str(case_record.get("stop_reason") or "")
+    if not stop_reason:
+        raise ValueError(f"Run directory has no manifest stop_reason: {case_dir}")
+    convergence_status = convergence_status_from_stop_reason(stop_reason)
+
     log_files, transcript_files, latest_log = find_log_files(case_dir)
     analyses = analyze_log_files(log_files)
     log_files_by_role = {
@@ -1089,8 +1091,8 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
             "meshing_log_files": log_files_by_role[ROLE_MESHING],
             "udf_compile_log_files": log_files_by_role[ROLE_UDF_COMPILE],
             "unknown_log_files": log_files_by_role[ROLE_UNKNOWN],
-            "convergence_status": parsed.convergence_status,
-            "stop_reason": parsed.stop_reason,
+            "convergence_status": convergence_status,
+            "stop_reason": stop_reason,
             "max_iteration_detected": parsed.max_iteration_detected,
             "max_iter_target": max_iter_target,
             "hit_max_iter_target": parsed.hit_max_iter_target,
@@ -1120,7 +1122,9 @@ def detect_logs_and_convergence(case_record: dict[str, Any], max_iter_target: in
             "has_udf_compile_errors": bool(parsed.udf_compile_error_evidence),
             "has_launch_errors": bool(parsed.launch_error_evidence),
             "hard_solver_failure_detected": hard_solver_failure,
-            "max_iter_only": bool(parsed.convergence_status == MAX_ITER_REACHED and not hard_solver_failure),
+            "max_iter_only": bool(
+                convergence_status == MAX_ITER_REACHED and not hard_solver_failure
+            ),
         }
     )
 
@@ -1632,6 +1636,12 @@ def strip_internal_paths(record: dict[str, Any]) -> dict[str, Any]:
 CASE_INVENTORY_FIELDNAMES = [
     "geo_name",
     "case_name",
+    "family",
+    "geo_id",
+    "mesh_id",
+    "run_id",
+    "u_target_ms",
+    "p_gauge_pa",
     "case_dir",
     "post_dir",
     "reports_dir",

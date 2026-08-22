@@ -17,34 +17,20 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from ro.manifest import iter_run_manifests
+from ro.paths import data_root, project_root, runs_root
 from ro.residual_transcript import (
     PARSE_OK,
     build_summary_text,
     measure_case_dir,
     write_measurement_csv,
 )
-from ro.paths import data_root, project_root, runs_root
 from ro.solver_common import (
     DEFAULT_MAX_ITERATIONS_FALLBACK,
     DEFAULT_RESIDUAL_TARGET_FALLBACK,
     max_iterations_from_common_solver_settings,
     residual_target_from_common_solver_settings,
 )
-SKIP_DIR_NAMES = {
-    "_inventory",
-    "__pycache__",
-    ".git",
-    ".hg",
-    ".svn",
-    "post",
-    "figures",
-    "reports",
-    "contours",
-    "plots",
-    "images",
-    "tmp",
-    "temp",
-}
 
 
 _LOAD_FAILED = object()
@@ -92,14 +78,6 @@ def default_residual_target() -> float:
     return residual_target_from_common_solver_settings(settings)
 
 
-def should_skip_dir_name(name: str, include_hidden: bool) -> bool:
-    if name in SKIP_DIR_NAMES:
-        return True
-    if not include_hidden and name.startswith(("_", ".")):
-        return True
-    return False
-
-
 def discover_cases(
     results_root: Path,
     *,
@@ -108,27 +86,16 @@ def discover_cases(
     include_hidden: bool,
 ) -> list[tuple[str, str, Path]]:
     cases: list[tuple[str, str, Path]] = []
-    if not results_root.is_dir():
-        raise NotADirectoryError(
-            f"Results root is not an existing directory: {results_root}"
-        )
-    for geo_dir in sorted(
-        (p for p in results_root.iterdir() if p.is_dir()),
-        key=lambda p: p.name.lower(),
+    for manifest_path, payload in iter_run_manifests(
+        results_root, include_hidden=include_hidden
     ):
-        if should_skip_dir_name(geo_dir.name, include_hidden):
+        geo_id = str(payload["geo_id"])
+        run_id = str(payload["run_id"])
+        if geo_name_filter and geo_id != geo_name_filter:
             continue
-        if geo_name_filter and geo_dir.name != geo_name_filter:
+        if case_name_filter and run_id != case_name_filter:
             continue
-        for case_dir in sorted(
-            (p for p in geo_dir.iterdir() if p.is_dir()),
-            key=lambda p: p.name.lower(),
-        ):
-            if should_skip_dir_name(case_dir.name, include_hidden):
-                continue
-            if case_name_filter and case_dir.name != case_name_filter:
-                continue
-            cases.append((geo_dir.name, case_dir.name, case_dir))
+        cases.append((geo_id, run_id, manifest_path.parent))
     return cases
 
 

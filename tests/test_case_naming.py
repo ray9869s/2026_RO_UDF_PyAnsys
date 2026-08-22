@@ -1,8 +1,8 @@
-"""Characterization tests for case-name building and operating-value parsing.
+"""Characterization tests for case-name building.
 
 Batch naming helpers are re-exported from _solver_common via batch_solver_sweep
-(phase 2). Report (01_batch_report_extract) and post (06) naming are unchanged
-here; a later phase may wire them to the shared module.
+(phase 2). Report (batch_report_extract) naming is checked here for token parity.
+Operating values come from the run manifest, not from case-name parsing.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from helpers import (
-    load_batch_postprocess,
     load_batch_report_extract,
     load_batch_solver_sweep,
 )
@@ -45,11 +44,6 @@ def sweep():
 @pytest.fixture(scope="module")
 def report_batch():
     return load_batch_report_extract()
-
-
-@pytest.fixture(scope="module")
-def post_batch():
-    return load_batch_postprocess()
 
 
 class TestBatchSolverSweepNaming:
@@ -142,32 +136,3 @@ class TestBatchReportExtractNaming:
         assert resolved["case_name"] == f"u0p1_p4M__{SIN_MESH}"
         assert resolved["base_case_name"] == "u0p1_p4M"
 
-
-class TestParseCaseOperatingValues:
-    @pytest.mark.parametrize(
-        ("case_name", "expected_u", "expected_p"),
-        [
-            ("u0p1_p4M", 0.1, 4.0e6),
-            ("u0p2_p6M", 0.2, 6.0e6),
-            ("u0p3_p8M", 0.3, 8.0e6),
-        ],
-    )
-    def test_plain_case_names(self, post_batch, case_name, expected_u, expected_p):
-        u, p = post_batch.parse_case_operating_values(case_name)
-        assert u == expected_u
-        assert p == expected_p
-
-    @pytest.mark.parametrize(
-        ("mesh_qualified_name", "expected_u", "expected_p"),
-        [
-            (f"u0p1_p4M__{SIN_MESH}", 0.1, 4.0e6),
-            (f"u0p2_p6M__{SIN_MESH}", 0.2, 6.0e6),
-            (f"u0p3_p8M__{SIN_MESH}", 0.3, 8.0e6),
-        ],
-    )
-    def test_mesh_qualified_names_parse_operating_values(
-        self, post_batch, mesh_qualified_name, expected_u, expected_p
-    ):
-        u, p = post_batch.parse_case_operating_values(mesh_qualified_name)
-        assert u == expected_u
-        assert p == expected_p

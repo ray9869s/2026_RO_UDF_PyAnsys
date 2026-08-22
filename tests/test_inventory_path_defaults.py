@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from helpers import (
@@ -11,6 +13,8 @@ from helpers import (
     load_case_inventory,
     load_module,
 )
+from ro.paths import run_dir
+from test_manifest import FAMILY, GEO_ID, MESH_ID, RUN_ID, write_test_run
 
 
 CWD_BUG_SCRIPTS = (
@@ -102,23 +106,86 @@ def test_residual_missing_runs_root_is_not_silent_success(
     assert "ERROR:" in captured.err
 
 
-def test_inventory_dry_run_finds_cases_from_data_root(
+def test_inventory_dry_run_finds_cases_from_manifests(
     inventory, monkeypatch, tmp_path, capsys
 ):
-    data = tmp_path / "data"
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     elsewhere = tmp_path / "elsewhere"
-    case_dir = data / "runs" / "Sin_ST" / "u0p1_p4M"
-    case_dir.mkdir(parents=True)
     elsewhere.mkdir()
-    monkeypatch.setenv("RO_DATA_ROOT", str(data))
+    write_test_run(run_id="u0p2_p6M", stop_reason="max_iter_reached", u_target_ms=0.2)
+    write_test_run(run_id="u0p3_p6M", stop_reason="max_iter_reached", u_target_ms=0.3)
     monkeypatch.chdir(elsewhere)
 
     rc = inventory.main(["--dry-run"])
     captured = capsys.readouterr()
     assert rc == 0
-    assert "Total cases: 1" in captured.out
+    assert "Total cases: 2" in captured.out
+    assert "Max-iter reached: 2" in captured.out
     assert "Dry run: would write case_inventory.csv" in captured.out
-    assert not (data / "inventory" / "case_inventory.csv").exists()
+    assert not (tmp_path / "inventory" / "case_inventory.csv").exists()
+
+
+def test_inventory_refuses_run_dir_without_manifest(
+    inventory, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID).mkdir(parents=True)
+
+    rc = inventory.main(["--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "Total cases: 0" not in captured.out
+    assert "ERROR:" in captured.err
+    assert "manifest" in captured.err.lower()
+
+
+def test_inventory_refuses_manifest_ids_that_disagree_with_path(
+    inventory, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = write_test_run()
+    payload = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    payload["geo_id"] = "D1225_a45"
+    (directory / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    rc = inventory.main(["--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "ERROR:" in captured.err
+    assert "ids do not match" in captured.err
+
+
+def test_inventory_two_level_leftover_is_not_a_case(
+    inventory, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    leftover = tmp_path / "runs" / "Sin_ST" / "u0p1_p4M"
+    leftover.mkdir(parents=True)
+    (leftover / "solver_log.txt").write_text("iteration 10\n", encoding="utf-8")
+
+    rc = inventory.main(["--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Total cases: 0" in captured.out
+
+
+def test_inventory_log_walk_stays_inside_one_run_dir(
+    inventory, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    run_a = write_test_run(run_id="u0p2_p6M", stop_reason="max_iter_reached")
+    run_b = write_test_run(run_id="u0p3_p6M", stop_reason="max_iter_reached")
+    (run_a / "solver_log_a.txt").write_text("iteration 10\n", encoding="utf-8")
+    (run_b / "solver_log_b.txt").write_text("iteration 20\n", encoding="utf-8")
+
+    logs_a, _, _ = inventory.find_log_files(run_a)
+    logs_b, _, _ = inventory.find_log_files(run_b)
+    names_a = {path.name for path in logs_a}
+    names_b = {path.name for path in logs_b}
+    assert names_a == {"solver_log_a.txt"}
+    assert names_b == {"solver_log_b.txt"}
+    assert all(run_a in path.parents or path.parent == run_a for path in logs_a)
+    assert all(run_b in path.parents or path.parent == run_b for path in logs_b)
 
 
 def test_batch_post_resolves_inventory_under_data_root(
