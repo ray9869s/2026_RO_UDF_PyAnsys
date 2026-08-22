@@ -2,6 +2,7 @@
 # ##### [0] Import Required Packages #####
 # ==========================================================
 import ansys.fluent.core as pyfluent
+import argparse
 import hashlib
 import os
 import re
@@ -11,7 +12,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ro.manifest import write_mesh_manifest
+from ro.manifest import (
+    assert_mesh_file_overwrite_allowed,
+    write_mesh_manifest,
+)
 from ro.mesh_common import (
     MESH_METRIC_NAMES,
     build_mesh_ledger_record,
@@ -103,6 +107,19 @@ def resolve_meshing_paths(cfg):
         ),
     }
 
+
+def parse_meshing_cli(argv=None):
+    parser = argparse.ArgumentParser(description="Fluent meshing worker.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Replace an existing hashed .msh.h5 that has no dependent run "
+            "manifests. Refused if any run still references this mesh_sha256."
+        ),
+    )
+    return parser.parse_args(argv)
+
 # ==========================================================
 # ##### [1] Load Run Configuration #####
 # ==========================================================
@@ -110,6 +127,7 @@ def resolve_meshing_paths(cfg):
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
+    meshing_cli = parse_meshing_cli()
     SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
     _default_config = project_root() / "configs" / "run_config.py"
     _env = os.environ.get("PYFLUENT_RUN_CONFIG")
@@ -354,6 +372,12 @@ if __name__ == "__main__":
 
     if not os.path.exists(case_path):
         os.makedirs(case_path)
+
+    assert_mesh_file_overwrite_allowed(
+        mesh_file_path,
+        case_path,
+        force=meshing_cli.force,
+    )
 
 
 # ==========================================================

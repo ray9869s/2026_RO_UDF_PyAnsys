@@ -10,6 +10,7 @@ from ro.manifest import (
     MESH_MANIFEST_REQUIRED_FIELDS,
     RUN_MANIFEST_REQUIRED_FIELDS,
     ManifestError,
+    assert_mesh_file_overwrite_allowed,
     iter_mesh_manifests,
     iter_run_manifests,
     read_mesh_manifest,
@@ -255,3 +256,77 @@ def test_mesh_quality_is_required_when_sha_is_set(monkeypatch, tmp_path):
 
     with pytest.raises(ManifestError, match="may not be null"):
         write_mesh_manifest(directory, payload)
+
+
+def test_mesh_sha256_change_allowed_when_no_runs_exist(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    write_mesh_manifest(directory, payload)
+    rewritten = copy.deepcopy(payload)
+    rewritten["mesh_sha256"] = "b" * 64
+
+    write_mesh_manifest(directory, rewritten)
+
+    assert read_mesh_manifest(directory)["mesh_sha256"] == "b" * 64
+
+
+def test_mesh_sha256_change_refused_when_runs_reference_old_hash(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    mesh_directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    mesh_directory.mkdir(parents=True)
+    write_mesh_manifest(mesh_directory, mesh_payload())
+    run_directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    run_directory.mkdir(parents=True)
+    write_run_manifest(run_directory, run_payload())
+    rewritten = copy.deepcopy(mesh_payload())
+    rewritten["mesh_sha256"] = "b" * 64
+
+    with pytest.raises(ManifestError, match="change mesh_sha256"):
+        write_mesh_manifest(mesh_directory, rewritten)
+
+
+def test_hashed_mesh_file_overwrite_requires_force(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    write_mesh_manifest(directory, mesh_payload())
+    mesh_file = directory / "mesh.msh.h5"
+    mesh_file.write_bytes(b"mesh")
+
+    with pytest.raises(ManifestError, match="Refusing to overwrite existing mesh"):
+        assert_mesh_file_overwrite_allowed(mesh_file, directory, force=False)
+
+    assert_mesh_file_overwrite_allowed(mesh_file, directory, force=True)
+
+
+def test_force_mesh_overwrite_refused_when_runs_reference_hash(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    write_mesh_manifest(directory, mesh_payload())
+    mesh_file = directory / "mesh.msh.h5"
+    mesh_file.write_bytes(b"mesh")
+    run_directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    run_directory.mkdir(parents=True)
+    write_run_manifest(run_directory, run_payload())
+
+    with pytest.raises(ManifestError, match="Refusing --force"):
+        assert_mesh_file_overwrite_allowed(mesh_file, directory, force=True)
+
+
+def test_incomplete_mesh_file_without_hashed_manifest_is_allowed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    mesh_file = directory / "mesh.msh.h5"
+    mesh_file.write_bytes(b"partial")
+
+    assert_mesh_file_overwrite_allowed(mesh_file, directory, force=False)

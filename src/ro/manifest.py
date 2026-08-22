@@ -457,7 +457,88 @@ def write_mesh_manifest(
                 "Refusing to overwrite mesh manifest with changed parameters: "
                 f"{changed!r}."
             )
+        old_sha = existing.get("mesh_sha256")
+        new_sha = payload.get("mesh_sha256")
+        if old_sha and new_sha and old_sha != new_sha:
+            dependents = run_dirs_referencing_mesh_sha256(
+                existing["family"],
+                existing["geo_id"],
+                existing["mesh_id"],
+                old_sha,
+            )
+            if dependents:
+                run_ids = ", ".join(path.name for path in dependents)
+                raise ManifestError(
+                    "Refusing to change mesh_sha256 while run manifests still "
+                    f"reference the old hash ({old_sha[:12]}…): {run_ids}. "
+                    "Use a new mesh_id instead of remeshing in place."
+                )
     return _atomic_write(manifest_path, payload)
+
+
+def run_dirs_referencing_mesh_sha256(
+    family: str,
+    geo_id: str,
+    mesh_id: str,
+    mesh_sha256: str,
+) -> tuple[Path, ...]:
+    """Return run directories under this mesh whose manifest cites mesh_sha256."""
+    root = runs_root() / family / geo_id / mesh_id
+    if not root.is_dir():
+        return ()
+    found: list[Path] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or not (child / "manifest.json").is_file():
+            continue
+        payload = read_run_manifest(child)
+        if payload.get("mesh_sha256") == mesh_sha256:
+            found.append(child)
+    return tuple(found)
+
+
+def assert_mesh_file_overwrite_allowed(
+    mesh_file: str | Path,
+    mesh_directory: str | Path,
+    *,
+    force: bool = False,
+) -> None:
+    """Refuse to replace a hashed .msh.h5 unless --force and no dependent runs.
+
+    A mesh file with no manifest, or a manifest whose mesh_sha256 is still
+    null, is treated as an incomplete write and is allowed to proceed.
+    """
+    mesh_file = Path(mesh_file)
+    mesh_directory = Path(mesh_directory)
+    if not mesh_file.is_file():
+        return
+    manifest_path = mesh_directory / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    existing = read_mesh_manifest(mesh_directory)
+    current_sha = existing.get("mesh_sha256")
+    if not current_sha:
+        return
+    if not force:
+        raise ManifestError(
+            "Refusing to overwrite existing mesh "
+            f"{mesh_file} (mesh_sha256={current_sha[:12]}…). "
+            "Pass --force only when no run manifests reference this hash. "
+            "To change the mesh, use a new mesh_id."
+        )
+    dependents = run_dirs_referencing_mesh_sha256(
+        existing["family"],
+        existing["geo_id"],
+        existing["mesh_id"],
+        current_sha,
+    )
+    if dependents:
+        run_ids = ", ".join(path.name for path in dependents)
+        raise ManifestError(
+            "Refusing --force: "
+            f"{len(dependents)} run manifest(s) still reference "
+            f"mesh_sha256={current_sha[:12]}… ({run_ids}). "
+            "Remeshing in place would orphan those runs. Use a new mesh_id."
+        )
 
 
 def read_mesh_manifest(mesh_directory: str | Path) -> dict[str, Any]:
