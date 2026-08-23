@@ -112,6 +112,8 @@ def populate_valid_meshing_config(cfg: ModuleType) -> None:
     cfg.n_buffer_in = 1
     cfg.n_buffer_out = 2
     cfg.cell_length_x_m = 0.003465
+    cfg.buffer_length_in_m = 0.003465
+    cfg.buffer_length_out_m = 0.00693
     cfg.n_lead_excluded = 3
     cfg.n_trail_excluded = 0
     cfg.m_max = 0.085

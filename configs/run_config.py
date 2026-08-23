@@ -38,6 +38,8 @@ RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
     "n_buffer_in",
     "n_buffer_out",
     "cell_length_x_m",
+    "buffer_length_in_m",
+    "buffer_length_out_m",
     "n_lead_excluded",
     "n_trail_excluded",
     "mesh_case_name",
@@ -73,6 +75,8 @@ n_active_cells = REQUIRED
 n_buffer_in = REQUIRED
 n_buffer_out = REQUIRED
 cell_length_x_m = REQUIRED
+buffer_length_in_m = REQUIRED
+buffer_length_out_m = REQUIRED
 n_lead_excluded = REQUIRED
 n_trail_excluded = REQUIRED
 
@@ -575,9 +579,11 @@ def validate_for_meshing():
     _require_nonnegative_number("bridge_radius_m", bridge_radius_m)
     _require_nonnegative_number("overlap_m", overlap_m)
     _require_integer("n_active_cells", n_active_cells, minimum=1)
-    _require_integer("n_buffer_in", n_buffer_in, minimum=0)
-    _require_integer("n_buffer_out", n_buffer_out, minimum=0)
+    _require_integer("n_buffer_in", n_buffer_in, minimum=1)
+    _require_integer("n_buffer_out", n_buffer_out, minimum=1)
     _require_positive_number("cell_length_x_m", cell_length_x_m)
+    _require_positive_number("buffer_length_in_m", buffer_length_in_m)
+    _require_positive_number("buffer_length_out_m", buffer_length_out_m)
     _require_integer("n_lead_excluded", n_lead_excluded, minimum=0)
     _require_integer("n_trail_excluded", n_trail_excluded, minimum=0)
     if n_lead_excluded + n_trail_excluded >= n_active_cells:

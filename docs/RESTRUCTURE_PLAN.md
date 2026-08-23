@@ -203,6 +203,9 @@ filament_d_m                    # 4.0e-4 for the current diamond family
 bridge_radius_m                 # 1.10e-4 — REQUIRED even though absent from geo_id
 overlap_m                       # 0.0 for current tangential-contact diamond
 n_active_cells, n_buffer_in, n_buffer_out, cell_length_x_m
+buffer_length_in_m, buffer_length_out_m   # metres; independent of pitch
+# cell_length_x_m is active pitch only. total length is
+# buffer_in + n_active * pitch + buffer_out, not n_total * pitch.
 membrane_wall_base_names        # e.g. ["wall_top_mem", "wall_bottom_mem"]
 buffer_wall_base_names          # generation-dependent; see note below
 n_lead_excluded, n_trail_excluded
@@ -366,6 +369,28 @@ Do not reopen these.
 | dated filenames | `meshing_code_260616.py`, `solver_code_260616.py`, and all dated `*_RO_UDF.c` keep their names. Directory `git mv` only. |
 | pytest dependency | `requirements-dev.txt`, not `requirements.txt` (the latter is the server's Ansys/jupyter pin list). |
 | `max_iterations` | Code is consistently 2000. `07`'s 3000 is a different knob (rerun budget). |
+| plug vs parabolic | Closed on `D2450_a45` / `max085_min006_cpg5_bl4_peel2` / `u0p2_p6M` vs `u0p2_p6M_plug`. See below. |
+
+### Plug vs parabolic — `D2450_a45` / `u0p2_p6M`
+
+Same mesh, same operating point, `use_inlet_velocity_profile` True vs False.
+Both converged at iteration 301. Parabolic is the campaign leaf; plug is
+`u0p2_p6M_plug`. Every headline metric agrees within 0.02%:
+
+| metric | parabolic | plug | relative |
+|---|---:|---:|---:|
+| `lmh_udm_avg` | 25.8773 | 25.8798 | +0.010% |
+| `lmh_mass_balance` | 25.8845 | 25.8876 | +0.012% |
+| `cp_inlet_avg` | 1.05827 | 1.05817 | −0.009% |
+| `cp_inlet_max` | 1.38812 | 1.38791 | −0.015% |
+| `pp_pressure_drop_periodic_per_m` | 33094 Pa/m | 33099 Pa/m | +0.016% |
+| `cm_avg` | 632.53 | 632.47 | −0.009% |
+
+CP was the last open question from this comparison. Inlet BC does not change
+the scored CP: the 1-cell inlet buffer plus `lead=3` puts the evaluation
+window `(1+3)×0.003465 m = 13.86 mm` from the inlet, more than 10 mm and far
+beyond the laminar entrance length at this Re. Per-cell ΔP already flattened
+by cells 5–8. Campaign BC stays parabolic; the plug leaf is a one-off.
 
 **When regenerating pillar / sinusoidal families.** The dated UDF hardcodes
 `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, and `INLET_AREA_EXPECTED_M2` for the current
@@ -459,6 +484,24 @@ is rewritten.
 
 ---
 
+## Known open questions
+
+### Entrance decay: cell count vs absolute length
+
+`n_lead_excluded = 3` was set from D2450 per-cell ΔP (active cell 1 ~+27%,
+cell 3 +2.5% vs the cells 4–7 plateau). That is 10.395 mm of membrane only
+because D2450's pitch is 3.465 mm. The D0817 `21c` geometry was built to
+test whether the same decay follows spacer pitch (three cells) or an
+absolute length (~10.4 mm), at the same domain extent and buffer lengths
+and one-third the pitch. `lead=3` was copied onto that layout as a starting
+convention; the per-cell comparison was never recorded. The 11 Aug
+`sum_if` failure blocked membrane-segment CP, not this measurement:
+`pp_pressure_drop_cell_N` is from x-normal iso-planes and plane pressure
+reports. One solved run on a different pitch writes the table. Do not
+treat a copied `lead=3` as a measured physical window.
+
+---
+
 ## 9. Working constraints
 
 - **All development happens in WSL** (`~/code/PyFluent`). The Windows server only
@@ -526,9 +569,8 @@ Sinusoidal, and Pillar, times nine operating points. Diamond/81 is phase one
 because it is the only family with CAD today; the other families need CAD
 regeneration under the same parametric scheme.
 
-Before starting that campaign, re-run one case (`D2450_a45`) **to completion**
-(not `max_iterations=1`) and confirm LMH, evaluation-window ΔP, and CP against
-the pre-restructure figures. The legacy `03_Results` tree is frozen under
-`RO_DATA_ROOT/archive/` and the `_scratch` logs are archived at
-`archive/logs/scratch_20260820.tgz` if a number needs to be recovered for
-comparison.
+The `D2450_a45` completion check is done: LMH, evaluation-window ΔP, and CP
+are physically consistent, and plug vs parabolic agrees to 0.02% (section 7).
+The legacy `03_Results` tree is frozen under `RO_DATA_ROOT/archive/` and the
+`_scratch` logs are archived at `archive/logs/scratch_20260820.tgz` if a
+number needs to be recovered for comparison.

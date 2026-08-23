@@ -161,6 +161,8 @@ def test_report_extract_accepts_explicit_layout_overrides():
             "n_active": 7,
             "n_buffer_out": 2,
             "cell_length_x_m": 0.003465,
+            "buffer_length_in_m": 0.003465,
+            "buffer_length_out_m": 0.00693,
         },
     )
     geo = extract.require_explicit_scoring_layout(cfg)

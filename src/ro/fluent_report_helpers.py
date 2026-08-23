@@ -260,13 +260,14 @@ def resolve_evaluation_window_from_config(cfg: Any) -> EvaluationWindow:
 def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
     """Build scoring geometry from asymmetric layout keys on a post config.
 
-    Asymmetric keys ``n_buffer_in``, ``n_active``, ``n_buffer_out``, and
-    ``cell_length_x_m`` are required (no silent 5/1 defaults).
+    Asymmetric keys ``n_buffer_in``, ``n_active``, ``n_buffer_out``,
+    ``cell_length_x_m``, ``buffer_length_in_m``, and ``buffer_length_out_m``
+    are required (no silent 5/1 defaults).
 
     Rule when legacy geometry keys are also present: they must agree with the
     asymmetric layout. Disagreement raises — neither side is preferred silently.
     ``buffer_length_m`` means the inlet-side buffer length
-    (``n_buffer_in * cell_length_x_m``). ``n_buffer_cells_each_end`` is only
+    (``buffer_length_in_m``). ``n_buffer_cells_each_end`` is only
     valid when ``n_buffer_in == n_buffer_out``; a non-None value on an
     asymmetric layout is a contradiction. A ``None`` value is treated as
     absent (used to clear the key via overrides).
@@ -276,6 +277,8 @@ def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
         int(_require_config_attr(cfg, "n_active")),
         int(_require_config_attr(cfg, "n_buffer_out")),
         float(_require_config_attr(cfg, "cell_length_x_m")),
+        float(_require_config_attr(cfg, "buffer_length_in_m")),
+        float(_require_config_attr(cfg, "buffer_length_out_m")),
     )
     domain_x_min_m = float(_require_config_attr(cfg, "domain_x_min_m"))
     geometry = scoring_geometry_from_layout(layout, domain_x_min_m)
@@ -294,7 +297,9 @@ def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
                 f"layout.total_length_m={geometry.domain_length_m!r} "
                 f"(n_buffer_in={layout.n_buffer_in}, n_active={layout.n_active}, "
                 f"n_buffer_out={layout.n_buffer_out}, "
-                f"cell_length_x_m={layout.cell_length_x_m})."
+                f"cell_length_x_m={layout.cell_length_x_m}, "
+                f"buffer_length_in_m={layout.buffer_length_in_m}, "
+                f"buffer_length_out_m={layout.buffer_length_out_m})."
             )
 
     if _config_has_layout_value(cfg, "n_unit_cells"):
@@ -308,9 +313,7 @@ def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
 
     if _config_has_layout_value(cfg, "buffer_length_m"):
         buffer_length_m = float(cfg.buffer_length_m)
-        expected_inlet_buffer_m = (
-            layout.n_buffer_in * float(layout.cell_length_x_m)
-        )
+        expected_inlet_buffer_m = float(layout.buffer_length_in_m)
         if not math.isclose(
             buffer_length_m,
             expected_inlet_buffer_m,
@@ -321,7 +324,7 @@ def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
                 "buffer_length_m contradicts asymmetric layout inlet buffer: "
                 f"buffer_length_m={buffer_length_m!r}, "
                 f"expected={expected_inlet_buffer_m!r} "
-                f"(n_buffer_in * cell_length_x_m)."
+                f"(buffer_length_in_m)."
             )
 
     if _config_has_layout_value(cfg, "n_buffer_cells_each_end"):

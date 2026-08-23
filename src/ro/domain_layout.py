@@ -4,16 +4,21 @@ The channel is tiled along x as::
 
     [n_buffer_in] + [n_active] + [n_buffer_out]
 
+``n_buffer_in`` / ``n_buffer_out`` are zone counts (1 and 2 on the current
+split-wall CAD), not a length in pitches. Inlet and outlet buffer lengths
+are independent metre fields. ``cell_length_x_m`` is the active-cell pitch
+only. ``total_length_m`` is ``buffer_in + n_active * pitch + buffer_out``,
+not ``n_total * pitch``.
+
 Membrane walls exist only over the active span. This module replaces the
 symmetric production triple
 ``(domain_length_m, n_unit_cells, n_buffer_cells_each_end)``, which cannot
 express the current 1+7+2 generation.
 
-``CELL_LENGTH_X_M = 0.003465`` is shared by the legacy 5-cell and current
-10-cell families in ``mesh_ledger.csv``. The entrance-decay diagnostic
-geometry ``D0817_a45_21c_brg110`` uses a separate third of that pitch
-(``CELL_LENGTH_X_D0817_M = 0.001155``) while keeping the same physical
-extent and buffer lengths for cell-by-cell comparison.
+``CELL_LENGTH_X_M = 0.003465`` is the D2450_a45 active pitch, which happens
+to equal the inlet buffer. Buffers are 3.465 mm in and 6.93 mm out on the
+current diamond CAD; a30/a60 pitches are not integer submultiples of those
+lengths.
 
 There is deliberately **no** ``cell_length_y`` here. The spanwise period lives
 in the meshing config as ``periodic_shift_y`` in **millimetres** (nominal
@@ -43,15 +48,11 @@ from typing import Optional
 from ro.manifest import read_mesh_manifest, read_run_manifest
 from ro.paths import mesh_dir
 
-# Constants harvested from mesh_ledger.csv (legacy + current 10-cell families
-# share this cell length) and from CURRENT / LEGACY buffer-active splits.
+# D2450_a45 active pitch. Inlet buffer is the same length by coincidence;
+# do not treat this constant as a buffer length.
 CELL_LENGTH_X_M = 0.003465
-# D0817 entrance-decay diagnostic: L_f = 0.816708 mm (= 3.465/(3*sqrt(2))),
-# theta = 45 deg from the inlet face, so cell length = L_f/cos(45) =
-# 1.155000 mm exactly (= 3.465/3). Same physical extent / buffer lengths as
-# D2450_a45_7c_brg110 (30 * 0.001155 = 0.03465 m; spacer 0.003465..0.027720 m;
-# buffers 3.465 / 6.930 mm). Not a production layout.
-CELL_LENGTH_X_D0817_M = 0.001155
+BUFFER_LENGTH_IN_M = 0.003465
+BUFFER_LENGTH_OUT_M = 0.00693
 
 MEMBRANE_WALL_BASE_NAMES = ("wall_top_mem", "wall_bottom_mem")
 LEGACY_BUFFER_WALL_BASE_NAMES = ("wall_top_buffer", "wall_bottom_buffer")
@@ -93,14 +94,25 @@ _DOMAIN_EXTENTS_HEADER_RE = re.compile(
 DEFAULT_EXTENT_REL_TOL = 1.0e-5
 
 
+def _require_positive_length(field_name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field_name} must be numeric, got {value!r}.")
+    length = float(value)
+    if length <= 0.0:
+        raise ValueError(f"{field_name} must be > 0, got {value!r}.")
+    return length
+
+
 @dataclass(frozen=True)
 class DomainLayout:
-    """Immutable streamwise layout: buffer / active / buffer cell counts."""
+    """Immutable streamwise layout: zone counts, active pitch, buffer lengths."""
 
     n_buffer_in: int
     n_active: int
     n_buffer_out: int
     cell_length_x_m: float
+    buffer_length_in_m: float
+    buffer_length_out_m: float
 
     def __post_init__(self) -> None:
         for field_name in ("n_buffer_in", "n_active", "n_buffer_out"):
@@ -111,16 +123,19 @@ class DomainLayout:
                 raise ValueError(f"{field_name} must be >= 0, got {value!r}.")
         if self.n_active < 1:
             raise ValueError(f"n_active must be >= 1, got {self.n_active!r}.")
-        if isinstance(self.cell_length_x_m, bool) or not isinstance(
-            self.cell_length_x_m, (int, float)
-        ):
-            raise TypeError(
-                f"cell_length_x_m must be numeric, got {self.cell_length_x_m!r}."
-            )
-        if float(self.cell_length_x_m) <= 0.0:
+        if self.n_buffer_in < 1:
             raise ValueError(
-                f"cell_length_x_m must be > 0, got {self.cell_length_x_m!r}."
+                "n_buffer_in must be >= 1 to split buffer_length_in_m, "
+                f"got {self.n_buffer_in!r}."
             )
+        if self.n_buffer_out < 1:
+            raise ValueError(
+                "n_buffer_out must be >= 1 to split buffer_length_out_m, "
+                f"got {self.n_buffer_out!r}."
+            )
+        _require_positive_length("cell_length_x_m", self.cell_length_x_m)
+        _require_positive_length("buffer_length_in_m", self.buffer_length_in_m)
+        _require_positive_length("buffer_length_out_m", self.buffer_length_out_m)
 
     @property
     def n_total(self) -> int:
@@ -128,17 +143,38 @@ class DomainLayout:
 
     @property
     def total_length_m(self) -> float:
-        return self.n_total * float(self.cell_length_x_m)
+        return (
+            float(self.buffer_length_in_m)
+            + self.n_active * float(self.cell_length_x_m)
+            + float(self.buffer_length_out_m)
+        )
 
     @property
     def active_length_m(self) -> float:
         return self.n_active * float(self.cell_length_x_m)
 
     def boundary_positions(self, x0: float) -> list[float]:
-        """Return n_total + 1 boundary x positions starting at measured x0."""
-        x0_f = float(x0)
+        """Return n_total + 1 boundary x positions starting at measured x0.
+
+        Inlet buffer, then ``n_active`` pitch steps, then outlet buffer.
+        Each buffer is split equally across its zone count (so D2450_a45
+        with ``n_buffer_out=2`` keeps the interior outlet plane).
+        """
+        x = float(x0)
+        boundaries = [x]
+        dx_in = float(self.buffer_length_in_m) / self.n_buffer_in
+        for _ in range(self.n_buffer_in):
+            x += dx_in
+            boundaries.append(x)
         dx = float(self.cell_length_x_m)
-        return [x0_f + index * dx for index in range(self.n_total + 1)]
+        for _ in range(self.n_active):
+            x += dx
+            boundaries.append(x)
+        dx_out = float(self.buffer_length_out_m) / self.n_buffer_out
+        for _ in range(self.n_buffer_out):
+            x += dx_out
+            boundaries.append(x)
+        return boundaries
 
     def spans(self, x0: float) -> list[tuple[str, float, float]]:
         """Return ordered (label, x_min, x_max) for every unit cell."""
@@ -177,9 +213,8 @@ class DomainLayout:
     def active_span(self, x0: float) -> tuple[float, float]:
         """Return (x_min, x_max) of the membrane / active region."""
         x0_f = float(x0)
-        dx = float(self.cell_length_x_m)
-        x_min = x0_f + self.n_buffer_in * dx
-        x_max = x_min + self.n_active * dx
+        x_min = x0_f + float(self.buffer_length_in_m)
+        x_max = x_min + self.n_active * float(self.cell_length_x_m)
         return (x_min, x_max)
 
     def active_cell_numbers(self) -> list[int]:
@@ -257,30 +292,25 @@ LEGACY_LAYOUT = DomainLayout(
     n_active=3,
     n_buffer_out=1,
     cell_length_x_m=CELL_LENGTH_X_M,
+    buffer_length_in_m=BUFFER_LENGTH_IN_M,
+    buffer_length_out_m=BUFFER_LENGTH_IN_M,
 )
 CURRENT_LAYOUT = DomainLayout(
     n_buffer_in=1,
     n_active=7,
     n_buffer_out=2,
     cell_length_x_m=CELL_LENGTH_X_M,
-)
-# Entrance-decay diagnostic: 3+21+6 at 1/3 the D2450 cell pitch. Same extent
-# and buffer lengths as CURRENT_LAYOUT so the two compare cell-by-cell.
-D0817_LAYOUT = DomainLayout(
-    n_buffer_in=3,
-    n_active=21,
-    n_buffer_out=6,
-    cell_length_x_m=CELL_LENGTH_X_D0817_M,
+    buffer_length_in_m=BUFFER_LENGTH_IN_M,
+    buffer_length_out_m=BUFFER_LENGTH_OUT_M,
 )
 
 # Lead/trail windows: legacy matches the old post_config alias
-# n_inlet_spacer_cells_excluded=1. CURRENT / D0817 use lead=3 so aggregate
-# metrics compare on the same physical entrance exclusion (D2450 local
-# active cells 4-7). layout_post_config_values emits the window; stock
+# n_inlet_spacer_cells_excluded=1. CURRENT uses lead=3 as a D2450-derived
+# cell-count convention; whether decay follows cell count or an absolute
+# length is still open. layout_post_config_values emits the window; stock
 # post_config leaves it unset so a direct run cannot silently score lead=1.
 LEGACY_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=1, n_trail_excluded=0)
 CURRENT_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
-D0817_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)
 
 def layout_from_mesh_manifest(mesh_directory: Path) -> GeometryLayoutRecord:
     """Build a layout record from ``mesh_directory/manifest.json``.
@@ -294,6 +324,8 @@ def layout_from_mesh_manifest(mesh_directory: Path) -> GeometryLayoutRecord:
         n_active=int(payload["n_active_cells"]),
         n_buffer_out=int(payload["n_buffer_out"]),
         cell_length_x_m=float(payload["cell_length_x_m"]),
+        buffer_length_in_m=float(payload["buffer_length_in_m"]),
+        buffer_length_out_m=float(payload["buffer_length_out_m"]),
     )
     return GeometryLayoutRecord(
         layout=layout,
@@ -356,10 +388,12 @@ def layout_post_config_values(record: GeometryLayoutRecord) -> dict[str, object]
         "n_active": layout.n_active,
         "n_buffer_out": layout.n_buffer_out,
         "cell_length_x_m": layout.cell_length_x_m,
+        "buffer_length_in_m": layout.buffer_length_in_m,
+        "buffer_length_out_m": layout.buffer_length_out_m,
         "active_membrane_base_names": list(record.membrane_wall_base_names),
         "buffer_wall_base_names": list(record.buffer_wall_base_names),
         "domain_length_m": layout.total_length_m,
-        "buffer_length_m": layout.n_buffer_in * float(layout.cell_length_x_m),
+        "buffer_length_m": float(layout.buffer_length_in_m),
         "n_unit_cells": layout.n_total,
         "n_lead_excluded": window.n_lead_excluded,
         "n_trail_excluded": window.n_trail_excluded,

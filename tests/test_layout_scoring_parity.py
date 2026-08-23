@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ro.domain_layout import CELL_LENGTH_X_M, CURRENT_LAYOUT, DomainLayout, EvaluationWindow, LEGACY_LAYOUT
+from ro.domain_layout import CELL_LENGTH_X_M, CURRENT_LAYOUT, EvaluationWindow, LEGACY_LAYOUT
 from ro.fluent_report_helpers import (
     derive_periodic_spacer_pressure_metrics,
     derive_periodic_spacer_pressure_metrics_for_layout,
@@ -110,7 +110,7 @@ class TestScoringGeometryCurrentLayout:
     def test_boundaries_active_span_and_spacer_length(self):
         domain_x_min_m = 0.0
         layout = CURRENT_LAYOUT
-        assert layout == DomainLayout(1, 7, 2, CELL_LENGTH_X_M)
+        assert layout == CURRENT_LAYOUT
 
         new = scoring_geometry_from_layout(layout, domain_x_min_m)
 
@@ -187,6 +187,8 @@ class TestResolveScoringLayoutFromConfig:
                 "n_active": 7,
                 "n_buffer_out": 2,
                 "cell_length_x_m": CELL_LENGTH_X_M,
+                "buffer_length_in_m": CELL_LENGTH_X_M,
+                "buffer_length_out_m": 0.00693,
                 "domain_length_m": 0.03465,
                 "buffer_length_m": 0.003465,
                 "n_unit_cells": 10,
@@ -209,6 +211,8 @@ class TestResolveScoringLayoutFromConfig:
             n_active=7,
             n_buffer_out=2,
             cell_length_x_m=CELL_LENGTH_X_M,
+            buffer_length_in_m=CELL_LENGTH_X_M,
+            buffer_length_out_m=0.00693,
             domain_length_m=0.017325,  # stale 5-cell length
         )
         with pytest.raises(ValueError, match="domain_length_m contradicts"):
@@ -221,6 +225,8 @@ class TestResolveScoringLayoutFromConfig:
             n_active=7,
             n_buffer_out=2,
             cell_length_x_m=CELL_LENGTH_X_M,
+            buffer_length_in_m=CELL_LENGTH_X_M,
+            buffer_length_out_m=0.00693,
             domain_length_m=0.03465,
             n_unit_cells=10,
             buffer_length_m=0.003465,
@@ -236,6 +242,8 @@ class TestResolveScoringLayoutFromConfig:
             n_active=7,
             n_buffer_out=2,
             cell_length_x_m=CELL_LENGTH_X_M,
+            buffer_length_in_m=CELL_LENGTH_X_M,
+            buffer_length_out_m=0.00693,
             domain_length_m=0.03465,
             n_unit_cells=10,
             buffer_length_m=0.003465,

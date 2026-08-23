@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from ro.domain_layout import (
+    BUFFER_LENGTH_IN_M,
+    BUFFER_LENGTH_OUT_M,
     CELL_LENGTH_X_M,
     CURRENT_LAYOUT,
     DomainLayout,
@@ -111,6 +113,12 @@ class TestDomainLayoutCurrent:
         assert layout.n_active == 7
         assert layout.n_buffer_out == 2
         assert math.isclose(layout.cell_length_x_m, CELL_LENGTH_X_M, rel_tol=1.0e-12)
+        assert math.isclose(
+            layout.buffer_length_in_m, BUFFER_LENGTH_IN_M, rel_tol=1.0e-12
+        )
+        assert math.isclose(
+            layout.buffer_length_out_m, BUFFER_LENGTH_OUT_M, rel_tol=1.0e-12
+        )
 
         boundaries = layout.boundary_positions(0.0)
         assert len(boundaries) == 11
@@ -128,6 +136,57 @@ class TestDomainLayoutCurrent:
         assert math.isclose(active_min, 0.003465, rel_tol=1.0e-12)
         assert math.isclose(active_max, 0.02772, rel_tol=1.0e-12)
         assert layout.active_cell_numbers() == [2, 3, 4, 5, 6, 7, 8]
+
+
+class TestDomainLayoutD2450A30:
+    """Non-integer buffer/pitch: independent buffer lengths, pitch for active only."""
+
+    PITCH_M = 0.002829
+    N_ACTIVE = 9
+
+    def test_buffer_in_nine_pitch_steps_buffer_out(self):
+        layout = DomainLayout(
+            1,
+            self.N_ACTIVE,
+            2,
+            self.PITCH_M,
+            BUFFER_LENGTH_IN_M,
+            BUFFER_LENGTH_OUT_M,
+        )
+        expected_total = (
+            BUFFER_LENGTH_IN_M
+            + self.N_ACTIVE * self.PITCH_M
+            + BUFFER_LENGTH_OUT_M
+        )
+        assert math.isclose(expected_total, 0.035856, rel_tol=1.0e-12)
+        assert math.isclose(layout.total_length_m, expected_total, rel_tol=1.0e-12)
+        assert not math.isclose(
+            layout.total_length_m,
+            layout.n_total * self.PITCH_M,
+            rel_tol=1.0e-9,
+        )
+
+        boundaries = layout.boundary_positions(0.0)
+        assert len(boundaries) == 13
+        expected = [0.0, BUFFER_LENGTH_IN_M]
+        for k in range(1, self.N_ACTIVE + 1):
+            expected.append(BUFFER_LENGTH_IN_M + k * self.PITCH_M)
+        expected.append(expected[-1] + BUFFER_LENGTH_OUT_M / 2.0)
+        expected.append(expected[-1] + BUFFER_LENGTH_OUT_M / 2.0)
+        _assert_close_sequence(boundaries, expected)
+
+        active_min, active_max = layout.active_span(0.0)
+        assert math.isclose(active_min, BUFFER_LENGTH_IN_M, rel_tol=1.0e-12)
+        assert math.isclose(
+            active_max,
+            BUFFER_LENGTH_IN_M + self.N_ACTIVE * self.PITCH_M,
+            rel_tol=1.0e-12,
+        )
+        assert math.isclose(
+            boundaries[-1] - active_max,
+            BUFFER_LENGTH_OUT_M,
+            rel_tol=1.0e-12,
+        )
 
 
 class TestDomainLayoutLegacy:
@@ -174,19 +233,39 @@ class TestDomainLayoutX0Shift:
 class TestDomainLayoutValidation:
     def test_n_active_zero_raises(self):
         with pytest.raises(ValueError, match="n_active"):
-            DomainLayout(1, 0, 1, CELL_LENGTH_X_M)
+            DomainLayout(
+                1, 0, 1, CELL_LENGTH_X_M, BUFFER_LENGTH_IN_M, BUFFER_LENGTH_IN_M
+            )
 
     def test_negative_counts_raise(self):
         with pytest.raises(ValueError, match="n_buffer_in"):
-            DomainLayout(-1, 3, 1, CELL_LENGTH_X_M)
+            DomainLayout(
+                -1, 3, 1, CELL_LENGTH_X_M, BUFFER_LENGTH_IN_M, BUFFER_LENGTH_IN_M
+            )
         with pytest.raises(ValueError, match="n_buffer_out"):
-            DomainLayout(1, 3, -1, CELL_LENGTH_X_M)
+            DomainLayout(
+                1, 3, -1, CELL_LENGTH_X_M, BUFFER_LENGTH_IN_M, BUFFER_LENGTH_IN_M
+            )
 
     def test_nonpositive_cell_length_raises(self):
         with pytest.raises(ValueError, match="cell_length_x_m"):
-            DomainLayout(1, 3, 1, 0.0)
+            DomainLayout(
+                1, 3, 1, 0.0, BUFFER_LENGTH_IN_M, BUFFER_LENGTH_IN_M
+            )
         with pytest.raises(ValueError, match="cell_length_x_m"):
-            DomainLayout(1, 3, 1, -0.003465)
+            DomainLayout(
+                1, 3, 1, -0.003465, BUFFER_LENGTH_IN_M, BUFFER_LENGTH_IN_M
+            )
+
+    def test_nonpositive_buffer_length_raises(self):
+        with pytest.raises(ValueError, match="buffer_length_in_m"):
+            DomainLayout(
+                1, 3, 1, CELL_LENGTH_X_M, 0.0, BUFFER_LENGTH_IN_M
+            )
+        with pytest.raises(ValueError, match="buffer_length_out_m"):
+            DomainLayout(
+                1, 3, 1, CELL_LENGTH_X_M, BUFFER_LENGTH_IN_M, -0.00693
+            )
 
     def test_window_consuming_active_span_raises(self):
         layout = CURRENT_LAYOUT
@@ -218,7 +297,14 @@ class TestEvaluationWindow:
             8,
         ]
 
-        shorter = DomainLayout(1, 5, 2, CELL_LENGTH_X_M)
+        shorter = DomainLayout(
+            1,
+            5,
+            2,
+            CELL_LENGTH_X_M,
+            BUFFER_LENGTH_IN_M,
+            BUFFER_LENGTH_OUT_M,
+        )
         assert window.evaluation_local_indices(shorter) == [2, 3, 4, 5]
         assert window.evaluation_cell_numbers(shorter) == [3, 4, 5, 6]
 
@@ -237,6 +323,8 @@ class TestLayoutFromMeshManifest:
         assert record.layout.n_active == 7
         assert record.layout.n_buffer_out == 2
         assert record.layout.cell_length_x_m == 0.003465
+        assert record.layout.buffer_length_in_m == 0.003465
+        assert record.layout.buffer_length_out_m == 0.00693
         assert record.membrane_wall_base_names == (
             "wall_top_mem",
             "wall_bottom_mem",
@@ -273,6 +361,9 @@ class TestLayoutFromMeshManifest:
         assert values["n_active"] == 7
         assert values["n_buffer_out"] == 2
         assert values["domain_length_m"] == 0.03465
+        assert values["buffer_length_in_m"] == 0.003465
+        assert values["buffer_length_out_m"] == 0.00693
+        assert values["buffer_length_m"] == 0.003465
         assert values["n_unit_cells"] == 10
         assert values["n_buffer_cells_each_end"] is None
         assert values["n_lead_excluded"] == 3

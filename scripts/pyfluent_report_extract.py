@@ -142,8 +142,9 @@ def require_explicit_scoring_layout(cfg):
         return resolve_scoring_layout_from_config(cfg)
     except AttributeError as exc:
         raise ValueError(
-            "Layout is unset. Set n_buffer_in, n_active, n_buffer_out, and "
-            "cell_length_x_m in the post config or PYFLUENT_POST_OVERRIDES. "
+            "Layout is unset. Set n_buffer_in, n_active, n_buffer_out, "
+            "cell_length_x_m, buffer_length_in_m, and buffer_length_out_m "
+            "in the post config or PYFLUENT_POST_OVERRIDES. "
             "Stock post_config has no layout default."
         ) from exc
 

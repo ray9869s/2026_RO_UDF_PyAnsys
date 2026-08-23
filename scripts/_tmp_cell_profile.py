@@ -489,27 +489,16 @@ def area_self_check(spacer_rows, reference_area_m2, reference_source):
 def cell_spans_m():
     """Return ordered (label, x_min_m, x_max_m) for buffer + spacer spans."""
     spans = []
-    x0 = DOMAIN_X_MIN_M
-    for i in range(N_INLET_BUFFER_CELLS):
-        x1 = x0 + CELL_LENGTH_M
-        spans.append((f"buffer_in_{i + 1}", x0, x1))
-        x0 = x1
-    for i in range(N_SPACER_CELLS):
-        x1 = x0 + CELL_LENGTH_M
-        spans.append((f"spacer_{i + 1}", x0, x1))
-        x0 = x1
-    for i in range(N_OUTLET_BUFFER_CELLS):
-        x1 = x0 + CELL_LENGTH_M
-        spans.append((f"buffer_out_{i + 1}", x0, x1))
-        x0 = x1
+    for label, x_min, x_max in LAYOUT.spans(DOMAIN_X_MIN_M):
+        if label.startswith("active_"):
+            label = "spacer_" + label.split("_", 1)[1]
+        spans.append((label, x_min, x_max))
     return spans
 
 
 def plane_x_positions_m():
     """Planes at every cell boundary from domain inlet to outlet."""
-    return [
-        DOMAIN_X_MIN_M + i * CELL_LENGTH_M for i in range(N_TOTAL_CELLS + 1)
-    ]
+    return LAYOUT.boundary_positions(DOMAIN_X_MIN_M)
 
 
 def print_table(title, rows, columns):
@@ -552,6 +541,8 @@ def main():
         f"  layout            = n_buffer_in={LAYOUT.n_buffer_in}, "
         f"n_active={LAYOUT.n_active}, n_buffer_out={LAYOUT.n_buffer_out}, "
         f"cell_length_x_m={LAYOUT.cell_length_x_m}, "
+        f"buffer_length_in_m={LAYOUT.buffer_length_in_m}, "
+        f"buffer_length_out_m={LAYOUT.buffer_length_out_m}, "
         f"total_length_m={LAYOUT.total_length_m}"
     )
     print(
@@ -563,7 +554,7 @@ def main():
     print(
         f"  cells             = {N_INLET_BUFFER_CELLS}+{N_SPACER_CELLS}+"
         f"{N_OUTLET_BUFFER_CELLS} "
-        f"(dx={CELL_LENGTH_M} m, Lx={DOMAIN_X_MAX_M} m)"
+        f"(pitch={CELL_LENGTH_M} m, Lx={DOMAIN_X_MAX_M} m)"
     )
     print(f"  CASE_PATH         = {case_path}")
     print(f"  FINAL_CASE_FILE   = {final_case_file}")

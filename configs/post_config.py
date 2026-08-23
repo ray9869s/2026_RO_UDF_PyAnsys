@@ -113,6 +113,8 @@ n_buffer_in = None
 n_active = None
 n_buffer_out = None
 cell_length_x_m = None
+buffer_length_in_m = None
+buffer_length_out_m = None
 # Legacy length/count keys — must agree with the asymmetric keys when set.
 # Leave unset unless an override supplies a consistent set. For asymmetric
 # layouts n_buffer_cells_each_end is None (never a fake each-end count).

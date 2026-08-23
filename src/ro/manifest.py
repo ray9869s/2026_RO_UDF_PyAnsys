@@ -33,6 +33,8 @@ MESH_MANIFEST_REQUIRED_FIELDS = (
     "n_buffer_in",
     "n_buffer_out",
     "cell_length_x_m",
+    "buffer_length_in_m",
+    "buffer_length_out_m",
     "membrane_wall_base_names",
     "buffer_wall_base_names",
     "n_lead_excluded",
@@ -83,6 +85,8 @@ _MESH_PARAMETER_FIELDS = (
     "n_buffer_in",
     "n_buffer_out",
     "cell_length_x_m",
+    "buffer_length_in_m",
+    "buffer_length_out_m",
     "membrane_wall_base_names",
     "buffer_wall_base_names",
     "n_lead_excluded",
@@ -215,6 +219,8 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         "bridge_radius_m",
         "overlap_m",
         "cell_length_x_m",
+        "buffer_length_in_m",
+        "buffer_length_out_m",
         "max_size",
         "min_size",
     ):
@@ -240,7 +246,14 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
     for field in ("membrane_wall_base_names", "buffer_wall_base_names"):
         _require_string_list(payload, field, "Mesh")
 
-    positive_fields = ("filament_d_m", "cell_length_x_m", "max_size", "min_size")
+    positive_fields = (
+        "filament_d_m",
+        "cell_length_x_m",
+        "buffer_length_in_m",
+        "buffer_length_out_m",
+        "max_size",
+        "min_size",
+    )
     for field in positive_fields:
         if float(payload[field]) <= 0.0:
             raise ManifestError(

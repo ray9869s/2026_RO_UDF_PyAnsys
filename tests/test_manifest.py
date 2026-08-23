@@ -44,6 +44,8 @@ def mesh_payload():
         "n_buffer_in": 1,
         "n_buffer_out": 3,
         "cell_length_x_m": 0.003465,
+        "buffer_length_in_m": 0.003465,
+        "buffer_length_out_m": 0.00693,
         "membrane_wall_base_names": ["wall_top_mem", "wall_bottom_mem"],
         "buffer_wall_base_names": [
             "wall_top_buffer_in",
