@@ -32,6 +32,7 @@ from ro.solver_common import (
     parse_last_residual_iteration_from_transcript_text,
     resolve_solver_final_artifact_exit_code,
 )
+from ro.domain_layout import layout_from_mesh_manifest
 from ro.fluent_report_helpers import create_x_normal_plane
 from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
 
@@ -314,8 +315,6 @@ if __name__ == "__main__":
     m_out_report_name = cfg.m_out_report_name
     enable_solve_time_qoi_reports = cfg.enable_solve_time_qoi_reports
     domain_x_min_m = cfg.domain_x_min_m
-    domain_length_m = cfg.domain_length_m
-    buffer_length_m = cfg.buffer_length_m
 
 # ==========================================================
 # ##### [2] Helper Functions #####
@@ -1630,12 +1629,15 @@ def retry_deferred_solve_time_qoi_report_definitions(
 def update_solve_time_pressure_qoi_report_definitions(
     solver,
     solution,
+    layout,
     domain_x_min_m,
-    domain_length_m,
-    buffer_length_m,
 ):
-    """Phase B: create initialized-data planes and spacer pressure reports."""
-    spacer_length_m = domain_length_m - 2.0 * buffer_length_m
+    """Phase B: create initialized-data planes and spacer pressure reports.
+
+    Planes come from ``layout.active_span``, matching post-extract.
+    """
+    spacer_x_in_m, spacer_x_out_m = layout.active_span(domain_x_min_m)
+    spacer_length_m = spacer_x_out_m - spacer_x_in_m
     if spacer_length_m <= 0.0:
         raise ValueError(
             "Cannot create solve-time QoI reports with non-positive "
@@ -1650,10 +1652,6 @@ def update_solve_time_pressure_qoi_report_definitions(
     plane_names = ["plane_spacer_in", "plane_spacer_out"]
     created = []
     try:
-        spacer_x_in_m = domain_x_min_m + buffer_length_m
-        spacer_x_out_m = (
-            domain_x_min_m + domain_length_m - buffer_length_m
-        )
         create_x_normal_plane(solver, plane_names[0], spacer_x_in_m)
         create_x_normal_plane(solver, plane_names[1], spacer_x_out_m)
 
@@ -3377,12 +3375,12 @@ if __name__ == "__main__":
                     deferred_solve_time_qoi_report_specs
                 ),
             )
+            qoi_layout = layout_from_mesh_manifest(mesh_case_path).layout
             update_solve_time_pressure_qoi_report_definitions(
                 solver=solver,
                 solution=solution,
+                layout=qoi_layout,
                 domain_x_min_m=domain_x_min_m,
-                domain_length_m=domain_length_m,
-                buffer_length_m=buffer_length_m,
             )
 
 

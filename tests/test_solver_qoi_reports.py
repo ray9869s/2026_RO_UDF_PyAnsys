@@ -12,6 +12,12 @@ from helpers import (
     load_solver_code,
     populate_valid_solver_config,
 )
+from ro.domain_layout import (
+    BUFFER_LENGTH_IN_M,
+    BUFFER_LENGTH_OUT_M,
+    CURRENT_LAYOUT,
+    DomainLayout,
+)
 
 
 class SettingsObject:
@@ -123,9 +129,8 @@ def test_solve_time_qoi_reports_are_split_across_initialization_boundary():
         solver_code.update_solve_time_pressure_qoi_report_definitions(
             solver=solver,
             solution=solution,
+            layout=CURRENT_LAYOUT,
             domain_x_min_m=0.0,
-            domain_length_m=0.017325,
-            buffer_length_m=0.003465,
         )
     )
 
@@ -134,9 +139,18 @@ def test_solve_time_qoi_reports_are_split_across_initialization_boundary():
         "pressure_spacer_out_avg",
         "pressure_drop_spacer",
     ]
-    assert iso_surfaces["plane_spacer_in"].iso_values == [0.003465]
+    spacer_x_in_m, spacer_x_out_m = CURRENT_LAYOUT.active_span(0.0)
+    assert iso_surfaces["plane_spacer_in"].iso_values == pytest.approx(
+        [spacer_x_in_m]
+    )
     assert iso_surfaces["plane_spacer_out"].iso_values == pytest.approx(
-        [0.01386]
+        [spacer_x_out_m]
+    )
+    assert iso_surfaces["plane_spacer_in"].iso_values == pytest.approx(
+        [0.003465]
+    )
+    assert iso_surfaces["plane_spacer_out"].iso_values == pytest.approx(
+        [0.02772]
     )
 
     expected_fields = {
@@ -295,9 +309,8 @@ def test_plane_failure_warns_and_does_not_abort(capsys):
         solver_code.update_solve_time_pressure_qoi_report_definitions(
             solver=inactive_solver,
             solution=solution,
+            layout=CURRENT_LAYOUT,
             domain_x_min_m=0.0,
-            domain_length_m=0.017325,
-            buffer_length_m=0.003465,
         )
     )
 
@@ -332,6 +345,11 @@ def test_runtime_orders_phase_b_after_initialization_before_residuals():
     assert phase_a < initialize < phase_b < residuals < iterate
 
 
+class _DegenerateLayout:
+    def active_span(self, x0):
+        return (0.0, 0.0)
+
+
 def test_solve_time_qoi_reports_require_positive_spacer_length():
     solver_code = load_solver_code("solver_qoi_invalid_geometry")
     solver, solution, *_ = make_solver_and_solution()
@@ -339,10 +357,48 @@ def test_solve_time_qoi_reports_require_positive_spacer_length():
         solver_code.update_solve_time_pressure_qoi_report_definitions(
             solver=solver,
             solution=solution,
+            layout=_DegenerateLayout(),
             domain_x_min_m=0.0,
-            domain_length_m=0.006,
-            buffer_length_m=0.003,
         )
+
+
+def test_solve_time_qoi_planes_follow_active_span_for_asymmetric_pitch():
+    solver_code = load_solver_code("solver_qoi_d2450_a30_planes")
+    solver, solution, iso_surfaces, *_ = make_solver_and_solution()
+    layout = DomainLayout(
+        n_buffer_in=1,
+        n_active=9,
+        n_buffer_out=2,
+        cell_length_x_m=0.002829,
+        buffer_length_in_m=BUFFER_LENGTH_IN_M,
+        buffer_length_out_m=BUFFER_LENGTH_OUT_M,
+    )
+    solver_code.update_solve_time_pressure_qoi_report_definitions(
+        solver=solver,
+        solution=solution,
+        layout=layout,
+        domain_x_min_m=0.0,
+    )
+    spacer_x_in_m, spacer_x_out_m = layout.active_span(0.0)
+    assert iso_surfaces["plane_spacer_in"].iso_values == pytest.approx(
+        [spacer_x_in_m]
+    )
+    assert iso_surfaces["plane_spacer_out"].iso_values == pytest.approx(
+        [spacer_x_out_m]
+    )
+    assert iso_surfaces["plane_spacer_in"].iso_values == pytest.approx(
+        [0.003465]
+    )
+    assert iso_surfaces["plane_spacer_out"].iso_values == pytest.approx(
+        [0.028926]
+    )
+
+
+def test_solver_qoi_planes_come_from_mesh_manifest_layout():
+    source = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    assert "layout_from_mesh_manifest(mesh_case_path)" in source
+    assert "layout.active_span(domain_x_min_m)" in source
+    assert "domain_length_m - 2.0 * buffer_length_m" not in source
 
 
 def test_solve_time_qoi_config_defaults_and_validation():
