@@ -370,6 +370,7 @@ Do not reopen these.
 | pytest dependency | `requirements-dev.txt`, not `requirements.txt` (the latter is the server's Ansys/jupyter pin list). |
 | `max_iterations` | Code is consistently 2000. `07`'s 3000 is a different knob (rerun budget). |
 | plug vs parabolic | Closed on `D2450_a45` / `max085_min006_cpg5_bl4_peel2` / `u0p2_p6M` vs `u0p2_p6M_plug`. See below. |
+| entrance decay | Tracks cell count, not millimetres. Campaign `n_lead_excluded = 3` for all nine diamonds. See below. |
 
 ### Plug vs parabolic — `D2450_a45` / `u0p2_p6M`
 
@@ -389,8 +390,53 @@ Both converged at iteration 301. Parabolic is the campaign leaf; plug is
 CP was the last open question from this comparison. Inlet BC does not change
 the scored CP: the 1-cell inlet buffer plus `lead=3` puts the evaluation
 window `(1+3)×0.003465 m = 13.86 mm` from the inlet, more than 10 mm and far
-beyond the laminar entrance length at this Re. Per-cell ΔP already flattened
-by cells 5–8. Campaign BC stays parabolic; the plug leaf is a one-off.
+beyond the laminar entrance length at this Re. Per-cell ΔP on this pitch
+already flattened by cells 4–7. Campaign BC stays parabolic; the plug leaf
+is a one-off.
+
+### Entrance decay — cell count, not millimetres
+
+Archive `D0817_a45_21c_brg110` / `entrance_para_u0p2_p6M` (pitch 1.155 mm,
+260810 UDF, usable for dP) vs campaign `D2450_a45` (pitch 3.465 mm).
+Active cell 1 is global `cell_2`. Plateau on the 21c is 129.9 Pa
+(cells 6–21).
+
+| active cell | x (mm, from membrane start) | dP (Pa) | vs plateau |
+|---|---:|---:|---:|
+| 1 | 1.155 | 332.6 | +156% |
+| 2 | 2.310 | 140.0 | +7.8% |
+| 3 | 3.465 | 137.3 | +5.7% |
+| 4 | 4.620 | 132.6 | +2.1% |
+| 5 | 5.775 | 129.9 | +0.0% |
+
+D2450 decayed inside 3 cells (+26% / +9.4% / +2.5% vs its plateau). Against
+the 21c (4–5 cells to plateau):
+
+| | D2450 | 21c | ratio |
+|---|---:|---:|---:|
+| cells to plateau | 3 | 4–5 | < 1.5× |
+| distance to plateau | 10.4 mm | 5.2 mm | 2× |
+| pitch | 3.465 mm | 1.155 mm | 3× |
+
+Decay follows spacer cells, not a fixed millimetre window. There is a weak
+secondary trend (3 vs 4–5 cells to the plateau). That is not used to vary
+lead: `lead=3` discards active cells 1–3, so the first scored cell on the
+21c is active 4 at +2.1%, which meets the same ~2% bar as D2450's discarded
+cell 3 (+2.5%). D2450's first scored cell is already on the plateau.
+
+**Campaign `n_lead_excluded = 3` on all nine diamonds.** One integer, matching
+cell-count scaling and the a60 five-cell ceiling. Interpolating lead against
+pitch would freeze a six-geometry guess into overwrite-guarded manifests.
+
+After each new mesh, the first `u0p2_p6M` extract already writes every
+`pp_pressure_drop_cell_N`. Check active cells 3–6 against that case's
+plateau. If the first scored cell exceeds ~2.5%, remesh **that** geo at
+`lead+1` (new `mesh_id`). `pp_pressure_drop_cell2_over_cell3` is hardcoded
+to global cells 2 and 3 (active 1 / active 2) and measures the entrance
+spike, not the tail; do not use it to pick lead.
+
+Mesh order for the remaining eight: **D0817_a45 first** (pitch already
+measured on the 21c), then **D2450_a60** (five active cells), then the rest.
 
 **When regenerating pillar / sinusoidal families.** The dated UDF hardcodes
 `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, and `INLET_AREA_EXPECTED_M2` for the current
@@ -486,19 +532,9 @@ is rewritten.
 
 ## Known open questions
 
-### Entrance decay: cell count vs absolute length
-
-`n_lead_excluded = 3` was set from D2450 per-cell ΔP (active cell 1 ~+27%,
-cell 3 +2.5% vs the cells 4–7 plateau). That is 10.395 mm of membrane only
-because D2450's pitch is 3.465 mm. The D0817 `21c` geometry was built to
-test whether the same decay follows spacer pitch (three cells) or an
-absolute length (~10.4 mm), at the same domain extent and buffer lengths
-and one-third the pitch. `lead=3` was copied onto that layout as a starting
-convention; the per-cell comparison was never recorded. The 11 Aug
-`sum_if` failure blocked membrane-segment CP, not this measurement:
-`pp_pressure_drop_cell_N` is from x-normal iso-planes and plane pressure
-reports. One solved run on a different pitch writes the table. Do not
-treat a copied `lead=3` as a measured physical window.
+None that block the eight remaining diamond meshes. Campaign lead is
+`n_lead_excluded = 3` (section 7); confirm on the first extract of each
+new mesh and remesh that geo only if the first scored cell exceeds ~2.5%.
 
 ---
 
