@@ -39,6 +39,55 @@ def _load_module(name, path):
 _INLET_PROFILE_FLAG = "use_inlet_velocity_profile"
 
 
+def solver_case_label(geo_id, mesh_id, run_id):
+    return f"{geo_id}/{mesh_id}/{run_id}"
+
+
+def classify_solver_pre_execution(
+    *,
+    skip_existing_final_data,
+    final_pair_exists,
+    dry_run,
+):
+    """Decide dry-run vs existing-final skip before Fluent is launched.
+
+    Existing-final skip wins over dry-run so a dry-run summary can still
+    show that skip_existing_final_data fired.
+    """
+    if skip_existing_final_data and final_pair_exists:
+        return "skipped_existing", "existing final pair"
+    if dry_run:
+        return "dry_run", None
+    return "run", None
+
+
+def _print_batch_summary(dry_run_cases, skipped_existing, successes, failures):
+    print(f"\n{'='*72}")
+    print("BATCH SOLVER SWEEP SUMMARY")
+    print(f"{'='*72}")
+    print(f"  dry_run          : {len(dry_run_cases)}")
+    print(f"  skipped_existing : {len(skipped_existing)}")
+    print(f"  succeeded        : {len(successes)}")
+    print(f"  failed           : {len(failures)}")
+    if dry_run_cases:
+        print("  Dry-run cases:")
+        for label in dry_run_cases:
+            print(f"    {label}")
+    if skipped_existing:
+        print("  Skipped existing:")
+        for label, reason in skipped_existing:
+            print(f"    {label}  ({reason})")
+    if successes:
+        print("  Succeeded cases:")
+        for label in successes:
+            print(f"    {label}")
+    if failures:
+        print("  FAILED cases:")
+        for label in failures:
+            print(f"    {label}")
+    print(f"{'='*72}\n")
+
+
 def require_explicit_inlet_velocity_profile(
     common_solver_settings,
     solver_sweep_cases=None,
@@ -57,7 +106,11 @@ def require_explicit_inlet_velocity_profile(
     for case_dict in cases:
         merged = merge_batch_case_overrides(common, case_dict)
         if _INLET_PROFILE_FLAG not in merged:
-            label = f"{case_dict.get('geo_id', '?')}/{case_dict.get('run_id', '?')}"
+            label = solver_case_label(
+                case_dict.get("geo_id", "?"),
+                case_dict.get("mesh_id", "?"),
+                case_dict.get("run_id", "?"),
+            )
             missing.append(label)
     if missing or not cases:
         raise ValueError(
@@ -87,7 +140,8 @@ def main():
 
     successes = []
     failures = []
-    skipped = []
+    dry_run_cases = []
+    skipped_existing = []
 
     total = len(solver_sweep_cases)
     print(f"\n{'='*72}")
@@ -101,7 +155,7 @@ def main():
         mesh_id = case_dict["mesh_id"]
         run_id = case_dict["run_id"]
         base_case_name, case_name = resolve_case_names(case_dict)
-        label = f"{geo_id}/{run_id}"
+        label = solver_case_label(geo_id, mesh_id, run_id)
 
         print(f"\n{'='*72}")
         print(f"CASE {i + 1}/{total}: {label}")
@@ -146,7 +200,23 @@ def main():
         cmd = [sys.executable, str(SOLVER_SCRIPT_PATH)]
         print(f"Command: {' '.join(cmd)}")
 
-        if dry_run:
+        final_pair_exists = (
+            os.path.isfile(expected_final_case)
+            and os.path.isfile(expected_final_data)
+        )
+        outcome, skip_reason = classify_solver_pre_execution(
+            skip_existing_final_data=skip_existing_final_data,
+            final_pair_exists=final_pair_exists,
+            dry_run=dry_run,
+        )
+        if outcome == "skipped_existing":
+            print(f"SKIP: {skip_reason}:")
+            print(f"  {expected_final_case}")
+            print(f"  {expected_final_data}")
+            skipped_existing.append((label, skip_reason))
+            continue
+
+        if outcome == "dry_run":
             if input_mode == "mesh_initialization" and not os.path.isfile(expected_mesh):
                 print("[DRY RUN] Note: mesh file not found (expected when run off-server).")
             if input_mode == "restart_continuation":
@@ -155,7 +225,7 @@ def main():
                 if not os.path.isfile(restart_data_file):
                     print("[DRY RUN] Note: restart data file not found (expected when run off-server).")
             print("[DRY RUN] Skipping Fluent execution.")
-            skipped.append(label)
+            dry_run_cases.append(label)
             continue
 
         missing_input_files = []
@@ -177,12 +247,6 @@ def main():
                 break
             continue
 
-        if skip_existing_final_data:
-            if os.path.isfile(expected_final_case) and os.path.isfile(expected_final_data):
-                print("SKIP: Final case and data already exist.")
-                skipped.append(label)
-                continue
-
         env = {**os.environ, "PYFLUENT_RUN_OVERRIDES": json.dumps(overrides)}
         # The worker must load the base run_config.py, not a leftover env config.
         env.pop("PYFLUENT_RUN_CONFIG", None)
@@ -203,25 +267,7 @@ def main():
                 print("Stopping batch because continue_on_failure=False.")
                 break
 
-    print(f"\n{'='*72}")
-    print("BATCH SOLVER SWEEP SUMMARY")
-    print(f"{'='*72}")
-    print(f"  Succeeded : {len(successes)}")
-    print(f"  Skipped   : {len(skipped)}")
-    print(f"  Failed    : {len(failures)}")
-    if successes:
-        print("  Succeeded cases:")
-        for s in successes:
-            print(f"    {s}")
-    if skipped:
-        print("  Skipped cases:")
-        for s in skipped:
-            print(f"    {s}")
-    if failures:
-        print("  FAILED cases:")
-        for f in failures:
-            print(f"    {f}")
-    print(f"{'='*72}\n")
+    _print_batch_summary(dry_run_cases, skipped_existing, successes, failures)
 
     if failures:
         sys.exit(1)

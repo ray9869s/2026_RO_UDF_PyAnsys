@@ -53,6 +53,50 @@ def _continue_on_failure(batchcfg):
     return getattr(batchcfg, "continue_on_failure", True)
 
 
+def mesh_case_label(geo_id, mesh_id):
+    return f"{geo_id}/{mesh_id}"
+
+
+def classify_mesh_pre_execution(*, skip_existing_mesh, mesh_exists, dry_run):
+    """Decide dry-run vs existing-mesh skip before Fluent is launched.
+
+    Existing-mesh skip wins over dry-run so a dry-run summary can still
+    show that skip_existing_mesh fired.
+    """
+    if skip_existing_mesh and mesh_exists:
+        return "skipped_existing", "existing mesh"
+    if dry_run:
+        return "dry_run", None
+    return "run", None
+
+
+def _print_batch_summary(dry_run_cases, skipped_existing, successes, failures):
+    print(f"\n{'='*72}")
+    print("BATCH MESHING SUMMARY")
+    print(f"{'='*72}")
+    print(f"  dry_run          : {len(dry_run_cases)}")
+    print(f"  skipped_existing : {len(skipped_existing)}")
+    print(f"  succeeded        : {len(successes)}")
+    print(f"  failed           : {len(failures)}")
+    if dry_run_cases:
+        print("  Dry-run cases:")
+        for label in dry_run_cases:
+            print(f"    {label}")
+    if skipped_existing:
+        print("  Skipped existing:")
+        for label, reason in skipped_existing:
+            print(f"    {label}  ({reason})")
+    if successes:
+        print("  Succeeded cases:")
+        for label in successes:
+            print(f"    {label}")
+    if failures:
+        print("  FAILED cases:")
+        for label in failures:
+            print(f"    {label}")
+    print(f"{'='*72}\n")
+
+
 def _resolved_mesh_parameters(base_cfg, overrides):
     values = {
         name: getattr(base_cfg, name, None)
@@ -136,7 +180,8 @@ def main():
 
     successes = []
     failures = []
-    skipped = []
+    dry_run_cases = []
+    skipped_existing = []
 
     total = len(mesh_batch_cases)
     print(f"\n{'='*72}")
@@ -148,7 +193,7 @@ def main():
         family = case_dict["family"]
         geo_id = case_dict["geo_id"]
         mesh_id = case_dict["mesh_id"]
-        label = f"{geo_id}/{mesh_id}"
+        label = mesh_case_label(geo_id, mesh_id)
         overrides = _build_overrides(case_dict, common_mesh_settings)
         mesh_parameters = _resolved_mesh_parameters(base_cfg, overrides)
 
@@ -161,9 +206,14 @@ def main():
         mesh_log_path = mesh_directory / f"mesh_log_{mesh_id}.txt"
         print(f"Expected mesh output: {expected_mesh}")
 
-        if skip_existing_mesh and os.path.isfile(expected_mesh):
-            print(f"SKIP: Mesh already exists: {expected_mesh}")
-            skipped.append(label)
+        outcome, skip_reason = classify_mesh_pre_execution(
+            skip_existing_mesh=skip_existing_mesh,
+            mesh_exists=os.path.isfile(expected_mesh),
+            dry_run=dry_run,
+        )
+        if outcome == "skipped_existing":
+            print(f"SKIP: {skip_reason}: {expected_mesh}")
+            skipped_existing.append((label, skip_reason))
             _write_case_ledger(
                 ledger_path=ledger_path,
                 geo_name=geo_id,
@@ -187,9 +237,9 @@ def main():
 
         print(f"Command: {' '.join(cmd)}")
 
-        if dry_run:
+        if outcome == "dry_run":
             print("[DRY RUN] Skipping Fluent execution.")
-            skipped.append(label)
+            dry_run_cases.append(label)
             continue
 
         started = time.monotonic()
@@ -227,25 +277,7 @@ def main():
                 print("Stopping batch because continue_on_failure=False.")
                 break
 
-    print(f"\n{'='*72}")
-    print("BATCH MESHING SUMMARY")
-    print(f"{'='*72}")
-    print(f"  Succeeded : {len(successes)}")
-    print(f"  Skipped   : {len(skipped)}")
-    print(f"  Failed    : {len(failures)}")
-    if successes:
-        print("  Succeeded cases:")
-        for s in successes:
-            print(f"    {s}")
-    if skipped:
-        print("  Skipped cases:")
-        for s in skipped:
-            print(f"    {s}")
-    if failures:
-        print("  FAILED cases:")
-        for f in failures:
-            print(f"    {f}")
-    print(f"{'='*72}\n")
+    _print_batch_summary(dry_run_cases, skipped_existing, successes, failures)
 
     if failures:
         sys.exit(1)
