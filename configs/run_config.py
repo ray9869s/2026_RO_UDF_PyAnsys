@@ -197,8 +197,12 @@ fail_if_quality_not_parsed = False
 
 # When True: surface mesh first (no shadow-copy constraint), then
 # Set Up Periodic Boundaries with Automatic + both labels.
-# Default False preserves current Manual-before-surface behavior.
-periodic_after_surface_mesh = False
+# D0817_a45 surface max skewness was 0.956 with False (Manual-before-surface)
+# and 0.743 with True. The 21c diagnostic that completed a volume mesh at
+# this 1.155 mm pitch used True. D2450_a45 stays on its existing False
+# mesh (hashed; runs cite mesh_sha256). The ledger column records which
+# path produced each mesh.
+periodic_after_surface_mesh = True
 
 # Checkpoint option
 save_surface_mesh_checkpoint = True

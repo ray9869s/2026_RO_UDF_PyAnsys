@@ -371,6 +371,7 @@ Do not reopen these.
 | `max_iterations` | Code is consistently 2000. `07`'s 3000 is a different knob (rerun budget). |
 | plug vs parabolic | Closed on `D2450_a45` / `max085_min006_cpg5_bl4_peel2` / `u0p2_p6M` vs `u0p2_p6M_plug`. See below. |
 | entrance decay | Tracks cell count, not millimetres. Campaign `n_lead_excluded = 3` for all nine diamonds. See below. |
+| `periodic_after_surface_mesh` | Campaign default **True**. `D2450_a45` was meshed with False and is not remeshed. Mixed-order by design. See below. |
 
 ### Plug vs parabolic — `D2450_a45` / `u0p2_p6M`
 
@@ -437,6 +438,23 @@ spike, not the tail; do not use it to pick lead.
 
 Mesh order for the remaining eight: **D0817_a45 first** (pitch already
 measured on the 21c), then **D2450_a60** (five active cells), then the rest.
+
+### Periodic task order — mixed on purpose
+
+`periodic_after_surface_mesh` defaulted to False (Manual, before surface mesh)
+when the flag was added. That is the path that built hashed `D2450_a45` /
+`max085_min006_cpg5_bl4_peel2`. The 21c diagnostic at 1.155 mm pitch used
+True (Automatic, after surface mesh) and completed the volume mesh.
+Production `D0817_a45` surface max skewness was 0.956 on False and 0.743 on
+True.
+
+The campaign default is now True for every **unmeshed** geo. `D2450_a45` is
+not remeshed: skip-existing plus the hash overwrite guard refuse in-place
+replacement while runs cite `mesh_sha256`, and False already produced a
+valid volume mesh on that CAD. Remeshing it under True would be a new
+`mesh_id` and a new solve set, not a free consistency fix. The ledger
+column `periodic_after_surface_mesh` is how the mixed-order campaign stays
+auditable.
 
 **When regenerating pillar / sinusoidal families.** The dated UDF hardcodes
 `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, and `INLET_AREA_EXPECTED_M2` for the current
