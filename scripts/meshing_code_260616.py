@@ -18,6 +18,7 @@ from ro.manifest import (
 )
 from ro.mesh_common import (
     MESH_METRIC_NAMES,
+    _parse_surface_skewness_table,
     build_mesh_ledger_record,
     mesh_parameters_from_mapping,
     parse_last_float as _parse_last_float,
@@ -544,6 +545,92 @@ def parse_mesh_quality_from_log(log_path):
     )
 
 
+def surface_mesh_continuation_log_path(mesh_log_path):
+    """Return the sidecar transcript used after the surface-mesh quality flush."""
+    mesh_log_path = Path(mesh_log_path)
+    return mesh_log_path.with_name(
+        f"{mesh_log_path.stem}_after_surface{mesh_log_path.suffix}"
+    )
+
+
+def append_transcript_continuation(log_path, continuation_path):
+    """Append a continuation transcript onto the flushed log, then delete it.
+
+    PyFluent's ``transcript.start(file_name=)`` deletes the target file, so the
+    volume-mesh portion cannot be restarted onto the original log. The worker
+    writes that portion to *continuation_path* and merges it here.
+    """
+    log_path = Path(log_path)
+    continuation_path = Path(continuation_path)
+    if not continuation_path.is_file():
+        return
+    extra = continuation_path.read_text(encoding="utf-8", errors="ignore")
+    if extra:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(extra)
+    continuation_path.unlink()
+
+
+def apply_surface_mesh_quality_gate(
+    log_path,
+    max_skewness_limit,
+    skewed_face_fraction_limit,
+):
+    """Refuse a bad or unreadable surface mesh before prism/volume generation.
+
+    Uses only the Fluent surface-skewness table. An unparseable table is always
+    a failure: ``fail_if_quality_not_parsed`` applies to the post-volume gate,
+    where missing ortho/AR used to mean a formatting change. Here, continuing
+    without a table is the MPI crash this check exists to stop.
+    """
+    log_path = Path(log_path)
+    if log_path.is_file():
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    else:
+        text = ""
+        print(f"Surface quality log file not found: {log_path}")
+
+    surface_table = _parse_surface_skewness_table(text)
+    if surface_table is None:
+        raise RuntimeError(
+            "Could not parse the surface-mesh skewness table from the "
+            "transcript. The surface mesh quality gate cannot be applied."
+        )
+
+    max_skewness = surface_table["max_skewness"]
+    skewed_face_fraction = surface_table["skewed_face_fraction"]
+    skewed_faces_over_080 = surface_table["skewed_faces_over_080"]
+    surface_face_count = surface_table["surface_face_count"]
+
+    print(f"Parsed surface maximum skewness: {max_skewness}")
+    print(
+        f"Parsed surface averaged skewness: {surface_table['averaged_skewness']}"
+    )
+    print(f"Parsed skewed faces over 0.80: {skewed_faces_over_080}")
+    print(f"Parsed surface face count: {surface_face_count}")
+    print(f"Parsed skewed face fraction: {skewed_face_fraction}")
+
+    if max_skewness_limit is not None and max_skewness > max_skewness_limit:
+        raise RuntimeError(
+            "Surface mesh quality failed: maximum skewness "
+            f"{max_skewness} is above the threshold {max_skewness_limit}."
+        )
+
+    if (
+        skewed_face_fraction_limit is not None
+        and skewed_face_fraction > skewed_face_fraction_limit
+    ):
+        raise RuntimeError(
+            "Surface mesh quality failed: skewed face fraction "
+            f"{skewed_face_fraction} "
+            f"({skewed_faces_over_080} / {surface_face_count}) "
+            f"is above the threshold {skewed_face_fraction_limit}."
+        )
+
+    print("Surface mesh quality gate passed (skewness only).")
+    return surface_table
+
+
 def apply_mesh_quality_gate(
     log_path,
     min_orthogonal_quality_limit,
@@ -662,6 +749,7 @@ if __name__ == "__main__":
     meshing = None
     workflow = None
     transcript_is_running = False
+    continuation_log_path = None
     original_working_directory = os.getcwd()
     run_started = time.monotonic()
     run_status = "FAILED"
@@ -791,6 +879,22 @@ if __name__ == "__main__":
                 description="Surface mesh checkpoint",
             )
 
+        # Flush, refuse a bad surface, then resume onto a sidecar file.
+        # transcript.start(file_name=) deletes its target, so the original
+        # log cannot be reopened for the volume-mesh portion.
+        meshing.transcript.stop()
+        transcript_is_running = False
+        apply_surface_mesh_quality_gate(
+            log_path=mesh_log_path,
+            max_skewness_limit=max_skewness_threshold,
+            skewed_face_fraction_limit=skewed_face_fraction_threshold,
+        )
+        continuation_log_path = surface_mesh_continuation_log_path(mesh_log_path)
+        meshing.transcript.start(
+            file_name=as_fluent_path(continuation_log_path)
+        )
+        transcript_is_running = True
+
         # ======================================================
         # ##### [9b] Setup Periodic Boundaries (optional: after surface mesh) #####
         # ======================================================
@@ -918,6 +1022,9 @@ if __name__ == "__main__":
         # Stop the transcript to flush mesh quality output before parsing the log file.
         meshing.transcript.stop()
         transcript_is_running = False
+        if continuation_log_path is not None:
+            append_transcript_continuation(mesh_log_path, continuation_log_path)
+            continuation_log_path = None
 
         mesh_metrics = apply_mesh_quality_gate(
             log_path=mesh_log_path,
@@ -959,6 +1066,15 @@ if __name__ == "__main__":
                 transcript_is_running = False
             except Exception:
                 pass
+
+        if continuation_log_path is not None:
+            try:
+                append_transcript_continuation(
+                    mesh_log_path, continuation_log_path
+                )
+            except Exception:
+                pass
+            continuation_log_path = None
 
         try:
             if not any(value is not None for value in mesh_metrics.values()):

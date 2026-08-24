@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import re
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,7 @@ from ro.mesh_common import (
     parse_mesh_metrics_text,
     parse_meshing_input_summary,
     upsert_mesh_ledger_csv,
+    write_mesh_run_record,
 )
 from helpers import SCRIPTS_DIR, load_module
 
@@ -634,6 +637,38 @@ def test_retroactive_builder_uses_same_schema(tmp_path):
     assert real_record["porosity"] == pytest.approx(0.7344725011140605)
 
 
+REAL_D0817_A45_FAILED_SURFACE_TABLE = """
+                     name    skewed-cells (> 0.80)   averaged-skewness   maximum-skewness   face count
+                    solid                      52         0.040000000         0.9556           200000
+"""
+
+SURFACE_SUMMARY_WITHOUT_TABLE = (
+    "---------------- Surface Meshing of D0817_a45 complete in  1.20 "
+    "minutes, with a maximum skewness of  0.96.\n"
+)
+
+
+def load_meshing_code():
+    stubs = {
+        "ansys": types.ModuleType("ansys"),
+        "ansys.fluent": types.ModuleType("ansys.fluent"),
+        "ansys.fluent.core": types.ModuleType("ansys.fluent.core"),
+    }
+    saved = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    try:
+        return load_module(
+            "meshing_code_surface_gate_under_test",
+            SCRIPTS_DIR / "meshing_code_260616.py",
+        )
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
 def test_batch_meshing_continue_on_failure_defaults_true():
     batch = load_module(
         "batch_meshing_under_test",
@@ -646,3 +681,110 @@ def test_batch_meshing_continue_on_failure_defaults_true():
         )
         is False
     )
+
+
+def test_surface_mesh_gate_passes_real_surface_table(tmp_path, capsys):
+    meshing = load_meshing_code()
+    log_path = tmp_path / "mesh_log.txt"
+    log_path.write_text(REAL_SURFACE_SKEWNESS_TABLE, encoding="utf-8")
+    table = meshing.apply_surface_mesh_quality_gate(
+        log_path, 0.85, 3.0e-5
+    )
+    assert table["max_skewness"] == pytest.approx(0.52229388)
+    assert table["skewed_faces_over_080"] == 0
+    captured = capsys.readouterr().out
+    assert "Surface mesh quality gate passed (skewness only)." in captured
+    assert "Mesh quality gate passed." not in captured
+
+
+def test_surface_mesh_gate_refuses_d0817_a45_max_skewness(tmp_path):
+    meshing = load_meshing_code()
+    log_path = tmp_path / "mesh_log.txt"
+    log_path.write_text(REAL_D0817_A45_FAILED_SURFACE_TABLE, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Surface mesh quality failed: maximum skewness"):
+        meshing.apply_surface_mesh_quality_gate(log_path, 0.85, 3.0e-5)
+
+
+def test_surface_mesh_gate_refuses_d0817_a60_max_skewness(tmp_path):
+    meshing = load_meshing_code()
+    log_path = tmp_path / "mesh_log.txt"
+    log_path.write_text(REAL_D0817_A60_SURFACE_TABLE, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="maximum skewness"):
+        meshing.apply_surface_mesh_quality_gate(log_path, 0.85, 3.0e-5)
+
+
+def test_surface_mesh_gate_refuses_unparseable_table(tmp_path):
+    meshing = load_meshing_code()
+    log_path = tmp_path / "mesh_log.txt"
+    log_path.write_text("Generate the Surface Mesh complete.\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Could not parse the surface-mesh skewness table"):
+        meshing.apply_surface_mesh_quality_gate(log_path, 0.85, 3.0e-5)
+
+
+def test_surface_mesh_gate_refuses_summary_line_without_table(tmp_path):
+    meshing = load_meshing_code()
+    log_path = tmp_path / "mesh_log.txt"
+    log_path.write_text(SURFACE_SUMMARY_WITHOUT_TABLE, encoding="utf-8")
+    metrics = parse_mesh_metrics_text(SURFACE_SUMMARY_WITHOUT_TABLE)
+    assert metrics["max_skewness"] == pytest.approx(0.96)
+    with pytest.raises(RuntimeError, match="Could not parse the surface-mesh skewness table"):
+        meshing.apply_surface_mesh_quality_gate(log_path, 0.85, 3.0e-5)
+
+
+def test_surface_mesh_gate_refuses_missing_log(tmp_path):
+    meshing = load_meshing_code()
+    with pytest.raises(RuntimeError, match="Could not parse the surface-mesh skewness table"):
+        meshing.apply_surface_mesh_quality_gate(
+            tmp_path / "missing.txt", 0.85, 3.0e-5
+        )
+
+
+def test_append_transcript_continuation_preserves_flushed_log(tmp_path):
+    meshing = load_meshing_code()
+    log_path = tmp_path / "mesh_log.txt"
+    continuation = meshing.surface_mesh_continuation_log_path(log_path)
+    log_path.write_text("SURFACE TABLE\n", encoding="utf-8")
+    continuation.write_text("VOLUME CHECK\n", encoding="utf-8")
+    meshing.append_transcript_continuation(log_path, continuation)
+    assert log_path.read_text(encoding="utf-8") == "SURFACE TABLE\nVOLUME CHECK\n"
+    assert not continuation.is_file()
+
+
+def test_batch_ledger_prefers_worker_surface_gate_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    batch = load_module(
+        "batch_meshing_ledger_error_under_test",
+        SCRIPTS_DIR / "batch_meshing.py",
+    )
+    mesh_directory = (
+        tmp_path / "meshes" / "diamond" / "D0817_a45"
+        / "max085_min006_cpg5_bl4_peel2"
+    )
+    mesh_directory.mkdir(parents=True)
+    log_path = mesh_directory / "mesh_log_max085_min006_cpg5_bl4_peel2.txt"
+    log_path.write_text(REAL_D0817_A45_FAILED_SURFACE_TABLE, encoding="utf-8")
+    worker_message = (
+        "RuntimeError: Surface mesh quality failed: maximum skewness "
+        "0.9556 is above the threshold 0.85."
+    )
+    write_mesh_run_record(
+        mesh_directory / "mesh_run_record.json",
+        {"error_summary": worker_message},
+    )
+    ledger_path = tmp_path / "inventory" / "mesh_ledger.csv"
+    record = batch._write_case_ledger(
+        ledger_path=ledger_path,
+        geo_name="D0817_a45",
+        mesh_case_name="max085_min006_cpg5_bl4_peel2",
+        mesh_parameters=mesh_parameters_from_mapping({}),
+        status="FAILED",
+        exit_code=1,
+        wall_time_seconds=12.0,
+        mesh_log_path=log_path,
+        mesh_file_path=mesh_directory / "D0817_a45_max085_min006_cpg5_bl4_peel2.msh.h5",
+        error_summary="meshing worker exited with code 1",
+    )
+    assert record["error_summary"] == worker_message
+    assert record["status"] == "FAILED"
+    assert record["max_skewness"] == pytest.approx(0.9556)
+

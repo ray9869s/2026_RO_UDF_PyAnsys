@@ -91,19 +91,20 @@ def _write_case_ledger(
             if value is not None
         })
 
-    if worker_record:
-        actual_parameters.update({
-            name: worker_record.get(name)
-            for name in MESH_PARAMETER_NAMES
-            if worker_record.get(name) is not None
-        })
-        metrics.update({
-            name: worker_record.get(name)
-            for name in MESH_METRIC_NAMES
-            if worker_record.get(name) is not None
-        })
-        if not error_summary:
-            error_summary = worker_record.get("error_summary", "")
+        if worker_record:
+            actual_parameters.update({
+                name: worker_record.get(name)
+                for name in MESH_PARAMETER_NAMES
+                if worker_record.get(name) is not None
+            })
+            metrics.update({
+                name: worker_record.get(name)
+                for name in MESH_METRIC_NAMES
+                if worker_record.get(name) is not None
+            })
+            worker_error = worker_record.get("error_summary") or ""
+            if worker_error:
+                error_summary = worker_error
 
     record = build_mesh_ledger_record(
         geo_name=geo_name,
