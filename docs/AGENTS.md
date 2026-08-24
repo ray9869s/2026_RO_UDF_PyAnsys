@@ -16,8 +16,10 @@ optimization (MFBO) layer is planned but not implemented — keep it in mind,
 don't build it unasked.
 
 Production UDF is `260816_RO_UDF.c`. `RO_ANALYTIC_CWALL = 1` is the production
-setting. CP is grid-independent to about 0.4% against geometry-to-geometry
-differences of 2.7%. The grid-convergence question is closed.
+setting. The 0.44% LMH and 7.1% CP-excess figures (and the UDF header's
+"~0.4% against 2.7%") are a bl4-vs-bl6 wall-normal comparison at fixed
+`max085`, not a surface-size (`m_max`) study. Surface-size grid
+independence is not closed.
 
 The D2450_a45 peel2 remesh matched the archive ledger (796,009 cells, ortho
 0.102087, AR 62.7715, skew 0.67063399). The restructure is physics-neutral.

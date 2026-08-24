@@ -372,6 +372,7 @@ Do not reopen these.
 | plug vs parabolic | Closed on `D2450_a45` / `max085_min006_cpg5_bl4_peel2` / `u0p2_p6M` vs `u0p2_p6M_plug`. See below. |
 | entrance decay | Tracks cell count, not millimetres. Campaign `n_lead_excluded = 3` for all nine diamonds. See below. |
 | `periodic_after_surface_mesh` | Campaign default **True**. `D2450_a45` was meshed with False and is not remeshed. Mixed-order by design. See below. |
+| surface-size grid independence | **Not closed.** The 0.44% LMH / 7.1% CP-excess numbers are bl4 vs bl6 at fixed `max085`, not an `m_max` sweep. See below. |
 
 ### Plug vs parabolic — `D2450_a45` / `u0p2_p6M`
 
@@ -455,6 +456,21 @@ valid volume mesh on that CAD. Remeshing it under True would be a new
 `mesh_id` and a new solve set, not a free consistency fix. The ledger
 column `periodic_after_surface_mesh` is how the mixed-order campaign stays
 auditable.
+
+### Grid convergence — wall-normal is not surface size
+
+`AGENTS.md` and the `260822_RO_UDF.c` header overstated this. The quoted
+0.44% LMH and 7.1% CP-excess (header: "~0.4% against geometry-to-geometry
+2.7%") compare **bl4 vs bl6 at fixed `max085`**, same operating point
+(`D2450_a45` / `u0p2_p6M`), both stopping at iteration 301. That is a
+wall-normal (prism count / y1) check. It is not an `m_max` / surface-size
+study, and it does not close grid independence for the campaign mesh.
+
+Do not edit the dated UDF header; it is a used results file. The
+correction lives here and in `AGENTS.md`. An `m_max` sweep on `D2450_a45`
+(max120 / hashed max085 / max060, `u0p2_p6M` parabolic) is the surface-size
+study; pin `periodic_after_surface_mesh = False` on the new meshes so they
+match the hashed reference.
 
 **When regenerating pillar / sinusoidal families.** The dated UDF hardcodes
 `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, and `INLET_AREA_EXPECTED_M2` for the current
