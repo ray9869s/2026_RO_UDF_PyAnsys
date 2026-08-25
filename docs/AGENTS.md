@@ -15,11 +15,21 @@ in `configs/batch_config.py` → subprocess workers (`scripts/meshing_code_*.py`
 optimization (MFBO) layer is planned but not implemented — keep it in mind,
 don't build it unasked.
 
-Production UDF is `260816_RO_UDF.c`. `RO_ANALYTIC_CWALL = 1` is the production
-setting. The 0.44% LMH and 7.1% CP-excess figures (and the UDF header's
+Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
+`260816_RO_UDF.c` is a frozen ASCII compile-fix sibling; new runs use 260822.
+`RO_ANALYTIC_CWALL = 1` is the production setting. The 0.44% LMH and 7.1% CP-excess figures (and the UDF header's
 "~0.4% against 2.7%") are a bl4-vs-bl6 wall-normal comparison at fixed
 `max085`, not a surface-size (`m_max`) study. Surface-size grid
 independence is not closed.
+
+**CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with mid-plane
+\(c_b\) on the evaluation window. See `docs/metrics_conventions.md`.
+
+**CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
+\(c_m\) and \(c_p\) when the denominator is face-dependent.
+
+**CP window:** CP table metrics are always evaluation-window restricted
+(mesh manifest `n_lead_excluded` / `n_trail_excluded`), not all active cells.
 
 The D2450_a45 peel2 remesh matched the archive ledger (796,009 cells, ortho
 0.102087, AR 62.7715, skew 0.67063399). The restructure is physics-neutral.

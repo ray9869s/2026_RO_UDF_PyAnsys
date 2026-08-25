@@ -85,6 +85,7 @@ def run_payload():
         "u_target_ms": 0.2,
         "inlet_bc_type": "parabolic",
         "udf_version": "260816_RO_UDF.c",
+        "analytic_cwall": 1,
         "solver_settings": {
             "max_iterations": 2000,
             "residual_target": 1.0e-7,

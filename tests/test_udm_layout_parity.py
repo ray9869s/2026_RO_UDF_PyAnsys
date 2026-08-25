@@ -240,6 +240,18 @@ def test_d_salt_matches_run_config_mass_diffusivity():
         assert float(match.group(1)) == pytest.approx(expected)
 
 
+def test_parse_ro_analytic_cwall_from_production_udf():
+    from ro.udm_layout import (
+        parse_ro_analytic_cwall_from_udf_path,
+        parse_ro_analytic_cwall_from_udf_source,
+    )
+
+    assert parse_ro_analytic_cwall_from_udf_path(UDF_260822_PATH) == 1
+    assert parse_ro_analytic_cwall_from_udf_path(UDF_260813_PATH) == 0
+    source = UDF_260822_PATH.read_text(encoding="ascii")
+    assert parse_ro_analytic_cwall_from_udf_source(source) == 1
+
+
 def test_analytic_cwall_defaults_off():
     source = UDF_260813_PATH.read_text(encoding="utf-8")
     assert re.search(r"#define\s+RO_ANALYTIC_CWALL\s+0", source)

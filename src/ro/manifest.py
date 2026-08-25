@@ -13,6 +13,7 @@ from typing import Any
 
 from ro.paths import mesh_dir, meshes_root, run_dir, runs_root
 from ro.solver_common import STOP_REASON_VALUES
+from ro.udm_layout import parse_ro_analytic_cwall_from_case
 
 
 class ManifestError(ValueError):
@@ -67,6 +68,7 @@ RUN_MANIFEST_REQUIRED_FIELDS = (
     "u_target_ms",
     "inlet_bc_type",
     "udf_version",
+    "analytic_cwall",
     "solver_settings",
     "stop_reason",
     "created_utc",
@@ -108,6 +110,7 @@ _RUN_PARAMETER_FIELDS = (
     "u_target_ms",
     "inlet_bc_type",
     "udf_version",
+    "analytic_cwall",
     "solver_settings",
 )
 
@@ -345,6 +348,18 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     for field in _SOLVER_SETTING_FIELDS:
         _require_number(solver_settings, field, "Run solver_settings")
 
+    analytic_cwall = payload["analytic_cwall"]
+    if isinstance(analytic_cwall, bool) or not isinstance(analytic_cwall, int):
+        raise ManifestError(
+            "Run manifest analytic_cwall must be an integer 0 or 1, "
+            f"got {analytic_cwall!r}."
+        )
+    if analytic_cwall not in (0, 1):
+        raise ManifestError(
+            "Run manifest analytic_cwall must be 0 or 1, "
+            f"got {analytic_cwall!r}."
+        )
+
 
 def _validate_mesh_location(directory: Path, payload: Mapping[str, Any]) -> None:
     family = payload["family"]
@@ -552,6 +567,29 @@ def assert_mesh_file_overwrite_allowed(
             f"mesh_sha256={current_sha[:12]}… ({run_ids}). "
             "Remeshing in place would orphan those runs. Use a new mesh_id."
         )
+
+
+def sync_run_manifest_analytic_cwall(run_directory: str | Path) -> int:
+    """Parse case-local UDF and ensure run manifest records analytic_cwall.
+
+    Existing runs without the field are updated from the case UDF copy.
+    Raises if RO_ANALYTIC_CWALL is absent or zero.
+    """
+    directory = Path(run_directory)
+    value = parse_ro_analytic_cwall_from_case(directory)
+    if value != 1:
+        raise ManifestError(
+            f"RO_ANALYTIC_CWALL must be 1 for CP metrics, got {value!r} "
+            f"from case UDF in {directory}."
+        )
+    path = directory / "manifest.json"
+    if not path.is_file():
+        raise ManifestError(f"Run manifest not found: {path}.")
+    payload = _read_json(path)
+    if payload.get("analytic_cwall") != value:
+        payload["analytic_cwall"] = value
+        write_run_manifest(directory, payload)
+    return value
 
 
 def read_mesh_manifest(mesh_directory: str | Path) -> dict[str, Any]:

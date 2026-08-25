@@ -71,6 +71,20 @@ must match the directory components and the builder path, or the read raises
 only before `mesh_sha256` is set. `run_config.py` uses an explicit `REQUIRED`
 placeholder, so an unset field fails validation rather than falling through.
 
+## Metrics and conventions
+
+Campaign CP uses the **canonical** Bae (2023) form with a mid-plane bulk
+denominator \(c_b\) over the evaluation window:
+
+\[
+M = (c_m - c_p)/(c_b - c_p)
+\]
+
+Literature variants L1 (Gu 2017) and L2 (Bae inlet approximation) are computed
+alongside for the definition-sensitivity table only. Averaging order, rescaling
+from UDM-9, guards, and window rules are documented in
+[docs/metrics_conventions.md](docs/metrics_conventions.md).
+
 ## UDF
 
 Production source is `udfs/260822_RO_UDF.c`. Membrane water and salt flux are

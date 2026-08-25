@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -249,7 +250,6 @@ def test_concentration_units_are_explicit_and_convert_consistently():
             "mass_fraction"
         ),
         "pp_salt_mass_fraction_rise_cell_2": "mass_fraction",
-        "pp_cp_gu_unit_cell_boundary_2": "-",
     }
     assert {
         name: concentration_metric_unit(name)
@@ -257,27 +257,56 @@ def test_concentration_units_are_explicit_and_convert_consistently():
     } == expected_units
 
 
-def test_contour_reader_prefers_explicit_bulk_concentration_units(tmp_path):
+def test_contour_reader_reads_c_b_window_mol_m3(tmp_path):
     reports = tmp_path / "post" / "reports"
     reports.mkdir(parents=True)
     (reports / "summary_metrics_wide.csv").write_text(
-        "c_bulk_center_area_avg,c_bulk_center_area_avg_units_or_type,"
-        "c_bulk_center_mass_fraction_avg,c_bulk_center_mol_m3_avg\n"
-        "999.0,molar_mol_m3,0.035,597.8268309\n",
+        "c_b_window_mol_m3\n"
+        "612.5\n",
         encoding="utf-8",
     )
     contour = load_module(
-        "contour_explicit_bulk_units",
+        "contour_c_b_window",
         POST_DIR / "pyensight_contour_export.py",
     )
 
-    value, units, diagnostic = contour._read_pyfluent_bulk_center_avg(
+    value, diagnostic = contour._read_pyfluent_c_b_window_mol_m3(
         {"case_path": str(tmp_path)}
     )
 
-    assert value == pytest.approx(0.035)
-    assert units == "mass_fraction"
-    assert "c_bulk_center_mass_fraction_avg" in diagnostic
+    assert value == pytest.approx(612.5)
+    assert "c_b_window_mol_m3" in diagnostic
+
+
+def test_contour_reader_reads_cp_canon_rescale_k_window(tmp_path):
+    reports = tmp_path / "post" / "reports"
+    reports.mkdir(parents=True)
+    payload = {
+        "derived_values": {
+            "segmented_cp_values": {
+                "pp_cp_canon_rescale_k_cell_2": 0.991,
+                "pp_membrane_area_cell_2_m2": 0.002,
+                "pp_cp_canon_rescale_k_cell_3": 0.993,
+                "pp_membrane_area_cell_3_m2": 0.003,
+            }
+        }
+    }
+    (reports / "raw_report_values.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    contour = load_module(
+        "contour_k_window",
+        POST_DIR / "pyensight_contour_export.py",
+    )
+
+    value, diagnostic = contour._read_pyfluent_cp_canon_rescale_k_window(
+        {"case_path": str(tmp_path)}
+    )
+
+    expected = (0.991 * 0.002 + 0.993 * 0.003) / (0.002 + 0.003)
+    assert value == pytest.approx(expected)
+    assert "k_window" in diagnostic
 
 
 def test_udm_area_uses_unweighted_volume_sum_report():
@@ -396,9 +425,27 @@ class FakeSegmentReduction:
             return 2.0e-5
         if expression == "udm-9":
             return 2.1
+        if expression == "nacl":
+            return 0.07
         if expression.startswith("((("):
             return 2.2
+        if expression.startswith("(") and "udm-7" in expression:
+            return 1.0
         return 1.0
+
+    def maximum_if(self, *, expression, condition, locations):
+        if expression == "udm-9":
+            return 1.2
+        if expression == "udm-7":
+            return 650.0
+        if expression.startswith("("):
+            return 0.55
+        return 1.0
+
+    def minimum_if(self, *, expression, condition, locations):
+        if expression.startswith("("):
+            return 0.45
+        return 0.45
 
 
 def test_segmented_membrane_cp_uses_facewise_gu_reduction():
@@ -435,15 +482,38 @@ def test_segmented_membrane_cp_uses_facewise_gu_reduction():
         "pp_cp_inlet_unit_cell_boundary_2": 1.05,
         "pp_cp_bulk_unit_cell_boundary_2": 600.0 / bulk_mol,
         "pp_cp_perm_mol_m3_cell_2": 0.5,
-        "pp_cp_gu_unit_cell_boundary_2": 1.1,
     })
     assert all(call[2] == [wall] for call in reduction.calls)
     assert all(call[3] == "Area" for call in reduction.calls)
     assert all(
         call[1] == "AND(x >= 0.003465 [m], x <= 0.00693 [m])"
         for call in reduction.calls
+        if call[0] != "nacl"
     )
-    assert any(call[0].startswith("(((") for call in reduction.calls)
+
+
+def test_segmented_membrane_cp_window_metrics_with_c_b():
+    reduction = FakeSegmentReduction()
+    wall = SimpleNamespace(obj_name="wall_top_mem")
+    metrics = segmented_membrane_cp_metrics(
+        reduction=reduction,
+        wall_locations=[wall],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
+        spacer_cells=[2, 3],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035, 3: 0.036},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        evaluation_cell_numbers=[3],
+        c_b_by_cell_mol_per_m3={2: 610.0, 3: 615.0},
+        midplane_area_by_cell_m2={2: 1.0, 3: 1.0},
+    )
+    assert "cp_canon_window_avg" in metrics
+    assert "cp_L1_window_avg" in metrics
+    assert "cp_L2_window_avg" in metrics
+    assert "cp_canon_all_active_avg" in metrics
+    assert metrics["c_b_window_mol_m3"] == pytest.approx(615.0)
 
 
 def test_concentration_diagnostics_reject_zone_name_strings():

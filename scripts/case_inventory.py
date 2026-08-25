@@ -200,9 +200,9 @@ TEXT_TAIL_BYTES = 2 * 1024 * 1024
 MAX_LOG_FILES_TO_PARSE = 40
 
 SUMMARY_FIELDS = {
-    "c_bulk_center_area_avg": (
+    "c_bulk_center_whole_domain_area_avg": (
         ("c_bulk_center_area_avg",),
-        ("bulk", "center", "area", "avg"),
+        ("bulk", "center", "area", "avg", "whole", "domain"),
     ),
     "lmh": (
         ("lmh",),
@@ -1743,7 +1743,7 @@ CASE_INVENTORY_FIELDNAMES = [
     "report_csv_count",
     "report_files",
     "summary_metrics_read_error",
-    "c_bulk_center_area_avg",
+    "c_bulk_center_whole_domain_area_avg",
     "lmh",
     "cp",
     "pressure_drop",

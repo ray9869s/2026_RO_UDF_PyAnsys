@@ -6,6 +6,16 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+from ro.cp_metrics import (
+    CP_SCALAR_RESCALE_GUARD_THRESHOLD,
+    average_of_ratios_cp_bae_approx,
+    canonical_rescale_factor,
+    cp_l1_gu2017,
+    cp_perm_expression,
+    midplane_window_bulk_aggregate,
+    window_area_weighted_average,
+    window_pointwise_max,
+)
 from ro.domain_layout import DomainLayout, EvaluationWindow
 
 
@@ -455,6 +465,306 @@ def wall_zone_reduction_locations(setup, wall_zone_names):
     return locations
 
 
+def iso_surface_reduction_locations(setup, iso_surface_names):
+    """Resolve iso-surface names to settings objects accepted by reductions."""
+    if not iso_surface_names:
+        raise ValueError("At least one iso-surface name is required.")
+    iso_group = setup.results.surfaces.iso_surface
+    locations = []
+    for surface_name in iso_surface_names:
+        try:
+            locations.append(iso_group[surface_name])
+        except Exception as exc:
+            raise ValueError(
+                f"Could not resolve iso-surface {surface_name!r} "
+                "to a settings object."
+            ) from exc
+    return locations
+
+
+def _reduction_max_if(reduction, expression, condition, locations):
+    """Facet maximum of ``expression`` where ``condition`` holds."""
+    for method_name in ("maximum_if", "max_if"):
+        method = getattr(reduction, method_name, None)
+        if method is None:
+            continue
+        try:
+            return method(
+                expression=expression,
+                condition=condition,
+                locations=list(locations),
+            )
+        except TypeError:
+            try:
+                return method(
+                    expression=expression,
+                    condition=condition,
+                    locations=locations,
+                )
+            except Exception:
+                continue
+        except Exception:
+            continue
+    raise RuntimeError(
+        "Fluent reduction API exposes no working maximum_if/max_if for "
+        "facet-max CP metrics."
+    )
+
+
+def _reduction_min_if(reduction, expression, condition, locations):
+    """Facet minimum of ``expression`` where ``condition`` holds."""
+    for method_name in ("minimum_if", "min_if"):
+        method = getattr(reduction, method_name, None)
+        if method is None:
+            continue
+        try:
+            return method(
+                expression=expression,
+                condition=condition,
+                locations=list(locations),
+            )
+        except TypeError:
+            try:
+                return method(
+                    expression=expression,
+                    condition=condition,
+                    locations=locations,
+                )
+            except Exception:
+                continue
+        except Exception:
+            continue
+    raise RuntimeError(
+        "Fluent reduction API exposes no working minimum_if/min_if for "
+        "facet-min CP guard metrics."
+    )
+
+
+def _membrane_x_segment_condition(x_min_m, x_max_m):
+    return (
+        f"AND(x >= {float(x_min_m)!r} [m], "
+        f"x <= {float(x_max_m)!r} [m])"
+    )
+
+
+def _midplane_x_segment_condition(x_min_m, x_max_m):
+    return _membrane_x_segment_condition(x_min_m, x_max_m)
+
+
+def evaluation_window_midplane_bulk_concentrations(
+    reduction,
+    midplane_locations,
+    unit_cell_boundary_x_m,
+    evaluation_cell_numbers,
+    salt_expression,
+    *,
+    density_kg_per_m3,
+    molecular_weight_kg_per_mol,
+    salt_is_mass_fraction=True,
+):
+    """Mid-plane (z = h/2) area-average salt concentration per evaluation cell.
+
+    Returns (c_b_by_cell, midplane_area_by_cell, c_b_window) in mol/m3.
+    Whole-domain mid-plane averages include inlet-buffer regions and must not
+    be substituted here.
+    """
+    if not midplane_locations:
+        raise ValueError("At least one mid-plane location is required.")
+    if not evaluation_cell_numbers:
+        raise ValueError("At least one evaluation cell is required.")
+
+    c_b_by_cell: dict[int, float] = {}
+    midplane_area_by_cell: dict[int, float] = {}
+
+    for cell_number in evaluation_cell_numbers:
+        x_min_m = unit_cell_boundary_x_m[cell_number - 1]
+        x_max_m = unit_cell_boundary_x_m[cell_number]
+        condition = _midplane_x_segment_condition(x_min_m, x_max_m)
+        area_m2 = reduction.sum_if(
+            expression="1",
+            condition=condition,
+            locations=list(midplane_locations),
+            weight="Area",
+        )
+        if area_m2 is None or area_m2 <= 0.0:
+            raise ValueError(
+                f"Mid-plane segment for evaluation cell {cell_number} has no "
+                f"positive area (x=[{x_min_m!r}, {x_max_m!r} m])."
+            )
+        salt_sum = reduction.sum_if(
+            expression=salt_expression,
+            condition=condition,
+            locations=list(midplane_locations),
+            weight="Area",
+        )
+        if salt_sum is None:
+            raise ValueError(
+                f"Mid-plane salt average failed for evaluation cell "
+                f"{cell_number}."
+            )
+        salt_avg = salt_sum / area_m2
+        if salt_is_mass_fraction:
+            c_b = mass_fraction_to_molar_concentration(
+                salt_avg,
+                density_kg_per_m3,
+                molecular_weight_kg_per_mol,
+            )
+        else:
+            c_b = float(salt_avg)
+        if c_b is None or c_b <= 0.0:
+            raise ValueError(
+                f"Mid-plane bulk concentration is not positive for cell "
+                f"{cell_number}: {c_b!r}."
+            )
+        c_b_by_cell[cell_number] = c_b
+        midplane_area_by_cell[cell_number] = area_m2
+
+    c_b_window = midplane_window_bulk_aggregate(
+        c_b_by_cell,
+        midplane_area_by_cell,
+        evaluation_cell_numbers,
+    )
+    return c_b_by_cell, midplane_area_by_cell, c_b_window
+
+
+def _compute_membrane_segment_reductions(
+    reduction,
+    wall_locations,
+    condition,
+    b_perm,
+    c0_mol_per_m3,
+    cm_field="udm-7",
+    jw_field="udm-6",
+    cp_field="udm-9",
+):
+    """Area sums and facet maxima for one membrane x-segment."""
+
+    def area_sum(expression):
+        return reduction.sum_if(
+            expression=expression,
+            condition=condition,
+            locations=list(wall_locations),
+            weight="Area",
+        )
+
+    cp_perm_expr = cp_perm_expression(b_perm, cm_field, jw_field)
+    area_m2 = area_sum("1")
+    if area_m2 is None or area_m2 <= 0.0:
+        return None
+    return {
+        "area_m2": area_m2,
+        "cm_area_sum": area_sum(cm_field),
+        "jw_area_sum": area_sum(jw_field),
+        "cp_udm9_area_sum": area_sum(cp_field),
+        "cp_perm_area_sum": area_sum(cp_perm_expr),
+        "cp_perm_min": _reduction_min_if(
+            reduction,
+            cp_perm_expr,
+            condition,
+            wall_locations,
+        ),
+        "cp_perm_max": _reduction_max_if(
+            reduction,
+            cp_perm_expr,
+            condition,
+            wall_locations,
+        ),
+        "cp_udm9_max": _reduction_max_if(
+            reduction,
+            cp_field,
+            condition,
+            wall_locations,
+        ),
+        "cm_max": _reduction_max_if(
+            reduction,
+            cm_field,
+            condition,
+            wall_locations,
+        ),
+        "cp_perm_expr": cp_perm_expr,
+    }
+
+
+def _segment_metrics_from_reductions(
+    segment,
+    cell_number,
+    c_b_cell_mol_per_m3,
+    c0_mol_per_m3,
+):
+    """Build per-cell CP metrics from pre-aggregated membrane reductions."""
+    area_m2 = segment["area_m2"]
+    cm_avg = segment["cm_area_sum"] / area_m2
+    jw_avg = segment["jw_area_sum"] / area_m2
+    cp_udm9_avg = average_of_ratios_cp_bae_approx(
+        segment["cp_udm9_area_sum"],
+        area_m2,
+    )
+    cp_perm_avg = segment["cp_perm_area_sum"] / area_m2
+
+    cp_perm_min = segment["cp_perm_min"]
+    cp_perm_max = segment["cp_perm_max"]
+    if cp_perm_min is None or cp_perm_max is None:
+        cp_perm_min = cp_perm_avg
+        cp_perm_max = cp_perm_avg
+
+    k_n, delta = canonical_rescale_factor(
+        c0_mol_per_m3,
+        c_b_cell_mol_per_m3,
+        cp_perm_avg,
+        cp_perm_min_mol_per_m3=cp_perm_min,
+        cp_perm_max_mol_per_m3=cp_perm_max,
+    )
+    cp_canon = cp_udm9_avg * k_n
+    cp_l1 = cp_l1_gu2017(cm_avg, c_b_cell_mol_per_m3)
+    cp_l2 = cp_udm9_avg
+
+    cp_canon_max = float(segment["cp_udm9_max"]) * k_n
+    cp_l1_max = float(segment["cm_max"]) / c_b_cell_mol_per_m3
+    cp_l2_max = float(segment["cp_udm9_max"])
+
+    metrics = {
+        f"pp_membrane_area_cell_{cell_number}_m2": area_m2,
+        f"pp_cm_mol_m3_cell_{cell_number}": cm_avg,
+        f"pp_jw_m_per_s_cell_{cell_number}": jw_avg,
+        f"pp_cp_inlet_unit_cell_boundary_{cell_number}": cp_udm9_avg,
+        f"pp_cp_perm_mol_m3_cell_{cell_number}": cp_perm_avg,
+        f"pp_c_b_midplane_cell_{cell_number}_mol_m3": c_b_cell_mol_per_m3,
+        f"pp_cp_canon_cell_{cell_number}": cp_canon,
+        f"pp_cp_L1_cell_{cell_number}": cp_l1,
+        f"pp_cp_L2_cell_{cell_number}": cp_l2,
+        f"pp_cp_canon_rescale_k_cell_{cell_number}": k_n,
+        f"pp_cp_canon_rescale_delta_cell_{cell_number}": delta,
+        f"pp_cp_canon_max_cell_{cell_number}": cp_canon_max,
+        f"pp_cp_L1_max_cell_{cell_number}": cp_l1_max,
+        f"pp_cp_L2_max_cell_{cell_number}": cp_l2_max,
+    }
+    return metrics
+
+
+def _cp_scope_aggregates(
+    cell_numbers,
+    membrane_area_by_cell,
+    cp_avg_by_cell,
+    cp_max_by_cell,
+    definition_label,
+    scope,
+):
+    """Return window or all-active aggregate keys for one CP definition."""
+    avg_key = f"cp_{definition_label}_{scope}_avg"
+    max_key = f"cp_{definition_label}_{scope}_max"
+    return {
+        avg_key: window_area_weighted_average(
+            cp_avg_by_cell,
+            membrane_area_by_cell,
+            cell_numbers,
+        ),
+        max_key: window_pointwise_max(
+            cp_max_by_cell,
+            cell_numbers,
+        ),
+    }
+
+
 def mass_fraction_to_molar_concentration(
     mass_fraction,
     density_kg_per_m3,
@@ -516,8 +826,19 @@ def segmented_membrane_cp_metrics(
     molecular_weight_kg_per_mol,
     c_inlet_ref_mol_per_m3,
     salt_permeability_m_per_s,
+    *,
+    evaluation_cell_numbers=None,
+    c_b_by_cell_mol_per_m3=None,
+    midplane_area_by_cell_m2=None,
+    wall_locations_by_name=None,
 ):
-    """Compute x-segmented membrane CP metrics with facewise Gu CP."""
+    """Compute x-segmented membrane CP metrics (all-active and optional window).
+
+    When ``evaluation_cell_numbers`` and ``c_b_by_cell_mol_per_m3`` are
+    supplied, also emits canonical/L1/L2 window aggregates and per-cell
+    c_b-based metrics. UDM-9 values are average-of-ratios; canonical applies
+    a per-cell scalar rescale.
+    """
     if not wall_locations:
         raise ValueError("At least one membrane wall location is required.")
     b_perm = float(salt_permeability_m_per_s)
@@ -525,44 +846,33 @@ def segmented_membrane_cp_metrics(
     if b_perm <= 0.0 or c0 <= 0.0:
         raise ValueError("Salt permeability and inlet concentration must be positive.")
 
-    cm_field = "udm-7"
-    jw_field = "udm-6"
-    cp_perm_expression = (
-        f"({b_perm!r} * ({cm_field}) / (({jw_field}) + {b_perm!r}))"
-    )
-    cp_gu_expression = (
-        f"((({cm_field}) - ({cp_perm_expression})) / "
-        f"({c0!r} - ({cp_perm_expression})))"
-    )
+    metrics: dict[str, Any] = {}
+    segment_cache: dict[int, dict] = {}
 
-    metrics = {}
     for cell_number in spacer_cells:
         x_min_m = unit_cell_boundary_x_m[cell_number - 1]
         x_max_m = unit_cell_boundary_x_m[cell_number]
-        condition = (
-            f"AND(x >= {float(x_min_m)!r} [m], "
-            f"x <= {float(x_max_m)!r} [m])"
+        condition = _membrane_x_segment_condition(x_min_m, x_max_m)
+        segment = _compute_membrane_segment_reductions(
+            reduction,
+            wall_locations,
+            condition,
+            b_perm,
+            c0,
         )
-
-        def area_sum(expression):
-            return reduction.sum_if(
-                expression=expression,
-                condition=condition,
-                locations=list(wall_locations),
-                weight="Area",
-            )
-
-        area_m2 = area_sum("1")
-        if area_m2 is None or area_m2 <= 0.0:
+        if segment is None:
             raise ValueError(
                 f"Membrane segment for cell {cell_number} has no positive area."
             )
-
-        cm_avg = area_sum(cm_field) / area_m2
-        jw_avg = area_sum(jw_field) / area_m2
-        cp_inlet_avg = area_sum("udm-9") / area_m2
-        cp_perm_avg = area_sum(cp_perm_expression) / area_m2
-        cp_gu_avg = area_sum(cp_gu_expression) / area_m2
+        segment_cache[cell_number] = segment
+        area_m2 = segment["area_m2"]
+        cm_avg = segment["cm_area_sum"] / area_m2
+        jw_avg = segment["jw_area_sum"] / area_m2
+        cp_inlet_avg = average_of_ratios_cp_bae_approx(
+            segment["cp_udm9_area_sum"],
+            area_m2,
+        )
+        cp_perm_avg = segment["cp_perm_area_sum"] / area_m2
 
         bulk_mol_per_m3 = mass_fraction_to_molar_concentration(
             mixing_cup_mass_fraction_by_boundary.get(cell_number),
@@ -582,10 +892,244 @@ def segmented_membrane_cp_metrics(
             f"pp_cp_inlet_unit_cell_boundary_{cell_number}": cp_inlet_avg,
             f"pp_cp_bulk_unit_cell_boundary_{cell_number}": cp_bulk,
             f"pp_cp_perm_mol_m3_cell_{cell_number}": cp_perm_avg,
-            f"pp_cp_gu_unit_cell_boundary_{cell_number}": cp_gu_avg,
         })
 
+    if evaluation_cell_numbers is not None:
+        if c_b_by_cell_mol_per_m3 is None:
+            raise ValueError(
+                "c_b_by_cell_mol_per_m3 is required when evaluation_cell_numbers "
+                "is set."
+            )
+        if midplane_area_by_cell_m2 is None:
+            raise ValueError(
+                "midplane_area_by_cell_m2 is required when evaluation_cell_numbers "
+                "is set."
+            )
+        missing_cells = [
+            cell_number
+            for cell_number in evaluation_cell_numbers
+            if cell_number not in c_b_by_cell_mol_per_m3
+        ]
+        if missing_cells:
+            raise ValueError(
+                f"c_b missing for evaluation cells: {missing_cells!r}."
+            )
+
+        canon_avg: dict[int, float] = {}
+        canon_max: dict[int, float] = {}
+        l1_avg: dict[int, float] = {}
+        l1_max: dict[int, float] = {}
+        l2_avg: dict[int, float] = {}
+        l2_max: dict[int, float] = {}
+        membrane_area: dict[int, float] = {}
+        delta_values: dict[int, float] = {}
+
+        for cell_number in evaluation_cell_numbers:
+            if cell_number not in segment_cache:
+                x_min_m = unit_cell_boundary_x_m[cell_number - 1]
+                x_max_m = unit_cell_boundary_x_m[cell_number]
+                condition = _membrane_x_segment_condition(x_min_m, x_max_m)
+                segment = _compute_membrane_segment_reductions(
+                    reduction,
+                    wall_locations,
+                    condition,
+                    b_perm,
+                    c0,
+                )
+                if segment is None:
+                    raise ValueError(
+                        f"Membrane segment for evaluation cell {cell_number} "
+                        "has no positive area."
+                    )
+                segment_cache[cell_number] = segment
+            segment = segment_cache[cell_number]
+            c_b_cell = c_b_by_cell_mol_per_m3[cell_number]
+            cell_metrics = _segment_metrics_from_reductions(
+                segment,
+                cell_number,
+                c_b_cell,
+                c0,
+            )
+            metrics.update(cell_metrics)
+            membrane_area[cell_number] = segment["area_m2"]
+            canon_avg[cell_number] = cell_metrics[
+                f"pp_cp_canon_cell_{cell_number}"
+            ]
+            canon_max[cell_number] = cell_metrics[
+                f"pp_cp_canon_max_cell_{cell_number}"
+            ]
+            l1_avg[cell_number] = cell_metrics[f"pp_cp_L1_cell_{cell_number}"]
+            l1_max[cell_number] = cell_metrics[f"pp_cp_L1_max_cell_{cell_number}"]
+            l2_avg[cell_number] = cell_metrics[f"pp_cp_L2_cell_{cell_number}"]
+            l2_max[cell_number] = cell_metrics[f"pp_cp_L2_max_cell_{cell_number}"]
+            delta_values[cell_number] = cell_metrics[
+                f"pp_cp_canon_rescale_delta_cell_{cell_number}"
+            ]
+
+        metrics["c_b_window_mol_m3"] = midplane_window_bulk_aggregate(
+            c_b_by_cell_mol_per_m3,
+            midplane_area_by_cell_m2 or {},
+            evaluation_cell_numbers,
+        )
+        metrics["c_inlet_ref_mol_m3"] = c0
+        metrics["cp_scalar_rescale_guard_threshold"] = (
+            CP_SCALAR_RESCALE_GUARD_THRESHOLD
+        )
+        metrics["cp_canon_rescale_delta_max"] = max(delta_values.values())
+
+        metrics.update(
+            _cp_scope_aggregates(
+                evaluation_cell_numbers,
+                membrane_area,
+                canon_avg,
+                canon_max,
+                "canon",
+                "window",
+            )
+        )
+        metrics.update(
+            _cp_scope_aggregates(
+                evaluation_cell_numbers,
+                membrane_area,
+                l1_avg,
+                l1_max,
+                "L1",
+                "window",
+            )
+        )
+        metrics.update(
+            _cp_scope_aggregates(
+                evaluation_cell_numbers,
+                membrane_area,
+                l2_avg,
+                l2_max,
+                "L2",
+                "window",
+            )
+        )
+
+        spacer_with_c_b = [
+            cell_number
+            for cell_number in spacer_cells
+            if cell_number in c_b_by_cell_mol_per_m3
+        ]
+        if spacer_with_c_b:
+            all_canon_avg: dict[int, float] = {}
+            all_canon_max: dict[int, float] = {}
+            all_l1_avg: dict[int, float] = {}
+            all_l1_max: dict[int, float] = {}
+            all_l2_avg: dict[int, float] = {}
+            all_l2_max: dict[int, float] = {}
+            all_membrane_area: dict[int, float] = {}
+            for cell_number in spacer_with_c_b:
+                if cell_number not in segment_cache:
+                    continue
+                segment = segment_cache[cell_number]
+                c_b_cell = c_b_by_cell_mol_per_m3[cell_number]
+                cell_metrics = _segment_metrics_from_reductions(
+                    segment,
+                    cell_number,
+                    c_b_cell,
+                    c0,
+                )
+                all_membrane_area[cell_number] = segment["area_m2"]
+                all_canon_avg[cell_number] = cell_metrics[
+                    f"pp_cp_canon_cell_{cell_number}"
+                ]
+                all_canon_max[cell_number] = cell_metrics[
+                    f"pp_cp_canon_max_cell_{cell_number}"
+                ]
+                all_l1_avg[cell_number] = cell_metrics[f"pp_cp_L1_cell_{cell_number}"]
+                all_l1_max[cell_number] = cell_metrics[f"pp_cp_L1_max_cell_{cell_number}"]
+                all_l2_avg[cell_number] = cell_metrics[f"pp_cp_L2_cell_{cell_number}"]
+                all_l2_max[cell_number] = cell_metrics[f"pp_cp_L2_max_cell_{cell_number}"]
+            metrics.update(
+                _cp_scope_aggregates(
+                    spacer_with_c_b,
+                    all_membrane_area,
+                    all_canon_avg,
+                    all_canon_max,
+                    "canon",
+                    "all_active",
+                )
+            )
+            metrics.update(
+                _cp_scope_aggregates(
+                    spacer_with_c_b,
+                    all_membrane_area,
+                    all_l1_avg,
+                    all_l1_max,
+                    "L1",
+                    "all_active",
+                )
+            )
+            metrics.update(
+                _cp_scope_aggregates(
+                    spacer_with_c_b,
+                    all_membrane_area,
+                    all_l2_avg,
+                    all_l2_max,
+                    "L2",
+                    "all_active",
+                )
+            )
+
+        if wall_locations_by_name:
+            for wall_name, wall_locs in wall_locations_by_name.items():
+                suffix = _wall_metric_suffix(wall_name)
+                per_wall_canon_avg: dict[int, float] = {}
+                per_wall_canon_max: dict[int, float] = {}
+                per_wall_area: dict[int, float] = {}
+                for cell_number in evaluation_cell_numbers:
+                    x_min_m = unit_cell_boundary_x_m[cell_number - 1]
+                    x_max_m = unit_cell_boundary_x_m[cell_number]
+                    condition = _membrane_x_segment_condition(x_min_m, x_max_m)
+                    segment = _compute_membrane_segment_reductions(
+                        reduction,
+                        wall_locs,
+                        condition,
+                        b_perm,
+                        c0,
+                    )
+                    if segment is None:
+                        raise ValueError(
+                            f"Membrane segment for {wall_name} cell "
+                            f"{cell_number} has no positive area."
+                        )
+                    c_b_cell = c_b_by_cell_mol_per_m3[cell_number]
+                    cell_metrics = _segment_metrics_from_reductions(
+                        segment,
+                        cell_number,
+                        c_b_cell,
+                        c0,
+                    )
+                    per_wall_area[cell_number] = segment["area_m2"]
+                    per_wall_canon_avg[cell_number] = cell_metrics[
+                        f"pp_cp_canon_cell_{cell_number}"
+                    ]
+                    per_wall_canon_max[cell_number] = cell_metrics[
+                        f"pp_cp_canon_max_cell_{cell_number}"
+                    ]
+                wall_agg = _cp_scope_aggregates(
+                    evaluation_cell_numbers,
+                    per_wall_area,
+                    per_wall_canon_avg,
+                    per_wall_canon_max,
+                    f"canon_{suffix}",
+                    "window",
+                )
+                metrics.update(wall_agg)
+
     return metrics
+
+
+def _wall_metric_suffix(wall_zone_name: str) -> str:
+    lowered = wall_zone_name.lower()
+    if "bottom" in lowered:
+        return "lower"
+    if "top" in lowered:
+        return "upper"
+    return wall_zone_name.replace("wall_", "")
 
 
 def exception_details(exc):

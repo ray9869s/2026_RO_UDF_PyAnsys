@@ -73,7 +73,7 @@ udfs/        dated *_RO_UDF.c — filenames unchanged
 src/ro/      installable package
 ```
 
-Production UDF is `udfs/260816_RO_UDF.c`.
+Production UDF is `udfs/260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 
 ### Data (`RO_DATA_ROOT`, `C:\ro_data`)
 

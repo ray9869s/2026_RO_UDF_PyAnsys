@@ -6,7 +6,7 @@ Export presentation-quality contour images from a solved Fluent case using
 PyEnSight (ansys.pyensight.core v0.11+, EnSight 25.1).
 
 Fields exported (membrane wall unless noted):
-  cp_inlet         - CP = salt_conc / bulk_center_avg  on membrane walls
+  cp_inlet         - Canonical CP = udm-9 * k_window on membrane walls
   water_flux       - Jw [m/s] from solution-diffusion formula on membrane walls
   lmh              - Jw * 3.6e6 [LMH] on membrane walls
   salt_flux        - salt mass flux [kg/m2/s] on membrane walls
@@ -90,9 +90,9 @@ DEFAULT_FIELDS: List[str] = ["cp_inlet", "water_flux", "lmh", "salt_flux"]
 # Candidates are tried in order (exact, then normalised) against ENS_VAR.DESCRIPTION.
 FIELD_SPECS: dict = {
     "cp_inlet": {
-        # Field key kept as cp_inlet for pipeline compatibility; semantics are
-        # now film-theory CP on udm-9 (not Cm/C_INLET_REF). Intended rename: cp.
-        "display_label": "CP [-] (film-theory)",
+        # Field key kept as cp_inlet for pipeline compatibility; contour is
+        # canonical CP (udm-9 * k), not L1 or raw UDM-9.
+        "display_label": "CP [-]",
         "var_candidates": ["udm-9", "UDM-9", "User Defined Memory 9", "udm_9"],
         "surface_type": "membrane",
         "output_suffix": "cp_inlet_membrane",
@@ -3063,22 +3063,47 @@ def compute_bulk_center_average(
     return None, None, summary, full_diag
 
 
-def create_cp_wall_direct(
+def create_cp_wall_canon(
     session: Any,
-    salt_var_desc: str,
-    bulk_avg_value: float,
+    udm9_var_desc: str,
+    k_value: float,
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Create CP_WALL_DIRECT = salt_var / bulk_avg_value on all parts.
+    """Create CP_WALL_CANON = udm-9 * k on all parts.
     Returns (var_obj, var_desc, diag_str)."""
-    derived_name = "CP_WALL_DIRECT"
+    derived_name = "CP_WALL_CANON"
     safe_var = (
-        f"'{salt_var_desc}'"
-        if (" " in salt_var_desc or "-" in salt_var_desc)
-        else salt_var_desc
+        f"'{udm9_var_desc}'"
+        if (" " in udm9_var_desc or "-" in udm9_var_desc)
+        else udm9_var_desc
     )
     try:
         session.ensight.part.select_all()
-        expr = f"{derived_name} = {safe_var} / {bulk_avg_value:.12g}"
+        expr = f"{derived_name} = {safe_var} * {k_value:.12g}"
+        session.ensight.variables.evaluate(expr)
+        var_obj, var_desc = find_ensight_variable(session, [derived_name])
+        if var_obj is not None:
+            return var_obj, derived_name, f"ok,expr='{expr}'"
+        return None, None, f"evaluate_ok_but_var_not_found,expr='{expr}'"
+    except Exception as e:
+        return None, None, f"calculator_err:{e}"
+
+
+def create_cp_wall_l1(
+    session: Any,
+    cm_var_desc: str,
+    c_b_mol_per_m3: float,
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Create CP_WALL_L1 = udm-7 / c_b on all parts (Gu 2017 L1 form).
+    Returns (var_obj, var_desc, diag_str)."""
+    derived_name = "CP_WALL_L1"
+    safe_var = (
+        f"'{cm_var_desc}'"
+        if (" " in cm_var_desc or "-" in cm_var_desc)
+        else cm_var_desc
+    )
+    try:
+        session.ensight.part.select_all()
+        expr = f"{derived_name} = {safe_var} / {c_b_mol_per_m3:.12g}"
         session.ensight.variables.evaluate(expr)
         var_obj, var_desc = find_ensight_variable(session, [derived_name])
         if var_obj is not None:
@@ -3364,64 +3389,122 @@ def create_shear_rate_wall_direct(
 # PyFluent report CSV reader for CP bulk reference
 # ---------------------------------------------------------------------------
 
-def _read_pyfluent_bulk_center_avg(
+def _read_pyfluent_c_b_window_mol_m3(
     plan_item: dict,
-) -> Tuple[Optional[float], str, str]:
-    """Read c_bulk_center_area_avg from the PyFluent summary_metrics_wide.csv.
+) -> Tuple[Optional[float], str]:
+    """Read evaluation-window mid-plane c_b_window_mol_m3 from PyFluent reports.
 
-    Returns (value, units_or_type, diag). value is None when unavailable.
-    units_or_type is 'mass_fraction' or 'molar_mol_m3' as written by pyfluent_report_extract.py.
+    Returns (value_mol_m3, diag). value is None when unavailable.
     """
     import csv as _csv
 
     case_path = Path(plan_item.get("case_path", ""))
     if not case_path.is_dir():
-        return None, "", f"case_path_not_dir:{case_path}"
+        return None, f"case_path_not_dir:{case_path}"
 
     csv_path = case_path / "post" / "reports" / "summary_metrics_wide.csv"
-    if not csv_path.is_file():
-        return None, "", f"csv_not_found:{csv_path}"
-
-    try:
-        with open(csv_path, newline="", encoding="utf-8-sig") as fh:
-            reader = _csv.DictReader(fh)
-            rows = list(reader)
-    except Exception as exc:
-        return None, "", f"csv_read_err:{exc}"
-
-    if not rows:
-        return None, "", "csv_empty"
-
-    row = rows[0]
-    explicit_candidates = [
-        ("c_bulk_center_mass_fraction_avg", "mass_fraction"),
-        ("c_bulk_center_mol_m3_avg", "molar_mol_m3"),
-    ]
-    for column_name, units_str in explicit_candidates:
-        val_str = (row.get(column_name) or "").strip()
-        if not val_str or val_str.lower() in ("none", "nan", ""):
-            continue
+    if csv_path.is_file():
         try:
-            value = float(val_str)
-        except ValueError:
-            return None, units_str, f"{column_name}_not_numeric:{val_str!r}"
-        return (
-            value,
-            units_str,
-            f"read_ok,column={column_name},val={value:.6g},units={units_str}",
-        )
+            with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+                reader = _csv.DictReader(fh)
+                rows = list(reader)
+        except Exception as exc:
+            return None, f"csv_read_err:{exc}"
+        if rows:
+            val_str = (rows[0].get("c_b_window_mol_m3") or "").strip()
+            if val_str and val_str.lower() not in ("none", "nan", ""):
+                try:
+                    value = float(val_str)
+                    return (
+                        value,
+                        f"read_ok,column=c_b_window_mol_m3,val={value:.6g}",
+                    )
+                except ValueError:
+                    return None, f"c_b_window_mol_m3_not_numeric:{val_str!r}"
 
-    val_str = (row.get("c_bulk_center_area_avg") or "").strip()
-    units_str = (row.get("c_bulk_center_area_avg_units_or_type") or "").strip()
-    if not val_str or val_str.lower() in ("none", "nan", ""):
-        return None, units_str, f"c_bulk_center_area_avg_missing_in_csv"
+    json_path = case_path / "post" / "reports" / "raw_report_values.json"
+    if json_path.is_file():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            segmented = payload.get("derived_values", {}).get(
+                "segmented_cp_values", {}
+            )
+            value = segmented.get("c_b_window_mol_m3")
+            if value is not None:
+                value_f = float(value)
+                return (
+                    value_f,
+                    f"read_ok,json=segmented_cp_values.c_b_window_mol_m3,"
+                    f"val={value_f:.6g}",
+                )
+        except Exception as exc:
+            return None, f"json_read_err:{exc}"
 
-    try:
-        value = float(val_str)
-    except ValueError:
-        return None, units_str, f"c_bulk_center_area_avg_not_numeric:{val_str!r}"
+    return None, "c_b_window_mol_m3_missing_in_reports"
 
-    return value, units_str, f"read_ok,val={value:.6g},units={units_str}"
+
+def _read_pyfluent_cp_canon_rescale_k_window(
+    plan_item: dict,
+) -> Tuple[Optional[float], str]:
+    """Read evaluation-window aggregate k for CP_WALL_CANON = udm-9 * k.
+
+    Membrane contours are not cell-resolved: k is the area-weighted mean of
+    per-cell pp_cp_canon_rescale_k_cell_{N} over cells with membrane area in
+    the evaluation window (same cells as segmented CP metrics).
+
+    Returns (k_window, diag). value is None when unavailable.
+    """
+    case_path = Path(plan_item.get("case_path", ""))
+    if not case_path.is_dir():
+        return None, f"case_path_not_dir:{case_path}"
+
+    json_path = case_path / "post" / "reports" / "raw_report_values.json"
+    if json_path.is_file():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            segmented = payload.get("derived_values", {}).get(
+                "segmented_cp_values", {}
+            )
+            k_by_cell: dict[int, float] = {}
+            area_by_cell: dict[int, float] = {}
+            for key, raw_value in segmented.items():
+                k_match = re.fullmatch(
+                    r"pp_cp_canon_rescale_k_cell_(\d+)", key
+                )
+                if k_match and raw_value is not None:
+                    k_by_cell[int(k_match.group(1))] = float(raw_value)
+                    continue
+                area_match = re.fullmatch(
+                    r"pp_membrane_area_cell_(\d+)_m2", key
+                )
+                if area_match and raw_value is not None:
+                    area_by_cell[int(area_match.group(1))] = float(raw_value)
+
+            cell_numbers = sorted(set(k_by_cell) & set(area_by_cell))
+            if cell_numbers:
+                total_area = 0.0
+                weighted_k = 0.0
+                for cell_number in cell_numbers:
+                    area = area_by_cell[cell_number]
+                    if area <= 0.0:
+                        return (
+                            None,
+                            f"non_positive_membrane_area_cell_{cell_number}",
+                        )
+                    total_area += area
+                    weighted_k += k_by_cell[cell_number] * area
+                if total_area <= 0.0:
+                    return None, "evaluation_window_membrane_area_not_positive"
+                k_window = weighted_k / total_area
+                return (
+                    k_window,
+                    f"read_ok,json=segmented_cp_values,"
+                    f"cells={cell_numbers},k_window={k_window:.6g}",
+                )
+        except Exception as exc:
+            return None, f"json_read_err:{exc}"
+
+    return None, "cp_canon_rescale_k_window_missing_in_reports"
 
 
 # ---------------------------------------------------------------------------
@@ -3673,6 +3756,11 @@ def export_contour(
     # 3. Locate UDM variable (used as fallback for cp_inlet / lmh)
     var_obj, matched_var_desc = find_ensight_variable(session, var_candidates)
     if var_obj is None:
+        if field_key == "cp_inlet":
+            raise RuntimeError(
+                f"CP contour requires udm-9 (candidates: {var_candidates}). "
+                "Ensure the .dat.h5 contains UDM data and loaded correctly."
+            )
         if field_key == "shear_rate":
             derived_variable_mode = "wall_shear_unavailable"
             _inv_path = output_file.parent / "ensight_variable_inventory.json"
@@ -3698,140 +3786,39 @@ def export_contour(
             session, SALT_MASS_FRAC_CANDIDATES, "salt mass fraction"
         )
 
-        # ---- CP wall direct ----
+        # ---- CP wall canonical (udm-9 * k_window) ----
         if field_key == "cp_inlet":
-            if salt_obj is not None:
-                primitive_variables_used_str = salt_desc
-
-                # Strategy 0: pre-computed bulk avg from PyFluent CSV (most reliable).
-                pf_val, pf_units, pf_diag = _read_pyfluent_bulk_center_avg(plan_item)
-                bulk_avg: Optional[float] = None
-                cp_full_diag: dict = {}
-                cp_plane: Optional[str] = None
-                plane_diag: str = ""
-
-                if pf_val is not None:
-                    is_conc = any(
-                        kw in _normalize(salt_desc)
-                        for kw in ["mol", "conc", "concentration"]
-                    )
-                    pf_ok = (50 <= pf_val <= 3000) if is_conc else (1e-4 <= pf_val <= 0.20)
-                    if pf_ok:
-                        bulk_avg = pf_val
-                        bulk_reference_mode_str = (
-                            "center_plane_area_weighted_average_from_pyfluent_report"
-                        )
-                        bulk_reference_value_float = pf_val
-                        bulk_reference_units_str = pf_units
-                        center_plane_name_str = "pyfluent_report_csv"
-                        cp_full_diag = {"pyfluent_source": pf_diag, "units": pf_units}
-                        info_msgs.append(
-                            f"CP bulk avg from PyFluent CSV: {pf_val:.6g} "
-                            f"({pf_units}); {pf_diag}"
-                        )
-                    else:
-                        info_msgs.append(
-                            f"PyFluent CSV val={pf_val:.4g} ({pf_units}) not plausible "
-                            f"for salt_desc={salt_desc} (is_conc={is_conc}); "
-                            "trying EnSight AMEAN"
-                        )
-                else:
-                    info_msgs.append(
-                        f"PyFluent CSV unavailable ({pf_diag}); trying EnSight AMEAN"
-                    )
-
-                # Strategy 1: center-plane area-weighted average from EnSight.
-                if bulk_avg is None:
-                    fluid_vol_parts = find_fluid_volume_parts(session)
-                    bulk_avg, cp_plane, plane_diag, cp_full_diag = (
-                        compute_bulk_center_average(session, salt_desc, fluid_vol_parts)
-                    )
-                center_plane_diagnostics_dict = cp_full_diag
-
-                if bulk_avg is not None and bulk_avg > 0:
-                    if not center_plane_name_str:
-                        center_plane_name_str = cp_plane or ""
-                    cp_var, cp_desc, cp_diag = create_cp_wall_direct(
-                        session, salt_desc, bulk_avg
-                    )
-                    if cp_var is not None:
-                        var_obj = cp_var
-                        matched_var_desc = cp_desc
-                        derived_variable_mode = "direct_cp_center_avg"
-                        if not bulk_reference_mode_str:
-                            bulk_reference_mode_str = "center_plane_area_weighted_average"
-                        if bulk_reference_value_float is None:
-                            bulk_reference_value_float = bulk_avg
-                        if not bulk_reference_units_str:
-                            bulk_reference_units_str = "same_as_salt_variable"
-                        formula_summary_str = (
-                            f"CP_WALL_DIRECT={salt_desc}/{bulk_avg:.6g} "
-                            f"(center-plane area-wtd avg)"
-                        )
-                        info_msgs.append(
-                            f"CP_WALL_DIRECT created: {cp_diag}; "
-                            f"bulk_avg={bulk_avg:.6g}"
-                        )
-                    else:
-                        warnings.append(f"WARN: CP_WALL_DIRECT calculator failed ({cp_diag})")
-                        derived_variable_mode = "calculator_failed"
-                        bulk_avg = None  # trigger inlet-ref fallback below
-                else:
-                    fr = cp_full_diag.get("final_result", "")
-                    derived_variable_mode = (
-                        "center_plane_failed"
-                        if "all_candidates_failed" in fr or "clip_failed" in fr
-                        else "area_average_failed"
-                    )
-                    warnings.append(f"WARN: bulk center avg failed ({plane_diag})")
-
-                # Fallback 1: inlet reference
-                if bulk_avg is None and salt_obj is not None:
-                    c_inlet_ref_mol = float(plan_item.get("c_inlet_ref_mol", UDF_C_INLET_REF))
-                    is_conc = any(
-                        kw in _normalize(salt_desc)
-                        for kw in ["mol", "conc", "concentration"]
-                    )
-                    if is_conc:
-                        inlet_ref = c_inlet_ref_mol
-                        ref_type = f"inlet_molar_conc_{c_inlet_ref_mol:.4g}_mol_m3"
-                    else:
-                        inlet_ref = INLET_SALT_MASS_FRAC_REF
-                        ref_type = f"inlet_mass_frac_{INLET_SALT_MASS_FRAC_REF:.5g}"
-
-                    cp_var2, cp_desc2, cp_diag2 = create_cp_wall_direct(
-                        session, salt_desc, inlet_ref
-                    )
-                    if cp_var2 is not None:
-                        var_obj = cp_var2
-                        matched_var_desc = cp_desc2
-                        derived_variable_mode = "bulk_reference_fallback_to_inlet"
-                        bulk_reference_mode_str = "inlet_reference_fallback"
-                        bulk_reference_value_float = inlet_ref
-                        bulk_reference_units_str = ref_type
-                        formula_summary_str = (
-                            f"CP_WALL_DIRECT={salt_desc}/{inlet_ref:.5g} "
-                            f"(inlet reference fallback)"
-                        )
-                        warnings.append(
-                            f"WARN: CP using inlet reference ({ref_type}), "
-                            f"center-plane avg unavailable"
-                        )
-                    else:
-                        warnings.append(
-                            f"WARN: inlet-ref CP also failed ({cp_diag2}); "
-                            f"falling back to UDM_9"
-                        )
-                        derived_variable_mode = "udm_fallback"
-                        warnings.append(
-                            "WARN: fallback to UDM_9; wall mapping may be unreliable"
-                        )
-            else:
-                derived_variable_mode = "primitive_unavailable"
-                warnings.append(
-                    "WARN: no primitive salt variable found; "
-                    "fallback to UDM_9; wall mapping may be unreliable"
+            k_window, k_diag = _read_pyfluent_cp_canon_rescale_k_window(plan_item)
+            if k_window is None or k_window <= 0.0:
+                raise RuntimeError(
+                    f"CP contour requires window aggregate k from PyFluent reports "
+                    f"({k_diag}); refusing fallback."
                 )
+
+            cp_var, cp_desc, cp_diag = create_cp_wall_canon(
+                session, matched_var_desc, k_window
+            )
+            if cp_var is None:
+                raise RuntimeError(
+                    f"CP_WALL_CANON calculator failed ({cp_diag})."
+                )
+
+            var_obj = cp_var
+            matched_var_desc = cp_desc
+            derived_variable_mode = "direct_cp_canon_window_k"
+            bulk_reference_mode_str = "cp_canon_rescale_k_window"
+            bulk_reference_value_float = k_window
+            bulk_reference_units_str = "-"
+            center_plane_name_str = "pyfluent_report_cp_canon_rescale_k"
+            center_plane_diagnostics_dict = {"pyfluent_source": k_diag}
+            formula_summary_str = (
+                f"CP_WALL_CANON={matched_var_desc}*{k_window:.6g} "
+                f"(udm-9 * k_window)"
+            )
+            info_msgs.append(
+                f"CP_WALL_CANON created: {cp_diag}; k_window={k_window:.6g}; "
+                f"{k_diag}"
+            )
 
         # ---- LMH wall direct ----
         elif field_key == "lmh":
@@ -4388,7 +4375,7 @@ def _colorbar_entry_from_record(r: ExportRecord, timestamp: str) -> dict:
     if r.field_key == "cp_inlet" and r.bulk_reference_mode:
         bulk_val = f"={r.bulk_reference_value:.6g}" if r.bulk_reference_value is not None else ""
         notes_parts.append(
-            f"CP bulk reference: mode={r.bulk_reference_mode}{bulk_val} "
+            f"CP canonical rescale k: mode={r.bulk_reference_mode}{bulk_val} "
             f"({r.bulk_reference_units_or_type or 'n/a'})"
         )
     if r.status not in (STATUS_SUCCESS, STATUS_WARN):

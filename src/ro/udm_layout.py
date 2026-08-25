@@ -186,3 +186,40 @@ def expected_udm_fields_from_case(case_dir) -> dict[str, str]:
     udf_path = find_case_udf_path(case_dir)
     source = udf_path.read_text(encoding="utf-8")
     return expected_udm_fields_from_enum(parse_udm_enum_from_c(source))
+
+
+def parse_ro_analytic_cwall_from_udf_source(source: str) -> int:
+    """Parse RO_ANALYTIC_CWALL default from a UDF C source string."""
+    ifndef_match = re.search(
+        r"#ifndef\s+RO_ANALYTIC_CWALL\s*\n#define\s+RO_ANALYTIC_CWALL\s+(\d+)",
+        source,
+    )
+    if ifndef_match is not None:
+        return int(ifndef_match.group(1))
+    define_match = re.search(r"#define\s+RO_ANALYTIC_CWALL\s+(\d+)", source)
+    if define_match is not None:
+        return int(define_match.group(1))
+    raise ValueError("RO_ANALYTIC_CWALL not found in UDF source.")
+
+
+def parse_ro_analytic_cwall_from_udf_path(udf_path: Path) -> int:
+    """Parse RO_ANALYTIC_CWALL from a UDF file path."""
+    source = udf_path.read_text(encoding="utf-8")
+    return parse_ro_analytic_cwall_from_udf_source(source)
+
+
+def parse_ro_analytic_cwall_from_case(case_dir) -> int:
+    """Parse RO_ANALYTIC_CWALL from the case-local dated UDF copy."""
+    udf_path = find_case_udf_path(case_dir)
+    return parse_ro_analytic_cwall_from_udf_path(udf_path)
+
+
+def require_ro_analytic_cwall(case_dir) -> int:
+    """Return RO_ANALYTIC_CWALL from the case UDF; raise if absent or zero."""
+    value = parse_ro_analytic_cwall_from_case(case_dir)
+    if value != 1:
+        raise ValueError(
+            f"RO_ANALYTIC_CWALL must be 1 for CP metrics, got {value!r} "
+            f"from case UDF in {case_dir}."
+        )
+    return value

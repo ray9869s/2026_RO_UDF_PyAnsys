@@ -35,6 +35,10 @@ from ro.solver_common import (
 from ro.domain_layout import layout_from_mesh_manifest
 from ro.fluent_report_helpers import create_x_normal_plane
 from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
+from ro.udm_layout import (
+    parse_ro_analytic_cwall_from_case,
+    parse_ro_analytic_cwall_from_udf_path,
+)
 
 
 def _utc_now_string():
@@ -47,6 +51,8 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
     )
     u_target_ms = float(cfg.inlet_velocity_value)
     u_mean_ms = u_target_ms if inlet_bc_type == "plug" else None
+    udf_path = udfs_dir() / cfg.udf_source_file_name
+    analytic_cwall = parse_ro_analytic_cwall_from_udf_path(udf_path)
     return {
         "schema_version": 1,
         "family": cfg.family,
@@ -59,6 +65,7 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
         "u_target_ms": u_target_ms,
         "inlet_bc_type": inlet_bc_type,
         "udf_version": cfg.udf_source_file_name,
+        "analytic_cwall": analytic_cwall,
         "solver_settings": {
             "max_iterations": cfg.max_iterations,
             "residual_target": cfg.residual_target,
@@ -90,9 +97,22 @@ def write_worker_run_manifest(
     return write_run_manifest(run_directory, payload)
 
 
+def _resolve_analytic_cwall_for_run(run_directory, udf_version: str) -> int:
+    """Prefer case-local UDF; fall back to repo udfs/ copy by manifest name."""
+    directory = Path(run_directory)
+    try:
+        return parse_ro_analytic_cwall_from_case(directory)
+    except FileNotFoundError:
+        return parse_ro_analytic_cwall_from_udf_path(udfs_dir() / udf_version)
+
+
 def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=None):
     payload = read_run_manifest(run_directory)
     payload["stop_reason"] = stop_reason
+    payload["analytic_cwall"] = _resolve_analytic_cwall_for_run(
+        run_directory,
+        payload["udf_version"],
+    )
     if payload["inlet_bc_type"] == "parabolic":
         if inlet_profile_g is None:
             raise RuntimeError(
