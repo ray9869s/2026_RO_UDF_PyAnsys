@@ -98,6 +98,10 @@ def resolve_report_case_paths(cfg):
     Preference: cfg.case_path, then cfg.results_dir/<geo>/<case>, then the
     parent of cfg.final_case_file. Missing all three is an error — joining
     project_root/03_Results would silently miss the data tree.
+
+    ``final_case_file`` and ``final_data_file`` are always resolved under
+    ``case_path`` when given as bare filenames (batch overrides often supply
+    only the leaf name). Absolute paths are preserved.
     """
     geo_name = cfg.geo_name
     case_name = cfg.case_name
@@ -108,25 +112,51 @@ def resolve_report_case_paths(cfg):
 
     if configured_case_path:
         case_path = Path(configured_case_path)
+        case_path_provenance = "case_path_override"
     elif results_dir:
         case_path = Path(results_dir) / str(geo_name) / str(case_name)
+        case_path_provenance = "results_dir_builder"
     elif configured_final_case:
         case_path = Path(configured_final_case).parent
+        case_path_provenance = "final_case_file_parent"
     else:
         raise ValueError(
             "Cannot locate the case directory. Set case_path, results_dir, "
             "or final_case_file in the post config."
         )
 
-    final_case_file = Path(
-        configured_final_case
-        if configured_final_case
-        else case_path / f"{geo_name}_{case_name}_final.cas.h5"
+    case_path = case_path.resolve()
+
+    def _resolve_case_artifact(
+        configured_value,
+        default_name: str,
+        provenance_label: str,
+    ) -> tuple[Path, str]:
+        if configured_value is None:
+            resolved = (case_path / default_name).resolve()
+            return resolved, f"default_under_case_path:{default_name}"
+        raw = Path(configured_value)
+        if raw.is_absolute():
+            return raw.resolve(), f"{provenance_label}:absolute_path"
+        if raw.parent == Path(".") or str(raw.parent) == "":
+            return (
+                (case_path / raw.name).resolve(),
+                f"{provenance_label}:case_path_join_bare_filename",
+            )
+        return (
+            (case_path / raw).resolve(),
+            f"{provenance_label}:case_path_join_relative_path",
+        )
+
+    final_case_file, final_case_provenance = _resolve_case_artifact(
+        configured_final_case,
+        f"{geo_name}_{case_name}_final.cas.h5",
+        "final_case_file",
     )
-    final_data_file = Path(
-        configured_final_data
-        if configured_final_data
-        else case_path / f"{geo_name}_{case_name}_final.dat.h5"
+    final_data_file, final_data_provenance = _resolve_case_artifact(
+        configured_final_data,
+        f"{geo_name}_{case_name}_final.dat.h5",
+        "final_data_file",
     )
     post_path = case_path / "post"
     report_path = post_path / "reports"
@@ -134,8 +164,11 @@ def resolve_report_case_paths(cfg):
         "geo_name": geo_name,
         "case_name": case_name,
         "case_path": case_path,
+        "case_path_provenance": case_path_provenance,
         "final_case_file": final_case_file,
+        "final_case_file_provenance": final_case_provenance,
         "final_data_file": final_data_file,
+        "final_data_file_provenance": final_data_provenance,
         "post_path": post_path,
         "report_path": report_path,
     }
@@ -213,8 +246,11 @@ if __name__ == "__main__":
 
     paths = resolve_report_case_paths(cfg)
     case_path = paths["case_path"]
+    case_path_provenance = paths["case_path_provenance"]
     final_case_file = paths["final_case_file"]
+    final_case_file_provenance = paths["final_case_file_provenance"]
     final_data_file = paths["final_data_file"]
+    final_data_file_provenance = paths["final_data_file_provenance"]
     post_path = paths["post_path"]
     report_path = paths["report_path"]
 
@@ -226,16 +262,32 @@ if __name__ == "__main__":
     pressure_csv_path = report_path / "pressure_report.csv"
     raw_report_json_path = report_path / "raw_report_values.json"
 
-    print("Case path:", case_path)
-    print("Final case file:", final_case_file)
-    print("Final data file:", final_data_file)
+    print("Case path:", case_path, f"({case_path_provenance})")
+    print(
+        "Final case file:",
+        final_case_file,
+        f"({final_case_file_provenance})",
+    )
+    print(
+        "Final data file:",
+        final_data_file,
+        f"({final_data_file_provenance})",
+    )
     print("Report output folder:", report_path)
 
     if not final_case_file.is_file():
-        raise FileNotFoundError(f"Final case file not found: {final_case_file}")
+        raise FileNotFoundError(
+            f"Final case file not found: {final_case_file} "
+            f"(provenance={final_case_file_provenance}, "
+            f"case_path={case_path} from {case_path_provenance})"
+        )
 
     if not final_data_file.is_file():
-        raise FileNotFoundError(f"Final data file not found: {final_data_file}")
+        raise FileNotFoundError(
+            f"Final data file not found: {final_data_file} "
+            f"(provenance={final_data_file_provenance}, "
+            f"case_path={case_path} from {case_path_provenance})"
+        )
 
     analytic_cwall_value, analytic_cwall_source = (
         resolve_analytic_cwall_for_extract(case_path)
@@ -243,6 +295,7 @@ if __name__ == "__main__":
     layout_validation = assert_layout_spans_match_cell_profile(
         scoring_layout,
         case_path,
+        case_name=case_name,
     )
     print(
         f"analytic_cwall={analytic_cwall_value} "
@@ -1931,8 +1984,11 @@ if __name__ == "__main__":
                 "geo_name": geo_name,
                 "case_name": case_name,
                 "case_path": str(case_path),
+                "case_path_provenance": case_path_provenance,
                 "final_case_file": str(final_case_file),
+                "final_case_file_provenance": final_case_file_provenance,
                 "final_data_file": str(final_data_file),
+                "final_data_file_provenance": final_data_file_provenance,
                 "analytic_cwall": analytic_cwall_value,
                 "analytic_cwall_source": analytic_cwall_source,
                 "layout_cell_profile_validation": layout_validation,

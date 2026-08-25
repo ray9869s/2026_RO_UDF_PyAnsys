@@ -77,6 +77,39 @@ def test_assert_layout_spans_match_cell_profile(tmp_path: Path):
     assert result["spacer_1_x_min_m"] == pytest.approx(0.003465)
     assert result["spacer_1_x_max_m"] == pytest.approx(0.006930)
     assert result["domain_end_m"] == pytest.approx(0.034650)
+    assert "cell_profile_csv_provenance" in result
+
+
+def test_assert_layout_uses_geo_level_generic_cell_profile(tmp_path: Path):
+    geo_dir = tmp_path / "D2450_a45_7c_brg110"
+    run_dir = geo_dir / "recon_bl4_u0p2"
+    run_dir.mkdir(parents=True)
+    _write_cell_profile_csv(geo_dir / "cell_profile.csv")
+    layout = DomainLayout(
+        n_buffer_in=1,
+        n_active=7,
+        n_buffer_out=2,
+        cell_length_x_m=0.003465,
+        buffer_length_in_m=0.003465,
+        buffer_length_out_m=0.00693,
+    )
+    scoring_layout = scoring_geometry_from_layout(layout, 0.0)
+    result = assert_layout_spans_match_cell_profile(
+        scoring_layout,
+        run_dir,
+        case_name="recon_bl4_u0p2",
+    )
+    assert result["cell_profile_csv_provenance"] == "geo_dir_generic_cell_profile"
+    assert "cell_profile.csv" in result["cell_profile_csv"]
+
+
+def test_resolve_cell_profile_csv_raises_when_missing(tmp_path: Path):
+    run_dir = tmp_path / "geo" / "recon_bl6_u0p2"
+    run_dir.mkdir(parents=True)
+    from ro.fluent_report_helpers import resolve_cell_profile_csv
+
+    with pytest.raises(FileNotFoundError, match="Layout validation requires"):
+        resolve_cell_profile_csv(run_dir, case_name="recon_bl6_u0p2")
 
 
 def test_resolve_analytic_cwall_without_manifest(tmp_path: Path):

@@ -140,8 +140,33 @@ def test_report_extract_uses_final_case_file_parent(tmp_path):
         final_case_file=final_case,
     )
     paths = extract.resolve_report_case_paths(cfg)
-    assert paths["case_path"] == case_dir
-    assert paths["final_case_file"] == final_case
+    assert paths["case_path"] == case_dir.resolve()
+    assert paths["final_case_file"] == final_case.resolve()
+    assert paths["case_path_provenance"] == "final_case_file_parent"
+
+
+def test_report_extract_joins_bare_final_case_filename_to_case_path(tmp_path):
+    extract = load_report_extract()
+    case_dir = tmp_path / "archive" / "geo" / "recon_bl4_u0p2"
+    case_dir.mkdir(parents=True)
+    final_name = "D2450_a45_7c_brg110_u0p2_p6M__mesh_max085_min006_cpg5_bl4_final.cas.h5"
+    final_case = case_dir / final_name
+    final_case.write_bytes(b"cas")
+    data_name = final_name.replace(".cas.h5", ".dat.h5")
+    (case_dir / data_name).write_bytes(b"dat")
+    cfg = SimpleNamespace(
+        geo_name="D2450_a45_7c_brg110",
+        case_name="recon_bl4_u0p2",
+        case_path=str(case_dir),
+        final_case_file=final_name,
+        final_data_file=data_name,
+    )
+    paths = extract.resolve_report_case_paths(cfg)
+    assert paths["final_case_file"] == final_case.resolve()
+    assert paths["final_data_file"] == (case_dir / data_name).resolve()
+    assert paths["final_case_file_provenance"].endswith(
+        "case_path_join_bare_filename"
+    )
 
 
 def test_report_extract_refuses_stock_layout_default():

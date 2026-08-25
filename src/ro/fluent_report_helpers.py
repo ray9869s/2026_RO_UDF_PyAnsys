@@ -368,30 +368,93 @@ def _layout_span_label_to_cell_profile(label: str) -> str:
     return label
 
 
-def find_cell_profile_csv(case_path) -> Optional[Path]:
-    """Return the first cell_profile*.csv under a case directory, if any."""
-    root = Path(case_path)
-    patterns = (
+def find_cell_profile_csv(
+    case_path,
+    case_name: Optional[str] = None,
+) -> Optional[Path]:
+    """Return a cell_profile CSV path if one exists (legacy helper).
+
+    Prefer :func:`resolve_cell_profile_csv`, which records provenance and
+    raises when no file is found.
+    """
+    resolved, _provenance = resolve_cell_profile_csv(case_path, case_name)
+    return resolved
+
+
+def resolve_cell_profile_csv(
+    case_path,
+    case_name: Optional[str] = None,
+) -> tuple[Path, str]:
+    """Locate cell_profile evidence for layout span validation.
+
+    Search order:
+    1. ``case_path/cell_profile_{case_name}.csv`` (run-specific under run dir)
+    2. ``case_path/**/cell_profile*.csv`` (legacy run-dir layouts)
+    3. ``case_path.parent/cell_profile_{case_name}.csv`` (geo-level run-specific)
+    4. ``case_path.parent/cell_profile.csv`` (geo-level generic)
+
+    The generic geo-level ``cell_profile.csv`` is intentional for meshes like
+    D2450_a45_7c_brg110: all runs on the geometry share the same 1+7+2 streamwise
+    spans; grid pairs such as bl4 vs bl6 differ only in near-wall resolution, not
+    buffer/active cell boundaries.
+
+    Raises ``FileNotFoundError`` when nothing matches — layout overrides must not
+    pass unverified.
+    """
+    root = Path(case_path).resolve()
+    run_name = case_name or root.name
+    geo_dir = root.parent
+
+    candidates: list[tuple[Path, str]] = []
+
+    run_specific = root / f"cell_profile_{run_name}.csv"
+    if run_specific.is_file():
+        candidates.append(
+            (run_specific, "case_dir_run_specific_cell_profile")
+        )
+
+    for pattern in (
         "cell_profile*.csv",
         "post/cell_profile*.csv",
         "post/reports/cell_profile*.csv",
-    )
-    for pattern in patterns:
-        matches = sorted(root.glob(pattern))
-        if matches:
-            return matches[0]
-    return None
+    ):
+        for match in sorted(root.glob(pattern)):
+            if match.is_file() and match not in [c[0] for c in candidates]:
+                candidates.append((match, f"case_dir_glob:{pattern}"))
+
+    geo_run_specific = geo_dir / f"cell_profile_{run_name}.csv"
+    if geo_run_specific.is_file():
+        candidates.append(
+            (geo_run_specific, "geo_dir_run_specific_cell_profile")
+        )
+
+    geo_generic = geo_dir / "cell_profile.csv"
+    if geo_generic.is_file():
+        candidates.append((geo_generic, "geo_dir_generic_cell_profile"))
+
+    if not candidates:
+        searched = [
+            str(run_specific),
+            str(geo_run_specific),
+            str(geo_generic),
+            str(root / "cell_profile*.csv"),
+        ]
+        raise FileNotFoundError(
+            "Layout validation requires cell_profile CSV evidence. "
+            f"Searched: {', '.join(searched)}."
+        )
+
+    return candidates[0]
 
 
-def read_cell_profile_spans(case_path) -> dict[str, tuple[float, float]]:
+def read_cell_profile_spans(
+    case_path,
+    case_name: Optional[str] = None,
+) -> dict[str, tuple[float, float]]:
     """Read span -> (x_min_m, x_max_m) from cell_profile.csv."""
     import csv
 
-    csv_path = find_cell_profile_csv(case_path)
-    if csv_path is None:
-        raise FileNotFoundError(
-            f"No cell_profile*.csv found under {case_path}."
-        )
+    csv_path, _provenance = resolve_cell_profile_csv(case_path, case_name)
     spans: dict[str, tuple[float, float]] = {}
     with csv_path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
@@ -426,18 +489,15 @@ def read_cell_profile_spans(case_path) -> dict[str, tuple[float, float]]:
 def assert_layout_spans_match_cell_profile(
     scoring_layout: ScoringLayoutGeometry,
     case_path,
+    case_name: Optional[str] = None,
 ) -> dict[str, object]:
     """Raise when resolved layout spans disagree with cell_profile.csv.
 
     Cross-checks every layout span against the CSV artifact and requires
     spacer_1 at [0.003465, 0.006930] m and domain end at 0.034650 m.
     """
-    csv_path = find_cell_profile_csv(case_path)
-    if csv_path is None:
-        raise FileNotFoundError(
-            f"Layout validation requires cell_profile*.csv under {case_path}."
-        )
-    csv_spans = read_cell_profile_spans(case_path)
+    csv_path, csv_provenance = resolve_cell_profile_csv(case_path, case_name)
+    csv_spans = read_cell_profile_spans(case_path, case_name)
     layout_spans = scoring_layout.layout.spans(scoring_layout.domain_x_min_m)
     mismatches: list[str] = []
     for label, layout_x_min, layout_x_max in layout_spans:
@@ -517,6 +577,7 @@ def assert_layout_spans_match_cell_profile(
 
     return {
         "cell_profile_csv": str(csv_path),
+        "cell_profile_csv_provenance": csv_provenance,
         "domain_end_m": domain_end_layout,
         "spacer_1_x_min_m": spacer_one[0] if spacer_one else None,
         "spacer_1_x_max_m": spacer_one[1] if spacer_one else None,
