@@ -49,25 +49,6 @@ def _rel_gap_percent(left: Optional[float], right: Optional[float]) -> str:
     return f"{abs(left - right) / mean * 100.0:.4f}%"
 
 
-def _cell_profile_legacy_warning(case_path: Optional[Path]) -> Optional[str]:
-    if case_path is None:
-        return None
-    from ro.fluent_report_helpers import find_cell_profile_csv
-
-    csv_path = find_cell_profile_csv(case_path)
-    if csv_path is None:
-        return None
-    header = csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
-    if "ref_mean_lmh_cells_3_5" in header:
-        return (
-            "WARNING: cell_profile.csv contains ref_mean_lmh_cells_3_5 — the "
-            "original extract used spacer cells 3–5 as its reference span, not "
-            "the current lead=3 window (cells 5–8). Numbers already in that "
-            "CSV are not comparable to the new windowed CP values."
-        )
-    return None
-
-
 def print_grid_cp_noise_table(
     left_segmented: Mapping[str, Any],
     right_segmented: Mapping[str, Any],
@@ -76,16 +57,8 @@ def print_grid_cp_noise_table(
     right_label: str = "bl6",
     left_cell_count: Optional[int] = None,
     right_cell_count: Optional[int] = None,
-    left_case_path: Optional[Path] = None,
-    right_case_path: Optional[Path] = None,
 ) -> None:
     """Print bl4-vs-bl6 grid-noise CP table (canonical / L1 / L2)."""
-    for warning_path in (left_case_path, right_case_path):
-        warning = _cell_profile_legacy_warning(warning_path)
-        if warning:
-            print(warning)
-            print()
-
     rows = [
         ("CANONICAL", "canon"),
         ("L1", "L1"),
@@ -224,8 +197,6 @@ def main() -> None:
     parser.add_argument("--right-label", type=str, default="bl6")
     parser.add_argument("--left-cells", type=int, default=None)
     parser.add_argument("--right-cells", type=int, default=None)
-    parser.add_argument("--left-case-path", type=Path, default=None)
-    parser.add_argument("--right-case-path", type=Path, default=None)
     args = parser.parse_args()
 
     left_json = args.left_json or args.plug_json
@@ -245,8 +216,6 @@ def main() -> None:
         right_label=args.right_label,
         left_cell_count=args.left_cells,
         right_cell_count=args.right_cells,
-        left_case_path=args.left_case_path,
-        right_case_path=args.right_case_path,
     )
 
 

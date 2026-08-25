@@ -575,20 +575,6 @@ def sync_run_manifest_analytic_cwall(run_directory: str | Path) -> int:
     Existing runs without the field are updated from the case UDF copy.
     Raises if RO_ANALYTIC_CWALL is absent or zero.
     """
-    value, _source = resolve_analytic_cwall_for_extract(run_directory)
-    return value
-
-
-def resolve_analytic_cwall_for_extract(
-    run_directory: str | Path,
-) -> tuple[int, str]:
-    """Resolve RO_ANALYTIC_CWALL for report extraction.
-
-    When ``manifest.json`` exists, syncs the manifest field from the case-local
-    UDF. When no manifest exists (archive runs), reads the case-local UDF only
-    and does not write a manifest. Returns ``(value, provenance)`` where
-    provenance is ``run_manifest`` or ``case_local_udf``.
-    """
     directory = Path(run_directory)
     value = parse_ro_analytic_cwall_from_case(directory)
     if value != 1:
@@ -596,14 +582,14 @@ def resolve_analytic_cwall_for_extract(
             f"RO_ANALYTIC_CWALL must be 1 for CP metrics, got {value!r} "
             f"from case UDF in {directory}."
         )
-    manifest_path = directory / "manifest.json"
-    if not manifest_path.is_file():
-        return value, "case_local_udf"
-    payload = _read_json(manifest_path)
+    path = directory / "manifest.json"
+    if not path.is_file():
+        raise ManifestError(f"Run manifest not found: {path}.")
+    payload = _read_json(path)
     if payload.get("analytic_cwall") != value:
         payload["analytic_cwall"] = value
         write_run_manifest(directory, payload)
-    return value, "run_manifest"
+    return value
 
 
 def read_mesh_manifest(mesh_directory: str | Path) -> dict[str, Any]:

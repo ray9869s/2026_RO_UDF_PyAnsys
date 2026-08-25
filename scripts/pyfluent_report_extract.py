@@ -31,14 +31,12 @@ except Exception:
 # Override with the PYFLUENT_POST_CONFIG environment variable for batch runs.
 # ----------------------------------------------------------
 from ro.paths import project_root  # noqa: E402
-from ro.manifest import resolve_analytic_cwall_for_extract  # noqa: E402
+from ro.manifest import sync_run_manifest_analytic_cwall  # noqa: E402
 
 DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
 
-from ro.domain_layout import normalize_post_layout_overrides  # noqa: E402
 from ro.fluent_report_helpers import (  # noqa: E402
-    assert_layout_spans_match_cell_profile,
     concentration_range_diagnostics,
     concentration_metric_unit,
     create_x_normal_plane as _create_x_normal_plane,
@@ -214,7 +212,6 @@ if __name__ == "__main__":
             raise ValueError(f"PYFLUENT_POST_OVERRIDES is not valid JSON: {e}")
         if not isinstance(_overrides, dict):
             raise ValueError("PYFLUENT_POST_OVERRIDES must be a JSON object.")
-        _overrides = normalize_post_layout_overrides(_overrides)
         cfg.apply_post_config_overrides(cfg, _overrides)
         print(f"Applied config overrides: {sorted(_overrides)}")
 
@@ -289,20 +286,7 @@ if __name__ == "__main__":
             f"case_path={case_path} from {case_path_provenance})"
         )
 
-    analytic_cwall_value, analytic_cwall_source = (
-        resolve_analytic_cwall_for_extract(case_path)
-    )
-    layout_validation = assert_layout_spans_match_cell_profile(
-        scoring_layout,
-        case_path,
-        case_name=case_name,
-    )
-    print(
-        f"analytic_cwall={analytic_cwall_value} "
-        f"(source={analytic_cwall_source})"
-    )
-    print(f"Layout validated against cell_profile: {layout_validation}")
-
+    sync_run_manifest_analytic_cwall(case_path)
 
 def as_fluent_path(path):
     """Convert a path to a Fluent-friendly absolute path."""
@@ -1989,9 +1973,6 @@ if __name__ == "__main__":
                 "final_case_file_provenance": final_case_file_provenance,
                 "final_data_file": str(final_data_file),
                 "final_data_file_provenance": final_data_file_provenance,
-                "analytic_cwall": analytic_cwall_value,
-                "analytic_cwall_source": analytic_cwall_source,
-                "layout_cell_profile_validation": layout_validation,
             },
             "computed_values": computed_values,
             "failed_report_specs": failed_report_specs,
