@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from ro.cp_metrics import (
@@ -354,6 +355,174 @@ def resolve_scoring_layout_from_config(cfg: Any) -> ScoringLayoutGeometry:
             f"spacer_length_m must be > 0, got {geometry.spacer_length_m}."
         )
     return geometry
+
+
+_LAYOUT_SPAN_REL_TOL = 1.0e-6
+_LAYOUT_SPAN_ABS_TOL = 1.0e-9
+
+
+def _layout_span_label_to_cell_profile(label: str) -> str:
+    """Map DomainLayout span labels to cell_profile.csv spacer names."""
+    if label.startswith("active_"):
+        return "spacer_" + label.split("_", 1)[1]
+    return label
+
+
+def find_cell_profile_csv(case_path) -> Optional[Path]:
+    """Return the first cell_profile*.csv under a case directory, if any."""
+    root = Path(case_path)
+    patterns = (
+        "cell_profile*.csv",
+        "post/cell_profile*.csv",
+        "post/reports/cell_profile*.csv",
+    )
+    for pattern in patterns:
+        matches = sorted(root.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def read_cell_profile_spans(case_path) -> dict[str, tuple[float, float]]:
+    """Read span -> (x_min_m, x_max_m) from cell_profile.csv."""
+    import csv
+
+    csv_path = find_cell_profile_csv(case_path)
+    if csv_path is None:
+        raise FileNotFoundError(
+            f"No cell_profile*.csv found under {case_path}."
+        )
+    spans: dict[str, tuple[float, float]] = {}
+    with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"cell_profile CSV has no header: {csv_path}.")
+        span_key = None
+        for candidate in ("span", "label", "cell"):
+            if candidate in reader.fieldnames:
+                span_key = candidate
+                break
+        if span_key is None:
+            raise ValueError(
+                f"cell_profile CSV missing span column: {csv_path}."
+            )
+        for row in reader:
+            label = (row.get(span_key) or "").strip()
+            if not label:
+                continue
+            x_min_raw = row.get("x_min_m")
+            x_max_raw = row.get("x_max_m")
+            if x_min_raw is None or x_max_raw is None:
+                raise ValueError(
+                    f"cell_profile row for {label!r} missing x_min_m/x_max_m "
+                    f"in {csv_path}."
+                )
+            spans[label] = (float(x_min_raw), float(x_max_raw))
+    if not spans:
+        raise ValueError(f"cell_profile CSV has no span rows: {csv_path}.")
+    return spans
+
+
+def assert_layout_spans_match_cell_profile(
+    scoring_layout: ScoringLayoutGeometry,
+    case_path,
+) -> dict[str, object]:
+    """Raise when resolved layout spans disagree with cell_profile.csv.
+
+    Cross-checks every layout span against the CSV artifact and requires
+    spacer_1 at [0.003465, 0.006930] m and domain end at 0.034650 m.
+    """
+    csv_path = find_cell_profile_csv(case_path)
+    if csv_path is None:
+        raise FileNotFoundError(
+            f"Layout validation requires cell_profile*.csv under {case_path}."
+        )
+    csv_spans = read_cell_profile_spans(case_path)
+    layout_spans = scoring_layout.layout.spans(scoring_layout.domain_x_min_m)
+    mismatches: list[str] = []
+    for label, layout_x_min, layout_x_max in layout_spans:
+        profile_label = _layout_span_label_to_cell_profile(label)
+        csv_span = csv_spans.get(profile_label)
+        if csv_span is None:
+            mismatches.append(f"{profile_label}: missing in cell_profile CSV")
+            continue
+        csv_x_min, csv_x_max = csv_span
+        if not math.isclose(
+            layout_x_min,
+            csv_x_min,
+            rel_tol=_LAYOUT_SPAN_REL_TOL,
+            abs_tol=_LAYOUT_SPAN_ABS_TOL,
+        ) or not math.isclose(
+            layout_x_max,
+            csv_x_max,
+            rel_tol=_LAYOUT_SPAN_REL_TOL,
+            abs_tol=_LAYOUT_SPAN_ABS_TOL,
+        ):
+            mismatches.append(
+                f"{profile_label}: layout=({layout_x_min:.9f}, {layout_x_max:.9f}) "
+                f"csv=({csv_x_min:.9f}, {csv_x_max:.9f})"
+            )
+
+    spacer_one = csv_spans.get("spacer_1")
+    if spacer_one is None:
+        mismatches.append("spacer_1: missing in cell_profile CSV")
+    else:
+        expected_min, expected_max = 0.003465, 0.006930
+        if not math.isclose(
+            spacer_one[0],
+            expected_min,
+            rel_tol=_LAYOUT_SPAN_REL_TOL,
+            abs_tol=_LAYOUT_SPAN_ABS_TOL,
+        ) or not math.isclose(
+            spacer_one[1],
+            expected_max,
+            rel_tol=_LAYOUT_SPAN_REL_TOL,
+            abs_tol=_LAYOUT_SPAN_ABS_TOL,
+        ):
+            mismatches.append(
+                f"spacer_1 anchor mismatch: csv=({spacer_one[0]:.9f}, "
+                f"{spacer_one[1]:.9f}), expected=({expected_min:.9f}, "
+                f"{expected_max:.9f})"
+            )
+
+    domain_end_layout = scoring_layout.unit_cell_boundary_x_m[-1]
+    domain_end_csv = max(x_max for _, x_max in csv_spans.values())
+    expected_domain_end = 0.034650
+    if not math.isclose(
+        domain_end_layout,
+        expected_domain_end,
+        rel_tol=_LAYOUT_SPAN_REL_TOL,
+        abs_tol=_LAYOUT_SPAN_ABS_TOL,
+    ):
+        mismatches.append(
+            f"domain end layout={domain_end_layout:.9f}, "
+            f"expected={expected_domain_end:.9f}"
+        )
+    if not math.isclose(
+        domain_end_csv,
+        expected_domain_end,
+        rel_tol=_LAYOUT_SPAN_REL_TOL,
+        abs_tol=_LAYOUT_SPAN_ABS_TOL,
+    ):
+        mismatches.append(
+            f"domain end csv={domain_end_csv:.9f}, "
+            f"expected={expected_domain_end:.9f}"
+        )
+
+    if mismatches:
+        raise ValueError(
+            "Layout overrides disagree with cell_profile.csv "
+            f"({csv_path}): " + "; ".join(mismatches)
+        )
+
+    return {
+        "cell_profile_csv": str(csv_path),
+        "domain_end_m": domain_end_layout,
+        "spacer_1_x_min_m": spacer_one[0] if spacer_one else None,
+        "spacer_1_x_max_m": spacer_one[1] if spacer_one else None,
+        "layout_span_count": len(layout_spans),
+        "csv_span_count": len(csv_spans),
+    }
 
 
 def unit_cell_plane_name(boundary_index):

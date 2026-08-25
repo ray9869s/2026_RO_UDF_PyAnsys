@@ -407,6 +407,70 @@ def layout_post_config_values(record: GeometryLayoutRecord) -> dict[str, object]
     return values
 
 
+def normalize_post_layout_overrides(overrides: Mapping[str, object]) -> dict[str, object]:
+    """Normalize operator layout overrides before applying to post_config.
+
+    Accepts mesh-manifest alias ``n_active_cells`` for ``n_active``. When buffer
+    lengths are omitted, derives them as one active pitch per buffer zone
+    (D2450 archive convention). Also emits consistent legacy length/count keys
+    when the asymmetric set is complete.
+    """
+    normalized: dict[str, object] = dict(overrides)
+
+    if "n_active_cells" in normalized:
+        active_cells = normalized["n_active_cells"]
+        if "n_active" in normalized and normalized["n_active"] != active_cells:
+            raise ValueError(
+                "n_active and n_active_cells disagree: "
+                f"{normalized['n_active']!r} vs {active_cells!r}."
+            )
+        normalized["n_active"] = active_cells
+        del normalized["n_active_cells"]
+
+    cell_length_x_m = normalized.get("cell_length_x_m")
+    n_buffer_in = normalized.get("n_buffer_in")
+    n_buffer_out = normalized.get("n_buffer_out")
+    if cell_length_x_m is not None:
+        pitch = float(cell_length_x_m)
+        if n_buffer_in is not None and "buffer_length_in_m" not in normalized:
+            normalized["buffer_length_in_m"] = int(n_buffer_in) * pitch
+        if n_buffer_out is not None and "buffer_length_out_m" not in normalized:
+            normalized["buffer_length_out_m"] = int(n_buffer_out) * pitch
+
+    required = (
+        "n_buffer_in",
+        "n_active",
+        "n_buffer_out",
+        "cell_length_x_m",
+        "buffer_length_in_m",
+        "buffer_length_out_m",
+    )
+    if all(key in normalized for key in required):
+        layout = DomainLayout(
+            int(normalized["n_buffer_in"]),
+            int(normalized["n_active"]),
+            int(normalized["n_buffer_out"]),
+            float(normalized["cell_length_x_m"]),
+            float(normalized["buffer_length_in_m"]),
+            float(normalized["buffer_length_out_m"]),
+        )
+        normalized.setdefault("domain_length_m", layout.total_length_m)
+        normalized.setdefault("buffer_length_m", float(layout.buffer_length_in_m))
+        normalized.setdefault("n_unit_cells", layout.n_total)
+        if layout.n_buffer_in == layout.n_buffer_out:
+            normalized.setdefault("n_buffer_cells_each_end", layout.n_buffer_in)
+        else:
+            normalized.setdefault("n_buffer_cells_each_end", None)
+
+    if "n_lead_excluded" in normalized:
+        normalized.setdefault(
+            "n_inlet_spacer_cells_excluded",
+            normalized["n_lead_excluded"],
+        )
+
+    return normalized
+
+
 def _normalize_msh_path(raw_path: str) -> str:
     """Collapse whitespace/newlines Fluent may insert inside a quoted path."""
     return "".join(raw_path.split())
