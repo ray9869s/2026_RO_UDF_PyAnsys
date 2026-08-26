@@ -51,11 +51,8 @@ common_mesh_settings = {
 # selections intact, and the batch failure was AttachAssembly timing out after
 # 82 s — a resource/session symptom, not a bad file. Testing whether the case
 # succeeds when it is the only one in the batch.
-# Remaining cases (restore after this test):
-#     ("D0817_a60", 15, 1.633416664,  0.9430535507),
-# D1225_a60 already built.
 _MESH_LAYOUTS = (
-    ("D0817_a30", 27, 0.9430535507, 1.633416664),
+    ("D0817_a60", 15, 1.633416664,  0.9430535507),
 )
 
 mesh_batch_cases = []
