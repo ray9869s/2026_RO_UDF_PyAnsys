@@ -1102,9 +1102,19 @@ if __name__ == "__main__":
 
         if meshing is not None:
             try:
-                meshing.exit()
-            except Exception:
-                pass
+                # wait=True blocks until Fluent host/cortex PIDs are gone so the
+                # Discovery CAD plugin session cannot contend with the next
+                # batch case. Default wait=False returns while shutdown is
+                # still in flight.
+                meshing.exit(wait=True)
+                print("Fluent meshing session exited (waited for process exit).")
+            except Exception as exit_error:
+                print(f"Warning: meshing.exit(wait=True) failed: {exit_error}")
+                try:
+                    meshing.force_exit()
+                    print("Forced Fluent meshing session exit after wait failure.")
+                except Exception as force_error:
+                    print(f"Warning: meshing.force_exit() failed: {force_error}")
 
         try:
             os.chdir(original_working_directory)

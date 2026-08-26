@@ -14,6 +14,15 @@ continue_on_failure = True
 skip_existing_mesh = True
 skip_existing_final_data = True
 
+# Batch meshing session lifecycle (AttachAssembly contention).
+# inter_case_delay_s: settle time after one worker exits before the next starts.
+# cad_import_max_retries: retries after a CAD AttachAssembly / Import failure
+#   (1 => up to 2 total worker invocations for that case).
+# clean_fm_scratch_on_success: remove FM_<HOST>_<PID>/ dirs after SUCCESS*.
+inter_case_delay_s = 0.0
+cad_import_max_retries = 1
+clean_fm_scratch_on_success = True
+
 _FAMILY = "diamond"
 _GEO_ID = "D2450_a45"
 _MESH_ID = "max085_min006_cpg5_bl4_peel2"
