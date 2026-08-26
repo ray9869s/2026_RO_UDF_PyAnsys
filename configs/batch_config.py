@@ -62,6 +62,8 @@ common_mesh_settings = {
 # succeeds when it is the only one in the batch.
 _MESH_LAYOUTS = (
     ("D0817_a60", 15, 1.633416664,  0.9430535507),
+    ("D2450_a60",  5, 4.900249992,  2.8291606522),
+    ("D1225_a60", 10, 2.450124996,  1.4145803261),
 )
 
 mesh_batch_cases = []
