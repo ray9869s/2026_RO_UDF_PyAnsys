@@ -53,11 +53,10 @@ common_mesh_settings = {
 # succeeds when it is the only one in the batch.
 # Remaining cases (restore after this test):
 #     ("D1225_a45", 14, 1.7325,       1.7325),
-#     ("D0817_a30", 27, 0.9430535507, 1.633416664),
 #     ("D0817_a60", 15, 1.633416664,  0.9430535507),
 # D1225_a60 already built.
 _MESH_LAYOUTS = (
-    ("D1225_a30", 18, 1.4145803261, 2.450124996),
+    ("D0817_a30", 27, 0.9430535507, 1.633416664),
 )
 
 mesh_batch_cases = []
