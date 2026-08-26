@@ -1,4 +1,32 @@
-"""Validated mesh and run manifests for the external RO data tree."""
+"""Validated mesh and run manifests for the external RO data tree.
+
+Schema version 2 extends every mesh/run leaf with campaign geometry fields
+(all lengths in metres unless noted):
+
+Common geometry (mesh + run):
+  unit_cell_xy_m:             [float, float]
+  Sigma_d_nominal_m:          float | null
+  membrane_trim_m:            float
+  membrane_contact_width_m:   float
+  membrane_blocked_area_frac: float in [0, 1)
+  porosity_eps:               float in (0, 1]
+  periodic_shift_y_m:         float
+  periodic_shift_y_source:    "derived_from_angle" | "explicit"
+  layer_angles_deg:           list[float] | null
+  layer_diameters_m:          list[float] | null  (ML only; diameters in metres)
+  layer_axis_z_m:             list[float] | null  (ML only)
+  joint_sphere_z_m:           list[float] | null  (ML only)
+  joint_sphere_R_m:           float | null
+  joint_sphere_R_ratio:       float | null        # R / r_min; recorded, not constrained
+  joint_sphere_r_min_m:       float | null        # thinner filament radius at contact
+  joint_sphere_count:         int >= 0
+  curvature_margin:           float | null (sinusoidal only, >= 1.2 when set)
+  spacer_wall_zones:          list[str]
+
+Run-only:
+  u_mean_source_mesh_id:      must equal mesh_id
+  needs_lead_recheck:         bool (True for pillar)
+"""
 
 from __future__ import annotations
 
@@ -11,14 +39,40 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+from ro.campaign_geo_ids import family_for_geo_id, validate_campaign_geo_id
+from ro.manifest_validation import (
+    validate_mesh_geometry_fields,
+    validate_run_geometry_fields,
+)
 from ro.paths import mesh_dir, meshes_root, run_dir, runs_root
 from ro.solver_common import STOP_REASON_VALUES
 from ro.udm_layout import parse_ro_analytic_cwall_from_case
 
 
-class ManifestError(ValueError):
-    """Raised when a manifest is invalid, stale, or unsafe to overwrite."""
+from ro.manifest_errors import ManifestError
 
+MANIFEST_SCHEMA_VERSION = 2
+
+_GEOMETRY_FIELDS = (
+    "unit_cell_xy_m",
+    "Sigma_d_nominal_m",
+    "membrane_trim_m",
+    "membrane_contact_width_m",
+    "membrane_blocked_area_frac",
+    "porosity_eps",
+    "periodic_shift_y_m",
+    "periodic_shift_y_source",
+    "layer_angles_deg",
+    "layer_diameters_m",
+    "layer_axis_z_m",
+    "joint_sphere_z_m",
+    "joint_sphere_R_m",
+    "joint_sphere_R_ratio",
+    "joint_sphere_r_min_m",
+    "joint_sphere_count",
+    "curvature_margin",
+    "spacer_wall_zones",
+)
 
 MESH_MANIFEST_REQUIRED_FIELDS = (
     "schema_version",
@@ -54,7 +108,7 @@ MESH_MANIFEST_REQUIRED_FIELDS = (
     "mesh_sha256",
     "created_utc",
     "generator_version",
-)
+) + _GEOMETRY_FIELDS
 
 RUN_MANIFEST_REQUIRED_FIELDS = (
     "schema_version",
@@ -72,7 +126,9 @@ RUN_MANIFEST_REQUIRED_FIELDS = (
     "solver_settings",
     "stop_reason",
     "created_utc",
-)
+    "u_mean_source_mesh_id",
+    "needs_lead_recheck",
+) + _GEOMETRY_FIELDS
 
 _MESH_PARAMETER_FIELDS = (
     "family",
@@ -98,7 +154,7 @@ _MESH_PARAMETER_FIELDS = (
     "cpg",
     "bl",
     "peel",
-)
+) + _GEOMETRY_FIELDS
 
 _RUN_PARAMETER_FIELDS = (
     "family",
@@ -112,7 +168,8 @@ _RUN_PARAMETER_FIELDS = (
     "udf_version",
     "analytic_cwall",
     "solver_settings",
-)
+    "needs_lead_recheck",
+) + _GEOMETRY_FIELDS
 
 _MESH_QUALITY_FIELDS = (
     "ortho_min",
@@ -139,10 +196,11 @@ def _require_fields(
     missing = tuple(field for field in required_fields if field not in payload)
     if missing:
         raise ManifestError(f"{kind} manifest missing required fields: {missing!r}.")
-    if payload["schema_version"] != 1:
+    if payload["schema_version"] != MANIFEST_SCHEMA_VERSION:
         raise ManifestError(
             f"Unsupported {kind} manifest schema_version: "
-            f"{payload['schema_version']!r}."
+            f"{payload['schema_version']!r}; expected {MANIFEST_SCHEMA_VERSION}. "
+            "Run scripts/migrate_manifest_schema_v2.py on legacy manifests."
         )
 
 
@@ -308,6 +366,16 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         if float(inlet_profile_g) <= 0.0:
             raise ManifestError("Mesh manifest inlet_profile_G must be positive.")
 
+    geo_id = payload["geo_id"]
+    validate_campaign_geo_id(geo_id)
+    expected_family = family_for_geo_id(geo_id)
+    if payload["family"] != expected_family:
+        raise ManifestError(
+            f"Mesh manifest family={payload['family']!r} does not match "
+            f"geo_id {geo_id!r} (expected {expected_family!r})."
+        )
+    validate_mesh_geometry_fields(payload)
+
 
 def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _require_fields(payload, RUN_MANIFEST_REQUIRED_FIELDS, "Run")
@@ -359,6 +427,16 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
             "Run manifest analytic_cwall must be 0 or 1, "
             f"got {analytic_cwall!r}."
         )
+
+    geo_id = payload["geo_id"]
+    validate_campaign_geo_id(geo_id)
+    expected_family = family_for_geo_id(geo_id)
+    if payload["family"] != expected_family:
+        raise ManifestError(
+            f"Run manifest family={payload['family']!r} does not match "
+            f"geo_id {geo_id!r} (expected {expected_family!r})."
+        )
+    validate_run_geometry_fields(payload)
 
 
 def _validate_mesh_location(directory: Path, payload: Mapping[str, Any]) -> None:
@@ -464,6 +542,31 @@ def _atomic_write(path: Path, payload: Mapping[str, Any]) -> Path:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink()
     return path
+
+
+def upgrade_mesh_manifest_in_place(
+    mesh_directory: str | Path,
+    payload: Mapping[str, Any],
+) -> Path:
+    """Validate and atomically write a v2 mesh manifest during migration.
+
+    Unlike write_mesh_manifest, this does not read/validate the existing v1 file.
+    """
+    directory = Path(mesh_directory)
+    _validate_mesh_payload(payload)
+    _validate_mesh_location(directory, payload)
+    return _atomic_write(directory / "manifest.json", payload)
+
+
+def upgrade_run_manifest_in_place(
+    run_directory: str | Path,
+    payload: Mapping[str, Any],
+) -> Path:
+    """Validate and atomically write a v2 run manifest during migration."""
+    directory = Path(run_directory)
+    _validate_run_payload(payload)
+    _validate_run_location(directory, payload)
+    return _atomic_write(directory / "manifest.json", payload)
 
 
 def write_mesh_manifest(

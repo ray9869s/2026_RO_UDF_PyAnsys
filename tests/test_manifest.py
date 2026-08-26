@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from ro.campaign_geometry import (
+    merge_geometry_into_mesh_manifest,
+    merge_geometry_into_run_manifest,
+)
 from ro.manifest import (
+    MANIFEST_SCHEMA_VERSION,
     MESH_MANIFEST_REQUIRED_FIELDS,
     RUN_MANIFEST_REQUIRED_FIELDS,
     ManifestError,
@@ -17,6 +22,8 @@ from ro.manifest import (
     iter_run_manifests,
     read_mesh_manifest,
     read_run_manifest,
+    upgrade_mesh_manifest_in_place,
+    upgrade_run_manifest_in_place,
     write_mesh_manifest,
     write_run_manifest,
 )
@@ -30,7 +37,7 @@ RUN_ID = "u0p2_p6M"
 
 
 def mesh_payload():
-    return {
+    base = {
         "schema_version": 1,
         "family": FAMILY,
         "geo_id": GEO_ID,
@@ -70,10 +77,13 @@ def mesh_payload():
         "created_utc": "2026-08-21T00:00:00Z",
         "generator_version": "meshing_code_260616.py",
     }
+    migrated = merge_geometry_into_mesh_manifest(base, GEO_ID)
+    migrated["schema_version"] = MANIFEST_SCHEMA_VERSION
+    return migrated
 
 
 def run_payload():
-    return {
+    base = {
         "schema_version": 1,
         "family": FAMILY,
         "geo_id": GEO_ID,
@@ -94,6 +104,9 @@ def run_payload():
         "stop_reason": "qoi_converged",
         "created_utc": "2026-08-21T00:00:00Z",
     }
+    migrated = merge_geometry_into_run_manifest(base, GEO_ID, mesh_id=MESH_ID)
+    migrated["schema_version"] = MANIFEST_SCHEMA_VERSION
+    return migrated
 
 
 def write_test_run(*, run_id: str = RUN_ID, **updates) -> Path:

@@ -13,7 +13,9 @@ import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.campaign_geometry import merge_geometry_into_run_manifest
 from ro.manifest import (
+    MANIFEST_SCHEMA_VERSION,
     read_mesh_manifest,
     read_run_manifest,
     write_mesh_manifest,
@@ -33,6 +35,7 @@ from ro.solver_common import (
     resolve_solver_final_artifact_exit_code,
 )
 from ro.domain_layout import layout_from_mesh_manifest
+from ro.lmh_metrics import lmh_mass_balance_expression
 from ro.fluent_report_helpers import create_x_normal_plane
 from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
 from ro.udm_layout import (
@@ -53,8 +56,8 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
     u_mean_ms = u_target_ms if inlet_bc_type == "plug" else None
     udf_path = udfs_dir() / cfg.udf_source_file_name
     analytic_cwall = parse_ro_analytic_cwall_from_udf_path(udf_path)
-    return {
-        "schema_version": 1,
+    base = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "family": cfg.family,
         "geo_id": cfg.geo_id,
         "mesh_id": cfg.mesh_id,
@@ -74,6 +77,11 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
         "stop_reason": "RUNNING",
         "created_utc": created_utc or _utc_now_string(),
     }
+    return merge_geometry_into_run_manifest(
+        base,
+        cfg.geo_id,
+        mesh_id=cfg.mesh_id,
+    )
 
 
 def write_worker_run_manifest(
@@ -1730,6 +1738,7 @@ def update_transport_report_definitions_for_current_zones(
     outlet_zones,
     membrane_wall_zones,
     density_value,
+    membrane_blocked_area_frac,
     m_in_name="m_in",
     m_out_name="m_out",
     area_mem_name="area_mem",
@@ -1771,18 +1780,28 @@ def update_transport_report_definitions_for_current_zones(
         surface_names=membrane_wall_zones,
     )
 
-    # Use a constant density in LMH monitor to avoid stale rho_avg references from
-    # the template and to keep the monitor robust for split fluid zones.
-    lmh_definition = f"abs({m_in_name} + {m_out_name}) / ({density_value} * {area_mem_name}) * 3.6e6"
+    # LMH from mass imbalance on effective membrane area (blocked fraction excluded).
+    lmh_definition = lmh_mass_balance_expression(
+        m_in_name=m_in_name,
+        m_out_name=m_out_name,
+        density_value=density_value,
+        area_mem_name=area_mem_name,
+        membrane_blocked_area_frac=membrane_blocked_area_frac,
+        signed=False,
+    )
 
     create_or_update_single_valued_expression_report(
         single_expression_report_definitions=single_expression_report_definitions,
         report_name=lmh_name,
         definition=lmh_definition,
     )
-    lmh_signed_definition = (
-        f"({m_in_name} + {m_out_name}) / "
-        f"({density_value} * {area_mem_name}) * 3.6e6"
+    lmh_signed_definition = lmh_mass_balance_expression(
+        m_in_name=m_in_name,
+        m_out_name=m_out_name,
+        density_value=density_value,
+        area_mem_name=area_mem_name,
+        membrane_blocked_area_frac=membrane_blocked_area_frac,
+        signed=True,
     )
     lmh_signed_report = create_or_update_single_valued_expression_report(
         single_expression_report_definitions=single_expression_report_definitions,
@@ -3129,12 +3148,16 @@ if __name__ == "__main__":
 
         # Rebuild report definitions that depend on current boundary names.
         # This fixes split-zone geometries where inlet/outlet/wall become inlet.1, outlet.1, wall.1, etc.
+        membrane_blocked_area_frac = float(
+            read_mesh_manifest(mesh_case_path)["membrane_blocked_area_frac"]
+        )
         update_transport_report_definitions_for_current_zones(
             solution=solution,
             inlet_zones=inlet_zone_names,
             outlet_zones=outlet_zone_names,
             membrane_wall_zones=membrane_wall_zone_names,
             density_value=mixture_density,
+            membrane_blocked_area_frac=membrane_blocked_area_frac,
             m_in_name=m_in_report_name,
             m_out_name=m_out_report_name,
             area_mem_name=area_mem_report_name,

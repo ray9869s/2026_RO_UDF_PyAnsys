@@ -83,16 +83,17 @@ def test_transport_reports_keep_magnitude_lmh_and_add_signed_companion():
         outlet_zones=["outlet"],
         membrane_wall_zones=["wall_top_mem", "wall_bottom_mem"],
         density_value=998.2,
+        membrane_blocked_area_frac=0.0,
         lmh_name="lmh",
         lmh_signed_name="lmh_signed",
     )
 
     expressions = solution.report_definitions.single_valued_expression
     assert expressions["lmh"].definition == (
-        "abs(m_in + m_out) / (998.2 * area_mem) * 3.6e6"
+        "abs(m_in + m_out) / (998.2 * area_mem * 1.0) * 3600000.0"
     )
     assert expressions["lmh_signed"].definition == (
-        "(m_in + m_out) / (998.2 * area_mem) * 3.6e6"
+        "(m_in + m_out) / (998.2 * area_mem * 1.0) * 3600000.0"
     )
     assert getattr(expressions["lmh_signed"], "print") is True
 

@@ -8,6 +8,8 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
+from ro.campaign_geo_ids import validate_campaign_geo_id
+
 
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
@@ -78,6 +80,7 @@ def _validate_geo_id(geo_id: str) -> None:
         or _GEO_ID_FORBIDDEN.search(geo_id) is not None
     ):
         raise ValueError(f"Invalid geo_id: {geo_id!r}.")
+    validate_campaign_geo_id(geo_id)
 
 
 def _validate_mesh_id(mesh_id: str) -> None:

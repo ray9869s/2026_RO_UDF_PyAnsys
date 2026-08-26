@@ -25,30 +25,7 @@ def rerun07():
     )
 
 
-def run_payload() -> dict:
-    return {
-        "schema_version": 1,
-        "family": FAMILY,
-        "geo_id": GEO_ID,
-        "mesh_id": MESH_ID,
-        "mesh_sha256": "a" * 64,
-        "run_id": RUN_ID,
-        "u_mean_ms": 0.2,
-        "p_gauge_pa": 6.0e6,
-        "u_target_ms": 0.2,
-        "inlet_bc_type": "plug",
-        "udf_version": "260816_RO_UDF.c",
-        "analytic_cwall": 1,
-        "solver_settings": {
-            "max_iterations": 2000,
-            "residual_target": 1.0e-7,
-            "operating_pressure": 101325.0,
-        },
-        "stop_reason": "max_iter_reached",
-        "created_utc": "2026-08-22T00:00:00Z",
-    }
-
-
+from test_manifest import run_payload
 def candidate(latest_log_file: str = "") -> dict[str, str]:
     return {
         "selected_index": "1",
@@ -65,7 +42,12 @@ def create_manifested_run(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
     directory.mkdir(parents=True)
-    write_run_manifest(directory, run_payload())
+    write_run_manifest(directory, run_payload() | {
+        "u_mean_ms": 0.2,
+        "inlet_bc_type": "plug",
+        "stop_reason": "max_iter_reached",
+        "created_utc": "2026-08-22T00:00:00Z",
+    })
     log_path = directory / "post" / "logs" / "solver.log"
     log_path.parent.mkdir(parents=True)
     log_path.write_text("solver transcript", encoding="utf-8")

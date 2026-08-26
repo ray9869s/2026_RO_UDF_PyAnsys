@@ -31,7 +31,8 @@ except Exception:
 # Override with the PYFLUENT_POST_CONFIG environment variable for batch runs.
 # ----------------------------------------------------------
 from ro.paths import project_root  # noqa: E402
-from ro.manifest import sync_run_manifest_analytic_cwall  # noqa: E402
+from ro.lmh_metrics import lmh_mass_balance_expression
+from ro.manifest import read_run_manifest, sync_run_manifest_analytic_cwall  # noqa: E402
 
 DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
@@ -878,8 +879,20 @@ if __name__ == "__main__":
             )
         )
 
-        # LMH from mass imbalance.
-        lmh_definition = f"abs(pp_m_in + pp_m_out) / ({rho} * pp_area_mem) * 3.6e6"
+        run_manifest = read_run_manifest(case_path)
+        membrane_blocked_area_frac = float(
+            run_manifest["membrane_blocked_area_frac"]
+        )
+
+        # LMH from mass imbalance on effective membrane area.
+        lmh_definition = lmh_mass_balance_expression(
+            m_in_name="pp_m_in",
+            m_out_name="pp_m_out",
+            density_value=rho,
+            area_mem_name="pp_area_mem",
+            membrane_blocked_area_frac=membrane_blocked_area_frac,
+            signed=False,
+        )
 
         report_names.append(
             create_or_update_single_expression_report(
@@ -888,8 +901,13 @@ if __name__ == "__main__":
                 lmh_definition,
             )
         )
-        lmh_signed_definition = (
-            f"(pp_m_in + pp_m_out) / ({rho} * pp_area_mem) * 3.6e6"
+        lmh_signed_definition = lmh_mass_balance_expression(
+            m_in_name="pp_m_in",
+            m_out_name="pp_m_out",
+            density_value=rho,
+            area_mem_name="pp_area_mem",
+            membrane_blocked_area_frac=membrane_blocked_area_frac,
+            signed=True,
         )
         report_names.append(
             create_or_update_single_expression_report(

@@ -12,7 +12,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.campaign_geometry import merge_geometry_into_mesh_manifest
 from ro.manifest import (
+    MANIFEST_SCHEMA_VERSION,
     assert_mesh_file_overwrite_allowed,
     write_mesh_manifest,
 )
@@ -41,8 +43,8 @@ def _sha256_file(path):
 
 
 def build_mesh_manifest_payload(cfg, mesh_metrics, mesh_sha256, *, created_utc=None):
-    return {
-        "schema_version": 1,
+    base = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "family": cfg.family,
         "geo_id": cfg.geo_id,
         "mesh_id": cfg.mesh_id,
@@ -76,6 +78,7 @@ def build_mesh_manifest_payload(cfg, mesh_metrics, mesh_sha256, *, created_utc=N
         "created_utc": created_utc or _utc_now_string(),
         "generator_version": Path(__file__).name,
     }
+    return merge_geometry_into_mesh_manifest(base, cfg.geo_id)
 
 
 def write_worker_mesh_manifest(
