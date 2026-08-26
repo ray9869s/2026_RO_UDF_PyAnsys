@@ -1,6 +1,5 @@
-# TEMPORARY: single-case smoke test after schema v2 + fresh data root.
-# Reproduces the archived D2450_a45 mesh (cell_count 796009) to confirm the
-# schema v2 write path runs under a live Fluent session.
+# Remaining 8 Diamond meshes. D2450_a45 is already built and verified
+# (cell_count 796009, u_mean 0.1992807, G 1.00360939613 — all match archive).
 #
 # periodic_after_surface_mesh = True is the campaign default: setting periodic
 # boundaries before surface meshing produces shadow-copy node slivers
@@ -10,7 +9,7 @@
 # into _in/_out, and zone_matches_base_name only accepts "base" or "base.N".
 from ro.solver_common import make_base_case_name
 
-dry_run = False                    # flip to False after reading the plan
+dry_run = False
 continue_on_failure = True
 skip_existing_mesh = True
 skip_existing_final_data = True
@@ -43,16 +42,35 @@ common_mesh_settings = {
     ],
 }
 
-mesh_batch_cases = [{
-    "family": _FAMILY,
-    "geo_id": _GEO_ID,
-    "mesh_id": _MESH_ID,
-    "spacing_code": "D2450",
-    "attack_angle_deg": 45,
-    "n_active_cells": 7,
-    "cell_length_x_m": 0.003465,
-    "periodic_shift_y": 3.465,
-}]
+# D0817_a45 first: it failed with a twin-face error in the 8/25 batch, which
+# was built with periodic_after_surface_mesh False. That setting is now known
+# to produce shadow-copy slivers, so this batch tests whether True alone
+# resolves the failure.
+# (geo_id, n_active_cells, pitch_mm, periodic_dy_mm)
+_MESH_LAYOUTS = (
+    ("D0817_a45", 21, 1.155,        1.155),
+    ("D1225_a45", 14, 1.7325,       1.7325),
+    ("D2450_a30",  9, 2.8291606522, 4.900249992),
+    ("D2450_a60",  5, 4.900249992,  2.8291606522),
+    ("D1225_a30", 18, 1.4145803261, 2.450124996),
+    ("D1225_a60", 10, 2.450124996,  1.4145803261),
+    ("D0817_a30", 27, 0.9430535507, 1.633416664),
+    ("D0817_a60", 15, 1.633416664,  0.9430535507),
+)
+
+mesh_batch_cases = []
+for _geo_id, _n_active, _pitch_mm, _periodic_dy_mm in _MESH_LAYOUTS:
+    _spacing_code, _angle_token = _geo_id.split("_")
+    mesh_batch_cases.append({
+        "family": _FAMILY,
+        "geo_id": _geo_id,
+        "mesh_id": _MESH_ID,
+        "spacing_code": _spacing_code,
+        "attack_angle_deg": int(_angle_token[1:]),
+        "n_active_cells": _n_active,
+        "cell_length_x_m": _pitch_mm * 1.0e-3,
+        "periodic_shift_y": _periodic_dy_mm,
+    })
 
 common_solver_settings = {
     "run_calculation_enabled": True,
@@ -80,18 +98,3 @@ solver_sweep_cases = [{
     "inlet_velocity_value": _U,
     "outlet_gauge_pressure": _P,
 }]
-
-# ---------------------------------------------------------------------------
-# Reference data for the production matrix. Not used by this smoke config.
-# (geo_id, n_active_cells, pitch_mm, periodic_dy_mm)
-# ---------------------------------------------------------------------------
-_PRODUCTION_MESH_LAYOUTS = (
-    ("D0817_a45", 21, 1.155, 1.155),
-    ("D2450_a60",  5, 4.900249992, 2.8291606522),
-    ("D2450_a30",  9, 2.8291606522, 4.900249992),
-    ("D1225_a30", 18, 1.4145803261, 2.450124996),
-    ("D1225_a45", 14, 1.7325, 1.7325),
-    ("D1225_a60", 10, 2.450124996, 1.4145803261),
-    ("D0817_a30", 27, 0.9430535507, 1.633416664),
-    ("D0817_a60", 15, 1.633416664, 0.9430535507),
-)
