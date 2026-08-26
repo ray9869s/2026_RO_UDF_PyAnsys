@@ -2,9 +2,9 @@
 # Reproduces the archived D2450_a45 mesh (cell_count 796009) to confirm the
 # schema v2 write path runs under a live Fluent session.
 #
-# periodic_after_surface_mesh is pinned False to match the archived reference.
-# The campaign default is True (avoids shadow-copy slivers at periodic
-# boundaries) — flip it before generating the production matrix.
+# periodic_after_surface_mesh = True is the campaign default: setting periodic
+# boundaries before surface meshing produces shadow-copy node slivers
+# (observed here as max skewness 0.88 vs 0.67 in the archived reference).
 #
 # buffer_wall_base_names MUST be overridden: this geometry splits buffer walls
 # into _in/_out, and zone_matches_base_name only accepts "base" or "base.N".
@@ -34,7 +34,7 @@ common_mesh_settings = {
     "m_cpg": 5,
     "bl_layers": 4,
     "peel_layers": 2,
-    "periodic_after_surface_mesh": False,
+    "periodic_after_surface_mesh": True,
     "wall_spacer_labels": ["wall_spacer"],
     "active_membrane_wall_labels": ["wall_top_mem", "wall_bottom_mem"],
     "buffer_wall_labels": [
