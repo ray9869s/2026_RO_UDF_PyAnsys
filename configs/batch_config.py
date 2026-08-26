@@ -10,7 +10,7 @@
 # into _in/_out, and zone_matches_base_name only accepts "base" or "base.N".
 from ro.solver_common import make_base_case_name
 
-dry_run = True                    # flip to False after reading the plan
+dry_run = False                    # flip to False after reading the plan
 continue_on_failure = True
 skip_existing_mesh = True
 skip_existing_final_data = True
