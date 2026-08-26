@@ -94,8 +94,8 @@ MESH_MANIFEST_REQUIRED_FIELDS = (
     "buffer_wall_base_names",
     "n_lead_excluded",
     "n_trail_excluded",
-    "max_size",
-    "min_size",
+    "max_size_mm",
+    "min_size_mm",
     "cpg",
     "bl",
     "peel",
@@ -149,8 +149,8 @@ _MESH_PARAMETER_FIELDS = (
     "buffer_wall_base_names",
     "n_lead_excluded",
     "n_trail_excluded",
-    "max_size",
-    "min_size",
+    "max_size_mm",
+    "min_size_mm",
     "cpg",
     "bl",
     "peel",
@@ -199,8 +199,7 @@ def _require_fields(
     if payload["schema_version"] != MANIFEST_SCHEMA_VERSION:
         raise ManifestError(
             f"Unsupported {kind} manifest schema_version: "
-            f"{payload['schema_version']!r}; expected {MANIFEST_SCHEMA_VERSION}. "
-            "Run scripts/migrate_manifest_schema_v2.py on legacy manifests."
+            f"{payload['schema_version']!r}; expected {MANIFEST_SCHEMA_VERSION}."
         )
 
 
@@ -282,8 +281,8 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         "cell_length_x_m",
         "buffer_length_in_m",
         "buffer_length_out_m",
-        "max_size",
-        "min_size",
+        "max_size_mm",
+        "min_size_mm",
     ):
         _require_number(payload, field, "Mesh")
     for field in ("n_active_cells", "cpg", "bl"):
@@ -312,8 +311,8 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         "cell_length_x_m",
         "buffer_length_in_m",
         "buffer_length_out_m",
-        "max_size",
-        "min_size",
+        "max_size_mm",
+        "min_size_mm",
     )
     for field in positive_fields:
         if float(payload[field]) <= 0.0:
@@ -327,8 +326,8 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
                 f"Mesh manifest field {field!r} must be nonnegative, "
                 f"got {payload[field]!r}."
             )
-    if float(payload["min_size"]) > float(payload["max_size"]):
-        raise ManifestError("Mesh manifest min_size must be <= max_size.")
+    if float(payload["min_size_mm"]) > float(payload["max_size_mm"]):
+        raise ManifestError("Mesh manifest min_size_mm must be <= max_size_mm.")
     if (
         payload["n_lead_excluded"] + payload["n_trail_excluded"]
         >= payload["n_active_cells"]

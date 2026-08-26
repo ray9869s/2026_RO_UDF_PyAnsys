@@ -15,9 +15,103 @@ _CURVATURE_MARGIN_MIN = 1.2
 _SIGMA_D_TOLERANCE_M = 1.0e-7
 _JOINT_SPHERE_RATIO_TOLERANCE_M = 1.0e-9
 
+# Plausible absolute ranges for ``*_m`` fields (metres). Exact 0.0 is allowed
+# (e.g. overlap_m, bridge_radius_m on empty/pillar); nonzero values must sit
+# inside the band. Unknown ``*_m`` keys get the generic band.
+_DOMAIN_SCALE_M = (1.0e-4, 1.0e-1)
+_FEATURE_SCALE_M = (1.0e-6, 1.0e-2)
+_GENERIC_SCALE_M = (1.0e-9, 1.0)
+_DOMAIN_SCALE_FIELDS = frozenset({
+    "unit_cell_xy_m",
+    "cell_length_x_m",
+    "periodic_shift_y_m",
+    "buffer_length_in_m",
+    "buffer_length_out_m",
+    "domain_extent_x_m",
+    "domain_extent_y_m",
+    "domain_extent_z_m",
+})
+_FEATURE_SCALE_FIELDS = frozenset({
+    "filament_d_m",
+    "bridge_radius_m",
+    "overlap_m",
+    "layer_diameters_m",
+    "layer_axis_z_m",
+    "joint_sphere_z_m",
+    "joint_sphere_R_m",
+    "joint_sphere_r_min_m",
+    "membrane_trim_m",
+    "membrane_contact_width_m",
+    "Sigma_d_nominal_m",
+})
+
 
 class ManifestValidationError(ManifestError):
     """Raised when manifest geometry validation fails."""
+
+
+def _iter_metre_named_scalars(
+    payload: Mapping[str, Any],
+):
+    """Yield (label, base_field, numeric_value) for every ``*_m`` scalar."""
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.endswith("_m"):
+            continue
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                if item is None:
+                    continue
+                yield f"{key}[{index}]", key, item
+        else:
+            yield key, key, value
+
+
+def _metre_band_for_field(field: str) -> tuple[float, float]:
+    if field in _DOMAIN_SCALE_FIELDS:
+        return _DOMAIN_SCALE_M
+    if field in _FEATURE_SCALE_FIELDS:
+        return _FEATURE_SCALE_M
+    return _GENERIC_SCALE_M
+
+
+def _unit_leak_hint(abs_value: float, lo: float, hi: float) -> str:
+    if abs_value > hi:
+        return "value is ~1000x high; mm leaked into a metre field?"
+    if abs_value < lo:
+        return "value is ~1000x low; micrometres leaked into a metre field?"
+    return "value outside expected metre band"
+
+
+def validate_metre_field_scales(
+    payload: Mapping[str, Any],
+    *,
+    kind: str = "Mesh",
+) -> None:
+    """Raise if any ``*_m`` field is outside its plausible metre band."""
+    for label, field, raw in _iter_metre_named_scalars(payload):
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ManifestValidationError(
+                f"{kind} manifest field {label!r} must be numeric metres, "
+                f"got {raw!r}."
+            )
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ManifestValidationError(
+                f"{kind} manifest field {label!r} must be finite metres, "
+                f"got {raw!r}."
+            )
+        # Exact zero is a valid unset/no-feature value for several lengths.
+        if value == 0.0:
+            continue
+        lo, hi = _metre_band_for_field(field)
+        abs_value = abs(value)
+        if abs_value < lo or abs_value > hi:
+            raise ManifestValidationError(
+                f"{kind} manifest field {label!r}={raw!r} is outside the "
+                f"expected band [{lo:g}, {hi:g}] m; {_unit_leak_hint(abs_value, lo, hi)}"
+            )
 
 
 def derive_periodic_shift_y_from_angle_m(
@@ -418,6 +512,7 @@ def validate_joint_sphere_consistency(
 
 def validate_mesh_geometry_fields(payload: Mapping[str, Any]) -> None:
     """Run all mesh-leaf geometry validations."""
+    validate_metre_field_scales(payload, kind="Mesh")
     validate_periodic_shift_y(payload, kind="Mesh")
     validate_sigma_d_invariant(payload, kind="Mesh")
     validate_curvature_margin(payload, kind="Mesh")
@@ -467,6 +562,7 @@ def validate_mesh_geometry_fields(payload: Mapping[str, Any]) -> None:
 
 def validate_run_geometry_fields(run_payload: Mapping[str, Any]) -> None:
     """Run all run-leaf geometry validations."""
+    validate_metre_field_scales(run_payload, kind="Run")
     validate_u_mean_source_mesh_id(run_payload)
     validate_periodic_shift_y_storage(run_payload, kind="Run")
     validate_sigma_d_invariant(run_payload, kind="Run")

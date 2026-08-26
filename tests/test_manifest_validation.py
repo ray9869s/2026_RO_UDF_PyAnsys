@@ -13,6 +13,7 @@ from ro.manifest_validation import (
     derive_periodic_shift_y_from_angle_m,
     validate_curvature_margin,
     validate_joint_sphere_consistency,
+    validate_metre_field_scales,
     validate_periodic_shift_y,
     validate_sigma_d_invariant,
     validate_spacer_wall_zones,
@@ -38,6 +39,38 @@ def test_explicit_source_does_not_invoke_derivation_check():
     payload["periodic_shift_y_m"] = 0.004
     payload["unit_cell_xy_m"] = [0.00245, 0.004]
     validate_periodic_shift_y(payload)
+
+
+def test_metre_fields_reject_millimetre_leakage():
+    payload = _diamond_mesh_payload(periodic_shift_y_m=3.465)
+    with pytest.raises(ManifestError, match="mm leaked into a metre field"):
+        validate_metre_field_scales(payload, kind="Mesh")
+
+
+def test_metre_fields_reject_micrometre_leakage():
+    payload = _diamond_mesh_payload(periodic_shift_y_m=3.465e-6)
+    with pytest.raises(ManifestError, match="micrometres leaked into a metre field"):
+        validate_metre_field_scales(payload, kind="Mesh")
+
+
+def test_metre_field_list_rejects_millimetre_leakage():
+    payload = _diamond_mesh_payload(unit_cell_xy_m=[3.465, 3.465])
+    with pytest.raises(ManifestError, match=r"unit_cell_xy_m\[0\]"):
+        validate_metre_field_scales(payload, kind="Mesh")
+
+
+def test_plausible_metre_fields_pass_scale_guard():
+    validate_metre_field_scales(mesh_payload(), kind="Mesh")
+    validate_metre_field_scales(run_payload(), kind="Run")
+
+
+def test_feature_scale_rejects_both_unit_leaks():
+    high = _diamond_mesh_payload(filament_d_m=0.4)  # 0.4 mm written as metres
+    with pytest.raises(ManifestError, match="mm leaked into a metre field"):
+        validate_metre_field_scales(high, kind="Mesh")
+    low = _diamond_mesh_payload(filament_d_m=4.0e-7)  # 0.4 um as metres
+    with pytest.raises(ManifestError, match="micrometres leaked into a metre field"):
+        validate_metre_field_scales(low, kind="Mesh")
 
 
 def test_derived_source_requires_angle_match():
