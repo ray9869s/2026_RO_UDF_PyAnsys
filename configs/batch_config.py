@@ -47,15 +47,20 @@ common_mesh_settings = {
 # to produce shadow-copy slivers, so this batch tests whether True alone
 # resolves the failure.
 # (geo_id, n_active_cells, pitch_mm, periodic_dy_mm)
+# Single-case run. D0817_a45.dsco opens correctly in Discovery GUI with named
+# selections intact, and the batch failure was AttachAssembly timing out after
+# 82 s — a resource/session symptom, not a bad file. Testing whether the case
+# succeeds when it is the only one in the batch.
+# Remaining cases (restore after this test):
+#     ("D1225_a45", 14, 1.7325,       1.7325),
+#     ("D2450_a30",  9, 2.8291606522, 4.900249992),
+#     ("D2450_a60",  5, 4.900249992,  2.8291606522),
+#     ("D1225_a30", 18, 1.4145803261, 2.450124996),
+#     ("D0817_a30", 27, 0.9430535507, 1.633416664),
+#     ("D0817_a60", 15, 1.633416664,  0.9430535507),
+# D1225_a60 already built.
 _MESH_LAYOUTS = (
-    ("D0817_a45", 21, 1.155,        1.155),
-    ("D1225_a45", 14, 1.7325,       1.7325),
-    ("D2450_a30",  9, 2.8291606522, 4.900249992),
-    ("D2450_a60",  5, 4.900249992,  2.8291606522),
-    ("D1225_a30", 18, 1.4145803261, 2.450124996),
-    ("D1225_a60", 10, 2.450124996,  1.4145803261),
-    ("D0817_a30", 27, 0.9430535507, 1.633416664),
-    ("D0817_a60", 15, 1.633416664,  0.9430535507),
+    ("D0817_a45", 21, 1.155, 1.155),
 )
 
 mesh_batch_cases = []
