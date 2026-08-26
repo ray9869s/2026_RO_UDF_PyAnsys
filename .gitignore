@@ -55,3 +55,4 @@ libudf/
 _scratch/
 
 notebooks/
+configs/batch_config.py.*.bak
