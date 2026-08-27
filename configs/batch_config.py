@@ -1,9 +1,12 @@
-# Remaining 8 Diamond meshes. D2450_a45 is already built and verified
-# (cell_count 796009, u_mean 0.1992807, G 1.00360939613 — all match archive).
+# Diamond campaign meshing. D2450_a45, D1225_a45, D0817_a45, D2450_a30,
+# D1225_a30, D0817_a30 are already built. This batch rebuilds the a60 family.
+#
+# D2450_a45 is the verified reference: cell_count 796009, u_mean 0.1992807,
+# inlet_profile_G 1.00360939613 — all match the archived pre-manifest run.
 #
 # periodic_after_surface_mesh = True is the campaign default: setting periodic
 # boundaries before surface meshing produces shadow-copy node slivers
-# (observed here as max skewness 0.88 vs 0.67 in the archived reference).
+# (measured as max skewness 0.88 vs 0.67 on D2450_a45).
 #
 # buffer_wall_base_names MUST be overridden: this geometry splits buffer walls
 # into _in/_out, and zone_matches_base_name only accepts "base" or "base.N".
@@ -55,33 +58,38 @@ common_mesh_settings = {
     ],
 }
 
-# D0817_a45 first: it failed with a twin-face error in the 8/25 batch, which
-# was built with periodic_after_surface_mesh False. That setting is now known
-# to produce shadow-copy slivers, so this batch tests whether True alone
-# resolves the failure.
-# (geo_id, n_active_cells, pitch_mm, periodic_dy_mm)
-# a60 with brg156 bridge spheres. brg110 hit the surface skewness gate on
-# D0817_a60 (0.86115 > 0.85), and the config calibration note already uses
-# D0817_a60_15c_brg156 as the worst passing mesh for the sff threshold.
+# Bridge radius stays 1.10e-4 campaign-wide. brg156 was tried on the a60
+# family and made things worse, not better:
+#   D2450_a60  brg110 skew 0.6767 ortho 0.0849 AR  87.7 cells  946741
+#              brg156 skew 0.6681 ortho 0.0804 AR  82.2 cells  861345
+#   D1225_a60  brg110 skew 0.6977 ortho 0.0762 AR  79.4 cells 1059674
+#              brg156 skew 0.6939 ortho 0.0734 AR 120.9 cells  874144
+#   D0817_a60  brg110 skew 0.86115   brg156 skew 0.86783   (both fail 0.85)
+# Surface skewness barely moved while volume ortho degraded and D1225_a60's
+# aspect ratio jumped, so the worst surface face is not at the bridge node.
+# D0817_a60 instead gets a finer surface size (m_max 0.060), which keeps the
+# geometry identical across the family and records the difference in mesh_id.
+# (geo_id, n_active_cells, pitch_mm, periodic_dy_mm, m_max)
 _MESH_LAYOUTS = (
-    ("D2450_a60",  5, 4.900249992,  2.8291606522),
-    ("D1225_a60", 10, 2.450124996,  1.4145803261),
-    ("D0817_a60", 15, 1.633416664,  0.9430535507),
+    ("D2450_a60",  5, 4.900249992,  2.8291606522, 0.085),
+    ("D1225_a60", 10, 2.450124996,  1.4145803261, 0.085),
+    ("D0817_a60", 15, 1.633416664,  0.9430535507, 0.060),
 )
 
 mesh_batch_cases = []
-for _geo_id, _n_active, _pitch_mm, _periodic_dy_mm in _MESH_LAYOUTS:
+for _geo_id, _n_active, _pitch_mm, _periodic_dy_mm, _m_max in _MESH_LAYOUTS:
     _spacing_code, _angle_token = _geo_id.split("_")
+    _case_mesh_id = f"max{int(round(_m_max * 1000)):03d}_min006_cpg5_bl4_peel2"
     mesh_batch_cases.append({
         "family": _FAMILY,
         "geo_id": _geo_id,
-        "mesh_id": _MESH_ID,
+        "mesh_id": _case_mesh_id,
         "spacing_code": _spacing_code,
         "attack_angle_deg": int(_angle_token[1:]),
         "n_active_cells": _n_active,
         "cell_length_x_m": _pitch_mm * 1.0e-3,
         "periodic_shift_y": _periodic_dy_mm,
-        "bridge_radius_m": 1.56e-4,
+        "m_max": _m_max,
     })
 
 common_solver_settings = {
