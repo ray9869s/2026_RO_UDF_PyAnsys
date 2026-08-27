@@ -60,14 +60,13 @@ common_mesh_settings = {
 # to produce shadow-copy slivers, so this batch tests whether True alone
 # resolves the failure.
 # (geo_id, n_active_cells, pitch_mm, periodic_dy_mm)
-# Single-case run. D0817_a45.dsco opens correctly in Discovery GUI with named
-# selections intact, and the batch failure was AttachAssembly timing out after
-# 82 s — a resource/session symptom, not a bad file. Testing whether the case
-# succeeds when it is the only one in the batch.
+# a60 with brg156 bridge spheres. brg110 hit the surface skewness gate on
+# D0817_a60 (0.86115 > 0.85), and the config calibration note already uses
+# D0817_a60_15c_brg156 as the worst passing mesh for the sff threshold.
 _MESH_LAYOUTS = (
-    ("D0817_a60", 15, 1.633416664,  0.9430535507),
     ("D2450_a60",  5, 4.900249992,  2.8291606522),
     ("D1225_a60", 10, 2.450124996,  1.4145803261),
+    ("D0817_a60", 15, 1.633416664,  0.9430535507),
 )
 
 mesh_batch_cases = []
@@ -82,6 +81,7 @@ for _geo_id, _n_active, _pitch_mm, _periodic_dy_mm in _MESH_LAYOUTS:
         "n_active_cells": _n_active,
         "cell_length_x_m": _pitch_mm * 1.0e-3,
         "periodic_shift_y": _periodic_dy_mm,
+        "bridge_radius_m": 1.56e-4,
     })
 
 common_solver_settings = {
