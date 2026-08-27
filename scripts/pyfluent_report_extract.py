@@ -46,7 +46,6 @@ from ro.fluent_report_helpers import (  # noqa: E402
     evaluation_window_midplane_bulk_concentrations,
     exception_details,
     fluid_zone_reduction_locations,
-    iso_surface_reduction_locations,
     mass_fraction_to_molar_concentration,
     midplane_window_bulk_aggregate,
     segmented_membrane_cp_metrics,
@@ -63,7 +62,6 @@ from ro.fluent_report_helpers import (  # noqa: E402
     unit_cell_plane_area_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
-    wall_zone_reduction_locations,
 )
 from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_CELL_STRAIN_RATE,
@@ -1204,9 +1202,9 @@ if __name__ == "__main__":
         # ==========================================================
         # Cell 8.4. Mid-plane bulk c_b per evaluation cell (window only)
         # ==========================================================
-        # NOT c_bulk_center_area_avg below: that whole-domain mid-plane value
-        # includes inlet-buffer regions still at inlet concentration and must
-        # not be used as c_b for CP denominators.
+        # Canonical CP denominator. Mixing-cup (surface-massavg) on z=h/2
+        # clipped in x to each evaluation cell. NOT interchangeable with
+        # cp_inlet_avg (L2 / UDM-9 inlet denominator).
 
         _CHANNEL_HEIGHT_M = getattr(cfg, "channel_height_m", 0.00077)
         _z_center_m = _CHANNEL_HEIGHT_M / 2.0
@@ -1218,171 +1216,190 @@ if __name__ == "__main__":
         c_b_by_cell_mol_per_m3 = {}
         midplane_area_by_cell_m2 = {}
         c_b_window_mol_per_m3 = None
-        c_bulk_center_area_avg = None
-        c_bulk_center_area_avg_source = None
-        c_bulk_center_area_avg_units_or_type = None
-        c_bulk_center_plane_name = None
-        _c_bulk_center_diag = "not_attempted"
         _midplane_salt_field = None
         _midplane_salt_is_mass_fraction = True
+        _found_center_z = None
+        _found_center_pname = None
 
-        try:
-            _found_center_z = None
-            _found_center_pname = None
+        for _z_val in _z_candidates_center:
+            _pname = (
+                f"pp_plane_zc_{abs(_z_val):.7f}"
+                .replace(".", "p")
+            )
+            try:
+                create_z_normal_plane(solver, _pname, _z_val)
+                _found_center_z = _z_val
+                _found_center_pname = _pname
+                break
+            except Exception as _e_plane:
+                print(f"Center plane creation at z={_z_val} failed: {_e_plane}")
 
-            for _z_val in _z_candidates_center:
-                _pname = (
-                    f"pp_plane_zc_{abs(_z_val):.7f}"
-                    .replace(".", "p")
+        if _found_center_pname is None:
+            raise RuntimeError(
+                "Canonical CP cannot be computed: mid-plane iso-surface "
+                "creation failed for all z candidates. "
+                "cp_inlet_avg (L2) is not a substitute for canonical CP."
+            )
+
+        midplane_window_error = None
+        for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
+            try:
+                (
+                    c_b_by_cell_mol_per_m3,
+                    midplane_area_by_cell_m2,
+                    _c_b_window_probe,
+                ) = evaluation_window_midplane_bulk_concentrations(
+                    solver=solver,
+                    solution=solution,
+                    midplane_surface_names=[_found_center_pname],
+                    unit_cell_boundary_x_m=unit_cell_boundary_x_m,
+                    evaluation_cell_numbers=spacer_cells,
+                    salt_field=_salt_field,
+                    density_kg_per_m3=rho,
+                    molecular_weight_kg_per_mol=(
+                        salt_molecular_weight_kg_per_mol
+                    ),
+                    salt_is_mass_fraction=True,
                 )
+                c_b_window_mol_per_m3 = midplane_window_bulk_aggregate(
+                    c_b_by_cell_mol_per_m3,
+                    midplane_area_by_cell_m2,
+                    evaluation_cells,
+                )
+                _midplane_salt_field = _salt_field
+                _midplane_salt_is_mass_fraction = True
+                midplane_window_error = None
+                break
+            except Exception as _e_massfrac:
+                midplane_window_error = _e_massfrac
+                print(
+                    f"Mid-plane c_b with field {_salt_field!r} failed: "
+                    f"{_e_massfrac}"
+                )
+        if not c_b_by_cell_mol_per_m3:
+            for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
                 try:
-                    create_z_normal_plane(solver, _pname, _z_val)
-                    _found_center_z = _z_val
-                    _found_center_pname = _pname
-                    _c_bulk_center_diag = f"plane_at_z={_z_val}"
-                    break
-                except Exception as _e_plane:
-                    _c_bulk_center_diag = f"plane_z_{_z_val}_failed:{_e_plane}"
-                    print(f"Center plane creation at z={_z_val} failed: {_e_plane}")
-
-            if _found_center_pname is not None:
-                midplane_locations = iso_surface_reduction_locations(
-                    setup,
-                    [_found_center_pname],
-                )
-                for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
-                    try:
-                        (
-                            c_b_by_cell_mol_per_m3,
-                            midplane_area_by_cell_m2,
-                            _c_b_window_probe,
-                        ) = evaluation_window_midplane_bulk_concentrations(
-                            reduction=solver.fields.reduction,
-                            midplane_locations=midplane_locations,
-                            unit_cell_boundary_x_m=unit_cell_boundary_x_m,
-                            evaluation_cell_numbers=spacer_cells,
-                            salt_expression=_salt_field,
-                            density_kg_per_m3=rho,
-                            molecular_weight_kg_per_mol=(
-                                salt_molecular_weight_kg_per_mol
-                            ),
-                            salt_is_mass_fraction=True,
-                        )
-                        c_b_window_mol_per_m3 = midplane_window_bulk_aggregate(
-                            c_b_by_cell_mol_per_m3,
-                            midplane_area_by_cell_m2,
-                            evaluation_cells,
-                        )
-                        _midplane_salt_field = _salt_field
-                        _midplane_salt_is_mass_fraction = True
-                        break
-                    except Exception as _e_massfrac:
-                        print(
-                            f"Mid-plane c_b with field {_salt_field!r} failed: "
-                            f"{_e_massfrac}"
-                        )
-                if not c_b_by_cell_mol_per_m3:
-                    for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
-                        try:
-                            (
-                                c_b_by_cell_mol_per_m3,
-                                midplane_area_by_cell_m2,
-                                _c_b_window_probe,
-                            ) = evaluation_window_midplane_bulk_concentrations(
-                                reduction=solver.fields.reduction,
-                                midplane_locations=midplane_locations,
-                                unit_cell_boundary_x_m=unit_cell_boundary_x_m,
-                                evaluation_cell_numbers=spacer_cells,
-                                salt_expression=_salt_field,
-                                density_kg_per_m3=rho,
-                                molecular_weight_kg_per_mol=(
-                                    salt_molecular_weight_kg_per_mol
-                                ),
-                                salt_is_mass_fraction=False,
-                            )
-                            c_b_window_mol_per_m3 = midplane_window_bulk_aggregate(
-                                c_b_by_cell_mol_per_m3,
-                                midplane_area_by_cell_m2,
-                                evaluation_cells,
-                            )
-                            _midplane_salt_field = _salt_field
-                            _midplane_salt_is_mass_fraction = False
-                            break
-                        except Exception as _e_molar:
-                            print(
-                                f"Mid-plane c_b molar try {_salt_field!r} failed: "
-                                f"{_e_molar}"
-                            )
-                if not c_b_by_cell_mol_per_m3:
-                    raise RuntimeError(
-                        "Could not resolve window-clipped mid-plane bulk "
-                        "concentration for evaluation cells."
+                    (
+                        c_b_by_cell_mol_per_m3,
+                        midplane_area_by_cell_m2,
+                        _c_b_window_probe,
+                    ) = evaluation_window_midplane_bulk_concentrations(
+                        solver=solver,
+                        solution=solution,
+                        midplane_surface_names=[_found_center_pname],
+                        unit_cell_boundary_x_m=unit_cell_boundary_x_m,
+                        evaluation_cell_numbers=spacer_cells,
+                        salt_field=_salt_field,
+                        density_kg_per_m3=rho,
+                        molecular_weight_kg_per_mol=(
+                            salt_molecular_weight_kg_per_mol
+                        ),
+                        salt_is_mass_fraction=False,
                     )
-
-                for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
-                    try:
-                        create_or_update_surface_report(
-                            solution,
-                            "pp_c_bulk_center",
-                            SURFACE_AREA_WEIGHTED_AVG,
-                            _salt_field,
-                            [_found_center_pname],
-                        )
-                        _val_center, _ = compute_one_report(
-                            solution, "pp_c_bulk_center", verbose=False
-                        )
-                        if _val_center is None:
-                            _c_bulk_center_diag = f"field={_salt_field},val=None"
-                            continue
-                        if 1e-4 <= _val_center <= 0.20:
-                            c_bulk_center_area_avg = _val_center
-                            c_bulk_center_area_avg_source = _salt_field
-                            c_bulk_center_area_avg_units_or_type = "mass_fraction"
-                            c_bulk_center_plane_name = _found_center_pname
-                            _c_bulk_center_diag = (
-                                f"ok,field={_salt_field},z={_found_center_z},"
-                                f"val={_val_center:.6g}; "
-                                "whole-domain only — not for CP c_b"
-                            )
-                            break
-                        elif 50 <= _val_center <= 3000:
-                            c_bulk_center_area_avg = _val_center
-                            c_bulk_center_area_avg_source = _salt_field
-                            c_bulk_center_area_avg_units_or_type = "molar_mol_m3"
-                            c_bulk_center_plane_name = _found_center_pname
-                            _c_bulk_center_diag = (
-                                f"ok,field={_salt_field},z={_found_center_z},"
-                                f"val={_val_center:.6g}; "
-                                "whole-domain only — not for CP c_b"
-                            )
-                            break
-                        else:
-                            _c_bulk_center_diag = (
-                                f"field={_salt_field},val={_val_center:.4g},not_plausible"
-                            )
-                    except Exception as _e_salt:
-                        _c_bulk_center_diag = f"field={_salt_field},err:{_e_salt}"
-        except Exception as _e_center:
-            _c_bulk_center_diag = f"exception:{_e_center}"
-            print(f"WARNING: center-plane bulk salt average failed: {_e_center}")
+                    c_b_window_mol_per_m3 = midplane_window_bulk_aggregate(
+                        c_b_by_cell_mol_per_m3,
+                        midplane_area_by_cell_m2,
+                        evaluation_cells,
+                    )
+                    _midplane_salt_field = _salt_field
+                    _midplane_salt_is_mass_fraction = False
+                    midplane_window_error = None
+                    break
+                except Exception as _e_molar:
+                    midplane_window_error = _e_molar
+                    print(
+                        f"Mid-plane c_b molar try {_salt_field!r} failed: "
+                        f"{_e_molar}"
+                    )
+        if not c_b_by_cell_mol_per_m3:
+            detail = (
+                f" Last error: {midplane_window_error!r}."
+                if midplane_window_error is not None
+                else ""
+            )
+            raise RuntimeError(
+                "Canonical CP cannot be computed: window mid-plane c_b "
+                "failed for all salt-field candidates."
+                f"{detail} "
+                "cp_inlet_avg (L2 / UDM-9 inlet denominator) is not a "
+                "substitute for canonical CP."
+            )
 
         print(
             f"\nEvaluation-window mid-plane c_b_window: {c_b_window_mol_per_m3} mol/m3"
         )
         print(f"  per-cell c_b: {c_b_by_cell_mol_per_m3}")
-        print(f"  salt field: {_midplane_salt_field!r}")
+        print(f"  salt field: {_midplane_salt_field!r} (surface-massavg)")
+
+        # ==========================================================
+        # Cell 8.4b. Legacy whole-domain mid-plane average (NOT c_b)
+        # ==========================================================
+        # Inventory diagnostic only. Includes inlet buffers; must not be
+        # used as the canonical CP denominator.
+
+        c_bulk_center_area_avg = None
+        c_bulk_center_area_avg_source = None
+        c_bulk_center_area_avg_units_or_type = None
+        c_bulk_center_plane_name = None
+        _c_bulk_center_diag = "not_attempted"
+        try:
+            for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
+                try:
+                    create_or_update_surface_report(
+                        solution,
+                        "pp_c_bulk_center",
+                        SURFACE_AREA_WEIGHTED_AVG,
+                        _salt_field,
+                        [_found_center_pname],
+                    )
+                    _val_center, _ = compute_one_report(
+                        solution, "pp_c_bulk_center", verbose=False
+                    )
+                    if _val_center is None:
+                        _c_bulk_center_diag = f"field={_salt_field},val=None"
+                        continue
+                    if 1e-4 <= _val_center <= 0.20:
+                        c_bulk_center_area_avg = _val_center
+                        c_bulk_center_area_avg_source = _salt_field
+                        c_bulk_center_area_avg_units_or_type = "mass_fraction"
+                        c_bulk_center_plane_name = _found_center_pname
+                        _c_bulk_center_diag = (
+                            f"ok,field={_salt_field},z={_found_center_z},"
+                            f"val={_val_center:.6g}; "
+                            "whole-domain only — not for CP c_b"
+                        )
+                        break
+                    elif 50 <= _val_center <= 3000:
+                        c_bulk_center_area_avg = _val_center
+                        c_bulk_center_area_avg_source = _salt_field
+                        c_bulk_center_area_avg_units_or_type = "molar_mol_m3"
+                        c_bulk_center_plane_name = _found_center_pname
+                        _c_bulk_center_diag = (
+                            f"ok,field={_salt_field},z={_found_center_z},"
+                            f"val={_val_center:.6g}; "
+                            "whole-domain only — not for CP c_b"
+                        )
+                        break
+                    else:
+                        _c_bulk_center_diag = (
+                            f"field={_salt_field},val={_val_center:.4g},not_plausible"
+                        )
+                except Exception as _e_salt:
+                    _c_bulk_center_diag = f"field={_salt_field},err:{_e_salt}"
+        except Exception as _e_legacy:
+            _c_bulk_center_diag = f"legacy_exception:{_e_legacy}"
+            print(
+                "WARNING: legacy whole-domain center-plane average failed "
+                f"(canonical c_b already computed): {_e_legacy}"
+            )
 
         segmented_cp_values = {}
         segmented_cp_diagnostic_error = ""
         segmented_cp_diagnostic_error_type = ""
         segmented_cp_diagnostic_error_message = ""
         try:
-            membrane_wall_locations = wall_zone_reduction_locations(
-                setup,
-                active_membrane_zones,
-            )
-            wall_locations_by_name = {
-                zone_name: wall_zone_reduction_locations(setup, [zone_name])
+            wall_surfaces_by_name = {
+                zone_name: [zone_name]
                 for zone_name in active_membrane_zones
             }
             mixing_cup_mass_fraction_by_boundary = {
@@ -1392,8 +1409,10 @@ if __name__ == "__main__":
                 for boundary_index in range(n_unit_cells + 1)
             }
             segmented_cp_values = segmented_membrane_cp_metrics(
-                reduction=solver.fields.reduction,
-                wall_locations=membrane_wall_locations,
+                solver=solver,
+                solution=solution,
+                setup=setup,
+                wall_surface_names=list(active_membrane_zones),
                 unit_cell_boundary_x_m=unit_cell_boundary_x_m,
                 spacer_cells=spacer_cells,
                 mixing_cup_mass_fraction_by_boundary=(
@@ -1408,7 +1427,7 @@ if __name__ == "__main__":
                 evaluation_cell_numbers=evaluation_cells,
                 c_b_by_cell_mol_per_m3=c_b_by_cell_mol_per_m3,
                 midplane_area_by_cell_m2=midplane_area_by_cell_m2,
-                wall_locations_by_name=wall_locations_by_name,
+                wall_surfaces_by_name=wall_surfaces_by_name,
             )
         except Exception as exc:
             error = exception_details(exc)
@@ -1424,7 +1443,7 @@ if __name__ == "__main__":
         pprint(segmented_cp_values)
 
         # ==========================================================
-        # Cell 8.5. Whole-domain center-plane bulk (PyEnSight legacy only)
+        # Cell 8.5. Whole-domain center-plane bulk (inventory only)
         # ==========================================================
 
         c_bulk_center_mass_fraction_avg = None

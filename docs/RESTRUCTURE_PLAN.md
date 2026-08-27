@@ -532,7 +532,7 @@ answer, listed roughly by how much damage they do.
 
 ## Known limitations
 
-### `segmented_membrane_cp_metrics` uses a broken `reduction.sum_if`
+### `reduction.sum_if` is broken — production uses iso_clip + surface reports
 
 Not a restructure regression. Added in `0cb3e55` (2026-08-02); the 2026-08-11
 server probe (`2bc4726`) established two independent defects in
@@ -546,21 +546,18 @@ server probe (`2bc4726`) established two independent defects in
    `expression="1"` returned a face count (2213) where the iso-clip area is
    \(1.126\times10^{-5}\,\mathrm{m}^2\).
 
-Production `segmented_membrane_cp_metrics` still calls `sum_if`. The proven
-replacement is `results.surfaces.iso_clip` on the membrane walls plus
-`surface-area` / `surface-areaavg` reports, already working in
-`scripts/_tmp_cell_profile.py`. Do not treat this as blocking: the paper CP is
-whole-membrane `cp_inlet_avg` (UDM-9 surface report); per-cell profiles come
-from `_tmp_cell_profile.py`.
+Production `segmented_membrane_cp_metrics` uses `results.surfaces.iso_clip`
+on the membrane walls plus `surface-area` / `surface-areaavg` /
+`surface-facetmax|min` reports (same pattern as
+`scripts/_tmp_cell_profile.py`). Mid-plane campaign \(c_b\) uses the same
+iso_clip path with `surface-massavg` on the species field. Do not reintroduce
+`reduction.sum_if` — it both throws and silently ignores `weight="Area"`.
 
-The report worker catches the exception and writes
-`segmented_cp_diagnostic_error`. Every campaign run will therefore carry a
-populated field. That is expected, not a failure. Inventory classifies on
-artifact presence, `stop_reason`, and a handful of log patterns
-(`Expression Error UsedIn`, graphics/UDF/launch). It does not read this
-column. Batch post `report_stage_status` is the worker return code; the catch
-keeps that at success. Leave those classifiers as they are until the helper
-is rewritten.
+Inventory classifies on artifact presence, `stop_reason`, and a handful of
+log patterns (`Expression Error UsedIn`, graphics/UDF/launch). It does not
+read `segmented_cp_diagnostic_error`. Batch post `report_stage_status` is
+the worker return code. Window mid-plane \(c_b\) failure is loud: extraction
+raises so canonical CP is not silently replaced by `cp_inlet_avg` (L2).
 
 ---
 

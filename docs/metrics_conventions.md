@@ -27,8 +27,13 @@ area-weighted.
   UDM-7 after analytic wall reconstruction).
 - \(c_p\): face-local permeate-side reference \(J_s/J_w = B c_m/(J_w+B)\) (same
   as the flux boundary condition).
-- \(c_b\): mid-plane (\(z = h/2\)) area-average salt concentration [mol/m³],
-  clipped in \(x\) to each evaluation-window unit cell (not the whole domain).
+- \(c_b\): mid-plane (\(z = h/2\)) **mass-weighted** (mixing-cup) salt
+  concentration [mol/m³], clipped in \(x\) to each evaluation-window unit cell
+  (not the whole domain). Implemented as Fluent `surface-massavg` on an
+  x-range iso-clip of the mid-plane iso-surface. Do not use
+  `surface-areaavg` for \(c_b\): area-weighted species averages are not
+  conserved across buffer regions with no membrane source (see campaign
+  probe STEP F / `_tmp_cell_profile.py`).
 - \(c_0\): inlet reference concentration (`c_inlet_ref`, 597.8268309 mol/m³).
 
 ## Averaging order

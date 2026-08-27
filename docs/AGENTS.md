@@ -23,7 +23,8 @@ Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 independence is not closed.
 
 **CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with mid-plane
-\(c_b\) on the evaluation window. See `docs/metrics_conventions.md`.
+mixing-cup \(c_b\) (`surface-massavg`) on the evaluation window. See
+`docs/metrics_conventions.md`.
 
 **CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
 \(c_m\) and \(c_p\) when the denominator is face-dependent.

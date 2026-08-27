@@ -8,7 +8,6 @@ from typing import Any, Mapping, Optional
 
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
-    average_of_ratios_cp_bae_approx,
     canonical_rescale_factor,
     cp_l1_gu2017,
     cp_perm_expression,
@@ -465,111 +464,177 @@ def wall_zone_reduction_locations(setup, wall_zone_names):
     return locations
 
 
-def iso_surface_reduction_locations(setup, iso_surface_names):
-    """Resolve iso-surface names to settings objects accepted by reductions."""
+_SURFACE_AREA = "surface-area"
+_SURFACE_AREA_WEIGHTED_AVG = "surface-areaavg"
+_SURFACE_MASS_WEIGHTED_AVG = "surface-massavg"
+_SURFACE_FACET_MAX = "surface-facetmax"
+_SURFACE_FACET_MIN = "surface-facetmin"
+_CP_PERM_NAMED_EXPRESSION = "pp_expr_cp_perm"
+
+
+def iso_surface_reduction_locations(solver, iso_surface_names):
+    """Resolve iso-surface names via ``solver.settings.results.surfaces``.
+
+    Pass the solver session (object with ``.settings.results``), not
+    ``solver.settings.setup``. On Fluent 25.1 setup has no ``.results``.
+    """
     if not iso_surface_names:
         raise ValueError("At least one iso-surface name is required.")
-    iso_group = setup.results.surfaces.iso_surface
+    try:
+        iso_group = solver.settings.results.surfaces.iso_surface
+    except AttributeError as exc:
+        raise TypeError(
+            "iso_surface_reduction_locations expects the solver session "
+            "(solver.settings.results.surfaces.iso_surface). "
+            "Do not pass solver.settings.setup — setup has no .results "
+            "on Fluent 25.1."
+        ) from exc
     locations = []
     for surface_name in iso_surface_names:
         try:
             locations.append(iso_group[surface_name])
-        except Exception as exc:
+        except Exception as err:
             raise ValueError(
                 f"Could not resolve iso-surface {surface_name!r} "
                 "to a settings object."
-            ) from exc
+            ) from err
     return locations
 
 
-def _reduction_max_if(reduction, expression, condition, locations):
-    """Facet maximum of ``expression`` where ``condition`` holds."""
-    for method_name in ("maximum_if", "max_if"):
-        method = getattr(reduction, method_name, None)
-        if method is None:
-            continue
-        try:
-            return method(
-                expression=expression,
-                condition=condition,
-                locations=list(locations),
-            )
-        except TypeError:
-            try:
-                return method(
-                    expression=expression,
-                    condition=condition,
-                    locations=locations,
-                )
-            except Exception:
-                continue
-        except Exception:
-            continue
-    raise RuntimeError(
-        "Fluent reduction API exposes no working maximum_if/max_if for "
-        "facet-max CP metrics."
-    )
+def _find_first_number(obj):
+    """Recursively find the first numeric value inside a compute result."""
+    if isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        return float(obj)
+    if isinstance(obj, dict):
+        for value in obj.values():
+            found = _find_first_number(value)
+            if found is not None:
+                return found
+    if isinstance(obj, (list, tuple)):
+        for value in obj:
+            found = _find_first_number(value)
+            if found is not None:
+                return found
+    return None
 
 
-def _reduction_min_if(reduction, expression, condition, locations):
-    """Facet minimum of ``expression`` where ``condition`` holds."""
-    for method_name in ("minimum_if", "min_if"):
-        method = getattr(reduction, method_name, None)
-        if method is None:
-            continue
-        try:
-            return method(
-                expression=expression,
-                condition=condition,
-                locations=list(locations),
-            )
-        except TypeError:
-            try:
-                return method(
-                    expression=expression,
-                    condition=condition,
-                    locations=locations,
-                )
-            except Exception:
-                continue
-        except Exception:
-            continue
-    raise RuntimeError(
-        "Fluent reduction API exposes no working minimum_if/min_if for "
-        "facet-min CP guard metrics."
-    )
+def create_x_range_iso_clip(solver, clip_name, surface_names, x_min_m, x_max_m):
+    """Create an x-coordinate iso-clip of named surfaces (Fluent 25.1 path).
+
+    Live-verified attributes (ansys-fluent-core 0.38.0):
+      clip.field = "x-coordinate"
+      clip.surfaces = [...]
+      clip.range.minimum / clip.range.maximum
+    """
+    if not surface_names:
+        raise ValueError(f"Cannot create iso-clip {clip_name!r}: no surfaces.")
+    iso_group = solver.settings.results.surfaces.iso_clip
+    existing = list_named_object_names(iso_group, "results.surfaces.iso_clip")
+    if clip_name in existing:
+        iso_group.delete(clip_name)
+    iso_group.create(clip_name)
+    clip = iso_group[clip_name]
+    clip.field = "x-coordinate"
+    clip.surfaces = list(surface_names)
+    clip.range.minimum = float(x_min_m)
+    clip.range.maximum = float(x_max_m)
+    return clip_name
 
 
-def _membrane_x_segment_condition(x_min_m, x_max_m):
-    return (
-        f"AND(x >= {float(x_min_m)!r} [m], "
-        f"x <= {float(x_max_m)!r} [m])"
-    )
+def delete_iso_clip(solver, clip_name):
+    """Delete an iso-clip surface if it exists."""
+    iso_group = solver.settings.results.surfaces.iso_clip
+    existing = list_named_object_names(iso_group, "results.surfaces.iso_clip")
+    if clip_name in existing:
+        iso_group.delete(clip_name)
 
 
-def _midplane_x_segment_condition(x_min_m, x_max_m):
-    return _membrane_x_segment_condition(x_min_m, x_max_m)
+def create_or_update_surface_field_report(
+    solution,
+    report_name,
+    report_type,
+    field_name,
+    surface_names,
+):
+    """Create/update a surface report definition (shared post path)."""
+    if not surface_names:
+        raise ValueError(f"Cannot create {report_name}: no surfaces.")
+    group = solution.report_definitions.surface
+    names = list_named_object_names(group, "solution.report_definitions.surface")
+    if report_name in names:
+        rd = group[report_name]
+    else:
+        rd = group.create(report_name)
+    rd.report_type = report_type
+    if field_name is not None:
+        rd.field = field_name
+    rd.surface_names = list(surface_names)
+    rd.per_surface = False
+    return report_name
+
+
+def delete_surface_field_report(solution, report_name):
+    """Delete a surface report definition if it exists."""
+    group = solution.report_definitions.surface
+    names = list_named_object_names(group, "solution.report_definitions.surface")
+    if report_name in names:
+        group.delete(report_name)
+
+
+def compute_surface_report_value(solution, report_name):
+    """Compute one surface report and return its first numeric value."""
+    result = solution.report_definitions.compute(report_defs=[report_name])
+    value = _find_first_number(result)
+    if value is None:
+        raise RuntimeError(
+            f"Could not extract numeric value from report {report_name!r}. "
+            f"Raw result: {result!r}"
+        )
+    return value
+
+
+def ensure_cp_perm_named_expression(
+    setup,
+    b_perm,
+    *,
+    name=_CP_PERM_NAMED_EXPRESSION,
+    cm_field="udm-7",
+    jw_field="udm-6",
+):
+    """Ensure a named expression for facewise c_p = B*cm/(Jw+B)."""
+    definition = cp_perm_expression(b_perm, cm_field, jw_field)
+    named = setup.named_expressions
+    existing = list_named_object_names(named, "setup.named_expressions")
+    if name not in existing:
+        named.create(name)
+    named[name].definition = definition
+    return name
 
 
 def evaluation_window_midplane_bulk_concentrations(
-    reduction,
-    midplane_locations,
+    solver,
+    solution,
+    midplane_surface_names,
     unit_cell_boundary_x_m,
     evaluation_cell_numbers,
-    salt_expression,
+    salt_field,
     *,
     density_kg_per_m3,
     molecular_weight_kg_per_mol,
     salt_is_mass_fraction=True,
 ):
-    """Mid-plane (z = h/2) area-average salt concentration per evaluation cell.
+    """Mid-plane (z = h/2) mixing-cup salt concentration per evaluation cell.
+
+    Uses x-range iso_clip on the mid-plane iso-surface plus surface-area and
+    surface-massavg reports (no ``reduction.sum_if``). Mass-weighted average
+    is the campaign bulk for conserved species; see metrics_conventions.md.
 
     Returns (c_b_by_cell, midplane_area_by_cell, c_b_window) in mol/m3.
     Whole-domain mid-plane averages include inlet-buffer regions and must not
     be substituted here.
     """
-    if not midplane_locations:
-        raise ValueError("At least one mid-plane location is required.")
+    if not midplane_surface_names:
+        raise ValueError("At least one mid-plane surface name is required.")
     if not evaluation_cell_numbers:
         raise ValueError("At least one evaluation cell is required.")
 
@@ -579,45 +644,67 @@ def evaluation_window_midplane_bulk_concentrations(
     for cell_number in evaluation_cell_numbers:
         x_min_m = unit_cell_boundary_x_m[cell_number - 1]
         x_max_m = unit_cell_boundary_x_m[cell_number]
-        condition = _midplane_x_segment_condition(x_min_m, x_max_m)
-        area_m2 = reduction.sum_if(
-            expression="1",
-            condition=condition,
-            locations=list(midplane_locations),
-            weight="Area",
+        tag = f"cb_cell_{cell_number}"
+        clip_name = f"pp_mid_clip_{tag}"
+        report_area = f"pp_mid_area_{tag}"
+        report_salt = f"pp_mid_salt_{tag}"
+        created_reports: list[str] = []
+        create_x_range_iso_clip(
+            solver,
+            clip_name,
+            list(midplane_surface_names),
+            x_min_m,
+            x_max_m,
         )
-        if area_m2 is None or area_m2 <= 0.0:
-            raise ValueError(
-                f"Mid-plane segment for evaluation cell {cell_number} has no "
-                f"positive area (x=[{x_min_m!r}, {x_max_m!r} m])."
+        try:
+            create_or_update_surface_field_report(
+                solution,
+                report_area,
+                _SURFACE_AREA,
+                None,
+                [clip_name],
             )
-        salt_sum = reduction.sum_if(
-            expression=salt_expression,
-            condition=condition,
-            locations=list(midplane_locations),
-            weight="Area",
-        )
-        if salt_sum is None:
-            raise ValueError(
-                f"Mid-plane salt average failed for evaluation cell "
-                f"{cell_number}."
+            created_reports.append(report_area)
+            area_m2 = float(compute_surface_report_value(solution, report_area))
+            if area_m2 <= 0.0:
+                raise ValueError(
+                    f"Mid-plane segment for evaluation cell {cell_number} has no "
+                    f"positive area (x=[{x_min_m!r}, {x_max_m!r} m])."
+                )
+            create_or_update_surface_field_report(
+                solution,
+                report_salt,
+                _SURFACE_MASS_WEIGHTED_AVG,
+                salt_field,
+                [clip_name],
             )
-        salt_avg = salt_sum / area_m2
-        if salt_is_mass_fraction:
-            c_b = mass_fraction_to_molar_concentration(
-                salt_avg,
-                density_kg_per_m3,
-                molecular_weight_kg_per_mol,
-            )
-        else:
-            c_b = float(salt_avg)
-        if c_b is None or c_b <= 0.0:
-            raise ValueError(
-                f"Mid-plane bulk concentration is not positive for cell "
-                f"{cell_number}: {c_b!r}."
-            )
-        c_b_by_cell[cell_number] = c_b
-        midplane_area_by_cell[cell_number] = area_m2
+            created_reports.append(report_salt)
+            salt_avg = float(compute_surface_report_value(solution, report_salt))
+            if salt_is_mass_fraction:
+                c_b = mass_fraction_to_molar_concentration(
+                    salt_avg,
+                    density_kg_per_m3,
+                    molecular_weight_kg_per_mol,
+                )
+            else:
+                c_b = float(salt_avg)
+            if c_b is None or c_b <= 0.0:
+                raise ValueError(
+                    f"Mid-plane bulk concentration is not positive for cell "
+                    f"{cell_number}: {c_b!r}."
+                )
+            c_b_by_cell[cell_number] = c_b
+            midplane_area_by_cell[cell_number] = area_m2
+        finally:
+            for report_name in created_reports:
+                try:
+                    delete_surface_field_report(solution, report_name)
+                except Exception:
+                    pass
+            try:
+                delete_iso_clip(solver, clip_name)
+            except Exception:
+                pass
 
     c_b_window = midplane_window_bulk_aggregate(
         c_b_by_cell,
@@ -627,62 +714,119 @@ def evaluation_window_midplane_bulk_concentrations(
     return c_b_by_cell, midplane_area_by_cell, c_b_window
 
 
-def _compute_membrane_segment_reductions(
-    reduction,
-    wall_locations,
-    condition,
+def _compute_membrane_segment_via_iso_clip(
+    solver,
+    solution,
+    wall_surface_names,
+    x_min_m,
+    x_max_m,
     b_perm,
-    c0_mol_per_m3,
+    *,
+    tag,
+    setup,
     cm_field="udm-7",
     jw_field="udm-6",
     cp_field="udm-9",
 ):
-    """Area sums and facet maxima for one membrane x-segment."""
+    """Area-weighted membrane metrics on one x-clipped wall surface set.
 
-    def area_sum(expression):
-        return reduction.sum_if(
-            expression=expression,
-            condition=condition,
-            locations=list(wall_locations),
-            weight="Area",
-        )
-
-    cp_perm_expr = cp_perm_expression(b_perm, cm_field, jw_field)
-    area_m2 = area_sum("1")
-    if area_m2 is None or area_m2 <= 0.0:
+    iso_clip + surface-area / surface-areaavg / surface-facetmax|min.
+    No ``reduction.sum_if``.
+    """
+    if not wall_surface_names:
         return None
-    return {
-        "area_m2": area_m2,
-        "cm_area_sum": area_sum(cm_field),
-        "jw_area_sum": area_sum(jw_field),
-        "cp_udm9_area_sum": area_sum(cp_field),
-        "cp_perm_area_sum": area_sum(cp_perm_expr),
-        "cp_perm_min": _reduction_min_if(
-            reduction,
-            cp_perm_expr,
-            condition,
-            wall_locations,
-        ),
-        "cp_perm_max": _reduction_max_if(
-            reduction,
-            cp_perm_expr,
-            condition,
-            wall_locations,
-        ),
-        "cp_udm9_max": _reduction_max_if(
-            reduction,
-            cp_field,
-            condition,
-            wall_locations,
-        ),
-        "cm_max": _reduction_max_if(
-            reduction,
-            cm_field,
-            condition,
-            wall_locations,
-        ),
-        "cp_perm_expr": cp_perm_expr,
+
+    clip_name = f"pp_mem_clip_{tag}"
+    cp_perm_field = ensure_cp_perm_named_expression(
+        setup,
+        b_perm,
+        cm_field=cm_field,
+        jw_field=jw_field,
+    )
+    reports = {
+        "area": f"pp_mem_area_{tag}",
+        "cm": f"pp_mem_cm_{tag}",
+        "jw": f"pp_mem_jw_{tag}",
+        "cp": f"pp_mem_cp_{tag}",
+        "cp_perm": f"pp_mem_cp_perm_{tag}",
+        "cp_perm_min": f"pp_mem_cp_perm_min_{tag}",
+        "cp_perm_max": f"pp_mem_cp_perm_max_{tag}",
+        "cp_max": f"pp_mem_cp_max_{tag}",
+        "cm_max": f"pp_mem_cm_max_{tag}",
     }
+    created_reports: list[str] = []
+    create_x_range_iso_clip(
+        solver,
+        clip_name,
+        list(wall_surface_names),
+        x_min_m,
+        x_max_m,
+    )
+    try:
+        create_or_update_surface_field_report(
+            solution,
+            reports["area"],
+            _SURFACE_AREA,
+            None,
+            [clip_name],
+        )
+        created_reports.append(reports["area"])
+        area_m2 = float(compute_surface_report_value(solution, reports["area"]))
+        if area_m2 <= 0.0:
+            return None
+
+        def _avg(report_key, field):
+            create_or_update_surface_field_report(
+                solution,
+                reports[report_key],
+                _SURFACE_AREA_WEIGHTED_AVG,
+                field,
+                [clip_name],
+            )
+            created_reports.append(reports[report_key])
+            return float(compute_surface_report_value(solution, reports[report_key]))
+
+        def _facet(report_key, report_type, field):
+            create_or_update_surface_field_report(
+                solution,
+                reports[report_key],
+                report_type,
+                field,
+                [clip_name],
+            )
+            created_reports.append(reports[report_key])
+            return float(compute_surface_report_value(solution, reports[report_key]))
+
+        cm_avg = _avg("cm", cm_field)
+        jw_avg = _avg("jw", jw_field)
+        cp_udm9_avg = _avg("cp", cp_field)
+        cp_perm_avg = _avg("cp_perm", cp_perm_field)
+        cp_perm_min = _facet("cp_perm_min", _SURFACE_FACET_MIN, cp_perm_field)
+        cp_perm_max = _facet("cp_perm_max", _SURFACE_FACET_MAX, cp_perm_field)
+        cp_udm9_max = _facet("cp_max", _SURFACE_FACET_MAX, cp_field)
+        cm_max = _facet("cm_max", _SURFACE_FACET_MAX, cm_field)
+
+        return {
+            "area_m2": area_m2,
+            "cm_avg": cm_avg,
+            "jw_avg": jw_avg,
+            "cp_udm9_avg": cp_udm9_avg,
+            "cp_perm_avg": cp_perm_avg,
+            "cp_perm_min": cp_perm_min,
+            "cp_perm_max": cp_perm_max,
+            "cp_udm9_max": cp_udm9_max,
+            "cm_max": cm_max,
+        }
+    finally:
+        for report_name in created_reports:
+            try:
+                delete_surface_field_report(solution, report_name)
+            except Exception:
+                pass
+        try:
+            delete_iso_clip(solver, clip_name)
+        except Exception:
+            pass
 
 
 def _segment_metrics_from_reductions(
@@ -691,15 +835,12 @@ def _segment_metrics_from_reductions(
     c_b_cell_mol_per_m3,
     c0_mol_per_m3,
 ):
-    """Build per-cell CP metrics from pre-aggregated membrane reductions."""
+    """Build per-cell CP metrics from iso_clip membrane segment averages."""
     area_m2 = segment["area_m2"]
-    cm_avg = segment["cm_area_sum"] / area_m2
-    jw_avg = segment["jw_area_sum"] / area_m2
-    cp_udm9_avg = average_of_ratios_cp_bae_approx(
-        segment["cp_udm9_area_sum"],
-        area_m2,
-    )
-    cp_perm_avg = segment["cp_perm_area_sum"] / area_m2
+    cm_avg = segment["cm_avg"]
+    jw_avg = segment["jw_avg"]
+    cp_udm9_avg = segment["cp_udm9_avg"]
+    cp_perm_avg = segment["cp_perm_avg"]
 
     cp_perm_min = segment["cp_perm_min"]
     cp_perm_max = segment["cp_perm_max"]
@@ -817,8 +958,10 @@ def concentration_metric_unit(metric_name):
 
 
 def segmented_membrane_cp_metrics(
-    reduction,
-    wall_locations,
+    solver,
+    solution,
+    setup,
+    wall_surface_names,
     unit_cell_boundary_x_m,
     spacer_cells,
     mixing_cup_mass_fraction_by_boundary,
@@ -830,17 +973,18 @@ def segmented_membrane_cp_metrics(
     evaluation_cell_numbers=None,
     c_b_by_cell_mol_per_m3=None,
     midplane_area_by_cell_m2=None,
-    wall_locations_by_name=None,
+    wall_surfaces_by_name=None,
 ):
     """Compute x-segmented membrane CP metrics (all-active and optional window).
 
-    When ``evaluation_cell_numbers`` and ``c_b_by_cell_mol_per_m3`` are
-    supplied, also emits canonical/L1/L2 window aggregates and per-cell
-    c_b-based metrics. UDM-9 values are average-of-ratios; canonical applies
-    a per-cell scalar rescale.
+    Uses iso_clip + surface-area / surface-areaavg / facet max|min reports.
+    No ``reduction.sum_if``. When ``evaluation_cell_numbers`` and
+    ``c_b_by_cell_mol_per_m3`` are supplied, also emits canonical/L1/L2 window
+    aggregates. UDM-9 values are average-of-ratios; canonical applies a
+    per-cell scalar rescale.
     """
-    if not wall_locations:
-        raise ValueError("At least one membrane wall location is required.")
+    if not wall_surface_names:
+        raise ValueError("At least one membrane wall surface name is required.")
     b_perm = float(salt_permeability_m_per_s)
     c0 = float(c_inlet_ref_mol_per_m3)
     if b_perm <= 0.0 or c0 <= 0.0:
@@ -849,30 +993,32 @@ def segmented_membrane_cp_metrics(
     metrics: dict[str, Any] = {}
     segment_cache: dict[int, dict] = {}
 
-    for cell_number in spacer_cells:
+    def _segment_for(cell_number, surfaces, tag_prefix):
         x_min_m = unit_cell_boundary_x_m[cell_number - 1]
         x_max_m = unit_cell_boundary_x_m[cell_number]
-        condition = _membrane_x_segment_condition(x_min_m, x_max_m)
-        segment = _compute_membrane_segment_reductions(
-            reduction,
-            wall_locations,
-            condition,
+        return _compute_membrane_segment_via_iso_clip(
+            solver,
+            solution,
+            list(surfaces),
+            x_min_m,
+            x_max_m,
             b_perm,
-            c0,
+            tag=f"{tag_prefix}_{cell_number}",
+            setup=setup,
         )
+
+    for cell_number in spacer_cells:
+        segment = _segment_for(cell_number, wall_surface_names, "comb")
         if segment is None:
             raise ValueError(
                 f"Membrane segment for cell {cell_number} has no positive area."
             )
         segment_cache[cell_number] = segment
         area_m2 = segment["area_m2"]
-        cm_avg = segment["cm_area_sum"] / area_m2
-        jw_avg = segment["jw_area_sum"] / area_m2
-        cp_inlet_avg = average_of_ratios_cp_bae_approx(
-            segment["cp_udm9_area_sum"],
-            area_m2,
-        )
-        cp_perm_avg = segment["cp_perm_area_sum"] / area_m2
+        cm_avg = segment["cm_avg"]
+        jw_avg = segment["jw_avg"]
+        cp_inlet_avg = segment["cp_udm9_avg"]
+        cp_perm_avg = segment["cp_perm_avg"]
 
         bulk_mol_per_m3 = mass_fraction_to_molar_concentration(
             mixing_cup_mass_fraction_by_boundary.get(cell_number),
@@ -926,16 +1072,7 @@ def segmented_membrane_cp_metrics(
 
         for cell_number in evaluation_cell_numbers:
             if cell_number not in segment_cache:
-                x_min_m = unit_cell_boundary_x_m[cell_number - 1]
-                x_max_m = unit_cell_boundary_x_m[cell_number]
-                condition = _membrane_x_segment_condition(x_min_m, x_max_m)
-                segment = _compute_membrane_segment_reductions(
-                    reduction,
-                    wall_locations,
-                    condition,
-                    b_perm,
-                    c0,
-                )
+                segment = _segment_for(cell_number, wall_surface_names, "comb")
                 if segment is None:
                     raise ValueError(
                         f"Membrane segment for evaluation cell {cell_number} "
@@ -1074,22 +1211,17 @@ def segmented_membrane_cp_metrics(
                 )
             )
 
-        if wall_locations_by_name:
-            for wall_name, wall_locs in wall_locations_by_name.items():
+        if wall_surfaces_by_name:
+            for wall_name, wall_names in wall_surfaces_by_name.items():
                 suffix = _wall_metric_suffix(wall_name)
                 per_wall_canon_avg: dict[int, float] = {}
                 per_wall_canon_max: dict[int, float] = {}
                 per_wall_area: dict[int, float] = {}
                 for cell_number in evaluation_cell_numbers:
-                    x_min_m = unit_cell_boundary_x_m[cell_number - 1]
-                    x_max_m = unit_cell_boundary_x_m[cell_number]
-                    condition = _membrane_x_segment_condition(x_min_m, x_max_m)
-                    segment = _compute_membrane_segment_reductions(
-                        reduction,
-                        wall_locs,
-                        condition,
-                        b_perm,
-                        c0,
+                    segment = _segment_for(
+                        cell_number,
+                        wall_names,
+                        f"w_{suffix}",
                     )
                     if segment is None:
                         raise ValueError(
@@ -1121,6 +1253,7 @@ def segmented_membrane_cp_metrics(
                 metrics.update(wall_agg)
 
     return metrics
+
 
 
 def _wall_metric_suffix(wall_zone_name: str) -> str:

@@ -13,8 +13,10 @@ from ro.fluent_report_helpers import (
     create_x_normal_plane,
     derive_periodic_spacer_pressure_metrics,
     derive_spacer_cell_metrics,
+    evaluation_window_midplane_bulk_concentrations,
     exception_details,
     fluid_zone_reduction_locations,
+    iso_surface_reduction_locations,
     mass_fraction_to_molar_concentration,
     molar_concentration_to_mass_fraction,
     segmented_membrane_cp_metrics,
@@ -411,49 +413,127 @@ def test_wall_zone_names_resolve_to_reduction_settings_objects():
     ) == [wall_top, wall_bottom]
 
 
-class FakeSegmentReduction:
+def test_iso_surface_reduction_locations_rejects_setup_only_object():
+    setup_only = SimpleNamespace(models=SimpleNamespace())
+    with pytest.raises(TypeError, match="Do not pass solver.settings.setup"):
+        iso_surface_reduction_locations(setup_only, ["pp_plane_zc"])
+
+
+def test_iso_surface_reduction_locations_uses_settings_results():
+    plane = SimpleNamespace(obj_name="pp_plane_zc")
+    iso_group = {"pp_plane_zc": plane}
+    solver = SimpleNamespace(
+        settings=SimpleNamespace(
+            results=SimpleNamespace(
+                surfaces=SimpleNamespace(iso_surface=iso_group)
+            )
+        )
+    )
+    assert iso_surface_reduction_locations(solver, ["pp_plane_zc"]) == [plane]
+
+
+class FakeNamedGroup:
     def __init__(self):
-        self.calls = []
+        self.objects = {}
+        self.deleted = []
 
-    def sum_if(self, *, expression, condition, locations, weight):
-        self.calls.append((expression, condition, locations, weight))
-        if expression == "1":
-            return 2.0
-        if expression == "udm-7":
-            return 1200.0
-        if expression == "udm-6":
-            return 2.0e-5
-        if expression == "udm-9":
-            return 2.1
-        if expression == "nacl":
-            return 0.07
-        if expression.startswith("((("):
-            return 2.2
-        if expression.startswith("(") and "udm-7" in expression:
-            return 1.0
-        return 1.0
+    def get_object_names(self):
+        return list(self.objects)
 
-    def maximum_if(self, *, expression, condition, locations):
-        if expression == "udm-9":
-            return 1.2
-        if expression == "udm-7":
-            return 650.0
-        if expression.startswith("("):
-            return 0.55
-        return 1.0
+    def create(self, name):
+        obj = SimpleNamespace(
+            field=None,
+            iso_values=None,
+            surfaces=None,
+            range=SimpleNamespace(minimum=None, maximum=None),
+            report_type=None,
+            surface_names=None,
+            per_surface=None,
+            definition=None,
+        )
+        self.objects[name] = obj
+        return obj
 
-    def minimum_if(self, *, expression, condition, locations):
-        if expression.startswith("("):
-            return 0.45
-        return 0.45
+    def delete(self, name):
+        self.deleted.append(name)
+        self.objects.pop(name, None)
+
+    def __getitem__(self, name):
+        return self.objects[name]
 
 
-def test_segmented_membrane_cp_uses_facewise_gu_reduction():
-    reduction = FakeSegmentReduction()
-    wall = SimpleNamespace(obj_name="wall_top_mem")
+class FakeIsoClipSession:
+    """Minimal Fluent-shaped session for iso_clip + surface-report CP paths."""
+
+    def __init__(self, *, area=2.0, salt_massavg=0.035, field_avgs=None, field_max=None, field_min=None):
+        self.iso_clip = FakeNamedGroup()
+        self.iso_surface = FakeNamedGroup()
+        self.surface_reports = FakeNamedGroup()
+        self.named_expressions = FakeNamedGroup()
+        self.area = area
+        self.salt_massavg = salt_massavg
+        self.field_avgs = field_avgs or {
+            "udm-7": 600.0,
+            "udm-6": 1.0e-5,
+            "udm-9": 1.05,
+            "pp_expr_cp_perm": 0.5,
+        }
+        self.field_max = field_max or {
+            "udm-9": 1.2,
+            "udm-7": 650.0,
+            "pp_expr_cp_perm": 0.55,
+        }
+        self.field_min = field_min or {
+            "pp_expr_cp_perm": 0.45,
+        }
+        self.compute_calls = []
+
+        def compute(*, report_defs):
+            name = report_defs[0]
+            self.compute_calls.append(name)
+            rd = self.surface_reports[name]
+            rtype = rd.report_type
+            field = rd.field
+            if rtype == "surface-area":
+                return {name: self.area}
+            if rtype == "surface-massavg":
+                return {name: self.salt_massavg}
+            if rtype == "surface-areaavg":
+                return {name: self.field_avgs[field]}
+            if rtype == "surface-facetmax":
+                return {name: self.field_max[field]}
+            if rtype == "surface-facetmin":
+                return {name: self.field_min[field]}
+            raise AssertionError(f"unexpected report {name!r} type={rtype!r}")
+
+        self.solver = SimpleNamespace(
+            settings=SimpleNamespace(
+                results=SimpleNamespace(
+                    surfaces=SimpleNamespace(
+                        iso_clip=self.iso_clip,
+                        iso_surface=self.iso_surface,
+                    )
+                ),
+                setup=SimpleNamespace(named_expressions=self.named_expressions),
+                solution=SimpleNamespace(
+                    report_definitions=SimpleNamespace(
+                        surface=self.surface_reports,
+                        compute=compute,
+                    )
+                ),
+            )
+        )
+        self.setup = self.solver.settings.setup
+        self.solution = self.solver.settings.solution
+
+
+def test_segmented_membrane_cp_uses_iso_clip_surface_reports():
+    session = FakeIsoClipSession()
     metrics = segmented_membrane_cp_metrics(
-        reduction=reduction,
-        wall_locations=[wall],
+        solver=session.solver,
+        solution=session.solution,
+        setup=session.setup,
+        wall_surface_names=["wall_top_mem"],
         unit_cell_boundary_x_m=[
             0.0,
             0.003465,
@@ -483,21 +563,22 @@ def test_segmented_membrane_cp_uses_facewise_gu_reduction():
         "pp_cp_bulk_unit_cell_boundary_2": 600.0 / bulk_mol,
         "pp_cp_perm_mol_m3_cell_2": 0.5,
     })
-    assert all(call[2] == [wall] for call in reduction.calls)
-    assert all(call[3] == "Area" for call in reduction.calls)
-    assert all(
-        call[1] == "AND(x >= 0.003465 [m], x <= 0.00693 [m])"
-        for call in reduction.calls
-        if call[0] != "nacl"
+    assert "pp_expr_cp_perm" in session.named_expressions.objects
+    assert any(
+        name.startswith("pp_mem_clip_") for name in session.iso_clip.deleted
+    )
+    assert not any(
+        "sum_if" in str(call) for call in session.compute_calls
     )
 
 
 def test_segmented_membrane_cp_window_metrics_with_c_b():
-    reduction = FakeSegmentReduction()
-    wall = SimpleNamespace(obj_name="wall_top_mem")
+    session = FakeIsoClipSession()
     metrics = segmented_membrane_cp_metrics(
-        reduction=reduction,
-        wall_locations=[wall],
+        solver=session.solver,
+        solution=session.solution,
+        setup=session.setup,
+        wall_surface_names=["wall_top_mem"],
         unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
         spacer_cells=[2, 3],
         mixing_cup_mass_fraction_by_boundary={2: 0.035, 3: 0.036},
@@ -514,6 +595,58 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
     assert "cp_L2_window_avg" in metrics
     assert "cp_canon_all_active_avg" in metrics
     assert metrics["c_b_window_mol_m3"] == pytest.approx(615.0)
+
+
+def test_midplane_bulk_uses_surface_massavg_not_areaavg():
+    session = FakeIsoClipSession(area=1.5e-5, salt_massavg=0.03512)
+    c_b_by_cell, area_by_cell, c_b_window = (
+        evaluation_window_midplane_bulk_concentrations(
+            solver=session.solver,
+            solution=session.solution,
+            midplane_surface_names=["pp_plane_zc"],
+            unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693],
+            evaluation_cell_numbers=[2],
+            salt_field="nacl",
+            density_kg_per_m3=998.2,
+            molecular_weight_kg_per_mol=0.05844,
+            salt_is_mass_fraction=True,
+        )
+    )
+    expected = mass_fraction_to_molar_concentration(
+        0.03512, 998.2, 0.05844
+    )
+    assert c_b_by_cell[2] == pytest.approx(expected)
+    assert area_by_cell[2] == pytest.approx(1.5e-5)
+    assert c_b_window == pytest.approx(expected)
+    salt_report_types = []
+    for name in session.compute_calls:
+        # Reports are deleted after compute; reconstruct type from name.
+        if "salt" in name:
+            salt_report_types.append("surface-massavg")
+        if "area" in name and "salt" not in name:
+            salt_report_types.append("surface-area")
+    assert "surface-massavg" in salt_report_types
+    assert "surface-area" in salt_report_types
+    # Ensure no areaavg salt report was computed for mid-plane c_b.
+    assert not any(
+        "areaavg" in str(getattr(rd, "report_type", ""))
+        for rd in session.surface_reports.objects.values()
+    )
+
+
+def test_midplane_bulk_rejects_nonpositive_area():
+    session = FakeIsoClipSession(area=0.0)
+    with pytest.raises(ValueError, match="no positive area"):
+        evaluation_window_midplane_bulk_concentrations(
+            solver=session.solver,
+            solution=session.solution,
+            midplane_surface_names=["pp_plane_zc"],
+            unit_cell_boundary_x_m=[0.0, 0.003465],
+            evaluation_cell_numbers=[1],
+            salt_field="nacl",
+            density_kg_per_m3=998.2,
+            molecular_weight_kg_per_mol=0.05844,
+        )
 
 
 def test_concentration_diagnostics_reject_zone_name_strings():
