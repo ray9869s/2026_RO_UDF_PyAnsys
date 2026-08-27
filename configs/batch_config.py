@@ -68,12 +68,26 @@ common_mesh_settings = {
 # Surface skewness barely moved while volume ortho degraded and D1225_a60's
 # aspect ratio jumped, so the worst surface face is not at the bridge node.
 # D0817_a60 instead gets a finer surface size (m_max 0.060), which keeps the
-# geometry identical across the family and records the difference in mesh_id.
+# geometry identical across the family and records the difference in mesh_id:
+# skewness fell 0.86115 -> 0.746625, well clear of the 0.85 gate.
+
+# This batch: rebuild the six a45/a30 meshes so all nine Diamond manifests
+# carry the corrected geometry metadata (porosity_eps measured, trim 1.5e-5,
+# Sigma_d 8.0e-4, contact width 1.52e-4, no unit_cell_xy_m). The a60 three
+# were already built with the new fields. Cell counts must reproduce:
+#   D2450_a45  796009    D2450_a30  1499175
+#   D1225_a45  558090    D1225_a30  1393328
+#   D0817_a45  502794    D0817_a30  1604696
+# D0817_a45 depends on the archived 8/11 CAD (1487160 B); the 8/16 re-save
+# fails prism meshing.
 # (geo_id, n_active_cells, pitch_mm, periodic_dy_mm, m_max)
 _MESH_LAYOUTS = (
-    ("D2450_a60",  5, 4.900249992,  2.8291606522, 0.085),
-    ("D1225_a60", 10, 2.450124996,  1.4145803261, 0.085),
-    ("D0817_a60", 15, 1.633416664,  0.9430535507, 0.060),
+    ("D2450_a45",  7, 3.465,         3.465,        0.085),
+    ("D1225_a45", 14, 1.7325,        1.7325,       0.085),
+    ("D0817_a45", 21, 1.155,         1.155,        0.085),
+    ("D2450_a30",  9, 2.8291606522,  4.900249992,  0.085),
+    ("D1225_a30", 18, 1.4145803261,  2.450124996,  0.085),
+    ("D0817_a30", 27, 0.9430535507,  1.633416664,  0.085),
 )
 
 mesh_batch_cases = []
