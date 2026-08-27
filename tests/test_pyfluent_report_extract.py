@@ -469,22 +469,21 @@ class FakeIsoClipSession:
         self.iso_clip = FakeNamedGroup()
         self.iso_surface = FakeNamedGroup()
         self.surface_reports = FakeNamedGroup()
-        self.named_expressions = FakeNamedGroup()
         self.area = area
         self.salt_massavg = salt_massavg
         self.field_avgs = field_avgs or {
             "udm-7": 600.0,
             "udm-6": 1.0e-5,
             "udm-9": 1.05,
-            "pp_expr_cp_perm": 0.5,
         }
         self.field_max = field_max or {
             "udm-9": 1.2,
             "udm-7": 650.0,
-            "pp_expr_cp_perm": 0.55,
+            "udm-6": 1.2e-5,
         }
         self.field_min = field_min or {
-            "pp_expr_cp_perm": 0.45,
+            "udm-7": 550.0,
+            "udm-6": 0.8e-5,
         }
         self.compute_calls = []
 
@@ -514,7 +513,6 @@ class FakeIsoClipSession:
                         iso_surface=self.iso_surface,
                     )
                 ),
-                setup=SimpleNamespace(named_expressions=self.named_expressions),
                 solution=SimpleNamespace(
                     report_definitions=SimpleNamespace(
                         surface=self.surface_reports,
@@ -523,7 +521,6 @@ class FakeIsoClipSession:
                 ),
             )
         )
-        self.setup = self.solver.settings.setup
         self.solution = self.solver.settings.solution
 
 
@@ -532,7 +529,6 @@ def test_segmented_membrane_cp_uses_iso_clip_surface_reports():
     metrics = segmented_membrane_cp_metrics(
         solver=session.solver,
         solution=session.solution,
-        setup=session.setup,
         wall_surface_names=["wall_top_mem"],
         unit_cell_boundary_x_m=[
             0.0,
@@ -555,21 +551,32 @@ def test_segmented_membrane_cp_uses_iso_clip_surface_reports():
         998.2,
         0.05844,
     )
+    from ro.cp_metrics import film_theory_cp_perm_mol_m3
+
+    expected_cp_perm = film_theory_cp_perm_mol_m3(600.0, 1.0e-5, 2.50e-8)
     assert metrics == pytest.approx({
         "pp_membrane_area_cell_2_m2": 2.0,
         "pp_cm_mol_m3_cell_2": 600.0,
         "pp_jw_m_per_s_cell_2": 1.0e-5,
         "pp_cp_inlet_unit_cell_boundary_2": 1.05,
         "pp_cp_bulk_unit_cell_boundary_2": 600.0 / bulk_mol,
-        "pp_cp_perm_mol_m3_cell_2": 0.5,
+        "pp_cp_perm_mol_m3_cell_2": expected_cp_perm,
     })
-    assert "pp_expr_cp_perm" in session.named_expressions.objects
     assert any(
         name.startswith("pp_mem_clip_") for name in session.iso_clip.deleted
     )
-    assert not any(
-        "sum_if" in str(call) for call in session.compute_calls
-    )
+    # Only UDM fields were used as surface-report fields (no named exprs).
+    used_fields = set()
+    for name in session.compute_calls:
+        # Reports deleted after compute; recover field from call pattern.
+        if "_cm_" in name and "max" not in name and "min" not in name:
+            used_fields.add("udm-7")
+        elif "_jw_" in name and "max" not in name and "min" not in name:
+            used_fields.add("udm-6")
+        elif "_cp_" in name and "perm" not in name:
+            used_fields.add("udm-9")
+    assert used_fields == {"udm-6", "udm-7", "udm-9"}
+    assert not any("pp_expr" in name for name in session.compute_calls)
 
 
 def test_segmented_membrane_cp_window_metrics_with_c_b():
@@ -577,7 +584,6 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
     metrics = segmented_membrane_cp_metrics(
         solver=session.solver,
         solution=session.solution,
-        setup=session.setup,
         wall_surface_names=["wall_top_mem"],
         unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
         spacer_cells=[2, 3],
@@ -647,6 +653,57 @@ def test_midplane_bulk_rejects_nonpositive_area():
             density_kg_per_m3=998.2,
             molecular_weight_kg_per_mol=0.05844,
         )
+
+
+def test_require_canonical_cp_summary_columns_rejects_l2_only():
+    from ro.fluent_report_helpers import require_canonical_cp_summary_columns
+
+    with pytest.raises(RuntimeError, match="Canonical CP cannot be computed"):
+        require_canonical_cp_summary_columns(
+            {
+                "cp_inlet_avg": 1.2,
+                "c_bulk_center_mol_m3_avg": 610.0,
+            }
+        )
+
+
+def test_successful_wide_summary_must_include_canonical_cp_columns():
+    from ro.fluent_report_helpers import (
+        CANONICAL_CP_SUMMARY_COLUMNS,
+        require_canonical_cp_summary_columns,
+        summary_rows_to_wide_record,
+    )
+
+    session = FakeIsoClipSession()
+    metrics = segmented_membrane_cp_metrics(
+        solver=session.solver,
+        solution=session.solution,
+        wall_surface_names=["wall_top_mem"],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
+        spacer_cells=[2, 3],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035, 3: 0.036},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        evaluation_cell_numbers=[3],
+        c_b_by_cell_mol_per_m3={2: 610.0, 3: 615.0},
+        midplane_area_by_cell_m2={2: 1.0, 3: 1.0},
+    )
+    summary_rows = [
+        {"metric": "geo_name", "value": "D2450_a45", "unit": "-"},
+        {"metric": "cp_inlet_avg", "value": 1.05, "unit": "-"},
+        {"metric": "c_b_window_mol_m3", "value": metrics["c_b_window_mol_m3"], "unit": "mol/m3"},
+    ]
+    for key, value in metrics.items():
+        if key == "c_b_window_mol_m3":
+            continue
+        summary_rows.append({"metric": key, "value": value, "unit": "-"})
+    wide = summary_rows_to_wide_record(summary_rows)
+    require_canonical_cp_summary_columns(wide)
+    for column in CANONICAL_CP_SUMMARY_COLUMNS:
+        assert column in wide
+        assert wide[column] is not None
 
 
 def test_concentration_diagnostics_reject_zone_name_strings():

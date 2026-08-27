@@ -12,6 +12,25 @@ from typing import Any, Mapping, Optional, Sequence
 CP_SCALAR_RESCALE_GUARD_THRESHOLD = 1.0e-4
 
 
+def film_theory_cp_perm_mol_m3(
+    cm_mol_per_m3: float,
+    jw_m_per_s: float,
+    b_perm_m_per_s: float,
+) -> float:
+    """Face or segment c_p = B*cm/(Jw+B) [mol/m3]."""
+    cm = float(cm_mol_per_m3)
+    jw = float(jw_m_per_s)
+    b = float(b_perm_m_per_s)
+    if b <= 0.0:
+        raise ValueError(f"b_perm must be positive, got {b_perm_m_per_s!r}.")
+    denom = jw + b
+    if denom <= 0.0:
+        raise ValueError(
+            f"Jw + B must be positive for cp_perm: Jw={jw!r}, B={b!r}."
+        )
+    return b * cm / denom
+
+
 def cp_perm_expression(
     b_perm: float,
     cm_field: str = "udm-7",

@@ -48,6 +48,7 @@ from ro.fluent_report_helpers import (  # noqa: E402
     fluid_zone_reduction_locations,
     mass_fraction_to_molar_concentration,
     midplane_window_bulk_aggregate,
+    require_canonical_cp_summary_columns,
     segmented_membrane_cp_metrics,
     molar_concentration_to_mass_fraction,
     resolve_evaluation_window_from_config,
@@ -1411,7 +1412,6 @@ if __name__ == "__main__":
             segmented_cp_values = segmented_membrane_cp_metrics(
                 solver=solver,
                 solution=solution,
-                setup=setup,
                 wall_surface_names=list(active_membrane_zones),
                 unit_cell_boundary_x_m=unit_cell_boundary_x_m,
                 spacer_cells=spacer_cells,
@@ -1435,8 +1435,23 @@ if __name__ == "__main__":
             segmented_cp_diagnostic_error_message = error["message"]
             segmented_cp_diagnostic_error = error["combined"]
             print(
-                "WARNING: segmented membrane CP diagnostics failed: "
+                "ERROR: segmented membrane CP diagnostics failed: "
                 f"{segmented_cp_diagnostic_error}"
+            )
+            raise RuntimeError(
+                "Canonical CP cannot be computed: segmented membrane CP "
+                f"failed ({segmented_cp_diagnostic_error}). "
+                "cp_inlet_avg (L2) is not a substitute for canonical CP."
+            ) from exc
+
+        if (
+            "cp_canon_window_avg" not in segmented_cp_values
+            or segmented_cp_values.get("c_b_window_mol_m3") is None
+        ):
+            raise RuntimeError(
+                "Canonical CP cannot be computed: segmented_cp_values is "
+                "missing cp_canon_window_avg / c_b_window_mol_m3. "
+                "cp_inlet_avg (L2) is not a substitute for canonical CP."
             )
 
         print("\nSegmented membrane CP diagnostics:")
@@ -1735,6 +1750,11 @@ if __name__ == "__main__":
             row.copy() for row in periodic_pressure_rows
         )
         for metric_name, metric_value in segmented_cp_values.items():
+            if metric_name in {
+                "c_b_window_mol_m3",
+            }:
+                # Written from the mid-plane path below; avoid duplicate metric.
+                continue
             if metric_name.endswith("_m2"):
                 metric_unit = "m2"
             elif "_m_per_s_" in metric_name:
@@ -1745,6 +1765,15 @@ if __name__ == "__main__":
                 "metric": metric_name,
                 "value": metric_value,
                 "unit": metric_unit,
+            })
+        for cell_number, c_b_val in sorted(c_b_by_cell_mol_per_m3.items()):
+            metric_name = f"pp_c_b_midplane_cell_{cell_number}_mol_m3"
+            if any(row["metric"] == metric_name for row in unit_cell_summary_rows):
+                continue
+            unit_cell_summary_rows.append({
+                "metric": metric_name,
+                "value": c_b_val,
+                "unit": "mol/m3",
             })
 
         # ----------------------------------------------------------
@@ -1839,6 +1868,14 @@ if __name__ == "__main__":
             {"metric": "c_bulk_center_plane_name",             "value": c_bulk_center_plane_name or "",                   "unit": "-"},
             {"metric": "c_bulk_center_mass_fraction_avg", "value": c_bulk_center_mass_fraction_avg, "unit": "mass_fraction"},
             {"metric": "c_bulk_center_mol_m3_avg", "value": c_bulk_center_mol_m3_avg, "unit": "mol/m3"},
+
+            {"metric": "c_b_window_mol_m3", "value": c_b_window_mol_per_m3, "unit": "mol/m3"},
+            {"metric": "c_b_window_salt_field", "value": _midplane_salt_field or "", "unit": "-"},
+            {
+                "metric": "c_b_window_is_mass_fraction_field",
+                "value": _midplane_salt_is_mass_fraction,
+                "unit": "-",
+            },
 
             {"metric": "pp_salt_mass_fraction_cells_above_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_above_threshold"], "unit": "cells"},
             {"metric": "pp_salt_mass_fraction_cells_below_threshold", "value": concentration_diagnostics["pp_salt_mass_fraction_cells_below_threshold"], "unit": "cells"},
@@ -1993,6 +2030,8 @@ if __name__ == "__main__":
             if col not in existing_front_columns
         )
         summary_wide_df = summary_wide_df[existing_front_columns + other_columns]
+
+        require_canonical_cp_summary_columns(summary_wide_df.iloc[0].to_dict())
 
         summary_wide_df.to_csv(summary_wide_csv_path, index=False, encoding="utf-8-sig")
 

@@ -10,7 +10,7 @@ from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
     canonical_rescale_factor,
     cp_l1_gu2017,
-    cp_perm_expression,
+    film_theory_cp_perm_mol_m3,
     midplane_window_bulk_aggregate,
     window_area_weighted_average,
     window_pointwise_max,
@@ -469,7 +469,30 @@ _SURFACE_AREA_WEIGHTED_AVG = "surface-areaavg"
 _SURFACE_MASS_WEIGHTED_AVG = "surface-massavg"
 _SURFACE_FACET_MAX = "surface-facetmax"
 _SURFACE_FACET_MIN = "surface-facetmin"
-_CP_PERM_NAMED_EXPRESSION = "pp_expr_cp_perm"
+
+# Required in summary_metrics_wide.csv when report extraction succeeds.
+CANONICAL_CP_SUMMARY_COLUMNS = (
+    "c_b_window_mol_m3",
+    "cp_canon_window_avg",
+    "cp_canon_window_max",
+    "cp_L1_window_avg",
+    "cp_L2_window_avg",
+)
+
+
+def require_canonical_cp_summary_columns(wide_record: Mapping[str, Any]) -> None:
+    """Raise if a successful extract is missing campaign canonical CP columns."""
+    missing = [
+        column
+        for column in CANONICAL_CP_SUMMARY_COLUMNS
+        if column not in wide_record or wide_record[column] in (None, "")
+    ]
+    if missing:
+        raise RuntimeError(
+            "Canonical CP cannot be computed: summary_metrics_wide is missing "
+            f"required columns {missing!r}. "
+            "cp_inlet_avg (L2) is not a substitute for canonical CP."
+        )
 
 
 def iso_surface_reduction_locations(solver, iso_surface_names):
@@ -593,24 +616,6 @@ def compute_surface_report_value(solution, report_name):
     return value
 
 
-def ensure_cp_perm_named_expression(
-    setup,
-    b_perm,
-    *,
-    name=_CP_PERM_NAMED_EXPRESSION,
-    cm_field="udm-7",
-    jw_field="udm-6",
-):
-    """Ensure a named expression for facewise c_p = B*cm/(Jw+B)."""
-    definition = cp_perm_expression(b_perm, cm_field, jw_field)
-    named = setup.named_expressions
-    existing = list_named_object_names(named, "setup.named_expressions")
-    if name not in existing:
-        named.create(name)
-    named[name].definition = definition
-    return name
-
-
 def evaluation_window_midplane_bulk_concentrations(
     solver,
     solution,
@@ -723,36 +728,31 @@ def _compute_membrane_segment_via_iso_clip(
     b_perm,
     *,
     tag,
-    setup,
     cm_field="udm-7",
     jw_field="udm-6",
     cp_field="udm-9",
 ):
     """Area-weighted membrane metrics on one x-clipped wall surface set.
 
-    iso_clip + surface-area / surface-areaavg / surface-facetmax|min.
-    No ``reduction.sum_if``.
+    iso_clip + surface-area / surface-areaavg / surface-facetmax|min on UDM
+    fields only. Film-theory c_p for the rescale guard is derived from cm/Jw
+    facet stats — Fluent 25.1 surface-report ``field`` does not accept setup
+    named expressions (``'field' has no attribute 'pp_expr_cp_perm'``).
     """
     if not wall_surface_names:
         return None
 
     clip_name = f"pp_mem_clip_{tag}"
-    cp_perm_field = ensure_cp_perm_named_expression(
-        setup,
-        b_perm,
-        cm_field=cm_field,
-        jw_field=jw_field,
-    )
     reports = {
         "area": f"pp_mem_area_{tag}",
         "cm": f"pp_mem_cm_{tag}",
         "jw": f"pp_mem_jw_{tag}",
         "cp": f"pp_mem_cp_{tag}",
-        "cp_perm": f"pp_mem_cp_perm_{tag}",
-        "cp_perm_min": f"pp_mem_cp_perm_min_{tag}",
-        "cp_perm_max": f"pp_mem_cp_perm_max_{tag}",
         "cp_max": f"pp_mem_cp_max_{tag}",
         "cm_max": f"pp_mem_cm_max_{tag}",
+        "cm_min": f"pp_mem_cm_min_{tag}",
+        "jw_max": f"pp_mem_jw_max_{tag}",
+        "jw_min": f"pp_mem_jw_min_{tag}",
     }
     created_reports: list[str] = []
     create_x_range_iso_clip(
@@ -800,11 +800,16 @@ def _compute_membrane_segment_via_iso_clip(
         cm_avg = _avg("cm", cm_field)
         jw_avg = _avg("jw", jw_field)
         cp_udm9_avg = _avg("cp", cp_field)
-        cp_perm_avg = _avg("cp_perm", cp_perm_field)
-        cp_perm_min = _facet("cp_perm_min", _SURFACE_FACET_MIN, cp_perm_field)
-        cp_perm_max = _facet("cp_perm_max", _SURFACE_FACET_MAX, cp_perm_field)
         cp_udm9_max = _facet("cp_max", _SURFACE_FACET_MAX, cp_field)
         cm_max = _facet("cm_max", _SURFACE_FACET_MAX, cm_field)
+        cm_min = _facet("cm_min", _SURFACE_FACET_MIN, cm_field)
+        jw_max = _facet("jw_max", _SURFACE_FACET_MAX, jw_field)
+        jw_min = _facet("jw_min", _SURFACE_FACET_MIN, jw_field)
+
+        # c_p = B*cm/(Jw+B): increases with cm, decreases with Jw.
+        cp_perm_avg = film_theory_cp_perm_mol_m3(cm_avg, jw_avg, b_perm)
+        cp_perm_min = film_theory_cp_perm_mol_m3(cm_min, jw_max, b_perm)
+        cp_perm_max = film_theory_cp_perm_mol_m3(cm_max, jw_min, b_perm)
 
         return {
             "area_m2": area_m2,
@@ -960,7 +965,6 @@ def concentration_metric_unit(metric_name):
 def segmented_membrane_cp_metrics(
     solver,
     solution,
-    setup,
     wall_surface_names,
     unit_cell_boundary_x_m,
     spacer_cells,
@@ -1004,7 +1008,6 @@ def segmented_membrane_cp_metrics(
             x_max_m,
             b_perm,
             tag=f"{tag_prefix}_{cell_number}",
-            setup=setup,
         )
 
     for cell_number in spacer_cells:
