@@ -126,6 +126,80 @@ def parse_meshing_cli(argv=None):
     )
     return parser.parse_args(argv)
 
+
+def read_pyfluent_watchdog_err(mesh_directory):
+    """Return non-empty pyfluent_watchdog.err text from a mesh leaf, else ''."""
+    path = Path(mesh_directory) / "pyfluent_watchdog.err"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return ""
+    return text
+
+
+def teardown_meshing_session(meshing, *, exit_timeout_s=60.0):
+    """Graceful exit(wait=True) with bounded timeout; force_exit only as fallback.
+
+    Returns the exit path label: 'graceful', 'force_exit', or 'unresolved'.
+    """
+    if meshing is None:
+        return "skipped"
+
+    exit_timeout_s = float(exit_timeout_s)
+    connection = getattr(meshing, "_fluent_connection", None)
+
+    try:
+        print(
+            f"Attempting graceful Fluent exit "
+            f"(timeout={exit_timeout_s:g}s, timeout_force=False, wait=True)..."
+        )
+        # timeout bounds the soft-exit RPC. timeout_force=False keeps force
+        # under our control so we can log which path ran. wait=True waits for
+        # host/cortex PIDs (up to 60s) after a successful soft exit.
+        meshing.exit(
+            timeout=exit_timeout_s,
+            timeout_force=False,
+            wait=True,
+        )
+        print("Fluent meshing session exit path: graceful")
+    except Exception as exit_error:
+        print(f"Warning: graceful meshing.exit failed: {exit_error}")
+        force_target = getattr(meshing, "_fluent_connection", None) or connection
+        try:
+            if force_target is None:
+                raise RuntimeError("no Fluent connection available for force_exit")
+            force_target.force_exit()
+            print("Fluent meshing session exit path: force_exit (after graceful failure)")
+            return "force_exit"
+        except Exception as force_error:
+            print(f"Warning: force_exit failed: {force_error}")
+            return "unresolved"
+
+    # Soft exit may have timed out without killing PIDs (timeout_force=False).
+    if connection is not None:
+        try:
+            finished = connection.wait_process_finished(wait=1.0)
+        except Exception as wait_error:
+            print(
+                f"Warning: could not verify Fluent process exit after graceful "
+                f"path: {wait_error}"
+            )
+            finished = None
+        if finished is False:
+            try:
+                connection.force_exit()
+                print(
+                    "Fluent meshing session exit path: force_exit "
+                    "(PIDs alive after graceful timeout)"
+                )
+                return "force_exit"
+            except Exception as force_error:
+                print(f"Warning: force_exit after graceful timeout failed: {force_error}")
+                return "unresolved"
+    return "graceful"
+
 # ==========================================================
 # ##### [1] Load Run Configuration #####
 # ==========================================================
@@ -1095,26 +1169,22 @@ if __name__ == "__main__":
                 mesh_file_path=mesh_file_path,
                 error_summary=run_error,
             )
+            # Watchdog stderr is usually benign noise; keep it out of
+            # error_summary so real failures stay readable.
+            watchdog_stderr = read_pyfluent_watchdog_err(case_path)
+            if watchdog_stderr:
+                record["watchdog_stderr"] = watchdog_stderr
+                print(
+                    "Recorded non-empty pyfluent_watchdog.err under "
+                    "watchdog_stderr (not error_summary)."
+                )
             write_mesh_run_record(mesh_run_record_path, record)
             print(f"Mesh run record written: {mesh_run_record_path}")
         except Exception as record_error:
             print(f"Warning: could not write mesh run record: {record_error}")
 
-        if meshing is not None:
-            try:
-                # wait=True blocks until Fluent host/cortex PIDs are gone so the
-                # Discovery CAD plugin session cannot contend with the next
-                # batch case. Default wait=False returns while shutdown is
-                # still in flight.
-                meshing.exit(wait=True)
-                print("Fluent meshing session exited (waited for process exit).")
-            except Exception as exit_error:
-                print(f"Warning: meshing.exit(wait=True) failed: {exit_error}")
-                try:
-                    meshing.force_exit()
-                    print("Forced Fluent meshing session exit after wait failure.")
-                except Exception as force_error:
-                    print(f"Warning: meshing.force_exit() failed: {force_error}")
+        exit_timeout_s = float(getattr(cfg, "fluent_exit_timeout_s", 60.0))
+        teardown_meshing_session(meshing, exit_timeout_s=exit_timeout_s)
 
         try:
             os.chdir(original_working_directory)

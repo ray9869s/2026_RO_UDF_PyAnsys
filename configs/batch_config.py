@@ -14,13 +14,17 @@ continue_on_failure = True
 skip_existing_mesh = True
 skip_existing_final_data = True
 
-# Batch meshing session lifecycle (AttachAssembly contention).
+# Batch meshing session lifecycle (AttachAssembly / socket-reset contention).
 # inter_case_delay_s: settle time after one worker exits before the next starts.
-# cad_import_max_retries: retries after a CAD AttachAssembly / Import failure
-#   (1 => up to 2 total worker invocations for that case).
+# post_failure_settle_s: floor applied after any non-SUCCESS case before the
+#   next case (even when inter_case_delay_s is 0). Leftover Fluent/Discovery/
+#   CADReaders processes are scanned after this settle.
+# transient_failure_max_retries: retries after CAD AttachAssembly or socket-
+#   reset (2 => up to 3 total worker invocations for that case).
 # clean_fm_scratch_on_success: remove FM_<HOST>_<PID>/ dirs after SUCCESS*.
 inter_case_delay_s = 0.0
-cad_import_max_retries = 1
+post_failure_settle_s = 15.0
+transient_failure_max_retries = 2
 clean_fm_scratch_on_success = True
 
 _FAMILY = "diamond"

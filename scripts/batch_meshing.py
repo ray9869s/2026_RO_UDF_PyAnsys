@@ -42,6 +42,25 @@ CAD_ATTACH_ASSEMBLY_PATTERNS = (
     re.compile(r"pIPartMgr", re.IGNORECASE),
 )
 
+# Session/socket-reset contention (gRPC dropped mid-mesh after prior failure).
+SESSION_SOCKET_RESET_PATTERNS = (
+    re.compile(r"IOCP/Socket", re.IGNORECASE),
+    re.compile(r"Connection reset", re.IGNORECASE),
+    re.compile(r"\b10054\b"),
+    re.compile(r"forcibly closed", re.IGNORECASE),
+)
+
+RETRY_KIND_CAD_ATTACH = "cad_attach_assembly"
+RETRY_KIND_SOCKET_RESET = "session_socket_reset"
+
+# Process-image markers checked after a failed case settles.
+LEFTOVER_PROCESS_MARKERS = (
+    "fluent",
+    "discovery",
+    "cadreaders",
+    "cadreader",
+)
+
 
 def _load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -88,8 +107,32 @@ def is_cad_attach_assembly_failure(text):
     return any(pattern.search(text) for pattern in CAD_ATTACH_ASSEMBLY_PATTERNS)
 
 
-def collect_cad_failure_evidence(mesh_log_path, mesh_run_record_path):
-    """Concatenate worker error_summary and mesh log for CAD-failure matching."""
+def is_session_socket_reset_failure(text):
+    """True when failure text matches gRPC/IOCP connection-reset signatures."""
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in SESSION_SOCKET_RESET_PATTERNS)
+
+
+def classify_retryable_session_failure(text):
+    """Return retry kind for session-contention failures, else None.
+
+    CAD AttachAssembly and socket-reset are both retryable but kept as
+    distinct kinds so logs and mesh_run_record stay distinguishable.
+    """
+    if is_cad_attach_assembly_failure(text):
+        return RETRY_KIND_CAD_ATTACH
+    if is_session_socket_reset_failure(text):
+        return RETRY_KIND_SOCKET_RESET
+    return None
+
+
+def collect_session_failure_evidence(mesh_log_path, mesh_run_record_path):
+    """Concatenate worker error_summary and mesh log for retry matching.
+
+    pyfluent_watchdog.err is intentionally excluded: it is usually benign
+    noise and must not drive retry classification.
+    """
     chunks = []
     record = load_mesh_run_record(mesh_run_record_path)
     if record:
@@ -105,6 +148,10 @@ def collect_cad_failure_evidence(mesh_log_path, mesh_run_record_path):
         except OSError:
             pass
     return "\n".join(chunks)
+
+
+# Backward-compatible alias used by older tests/imports.
+collect_cad_failure_evidence = collect_session_failure_evidence
 
 
 def cleanup_fm_scratch_dirs(mesh_directory):
@@ -124,21 +171,123 @@ def cleanup_fm_scratch_dirs(mesh_directory):
     return removed
 
 
-def record_cad_import_attempts(
+def _process_line_matches_leftover(line):
+    lowered = line.lower()
+    return any(marker in lowered for marker in LEFTOVER_PROCESS_MARKERS)
+
+
+def list_leftover_meshing_processes(*, runner=None):
+    """Return leftover Fluent/Discovery/CADReaders process lines, if any."""
+    if runner is None:
+        runner = subprocess.run
+    lines = []
+    try:
+        if os.name == "nt":
+            result = runner(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            raw = result.stdout or ""
+            for line in raw.splitlines():
+                if _process_line_matches_leftover(line):
+                    lines.append(line.strip())
+        else:
+            result = runner(
+                ["ps", "-eo", "pid=,comm=,args="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            raw = result.stdout or ""
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if stripped and _process_line_matches_leftover(stripped):
+                    lines.append(stripped)
+    except OSError as exc:
+        print(f"Warning: could not list leftover meshing processes: {exc}")
+        return []
+    return lines
+
+
+def settle_before_next_case(
+    *,
+    previous_status,
+    inter_case_delay_s,
+    post_failure_settle_s,
+    sleeper=time.sleep,
+    process_lister=None,
+):
+    """Sleep and scan for leftovers before starting the next meshing case.
+
+    After a non-SUCCESS case, always settle at least post_failure_settle_s
+    (even when inter_case_delay_s is 0). Returns leftover process lines.
+    """
+    if process_lister is None:
+        process_lister = list_leftover_meshing_processes
+
+    previous_failed = previous_status not in ("SUCCESS", "SUCCESS_AFTER_RETRY")
+    if previous_failed:
+        delay_s = max(float(inter_case_delay_s), float(post_failure_settle_s))
+        reason = "post-failure"
+    else:
+        delay_s = float(inter_case_delay_s)
+        reason = "inter-case"
+
+    if delay_s > 0.0:
+        print(
+            f"{reason.capitalize()} settle delay: {delay_s:g}s "
+            f"(inter_case_delay_s={inter_case_delay_s:g}, "
+            f"post_failure_settle_s={post_failure_settle_s:g})."
+        )
+        sleeper(delay_s)
+
+    leftovers = process_lister()
+    if leftovers:
+        print(
+            "WARNING: leftover Fluent/Discovery/CADReaders processes still "
+            f"present after {reason} settle ({len(leftovers)}):"
+        )
+        for line in leftovers:
+            print(f"  LEFTOVER: {line}")
+    elif previous_failed:
+        print("No leftover Fluent/Discovery/CADReaders processes after settle.")
+    return leftovers
+
+
+def record_session_attempt_metadata(
     mesh_run_record_path,
     *,
     attempts,
     status,
+    retry_kinds=None,
+    prior_case_leftover_processes=None,
 ):
-    """Persist attempt count on the worker mesh_run_record.json."""
+    """Persist attempt/retry metadata on the worker mesh_run_record.json."""
     path = Path(mesh_run_record_path)
     record = load_mesh_run_record(path) or {}
-    record["cad_import_attempts"] = int(attempts)
-    record["succeeded_on_cad_import_retry"] = (
-        status == "SUCCESS_AFTER_RETRY"
-    )
+    attempts = int(attempts)
+    retry_kinds = list(retry_kinds or [])
+    record["transient_failure_attempts"] = attempts
+    # Backward-compatible alias used by earlier batch summaries.
+    record["cad_import_attempts"] = attempts
+    record["succeeded_on_transient_retry"] = status == "SUCCESS_AFTER_RETRY"
+    record["succeeded_on_cad_import_retry"] = status == "SUCCESS_AFTER_RETRY"
+    record["retry_reasons"] = retry_kinds
+    record["retry_reason"] = retry_kinds[-1] if retry_kinds else None
+    record["session_retry_kinds"] = retry_kinds
+    if prior_case_leftover_processes:
+        record["prior_case_leftover_processes"] = list(
+            prior_case_leftover_processes
+        )
+        record["prior_case_leftovers_detected"] = True
     write_mesh_run_record(path, record)
     return record
+
+
+# Backward-compatible alias.
+record_cad_import_attempts = record_session_attempt_metadata
 
 
 def run_meshing_attempts(
@@ -151,16 +300,19 @@ def run_meshing_attempts(
     max_retries,
     runner=None,
 ):
-    """Run the meshing worker, retrying only on CAD AttachAssembly failures.
+    """Run the meshing worker, retrying CAD AttachAssembly / socket-reset.
 
-    max_retries is the number of *retries* after the first attempt (default 1
-    means up to 2 total invocations).
+    max_retries is the number of *retries* after the first attempt (default 2
+    means up to 3 total invocations).
+
+    Returns (result, attempts, retry_kinds).
     """
     if runner is None:
         runner = subprocess.run
     max_retries = max(0, int(max_retries))
     max_attempts = max_retries + 1
     result = None
+    retry_kinds = []
     for attempt in range(1, max_attempts + 1):
         print(
             f"Meshing worker attempt {attempt}/{max_attempts}: "
@@ -168,20 +320,25 @@ def run_meshing_attempts(
         )
         result = runner(cmd, env=env, cwd=cwd, check=False)
         if result.returncode == 0:
-            return result, attempt
+            return result, attempt, retry_kinds
 
-        evidence = collect_cad_failure_evidence(
+        evidence = collect_session_failure_evidence(
             mesh_log_path, mesh_run_record_path
         )
-        can_retry = (
-            attempt < max_attempts
-            and is_cad_attach_assembly_failure(evidence)
-        )
+        retry_kind = classify_retryable_session_failure(evidence)
+        can_retry = attempt < max_attempts and retry_kind is not None
         if can_retry:
-            print(
-                f"CAD AttachAssembly / Import failure on attempt {attempt}; "
-                f"retrying ({max_attempts - attempt} retry left)."
-            )
+            retry_kinds.append(retry_kind)
+            if retry_kind == RETRY_KIND_CAD_ATTACH:
+                print(
+                    f"CAD AttachAssembly / Import failure on attempt {attempt}; "
+                    f"retrying ({max_attempts - attempt} retry left)."
+                )
+            else:
+                print(
+                    f"Session socket-reset failure on attempt {attempt}; "
+                    f"retrying ({max_attempts - attempt} retry left)."
+                )
             continue
 
         if attempt < max_attempts:
@@ -189,9 +346,9 @@ def run_meshing_attempts(
                 f"Non-retryable meshing failure on attempt {attempt} "
                 f"(return code {result.returncode}); not retrying."
             )
-        return result, attempt
+        return result, attempt, retry_kinds
 
-    return result, max_attempts
+    return result, max_attempts, retry_kinds
 
 
 def _format_summary_case_line(entry):
@@ -318,8 +475,17 @@ def main():
     continue_on_failure = _continue_on_failure(batchcfg)
     skip_existing_mesh = getattr(batchcfg, "skip_existing_mesh", True)
     inter_case_delay_s = float(getattr(batchcfg, "inter_case_delay_s", 0.0))
-    cad_import_max_retries = int(
-        getattr(batchcfg, "cad_import_max_retries", 1)
+    post_failure_settle_s = float(
+        getattr(batchcfg, "post_failure_settle_s", 15.0)
+    )
+    # New name covers CAD AttachAssembly and socket-reset; keep reading the
+    # old key so existing batch_config files still work.
+    transient_failure_max_retries = int(
+        getattr(
+            batchcfg,
+            "transient_failure_max_retries",
+            getattr(batchcfg, "cad_import_max_retries", 2),
+        )
     )
     clean_fm_scratch_on_success = bool(
         getattr(batchcfg, "clean_fm_scratch_on_success", True)
@@ -335,6 +501,8 @@ def main():
     dry_run_cases = []
     skipped_existing = []
     executed_case_count = 0
+    previous_status = None
+    pending_leftovers = None
 
     total = len(mesh_batch_cases)
     print(f"\n{'='*72}")
@@ -345,7 +513,8 @@ def main():
     )
     print(
         f"inter_case_delay_s={inter_case_delay_s}  "
-        f"cad_import_max_retries={cad_import_max_retries}  "
+        f"post_failure_settle_s={post_failure_settle_s}  "
+        f"transient_failure_max_retries={transient_failure_max_retries}  "
         f"clean_fm_scratch_on_success={clean_fm_scratch_on_success}"
     )
     print(f"{'='*72}\n")
@@ -404,21 +573,25 @@ def main():
             dry_run_cases.append(label)
             continue
 
-        if executed_case_count > 0 and inter_case_delay_s > 0.0:
-            print(
-                f"Inter-case settle delay: {inter_case_delay_s:g}s "
-                f"before starting {label}."
+        prior_leftovers_for_record = None
+        if executed_case_count > 0 and previous_status is not None:
+            leftovers = settle_before_next_case(
+                previous_status=previous_status,
+                inter_case_delay_s=inter_case_delay_s,
+                post_failure_settle_s=post_failure_settle_s,
             )
-            time.sleep(inter_case_delay_s)
+            if leftovers:
+                prior_leftovers_for_record = leftovers
+            pending_leftovers = leftovers
 
         started = time.monotonic()
-        result, attempts = run_meshing_attempts(
+        result, attempts, retry_kinds = run_meshing_attempts(
             cmd=cmd,
             env=env,
             cwd=str(SCRIPT_DIR),
             mesh_log_path=mesh_log_path,
             mesh_run_record_path=mesh_run_record_path,
-            max_retries=cad_import_max_retries,
+            max_retries=transient_failure_max_retries,
         )
         wall_time_seconds = time.monotonic() - started
         executed_case_count += 1
@@ -438,10 +611,12 @@ def main():
                 f"attempts={attempts})"
             )
 
-        record_cad_import_attempts(
+        record_session_attempt_metadata(
             mesh_run_record_path,
             attempts=attempts,
             status=status,
+            retry_kinds=retry_kinds,
+            prior_case_leftover_processes=prior_leftovers_for_record,
         )
 
         ledger_record = _write_case_ledger(
@@ -469,6 +644,7 @@ def main():
             "cell_count": ledger_record.get("cell_count"),
         }
 
+        previous_status = status
         if result.returncode == 0:
             successes.append(summary_entry)
             if clean_fm_scratch_on_success:

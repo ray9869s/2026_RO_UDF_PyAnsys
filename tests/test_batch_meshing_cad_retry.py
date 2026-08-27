@@ -66,7 +66,7 @@ def test_run_meshing_attempts_retries_attach_assembly_only(tmp_path, capsys):
         )
         return SimpleNamespace(returncode=0)
 
-    result, attempts = batch.run_meshing_attempts(
+    result, attempts, retry_kinds = batch.run_meshing_attempts(
         cmd=["python", "meshing_code_260616.py"],
         env={},
         cwd=str(tmp_path),
@@ -78,6 +78,7 @@ def test_run_meshing_attempts_retries_attach_assembly_only(tmp_path, capsys):
     assert result.returncode == 0
     assert attempts == 2
     assert len(calls) == 2
+    assert retry_kinds == [batch.RETRY_KIND_CAD_ATTACH]
     captured = capsys.readouterr().out
     assert "CAD AttachAssembly / Import failure on attempt 1" in captured
 
@@ -103,7 +104,7 @@ def test_run_meshing_attempts_does_not_retry_non_cad_error(tmp_path, capsys):
         mesh_log.write_text("Surface mesh quality failed\n", encoding="utf-8")
         return SimpleNamespace(returncode=1)
 
-    result, attempts = batch.run_meshing_attempts(
+    result, attempts, retry_kinds = batch.run_meshing_attempts(
         cmd=["python", "meshing_code_260616.py"],
         env={},
         cwd=str(tmp_path),
@@ -115,10 +116,11 @@ def test_run_meshing_attempts_does_not_retry_non_cad_error(tmp_path, capsys):
     assert result.returncode == 1
     assert attempts == 1
     assert len(calls) == 1
+    assert retry_kinds == []
     captured = capsys.readouterr().out
     assert "Non-retryable meshing failure" in captured
     assert "CAD AttachAssembly" not in captured
-
+    assert "Session socket-reset" not in captured
 
 def test_multi_case_loop_retries_then_starts_next_case(
     tmp_path, monkeypatch, capsys
@@ -160,7 +162,8 @@ def test_multi_case_loop_retries_then_starts_next_case(
                 "continue_on_failure = True",
                 "skip_existing_mesh = False",
                 "inter_case_delay_s = 0.0",
-                "cad_import_max_retries = 1",
+                "post_failure_settle_s = 0.0",
+                "transient_failure_max_retries = 1",
                 "clean_fm_scratch_on_success = True",
                 "common_mesh_settings = {}",
                 f"mesh_batch_cases = {cases!r}",
@@ -234,6 +237,7 @@ def test_multi_case_loop_retries_then_starts_next_case(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(batch.subprocess, "run", fake_runner)
+    monkeypatch.setattr(batch, "list_leftover_meshing_processes", lambda: [])
 
     batch.main()
 
@@ -249,7 +253,11 @@ def test_multi_case_loop_retries_then_starts_next_case(
         / "mesh_run_record.json"
     )
     assert case1_record["cad_import_attempts"] == 2
+    assert case1_record["transient_failure_attempts"] == 2
     assert case1_record["succeeded_on_cad_import_retry"] is True
+    assert case1_record["succeeded_on_transient_retry"] is True
+    assert case1_record["retry_reason"] == batch.RETRY_KIND_CAD_ATTACH
+    assert case1_record["retry_reasons"] == [batch.RETRY_KIND_CAD_ATTACH]
 
     case2_record = load_mesh_run_record(
         tmp_path
@@ -315,7 +323,8 @@ def test_multi_case_non_cad_failure_does_not_retry_but_next_case_runs(
                 "continue_on_failure = True",
                 "skip_existing_mesh = False",
                 "inter_case_delay_s = 0.0",
-                "cad_import_max_retries = 1",
+                "post_failure_settle_s = 0.0",
+                "transient_failure_max_retries = 1",
                 "clean_fm_scratch_on_success = False",
                 "common_mesh_settings = {}",
                 f"mesh_batch_cases = {cases!r}",
@@ -366,6 +375,7 @@ def test_multi_case_non_cad_failure_does_not_retry_but_next_case_runs(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(batch.subprocess, "run", fake_runner)
+    monkeypatch.setattr(batch, "list_leftover_meshing_processes", lambda: [])
 
     with pytest.raises(SystemExit) as exc_info:
         batch.main()
@@ -383,3 +393,135 @@ def test_multi_case_non_cad_failure_does_not_retry_but_next_case_runs(
     )
     assert case1_record["cad_import_attempts"] == 1
     assert case1_record["succeeded_on_cad_import_retry"] is False
+    assert case1_record["retry_reason"] is None
+    assert case1_record["retry_reasons"] == []
+
+SOCKET_RESET_ERROR = (
+    "RuntimeError: IOCP/Socket: Connection reset (10054) "
+    "An existing connection was forcibly closed by the remote host"
+)
+
+
+def test_socket_reset_is_retryable_and_distinct_from_cad():
+    batch = _load_batch_meshing()
+    assert batch.is_session_socket_reset_failure(SOCKET_RESET_ERROR)
+    assert (
+        batch.classify_retryable_session_failure(SOCKET_RESET_ERROR)
+        == batch.RETRY_KIND_SOCKET_RESET
+    )
+    assert (
+        batch.classify_retryable_session_failure(ATTACH_ASSEMBLY_ERROR)
+        == batch.RETRY_KIND_CAD_ATTACH
+    )
+    assert batch.classify_retryable_session_failure(
+        "RuntimeError: Surface mesh quality failed"
+    ) is None
+
+
+def test_run_meshing_attempts_retries_socket_reset(tmp_path, capsys):
+    batch = _load_batch_meshing()
+    mesh_log = tmp_path / "mesh_log.txt"
+    record_path = tmp_path / "mesh_run_record.json"
+    calls = []
+
+    def runner(cmd, env=None, cwd=None, check=False):
+        calls.append(1)
+        if len(calls) == 1:
+            write_mesh_run_record(
+                record_path,
+                {"error_summary": SOCKET_RESET_ERROR, "status": "FAILED"},
+            )
+            mesh_log.write_text("IOCP/Socket connection reset\n", encoding="utf-8")
+            return SimpleNamespace(returncode=1)
+        write_mesh_run_record(
+            record_path,
+            {"status": "SUCCESS", "error_summary": "", "cell_count": 99},
+        )
+        return SimpleNamespace(returncode=0)
+
+    result, attempts, retry_kinds = batch.run_meshing_attempts(
+        cmd=["python", "meshing_code_260616.py"],
+        env={},
+        cwd=str(tmp_path),
+        mesh_log_path=mesh_log,
+        mesh_run_record_path=record_path,
+        max_retries=2,
+        runner=runner,
+    )
+    assert result.returncode == 0
+    assert attempts == 2
+    assert retry_kinds == [batch.RETRY_KIND_SOCKET_RESET]
+    captured = capsys.readouterr().out
+    assert "Session socket-reset failure on attempt 1" in captured
+    assert "CAD AttachAssembly" not in captured
+
+
+def test_collect_evidence_excludes_watchdog_err(tmp_path):
+    batch = _load_batch_meshing()
+    mesh_log = tmp_path / "mesh_log.txt"
+    mesh_log.write_text("log\n", encoding="utf-8")
+    record_path = tmp_path / "mesh_run_record.json"
+    write_mesh_run_record(record_path, {"error_summary": "RuntimeError: boom"})
+    (tmp_path / "pyfluent_watchdog.err").write_text(
+        "CalledProcessError: cleanup-fluent-HOST-131932.bat\n",
+        encoding="utf-8",
+    )
+    evidence = batch.collect_session_failure_evidence(mesh_log, record_path)
+    assert "RuntimeError: boom" in evidence
+    assert "cleanup-fluent-HOST-131932.bat" not in evidence
+
+
+def test_watchdog_stderr_recorded_separately_from_error_summary(tmp_path):
+    """Worker stores watchdog noise under watchdog_stderr, not error_summary."""
+    import sys
+    import types
+
+    stubs = {
+        "ansys": types.ModuleType("ansys"),
+        "ansys.fluent": types.ModuleType("ansys.fluent"),
+        "ansys.fluent.core": types.ModuleType("ansys.fluent.core"),
+    }
+    saved = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    try:
+        meshing = load_module(
+            "meshing_watchdog_record_under_test",
+            SCRIPTS_DIR / "meshing_code_260616.py",
+        )
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+    (tmp_path / "pyfluent_watchdog.err").write_text(
+        "CalledProcessError: cleanup bat exit 1\n",
+        encoding="utf-8",
+    )
+    assert meshing.read_pyfluent_watchdog_err(tmp_path).startswith(
+        "CalledProcessError"
+    )
+    # Simulate the record-write path: error_summary stays clean.
+    from ro.mesh_common import build_mesh_ledger_record, write_mesh_run_record
+
+    record = build_mesh_ledger_record(
+        geo_name="D2450_a60",
+        mesh_case_name="max085_min006_cpg5_bl4_peel2",
+        mesh_parameters={},
+        status="FAILED",
+        exit_code=1,
+        wall_time_seconds=1.0,
+        metrics={},
+        mesh_log_path=tmp_path / "mesh_log.txt",
+        mesh_file_path=tmp_path / "mesh.msh.h5",
+        error_summary="RuntimeError: IOCP/Socket: Connection reset (10054)",
+    )
+    watchdog = meshing.read_pyfluent_watchdog_err(tmp_path)
+    if watchdog:
+        record["watchdog_stderr"] = watchdog
+    write_mesh_run_record(tmp_path / "mesh_run_record.json", record)
+    loaded = load_mesh_run_record(tmp_path / "mesh_run_record.json")
+    assert "IOCP/Socket" in loaded["error_summary"]
+    assert "cleanup bat" not in loaded["error_summary"]
+    assert "cleanup bat" in loaded["watchdog_stderr"]
