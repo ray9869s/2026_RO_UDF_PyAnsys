@@ -4,12 +4,11 @@ Schema version 2 extends every mesh/run leaf with campaign geometry fields
 (all lengths in metres unless noted):
 
 Common geometry (mesh + run):
-  unit_cell_xy_m:             [float, float]
   Sigma_d_nominal_m:          float | null
   membrane_trim_m:            float
-  membrane_contact_width_m:   float
+  membrane_contact_width_m:   float | null
   membrane_blocked_area_frac: float in [0, 1)
-  porosity_eps:               float in (0, 1]
+  porosity_eps:               float in [0.3, 0.99] | null  (measured; not a registry constant)
   periodic_shift_y_m:         float
   periodic_shift_y_source:    "derived_from_angle" | "explicit"
   layer_angles_deg:           list[float] | null
@@ -54,7 +53,6 @@ from ro.manifest_errors import ManifestError
 MANIFEST_SCHEMA_VERSION = 2
 
 _GEOMETRY_FIELDS = (
-    "unit_cell_xy_m",
     "Sigma_d_nominal_m",
     "membrane_trim_m",
     "membrane_contact_width_m",

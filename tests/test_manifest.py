@@ -77,6 +77,8 @@ def mesh_payload():
     }
     migrated = merge_geometry_into_mesh_manifest(base, GEO_ID)
     migrated["schema_version"] = MANIFEST_SCHEMA_VERSION
+    # Measured porosity (not a registry constant).
+    migrated["porosity_eps"] = 0.908849
     return migrated
 
 

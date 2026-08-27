@@ -11,13 +11,17 @@ from typing import Any, Mapping
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_IDS
 
-# Invariant used by Sigma_d validation (section 3-2).
+# Channel height (invariant for Sigma_d / membrane_trim checks).
 CAMPAIGN_H_M = 0.00077
 
 _FILAMENT_D_M = 4.0e-4
 _DIAMOND_BRIDGE_RADIUS_M = 1.10e-4
-_DIAMOND_MEMBRANE_TRIM_M = (CAMPAIGN_H_M - _FILAMENT_D_M) / 2.0
-_DIAMOND_SIGMA_D_NOMINAL_M = CAMPAIGN_H_M + 2.0 * _DIAMOND_MEMBRANE_TRIM_M
+
+# Per-family independent stacked-filament height. Trim is derived:
+#   membrane_trim_m = (Sigma_d_nominal_m - h) / 2
+# Diamond / ML / Sin: 0.800 mm. Pillar: None (flat ends, trim = 0).
+_STACKED_SIGMA_D_NOMINAL_M = 0.00080
+_STACKED_MEMBRANE_TRIM_M = (_STACKED_SIGMA_D_NOMINAL_M - CAMPAIGN_H_M) / 2.0
 
 _SINUSOIDAL_WAVE_RADIUS_M = 4.0e-4
 
@@ -52,9 +56,8 @@ _DIAMOND_LAYOUTS: dict[str, tuple[int, float, float, int]] = {
 
 _ML_LAYER_ANGLES_DEG = (45.0, 90.0, -45.0)
 _ML_COMMON = {
-    "Sigma_d_nominal_m": 0.00080,
-    "membrane_trim_m": 0.000015,
-    "unit_cell_xy_m": [0.003465, 0.003465],
+    "Sigma_d_nominal_m": _STACKED_SIGMA_D_NOMINAL_M,
+    "membrane_trim_m": _STACKED_MEMBRANE_TRIM_M,
     "periodic_shift_y_m": 0.003465,
     "periodic_shift_y_source": "explicit",
     "joint_sphere_count": 2,
@@ -72,8 +75,6 @@ _ML_GEOMETRY: dict[str, dict[str, Any]] = {
         "joint_sphere_R_m": 0.000070,
         "joint_sphere_r_min_m": 0.000080,
         "joint_sphere_R_ratio": 0.875,
-        "membrane_contact_width_m": 0.000135,
-        "porosity_eps": 0.72,
     },
     "M_c267": {
         "layer_diameters_m": [0.000266670, 0.000266670, 0.000266670],
@@ -82,8 +83,6 @@ _ML_GEOMETRY: dict[str, dict[str, Any]] = {
         "joint_sphere_R_m": 0.000110,
         "joint_sphere_r_min_m": 0.000133335,
         "joint_sphere_R_ratio": 0.000110 / 0.000133335,
-        "membrane_contact_width_m": 0.000123,
-        "porosity_eps": 0.70,
     },
     "M_c400": {
         "layer_diameters_m": [0.000200, 0.000400, 0.000200],
@@ -92,14 +91,12 @@ _ML_GEOMETRY: dict[str, dict[str, Any]] = {
         "joint_sphere_R_m": 0.000110,
         "joint_sphere_r_min_m": 0.000100,
         "joint_sphere_R_ratio": 1.100,
-        "membrane_contact_width_m": 0.000105,
-        "porosity_eps": 0.68,
     },
 }
 
 # pitch fraction (p60=0.60 mm filament spacing scale), hole depth token
 _PILLAR_GEOMETRY: dict[str, tuple[float, float, float, float, float, bool]] = {
-    # unit_x, unit_y, periodic_y, porosity, blocked_frac, has_hole_zone
+    # unit_x, unit_y, periodic_y, porosity_unused, blocked_frac, has_hole_zone
     "P_p60_h00": (0.002400, 0.002400, 0.002400, 0.94, 0.08, False),
     "P_p60_h20": (0.002400, 0.002400, 0.002400, 0.93, 0.08, True),
     "P_p60_h30": (0.002400, 0.002400, 0.002400, 0.92, 0.08, True),
@@ -112,6 +109,32 @@ _PILLAR_GEOMETRY: dict[str, tuple[float, float, float, float, float, bool]] = {
     "P_p80_h00_f320": (0.003200, 0.003200, 0.003200, 0.95, 0.06, False),
     "P_p80_h20_f320": (0.003200, 0.003200, 0.003200, 0.94, 0.06, True),
 }
+
+
+def membrane_contact_width_m(
+    filament_d_m: float,
+    membrane_trim_m: float,
+) -> float:
+    """Flat contact-band width where the membrane cuts into a cylinder.
+
+    w = 2 * sqrt(d * t - t**2) with d = contact filament diameter and
+    t = membrane_trim_m.
+    """
+    d = float(filament_d_m)
+    t = float(membrane_trim_m)
+    if not math.isfinite(d) or d <= 0.0:
+        raise ValueError(f"filament_d_m must be positive and finite, got {filament_d_m!r}.")
+    if not math.isfinite(t) or t < 0.0:
+        raise ValueError(
+            f"membrane_trim_m must be finite and >= 0, got {membrane_trim_m!r}."
+        )
+    if t == 0.0:
+        return 0.0
+    if t > d:
+        raise ValueError(
+            f"membrane_trim_m={membrane_trim_m!r} exceeds filament_d_m={filament_d_m!r}."
+        )
+    return 2.0 * math.sqrt(d * t - t * t)
 
 
 def _sinusoidal_wavelength_amplitude_m(geo_id: str) -> tuple[float, float]:
@@ -132,21 +155,20 @@ def compute_curvature_margin(
     *,
     wave_radius_m: float = _SINUSOIDAL_WAVE_RADIUS_M,
 ) -> float | None:
-  """Return lambda**2 / (4 pi**2 A r) or None when amplitude is zero."""
-  if amplitude_m <= 0.0:
-      return None
-  if wavelength_m <= 0.0 or wave_radius_m <= 0.0:
-      raise ValueError(
-          "wavelength_m and wave_radius_m must be positive for curvature_margin."
-      )
-  return wavelength_m**2 / (4.0 * math.pi**2 * amplitude_m * wave_radius_m)
+    """Return lambda**2 / (4 pi**2 A r) or None when amplitude is zero."""
+    if amplitude_m <= 0.0:
+        return None
+    if wavelength_m <= 0.0 or wave_radius_m <= 0.0:
+        raise ValueError(
+            "wavelength_m and wave_radius_m must be positive for curvature_margin."
+        )
+    return wavelength_m**2 / (4.0 * math.pi**2 * amplitude_m * wave_radius_m)
 
 
 def _diamond_geometry_entry(geo_id: str) -> dict[str, Any]:
     n_active, pitch_mm, periodic_dy_mm, angle_deg = _DIAMOND_LAYOUTS[geo_id]
     periodic_shift_y_m = periodic_dy_mm * 1.0e-3
     cell_length_x_m = pitch_mm * 1.0e-3
-    lf_m = periodic_shift_y_m * math.sin(math.radians(angle_deg))
     spacing_code = geo_id.split("_", 1)[0]
     return {
         "spacing_code": spacing_code,
@@ -156,12 +178,14 @@ def _diamond_geometry_entry(geo_id: str) -> dict[str, Any]:
         "overlap_m": 0.0,
         "n_active_cells": n_active,
         "cell_length_x_m": cell_length_x_m,
-        "unit_cell_xy_m": [lf_m, periodic_shift_y_m],
-        "Sigma_d_nominal_m": _DIAMOND_SIGMA_D_NOMINAL_M,
-        "membrane_trim_m": _DIAMOND_MEMBRANE_TRIM_M,
-        "membrane_contact_width_m": _FILAMENT_D_M,
+        "Sigma_d_nominal_m": _STACKED_SIGMA_D_NOMINAL_M,
+        "membrane_trim_m": _STACKED_MEMBRANE_TRIM_M,
+        "membrane_contact_width_m": membrane_contact_width_m(
+            _FILAMENT_D_M, _STACKED_MEMBRANE_TRIM_M
+        ),
         "membrane_blocked_area_frac": 0.0,
-        "porosity_eps": 0.82,
+        # Measured at mesh time from fluid volume / bounding box; not a registry constant.
+        "porosity_eps": None,
         "periodic_shift_y_m": periodic_shift_y_m,
         "periodic_shift_y_source": "derived_from_angle",
         "layer_angles_deg": None,
@@ -181,6 +205,8 @@ def _diamond_geometry_entry(geo_id: str) -> dict[str, Any]:
 def _ml_geometry_entry(geo_id: str) -> dict[str, Any]:
     case = _ML_GEOMETRY[geo_id]
     middle_diameter_m = case["layer_diameters_m"][1]
+    # Outer layers contact the membrane.
+    contact_diameter_m = case["layer_diameters_m"][0]
     return {
         "spacing_code": geo_id,
         "attack_angle_deg": 0.0,
@@ -189,12 +215,13 @@ def _ml_geometry_entry(geo_id: str) -> dict[str, Any]:
         "overlap_m": 0.0,
         "n_active_cells": _ML_COMMON["n_active_cells"],
         "cell_length_x_m": _ML_COMMON["cell_length_x_m"],
-        "unit_cell_xy_m": list(_ML_COMMON["unit_cell_xy_m"]),
         "Sigma_d_nominal_m": _ML_COMMON["Sigma_d_nominal_m"],
         "membrane_trim_m": _ML_COMMON["membrane_trim_m"],
-        "membrane_contact_width_m": case["membrane_contact_width_m"],
+        "membrane_contact_width_m": membrane_contact_width_m(
+            contact_diameter_m, _ML_COMMON["membrane_trim_m"]
+        ),
         "membrane_blocked_area_frac": _ML_COMMON["membrane_blocked_area_frac"],
-        "porosity_eps": case["porosity_eps"],
+        "porosity_eps": None,
         "periodic_shift_y_m": _ML_COMMON["periodic_shift_y_m"],
         "periodic_shift_y_source": _ML_COMMON["periodic_shift_y_source"],
         "layer_angles_deg": list(_ML_LAYER_ANGLES_DEG),
@@ -213,9 +240,9 @@ def _ml_geometry_entry(geo_id: str) -> dict[str, Any]:
 
 def _pillar_geometry_entry(geo_id: str) -> dict[str, Any]:
     key = geo_id.split("_f320", 1)[0]
-    unit_x, unit_y, periodic_y, porosity, blocked, has_hole = _PILLAR_GEOMETRY[
-        key if key in _PILLAR_GEOMETRY else geo_id
-    ]
+    unit_x, unit_y, periodic_y, _unused_porosity, blocked, has_hole = (
+        _PILLAR_GEOMETRY[key if key in _PILLAR_GEOMETRY else geo_id]
+    )
     zones = list(_PILLAR_SPACER_WALL_ZONES_BASE)
     if has_hole:
         zones.append("wall_spacer_hole")
@@ -227,12 +254,12 @@ def _pillar_geometry_entry(geo_id: str) -> dict[str, Any]:
         "overlap_m": 0.0,
         "n_active_cells": 7,
         "cell_length_x_m": unit_x,
-        "unit_cell_xy_m": [unit_x, unit_y],
         "Sigma_d_nominal_m": None,
         "membrane_trim_m": 0.0,
-        "membrane_contact_width_m": _FILAMENT_D_M,
+        # Flat-ended pillars: cylindrical contact-band width is not applicable.
+        "membrane_contact_width_m": None,
         "membrane_blocked_area_frac": blocked,
-        "porosity_eps": porosity,
+        "porosity_eps": None,
         "periodic_shift_y_m": periodic_y,
         "periodic_shift_y_source": "explicit",
         "layer_angles_deg": None,
@@ -254,20 +281,22 @@ def _sinusoidal_geometry_entry(geo_id: str) -> dict[str, Any]:
     periodic_y = wavelength_m
     margin = compute_curvature_margin(wavelength_m, amplitude_m)
     n_active = 5 if geo_id != "S_A000" else 3
+    filament_d_m = _SINUSOIDAL_WAVE_RADIUS_M * 2.0
     return {
         "spacing_code": geo_id.split("_", 1)[0],
         "attack_angle_deg": 0.0,
-        "filament_d_m": _SINUSOIDAL_WAVE_RADIUS_M * 2.0,
+        "filament_d_m": filament_d_m,
         "bridge_radius_m": 0.0,
         "overlap_m": 0.0,
         "n_active_cells": n_active,
         "cell_length_x_m": wavelength_m,
-        "unit_cell_xy_m": [wavelength_m, periodic_y],
-        "Sigma_d_nominal_m": _DIAMOND_SIGMA_D_NOMINAL_M,
-        "membrane_trim_m": _DIAMOND_MEMBRANE_TRIM_M,
-        "membrane_contact_width_m": _SINUSOIDAL_WAVE_RADIUS_M * 2.0,
+        "Sigma_d_nominal_m": _STACKED_SIGMA_D_NOMINAL_M,
+        "membrane_trim_m": _STACKED_MEMBRANE_TRIM_M,
+        "membrane_contact_width_m": membrane_contact_width_m(
+            filament_d_m, _STACKED_MEMBRANE_TRIM_M
+        ),
         "membrane_blocked_area_frac": 0.0,
-        "porosity_eps": 0.7344725011140605 if amplitude_m > 0.0 else 1.0,
+        "porosity_eps": None,
         "periodic_shift_y_m": periodic_y,
         "periodic_shift_y_source": "explicit",
         "layer_angles_deg": None,
@@ -293,12 +322,11 @@ def _reference_geometry_entry() -> dict[str, Any]:
         "overlap_m": 0.0,
         "n_active_cells": 3,
         "cell_length_x_m": 0.003465,
-        "unit_cell_xy_m": [0.003465, 0.003465],
         "Sigma_d_nominal_m": CAMPAIGN_H_M,
         "membrane_trim_m": 0.0,
         "membrane_contact_width_m": 0.0,
         "membrane_blocked_area_frac": 0.0,
-        "porosity_eps": 1.0,
+        "porosity_eps": None,
         "periodic_shift_y_m": 0.003465,
         "periodic_shift_y_source": "explicit",
         "layer_angles_deg": None,
@@ -349,9 +377,13 @@ def merge_geometry_into_mesh_manifest(
             "n_active_cells",
             "cell_length_x_m",
             "needs_lead_recheck",
+            # Measured at mesh time; caller overlays from mesh metrics.
+            "porosity_eps",
         ):
             continue
         merged[key] = value
+    if "porosity_eps" not in merged:
+        merged["porosity_eps"] = None
     return merged
 
 
@@ -367,7 +399,6 @@ def merge_geometry_into_run_manifest(
     merged["u_mean_source_mesh_id"] = mesh_id
     merged["needs_lead_recheck"] = geometry["needs_lead_recheck"]
     for field in (
-        "unit_cell_xy_m",
         "Sigma_d_nominal_m",
         "membrane_trim_m",
         "membrane_contact_width_m",

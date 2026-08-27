@@ -78,7 +78,13 @@ def build_mesh_manifest_payload(cfg, mesh_metrics, mesh_sha256, *, created_utc=N
         "created_utc": created_utc or _utc_now_string(),
         "generator_version": Path(__file__).name,
     }
-    return merge_geometry_into_mesh_manifest(base, cfg.geo_id)
+    merged = merge_geometry_into_mesh_manifest(base, cfg.geo_id)
+    # Measured porosity from fluid volume / bounding box; never a registry constant.
+    measured_porosity = mesh_metrics.get("porosity")
+    merged["porosity_eps"] = (
+        float(measured_porosity) if measured_porosity is not None else None
+    )
+    return merged
 
 
 def write_worker_mesh_manifest(

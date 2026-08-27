@@ -40,14 +40,16 @@ def load_meshing_code():
                 sys.modules[name] = previous
 
 
-def _mesh_metrics():
-    return {
+def _mesh_metrics(**updates):
+    metrics = {
         "min_orthogonal_quality": 0.12,
         "max_aspect_ratio": 42.0,
         "max_skewness": 0.78,
         "skewed_face_fraction": 1.0e-6,
         "cell_count": 123456,
     }
+    metrics.update(updates)
+    return metrics
 
 
 def test_workers_write_linked_manifests(monkeypatch, tmp_path):
@@ -145,6 +147,31 @@ def test_mesh_manifest_fields_have_no_worker_defaults():
             "a" * 64,
             created_utc="2026-08-21T08:00:00Z",
         )
+
+
+def test_mesh_manifest_porosity_eps_from_measured_metrics():
+    meshing = load_meshing_code()
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+
+    with_measured = meshing.build_mesh_manifest_payload(
+        cfg,
+        _mesh_metrics(porosity=0.908849),
+        "a" * 64,
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    assert with_measured["porosity_eps"] == pytest.approx(0.908849)
+    assert with_measured["Sigma_d_nominal_m"] == pytest.approx(0.000800)
+    assert with_measured["membrane_trim_m"] == pytest.approx(0.000015)
+    assert "unit_cell_xy_m" not in with_measured
+
+    without_measured = meshing.build_mesh_manifest_payload(
+        cfg,
+        _mesh_metrics(),
+        "a" * 64,
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    assert without_measured["porosity_eps"] is None
 
 
 def test_run_manifest_write_precedes_case_loading_and_udf_handling():

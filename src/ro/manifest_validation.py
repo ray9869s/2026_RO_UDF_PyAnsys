@@ -12,8 +12,10 @@ from ro.manifest_errors import ManifestError
 _PERIODIC_SHIFT_SOURCES = frozenset({"derived_from_angle", "explicit"})
 _SPACER_WALL_PREFIX = "wall_spacer_"
 _CURVATURE_MARGIN_MIN = 1.2
-_SIGMA_D_TOLERANCE_M = 1.0e-7
+_MEMBRANE_TRIM_TOLERANCE_M = 1.0e-9
 _JOINT_SPHERE_RATIO_TOLERANCE_M = 1.0e-9
+_POROSITY_EPS_MIN = 0.3
+_POROSITY_EPS_MAX = 0.99
 
 # Plausible absolute ranges for ``*_m`` fields (metres). Exact 0.0 is allowed
 # (e.g. overlap_m, bridge_radius_m on empty/pillar); nonzero values must sit
@@ -22,7 +24,6 @@ _DOMAIN_SCALE_M = (1.0e-4, 1.0e-1)
 _FEATURE_SCALE_M = (1.0e-6, 1.0e-2)
 _GENERIC_SCALE_M = (1.0e-9, 1.0)
 _DOMAIN_SCALE_FIELDS = frozenset({
-    "unit_cell_xy_m",
     "cell_length_x_m",
     "periodic_shift_y_m",
     "buffer_length_in_m",
@@ -177,18 +178,6 @@ def validate_periodic_shift_y(
             f"got {payload['periodic_shift_y_m']!r}."
         )
 
-    unit_cell_xy = payload["unit_cell_xy_m"]
-    if (
-        not isinstance(unit_cell_xy, (list, tuple))
-        or len(unit_cell_xy) != 2
-        or any(not math.isfinite(float(v)) or float(v) <= 0.0 for v in unit_cell_xy)
-    ):
-        raise ManifestValidationError(
-            f"{kind} manifest unit_cell_xy_m must be a length-2 tuple of "
-            f"positive floats, got {unit_cell_xy!r}."
-        )
-    lf_m = float(unit_cell_xy[0])
-
     if source == "derived_from_angle":
         if forbid_derivation:
             raise ManifestValidationError(
@@ -196,21 +185,18 @@ def validate_periodic_shift_y(
                 f"when periodic_shift_y_source is {source!r}."
             )
         attack_angle_deg = float(payload["attack_angle_deg"])
-        derived = derive_periodic_shift_y_from_angle_m(lf_m, attack_angle_deg)
-        if not math.isclose(periodic_shift_y_m, derived, rel_tol=0.0, abs_tol=1.0e-12):
+        if not math.isfinite(attack_angle_deg):
             raise ManifestValidationError(
-                f"{kind} manifest periodic_shift_y_m={periodic_shift_y_m!r} does not "
-                f"match angle-derived value {derived!r} "
-                f"(lf_m={lf_m!r}, attack_angle_deg={attack_angle_deg!r})."
+                f"{kind} manifest attack_angle_deg must be finite for "
+                f"derived_from_angle, got {payload['attack_angle_deg']!r}."
             )
-        if not math.isclose(float(unit_cell_xy[1]), periodic_shift_y_m, abs_tol=1.0e-12):
+        sin_theta = math.sin(math.radians(attack_angle_deg))
+        if sin_theta <= 0.0:
             raise ManifestValidationError(
-                f"{kind} manifest unit_cell_xy_m[1]={unit_cell_xy[1]!r} must equal "
-                f"periodic_shift_y_m={periodic_shift_y_m!r} for derived_from_angle."
+                f"{kind} manifest attack_angle_deg must yield sin(theta) > 0 "
+                f"for derived_from_angle, got angle={attack_angle_deg!r}."
             )
     elif source == "explicit":
-        # Explicit path: derivation helper must not be invoked (callers pass
-        # forbid_derivation=True when cross-checking after an explicit write).
         pass
     else:
         raise ManifestValidationError(
@@ -219,7 +205,11 @@ def validate_periodic_shift_y(
 
 
 def validate_sigma_d_invariant(payload: Mapping[str, Any], *, kind: str = "Mesh") -> None:
-    """Sigma_d_nominal_m = h + 2 * membrane_trim_m when not None (Pillar excepted)."""
+    """Check membrane_trim_m against independent Sigma_d_nominal_m.
+
+    Sigma_d is the independent stacked-filament height. Expected trim is
+    (Sigma_d - h) / 2. Pillar uses Sigma_d=None and membrane_trim_m=0.
+    """
     membrane_trim_m = float(payload["membrane_trim_m"])
     if not math.isfinite(membrane_trim_m) or membrane_trim_m < 0.0:
         raise ManifestValidationError(
@@ -235,11 +225,22 @@ def validate_sigma_d_invariant(payload: Mapping[str, Any], *, kind: str = "Mesh"
             )
         return
     sigma_d_f = float(sigma_d)
-    expected = CAMPAIGN_H_M + 2.0 * membrane_trim_m
-    if not math.isclose(sigma_d_f, expected, abs_tol=_SIGMA_D_TOLERANCE_M):
+    if not math.isfinite(sigma_d_f) or sigma_d_f <= 0.0:
         raise ManifestValidationError(
-            f"{kind} manifest Sigma_d_nominal_m={sigma_d_f!r} violates invariant "
-            f"h + 2*membrane_trim_m = {expected!r} (h={CAMPAIGN_H_M!r})."
+            f"{kind} manifest Sigma_d_nominal_m must be a positive finite float "
+            f"when set, got {sigma_d!r}."
+        )
+    expected_trim = (sigma_d_f - CAMPAIGN_H_M) / 2.0
+    if not math.isclose(
+        membrane_trim_m,
+        expected_trim,
+        rel_tol=0.0,
+        abs_tol=_MEMBRANE_TRIM_TOLERANCE_M,
+    ):
+        raise ManifestValidationError(
+            f"{kind} manifest membrane_trim_m={membrane_trim_m!r} violates "
+            f"(Sigma_d_nominal_m - h) / 2 = {expected_trim!r} "
+            f"(Sigma_d={sigma_d_f!r}, h={CAMPAIGN_H_M!r})."
         )
 
 
@@ -524,12 +525,26 @@ def validate_mesh_geometry_fields(payload: Mapping[str, Any]) -> None:
             "Mesh manifest membrane_blocked_area_frac must be in [0, 1), "
             f"got {payload['membrane_blocked_area_frac']!r}."
         )
-    porosity = float(payload["porosity_eps"])
-    if not math.isfinite(porosity) or not 0.0 < porosity <= 1.0:
-        raise ManifestValidationError(
-            "Mesh manifest porosity_eps must be in (0, 1], "
-            f"got {payload['porosity_eps']!r}."
-        )
+    contact_width = payload["membrane_contact_width_m"]
+    if contact_width is not None:
+        contact_width_f = float(contact_width)
+        if not math.isfinite(contact_width_f) or contact_width_f < 0.0:
+            raise ManifestValidationError(
+                "Mesh manifest membrane_contact_width_m must be a finite float "
+                f">= 0 when set, got {payload['membrane_contact_width_m']!r}."
+            )
+    porosity = payload["porosity_eps"]
+    if porosity is not None:
+        porosity_f = float(porosity)
+        if (
+            not math.isfinite(porosity_f)
+            or not _POROSITY_EPS_MIN <= porosity_f <= _POROSITY_EPS_MAX
+        ):
+            raise ManifestValidationError(
+                f"Mesh manifest porosity_eps must be in "
+                f"[{_POROSITY_EPS_MIN}, {_POROSITY_EPS_MAX}] when set, "
+                f"got {payload['porosity_eps']!r}."
+            )
     joint_count = payload["joint_sphere_count"]
     if isinstance(joint_count, bool) or not isinstance(joint_count, int) or joint_count < 0:
         raise ManifestValidationError(
