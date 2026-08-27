@@ -477,6 +477,8 @@ CANONICAL_CP_SUMMARY_COLUMNS = (
     "cp_canon_window_max",
     "cp_L1_window_avg",
     "cp_L2_window_avg",
+    "cp_canon_rescale_delta_max",
+    "cp_scalar_rescale_guard_threshold",
 )
 
 

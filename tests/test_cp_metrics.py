@@ -61,6 +61,28 @@ def test_canonical_rescale_factor_and_guard():
     assert k == pytest.approx((c0 - cp_avg) / (cb - cp_avg))
 
 
+def test_guard_threshold_is_1e_3_and_accepts_u0p1_delta():
+    """Campaign threshold must clear observed u=0.1 / p=6 MPa delta (~2.32e-4)."""
+    assert CP_SCALAR_RESCALE_GUARD_THRESHOLD == pytest.approx(1.0e-3)
+    # Inputs tuned so delta sits at the observed u0p1_p6M scale (~2.32e-4).
+    c0 = 597.83
+    cb = 626.83
+    cp_min = 0.5
+    cp_max = 3.64
+    delta = scalar_rescale_guard_delta(c0, cb, cp_min, cp_max)
+    assert delta == pytest.approx(2.32e-4, rel=0.05)
+    assert delta < CP_SCALAR_RESCALE_GUARD_THRESHOLD
+    k, guarded = canonical_rescale_factor(
+        c0,
+        cb,
+        2.0,
+        cp_perm_min_mol_per_m3=cp_min,
+        cp_perm_max_mol_per_m3=cp_max,
+    )
+    assert guarded == pytest.approx(delta)
+    assert k > 0.0
+
+
 def test_cp_l1_denominator_face_independent():
     cm_avg = 650.0
     cb = 600.0

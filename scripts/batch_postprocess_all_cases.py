@@ -319,21 +319,26 @@ WORKER_EXIT_FAILED = 2
 
 
 def is_worker_hard_failure(worker_returncode: Optional[int]) -> bool:
-    """True for total worker failure (exit 2+), not partial/WARN (exit 1)."""
-    return worker_returncode is not None and worker_returncode not in (0, WORKER_EXIT_PARTIAL)
+    """True for any non-zero worker exit (including legacy exit-1 'partial')."""
+    return worker_returncode is not None and worker_returncode != 0
 
 
 def stage_status_from_worker_returncode(worker_returncode: int) -> str:
+    """Map worker process exit code to a stage status.
+
+    Exit 0 is SUCCESS. Any non-zero exit is FAILED. WARN is reserved for
+    JSON-inferred partial outcomes after a successful (exit 0) worker and is
+    never produced from the returncode alone — otherwise failed cases vanish
+    from the failed counter.
+    """
     if worker_returncode == 0:
         return STATUS_SUCCESS
-    if worker_returncode == WORKER_EXIT_PARTIAL:
-        return STATUS_WARN
     return STATUS_FAILED
 
 
 def shear_stage_eligible_for_fallback_retry(worker_returncode: Optional[int]) -> bool:
-    """Retry only on total worker failure (exit 2), not partial/WARN (exit 1)."""
-    return worker_returncode == WORKER_EXIT_FAILED
+    """Retry on any non-zero worker exit (hard failure)."""
+    return is_worker_hard_failure(worker_returncode)
 
 
 def infer_contour_stage_status(
@@ -444,7 +449,8 @@ def refine_recorded_stage_status(
     if stage_result.status == STATUS_DRY_RUN:
         return STATUS_DRY_RUN, ""
     if is_worker_hard_failure(stage_result.returncode):
-        return stage_result.status, ""
+        # Non-zero exit is always FAILED; do not keep a stale WARN label.
+        return STATUS_FAILED, ""
     return infer_fn(*infer_args)
 
 
@@ -1065,6 +1071,14 @@ def execute_case(
             }
         )
         report_result = run_stage_command("report", report_command, report_log, args.dry_run, env=env)
+        print(
+            f"  report: {report_result.status}"
+            + (
+                f" rc={report_result.returncode}"
+                if report_result.returncode is not None
+                else ""
+            )
+        )
     else:
         report_result = skipped_stage("report", report_status_planned, report_log)
 
@@ -1134,6 +1148,25 @@ def execute_case(
         shear_status_file,
         shear_counting_result.returncode,
     )
+
+    if contour_status_planned == STATUS_PLANNED:
+        print(
+            f"  pyensight_contours: {contour_recorded_status}"
+            + (
+                f" rc={contour_result.returncode}"
+                if contour_result.returncode is not None
+                else ""
+            )
+        )
+    if shear_status_planned == STATUS_PLANNED:
+        print(
+            f"  shear: {final_shear_status}"
+            + (
+                f" rc={final_shear_returncode}"
+                if final_shear_returncode is not None
+                else ""
+            )
+        )
 
     total_runtime = time.monotonic() - start_total
     error_parts = [
@@ -1278,18 +1311,21 @@ def build_summary_text(
         "Report stage:",
         f"  success: {report_counts.get(STATUS_SUCCESS, 0)}",
         f"  failed: {report_counts.get(STATUS_FAILED, 0)}",
+        f"  warn: {report_counts.get(STATUS_WARN, 0)}",
         f"  dry_run: {report_counts.get(STATUS_DRY_RUN, 0)}",
         f"  skipped: {skipped_count(report_counts)}",
         "",
         "PyEnSight contour stage:",
         f"  success: {contour_counts.get(STATUS_SUCCESS, 0)}",
         f"  failed: {contour_counts.get(STATUS_FAILED, 0)}",
+        f"  warn: {contour_counts.get(STATUS_WARN, 0)}",
         f"  dry_run: {contour_counts.get(STATUS_DRY_RUN, 0)}",
         f"  skipped: {skipped_count(contour_counts)}",
         "",
         "Shear stage:",
         f"  success: {shear_counts.get(STATUS_SUCCESS, 0)}",
         f"  failed: {shear_counts.get(STATUS_FAILED, 0)}",
+        f"  warn: {shear_counts.get(STATUS_WARN, 0)}",
         f"  dry_run: {shear_counts.get(STATUS_DRY_RUN, 0)}",
         f"  skipped: {skipped_count(shear_counts)}",
         f"  missing_cff: {shear_counts.get(STATUS_SKIPPED_MISSING_CFF, 0)}",
@@ -1298,16 +1334,16 @@ def build_summary_text(
         "",
         "Selected cases:",
     ]
-    if not plans:
+    if not results:
         lines.append("  (none)")
     else:
-        for plan in plans:
+        for row in results:
             lines.append(
                 "  "
-                f"{plan['selected_index']}. {plan['geo_name']}/{plan['case_name']} "
-                f"report={plan['report_stage_status']} "
-                f"contour={plan['pyensight_contour_stage_status']} "
-                f"shear={plan['shear_stage_status']}"
+                f"{row.get('selected_index')}. {row.get('geo_name')}/{row.get('case_name')} "
+                f"report={row.get('report_stage_status')} "
+                f"contour={row.get('pyensight_contour_stage_status')} "
+                f"shear={row.get('shear_stage_status')}"
             )
     return "\n".join(lines) + "\n"
 
@@ -1348,14 +1384,27 @@ def print_console_summary(results: list[dict[str, Any]], summary_path: Path) -> 
     contour_counts = stage_counts(results, "pyensight_contour_stage_status")
     shear_counts = stage_counts(results, "shear_stage_status")
     print("")
-    print(f"Report: success={report_counts.get(STATUS_SUCCESS, 0)} failed={report_counts.get(STATUS_FAILED, 0)} skipped={skipped_count(report_counts)} dry_run={report_counts.get(STATUS_DRY_RUN, 0)}")
-    print(f"Contours: success={contour_counts.get(STATUS_SUCCESS, 0)} failed={contour_counts.get(STATUS_FAILED, 0)} skipped={skipped_count(contour_counts)} dry_run={contour_counts.get(STATUS_DRY_RUN, 0)}")
+    print(
+        f"Report: success={report_counts.get(STATUS_SUCCESS, 0)} "
+        f"failed={report_counts.get(STATUS_FAILED, 0)} "
+        f"warn={report_counts.get(STATUS_WARN, 0)} "
+        f"skipped={skipped_count(report_counts)} "
+        f"dry_run={report_counts.get(STATUS_DRY_RUN, 0)}"
+    )
+    print(
+        f"Contours: success={contour_counts.get(STATUS_SUCCESS, 0)} "
+        f"failed={contour_counts.get(STATUS_FAILED, 0)} "
+        f"warn={contour_counts.get(STATUS_WARN, 0)} "
+        f"skipped={skipped_count(contour_counts)} "
+        f"dry_run={contour_counts.get(STATUS_DRY_RUN, 0)}"
+    )
     fallback_retried = sum(1 for r in results if r.get("shear_retry_attempted"))
     fallback_retry_success = sum(1 for r in results if r.get("shear_retry_status") == STATUS_SUCCESS)
     print(
         "Shear: "
         f"success={shear_counts.get(STATUS_SUCCESS, 0)} "
         f"failed={shear_counts.get(STATUS_FAILED, 0)} "
+        f"warn={shear_counts.get(STATUS_WARN, 0)} "
         f"skipped={skipped_count(shear_counts)} "
         f"missing_cff={shear_counts.get(STATUS_SKIPPED_MISSING_CFF, 0)} "
         f"dry_run={shear_counts.get(STATUS_DRY_RUN, 0)} "

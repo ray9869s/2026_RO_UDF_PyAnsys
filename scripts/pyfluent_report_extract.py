@@ -2129,6 +2129,7 @@ if __name__ == "__main__":
                 "cp_canon_all_active_max",
                 "c_b_window_mol_m3",
                 "cp_canon_rescale_delta_max",
+                "cp_scalar_rescale_guard_threshold",
             ):
                 print(f"  {key}: {segmented_cp_values.get(key)}")
 

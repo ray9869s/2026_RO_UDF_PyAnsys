@@ -55,9 +55,10 @@ then area-weighted into cells). Post-processing preserves that order.
 
 UDM-9 stores, per face, the L2 form with inlet denominator, area-weighted to
 cells. The canonical form replaces \(c_0\) with \(c_b\). Per face the exact
-conversion factor is \((c_0 - c_p)/(c_b - c_p)\); face-dependence in that
-factor is negligible (\(\partial k/\partial c_p \sim 2\times10^{-6}\) mol/m³
-for campaign values), so post-processing uses a **per-cell scalar**:
+conversion factor is \((c_0 - c_p)/(c_b - c_p)\). True per-face \(c_m\) /
+\(c_p\) are not readable at post (Fluent 25.1 cannot consume `F_UDMI`; the
+UDF area-weights face values into `C_UDMI`), so post-processing uses a
+**per-cell scalar**:
 
 \[
 k_N = \frac{c_0 - c_{p,\mathrm{avg},N}}{c_{b,N} - c_{p,\mathrm{avg},N}},\quad
@@ -71,8 +72,26 @@ M_{\mathrm{canon},N} = M_{\mathrm{UDM9},N}\, k_N
 \]
 
 using min/max of the per-face \(c_p\) expression as the spread. If
-\(\delta > 10^{-4}\) (0.01%, two orders below the CP noise floor), extraction
-raises. \(\delta\) is logged in `raw_report_values.json` for every run.
+\(\delta > 10^{-3}\), extraction raises.
+
+**Why \(10^{-3}\):** the previous \(10^{-4}\) threshold came from
+\(\partial k/\partial c_p \sim 2\times10^{-6}\), which assumes
+\(|c_0 - c_b| \sim 0.7\) mol/m³. Measured window values at \(p=6\) MPa are
+7.1 (\(u=0.3\)), 12.7 (\(u=0.2\)), and \(\sim 29\) (\(u=0.1\)), giving
+\(\partial k/\partial c_p\) of roughly \(2\times10^{-5}\), \(3.5\times10^{-5}\),
+and \(8\times10^{-5}\) — the 2e-6 premise does not hold anywhere in the
+matrix. \(\delta\) bounds the relative error on \(M\) at about \(\delta\)
+itself. Campaign accuracy is set by CP discriminability within the Diamond
+family (\(\sim 0.6\%\)); \(10^{-3}\) sits a factor of 6 below that. Observed
+\(\delta\) at \(u=0.1\), \(p=6\) MPa is \(2.32\times10^{-4}\); low velocity
+and high pressure raise CP and therefore \(\delta\), so \(p=8\) MPa at
+\(u=0.1\) is expected in the few-times-\(10^{-4}\) range. \(10^{-3}\) leaves
+margin without approaching the discriminability floor.
+
+Every successful extract writes `cp_canon_rescale_delta_max`,
+`cp_scalar_rescale_guard_threshold`, and per-cell
+`pp_cp_canon_rescale_delta_cell_{N}` into `summary_metrics_wide.csv` (and
+`raw_report_values.json`), not only when the guard fires.
 
 **Canonical `CP_max`:** the window facet maximum uses the same per-cell scalar
 \(k_N\) as the average path:

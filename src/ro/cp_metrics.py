@@ -9,7 +9,17 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Sequence
 
-CP_SCALAR_RESCALE_GUARD_THRESHOLD = 1.0e-4
+# Bound on face-dependence of the scalar rescale factor k_N.
+# Set to 1e-3 (not 1e-4): the old 1e-4 came from dk/dc_p ~ 2e-6, which
+# assumes |c_0 - c_b| ~ 0.7 mol/m3. Measured window |c_0 - c_b| at p=6 MPa
+# is 7.1 (u=0.3), 12.7 (u=0.2), ~29 (u=0.1), so dk/dc_p is ~2e-5–8e-5
+# across the matrix — the 2e-6 premise never held. delta bounds relative
+# error on M at about delta itself; Diamond-family CP discriminability is
+# ~0.6%, so 1e-3 leaves a factor-of-6 margin. Observed delta at u=0.1,
+# p=6 MPa is 2.32e-4; low-u / high-p cases sit in the few-times-1e-4
+# range. Per-face canonical CP would remove the approximation but is
+# blocked by Fluent 25.1's F_UDMI consumption defect.
+CP_SCALAR_RESCALE_GUARD_THRESHOLD = 1.0e-3
 
 
 def film_theory_cp_perm_mol_m3(
