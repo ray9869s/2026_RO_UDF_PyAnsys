@@ -6,10 +6,14 @@ import pytest
 
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
+    FACET_MIN_REJECT_AREA_FRAC,
+    FACET_MIN_TARGET_AREA_FRAC,
     average_of_ratios_cp_bae_approx,
     canonical_rescale_factor,
     cp_l1_gu2017,
+    facet_min_check_threshold,
     ratio_of_averages_cp_bae_approx,
+    resolve_area_backed_minimum,
     scalar_rescale_guard_delta,
     window_area_weighted_average,
 )
@@ -110,3 +114,42 @@ def test_scalar_rescale_guard_raises_when_delta_too_large():
             cp_perm_min_mol_per_m3=cp_min,
             cp_perm_max_mol_per_m3=cp_max,
         )
+
+
+def test_facet_min_check_threshold_adds_relative_slack():
+    assert facet_min_check_threshold(0.0) == pytest.approx(0.0)
+    assert facet_min_check_threshold(617.93) == pytest.approx(617.93 * 1.001)
+
+
+def test_resolve_area_backed_minimum_keeps_supported_facetmin():
+    used, rejected = resolve_area_backed_minimum(
+        610.0,
+        area_frac_at_check=1.0e-4,
+        area_frac_below_fn=lambda _t: 1.0,
+        search_upper=620.0,
+    )
+    assert rejected is False
+    assert used == pytest.approx(610.0)
+
+
+def test_resolve_area_backed_minimum_rejects_zero_area_poison():
+    """u0p1-style: facetmin=0 with no area; substitute area-bearing floor."""
+    true_min = 617.93
+
+    def area_frac_below(threshold: float) -> float:
+        if threshold < true_min:
+            return 0.0
+        # Jump to well above TARGET once the floor is crossed.
+        return 1.0e-3
+
+    used, rejected = resolve_area_backed_minimum(
+        0.0,
+        area_frac_at_check=0.0,
+        area_frac_below_fn=area_frac_below,
+        search_upper=620.0,
+        reject_frac=FACET_MIN_REJECT_AREA_FRAC,
+        target_frac=FACET_MIN_TARGET_AREA_FRAC,
+    )
+    assert rejected is True
+    assert used == pytest.approx(true_min, rel=1e-4)
+    assert used > 600.0

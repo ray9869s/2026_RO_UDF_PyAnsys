@@ -7,6 +7,7 @@ canonical rescaling applies a per-cell scalar factor to those stored values.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Optional, Sequence
 
 # Bound on face-dependence of the scalar rescale factor k_N.
@@ -20,6 +21,92 @@ from typing import Any, Mapping, Optional, Sequence
 # range. Per-face canonical CP would remove the approximation but is
 # blocked by Fluent 25.1's F_UDMI consumption defect.
 CP_SCALAR_RESCALE_GUARD_THRESHOLD = 1.0e-3
+
+# Area-backed facet-minimum hygiene for the unpaired cp_min/cp_max bound.
+# surface-facetmin can return a zero-area iso-clip cut facet (UDM cell value
+# from a non-membrane neighbour → exactly 0). Reject when the area fraction
+# below facet_min*(1+rel) is < REJECT; substitute the lowest threshold whose
+# iso_clip area fraction reaches TARGET (area-weighted low quantile).
+FACET_MIN_AREA_CHECK_REL = 1.0e-3
+FACET_MIN_REJECT_AREA_FRAC = 1.0e-9
+FACET_MIN_TARGET_AREA_FRAC = 1.0e-4
+
+
+def facet_min_check_threshold(
+    facet_min: float,
+    *,
+    rel: float = FACET_MIN_AREA_CHECK_REL,
+) -> float:
+    """Upper bound for the area-support check: facet_min * (1 + rel)."""
+    value = float(facet_min)
+    r = float(rel)
+    if r < 0.0:
+        raise ValueError(f"rel must be non-negative, got {rel!r}.")
+    return value * (1.0 + r)
+
+
+def resolve_area_backed_minimum(
+    facet_min: float,
+    *,
+    area_frac_at_check: float,
+    area_frac_below_fn,
+    search_upper: float,
+    reject_frac: float = FACET_MIN_REJECT_AREA_FRAC,
+    target_frac: float = FACET_MIN_TARGET_AREA_FRAC,
+    max_iter: int = 50,
+) -> tuple[float, bool]:
+    """Return ``(value_used, rejected)`` for an area-backed field minimum.
+
+    ``area_frac_at_check`` is the area fraction with field below
+    ``facet_min_check_threshold(facet_min)``. ``area_frac_below_fn(T)`` returns
+    the area fraction with field below threshold ``T``. When the facet minimum
+    has insufficient area support, bisect between ``facet_min`` and
+    ``search_upper`` for the lowest ``T`` whose area fraction is at least
+    ``target_frac``.
+    """
+    raw = float(facet_min)
+    frac_check = float(area_frac_at_check)
+    if not math.isfinite(frac_check) or frac_check < 0.0:
+        raise ValueError(
+            f"area_frac_at_check must be a non-negative finite float, "
+            f"got {area_frac_at_check!r}."
+        )
+    if frac_check >= float(reject_frac):
+        return raw, False
+
+    hi = float(search_upper)
+    if not math.isfinite(hi):
+        raise ValueError(f"search_upper must be finite, got {search_upper!r}.")
+    if hi < raw:
+        hi = raw
+
+    def _frac(threshold: float) -> float:
+        value = float(area_frac_below_fn(threshold))
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"area_frac_below_fn must return a non-negative finite float, "
+                f"got {value!r} at threshold={threshold!r}."
+            )
+        return value
+
+    # Expand the upper bracket if the initial search_upper undershoots.
+    expand_guard = 0
+    while _frac(hi) < float(target_frac) and expand_guard < 8:
+        span = max(hi - raw, abs(hi), 1.0e-30)
+        hi = hi + span
+        expand_guard += 1
+    if _frac(hi) < float(target_frac):
+        # No area-backed threshold found; keep the best available upper.
+        return hi, True
+
+    lo = raw
+    for _ in range(int(max_iter)):
+        mid = 0.5 * (lo + hi)
+        if _frac(mid) < float(target_frac):
+            lo = mid
+        else:
+            hi = mid
+    return hi, True
 
 
 def film_theory_cp_perm_mol_m3(

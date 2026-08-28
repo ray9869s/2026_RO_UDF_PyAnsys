@@ -465,7 +465,16 @@ class FakeNamedGroup:
 class FakeIsoClipSession:
     """Minimal Fluent-shaped session for iso_clip + surface-report CP paths."""
 
-    def __init__(self, *, area=2.0, salt_massavg=0.035, field_avgs=None, field_max=None, field_min=None):
+    def __init__(
+        self,
+        *,
+        area=2.0,
+        salt_massavg=0.035,
+        field_avgs=None,
+        field_max=None,
+        field_min=None,
+        true_field_min=None,
+    ):
         self.iso_clip = FakeNamedGroup()
         self.iso_surface = FakeNamedGroup()
         self.surface_reports = FakeNamedGroup()
@@ -485,6 +494,13 @@ class FakeIsoClipSession:
             "udm-7": 550.0,
             "udm-6": 0.8e-5,
         }
+        # Area-bearing floor per field. Defaults to facetmin (full support).
+        # Set below facetmin to simulate a zero-area facetmin poison.
+        self.true_field_min = (
+            true_field_min
+            if true_field_min is not None
+            else dict(self.field_min)
+        )
         self.compute_calls = []
 
         def compute(*, report_defs):
@@ -494,6 +510,26 @@ class FakeIsoClipSession:
             rtype = rd.report_type
             field = rd.field
             if rtype == "surface-area":
+                surfaces = list(rd.surface_names or [])
+                if surfaces:
+                    clip_name = surfaces[0]
+                    if clip_name in self.iso_clip.objects:
+                        clip = self.iso_clip.objects[clip_name]
+                        clip_field = clip.field
+                        if (
+                            clip_field
+                            and clip_field != "x-coordinate"
+                            and clip.range.maximum is not None
+                        ):
+                            thr = float(clip.range.maximum)
+                            true_min = float(
+                                self.true_field_min.get(clip_field, 0.0)
+                            )
+                            if thr + 1.0e-15 < true_min:
+                                return {name: 0.0}
+                            # Enough area that TARGET_FRAC (1e-4) is met once
+                            # the threshold reaches the area-bearing floor.
+                            return {name: self.area * 1.0e-3}
                 return {name: self.area}
             if rtype == "surface-massavg":
                 return {name: self.salt_massavg}
@@ -601,6 +637,39 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
     assert "cp_L2_window_avg" in metrics
     assert "cp_canon_all_active_avg" in metrics
     assert metrics["c_b_window_mol_m3"] == pytest.approx(615.0)
+    assert metrics["cp_facet_min_rejected_cell_3"] is False
+    assert metrics["cm_min_raw_cell_3"] == pytest.approx(550.0)
+    assert metrics["cm_min_used_cell_3"] == pytest.approx(550.0)
+
+
+def test_segmented_membrane_cp_rejects_zero_area_facetmin():
+    """Facetmin=0 with no iso_clip area is replaced by an area-backed floor."""
+    session = FakeIsoClipSession(
+        field_avgs={"udm-7": 620.0, "udm-6": 1.0e-5, "udm-9": 1.087},
+        field_max={"udm-7": 700.0, "udm-6": 1.2e-5, "udm-9": 1.2},
+        field_min={"udm-7": 0.0, "udm-6": 0.8e-5},
+        true_field_min={"udm-7": 618.0, "udm-6": 0.8e-5},
+    )
+    metrics = segmented_membrane_cp_metrics(
+        solver=session.solver,
+        solution=session.solution,
+        wall_surface_names=["wall_top_mem"],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693],
+        spacer_cells=[2],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        evaluation_cell_numbers=[2],
+        c_b_by_cell_mol_per_m3={2: 626.0},
+        midplane_area_by_cell_m2={2: 1.0},
+    )
+    assert metrics["cp_facet_min_rejected_cell_2"] is True
+    assert metrics["cm_min_raw_cell_2"] == pytest.approx(0.0)
+    assert metrics["cm_min_used_cell_2"] == pytest.approx(618.0, rel=1e-3)
+    assert metrics["pp_cp_canon_rescale_delta_cell_2"] < 1.0e-3
+    assert metrics["pp_cp_L2_cell_2"] == pytest.approx(1.087)
 
 
 def test_midplane_bulk_uses_surface_massavg_not_areaavg():

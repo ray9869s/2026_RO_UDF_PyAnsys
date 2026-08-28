@@ -319,8 +319,9 @@ def volume_fractions_above(
 ) -> dict[str, Any]:
     """Volume fraction of fluid domain with Yi > thresh (reduction API).
 
-    Prefers sum_if(Volume()) under a MassFraction condition. Also reports
-    cell-count fractions so a broken sum_if still yields a usable signal.
+    Prefers sum_if(expression="1", weight="Volume") under a MassFraction
+    condition. Also reports cell-count fractions so a broken sum_if still
+    yields a usable signal.
     """
     out: dict[str, Any] = {
         "fluid_zones": list(fluid_zones),
@@ -389,12 +390,13 @@ def volume_fractions_above(
                 f"count_if>{thresh}: {type(exc).__name__}: {exc}"
             )
 
-        # True volume via sum_if(Volume()).
+        # True volume: sum_if requires weight= on Fluent 25.1 / PyFluent 0.38.
         try:
             v = float(
                 reduction.sum_if(
-                    expression="Volume()",
+                    expression="1",
                     condition=cond,
+                    weight="Volume",
                     locations=locations,
                 )
             )

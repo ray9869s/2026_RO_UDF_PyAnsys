@@ -8,10 +8,14 @@ from typing import Any, Mapping, Optional
 
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
+    FACET_MIN_REJECT_AREA_FRAC,
+    FACET_MIN_TARGET_AREA_FRAC,
     canonical_rescale_factor,
     cp_l1_gu2017,
+    facet_min_check_threshold,
     film_theory_cp_perm_mol_m3,
     midplane_window_bulk_aggregate,
+    resolve_area_backed_minimum,
     window_area_weighted_average,
     window_pointwise_max,
 )
@@ -566,6 +570,30 @@ def create_x_range_iso_clip(solver, clip_name, surface_names, x_min_m, x_max_m):
     return clip_name
 
 
+def create_field_iso_clip(
+    solver,
+    clip_name: str,
+    surface_names: list[str],
+    field: str,
+    range_min: float,
+    range_max: float,
+) -> str:
+    """Create a field-value iso-clip of named surfaces (Fluent 25.1 path)."""
+    if not surface_names:
+        raise ValueError(f"Cannot create iso-clip {clip_name!r}: no surfaces.")
+    iso_group = solver.settings.results.surfaces.iso_clip
+    existing = list_named_object_names(iso_group, "results.surfaces.iso_clip")
+    if clip_name in existing:
+        iso_group.delete(clip_name)
+    iso_group.create(clip_name)
+    clip = iso_group[clip_name]
+    clip.field = field
+    clip.surfaces = list(surface_names)
+    clip.range.minimum = float(range_min)
+    clip.range.maximum = float(range_max)
+    return clip_name
+
+
 def delete_iso_clip(solver, clip_name):
     """Delete an iso-clip surface if it exists."""
     iso_group = solver.settings.results.surfaces.iso_clip
@@ -740,6 +768,11 @@ def _compute_membrane_segment_via_iso_clip(
     fields only. Film-theory c_p for the rescale guard is derived from cm/Jw
     facet stats — Fluent 25.1 surface-report ``field`` does not accept setup
     named expressions (``'field' has no attribute 'pp_expr_cp_perm'``).
+
+    Facet minima for cm and Jw are area-backed: a surface-facetmin that has
+    negligible iso_clip area below facet_min*(1+1e-3) is rejected (zero-area
+    clip-cut artifact) and replaced by the lowest threshold whose area
+    fraction reaches 1e-4.
     """
     if not wall_surface_names:
         return None
@@ -757,6 +790,7 @@ def _compute_membrane_segment_via_iso_clip(
         "jw_min": f"pp_mem_jw_min_{tag}",
     }
     created_reports: list[str] = []
+    created_clips: list[str] = [clip_name]
     create_x_range_iso_clip(
         solver,
         clip_name,
@@ -799,19 +833,81 @@ def _compute_membrane_segment_via_iso_clip(
             created_reports.append(reports[report_key])
             return float(compute_surface_report_value(solution, reports[report_key]))
 
+        def _area_frac_field_below(field: str, threshold: float, sub_tag: str) -> float:
+            """Area fraction on the x-clip with field in [0, threshold]."""
+            thr = float(threshold)
+            if thr < 0.0:
+                return 0.0
+            child = f"pp_mem_ab_{sub_tag}_{tag}"
+            create_field_iso_clip(
+                solver,
+                child,
+                [clip_name],
+                field,
+                0.0,
+                thr,
+            )
+            if child not in created_clips:
+                created_clips.append(child)
+            area_name = f"pp_mem_ab_area_{sub_tag}_{tag}"
+            create_or_update_surface_field_report(
+                solution,
+                area_name,
+                _SURFACE_AREA,
+                None,
+                [child],
+            )
+            if area_name not in created_reports:
+                created_reports.append(area_name)
+            try:
+                sub_area = float(compute_surface_report_value(solution, area_name))
+            except Exception:
+                sub_area = 0.0
+            return max(0.0, sub_area) / area_m2
+
+        def _area_backed_min(field: str, facet_min: float, search_upper: float, label: str):
+            check_hi = facet_min_check_threshold(facet_min)
+            frac_at_check = _area_frac_field_below(field, check_hi, f"{label}_chk")
+            used, rejected = resolve_area_backed_minimum(
+                facet_min,
+                area_frac_at_check=frac_at_check,
+                area_frac_below_fn=lambda thr, _f=field, _l=label: (
+                    _area_frac_field_below(_f, thr, f"{_l}_bis")
+                ),
+                search_upper=search_upper,
+                reject_frac=FACET_MIN_REJECT_AREA_FRAC,
+                target_frac=FACET_MIN_TARGET_AREA_FRAC,
+            )
+            return used, rejected, frac_at_check
+
         cm_avg = _avg("cm", cm_field)
         jw_avg = _avg("jw", jw_field)
         cp_udm9_avg = _avg("cp", cp_field)
         cp_udm9_max = _facet("cp_max", _SURFACE_FACET_MAX, cp_field)
         cm_max = _facet("cm_max", _SURFACE_FACET_MAX, cm_field)
-        cm_min = _facet("cm_min", _SURFACE_FACET_MIN, cm_field)
+        cm_min_raw = _facet("cm_min", _SURFACE_FACET_MIN, cm_field)
         jw_max = _facet("jw_max", _SURFACE_FACET_MAX, jw_field)
-        jw_min = _facet("jw_min", _SURFACE_FACET_MIN, jw_field)
+        jw_min_raw = _facet("jw_min", _SURFACE_FACET_MIN, jw_field)
+
+        cm_min_used, cm_min_rejected, _cm_frac = _area_backed_min(
+            cm_field,
+            cm_min_raw,
+            max(cm_avg, cm_min_raw),
+            "cm",
+        )
+        jw_min_used, jw_min_rejected, _jw_frac = _area_backed_min(
+            jw_field,
+            jw_min_raw,
+            max(jw_avg, jw_min_raw),
+            "jw",
+        )
+        facet_min_rejected = bool(cm_min_rejected or jw_min_rejected)
 
         # c_p = B*cm/(Jw+B): increases with cm, decreases with Jw.
+        # Unpaired bounds use area-backed minima for cm_min and jw_min.
         cp_perm_avg = film_theory_cp_perm_mol_m3(cm_avg, jw_avg, b_perm)
-        cp_perm_min = film_theory_cp_perm_mol_m3(cm_min, jw_max, b_perm)
-        cp_perm_max = film_theory_cp_perm_mol_m3(cm_max, jw_min, b_perm)
+        cp_perm_min = film_theory_cp_perm_mol_m3(cm_min_used, jw_max, b_perm)
+        cp_perm_max = film_theory_cp_perm_mol_m3(cm_max, jw_min_used, b_perm)
 
         return {
             "area_m2": area_m2,
@@ -823,17 +919,25 @@ def _compute_membrane_segment_via_iso_clip(
             "cp_perm_max": cp_perm_max,
             "cp_udm9_max": cp_udm9_max,
             "cm_max": cm_max,
+            "cm_min_raw": cm_min_raw,
+            "cm_min_used": cm_min_used,
+            "jw_min_raw": jw_min_raw,
+            "jw_min_used": jw_min_used,
+            "facet_min_rejected": facet_min_rejected,
+            "cm_min_rejected": cm_min_rejected,
+            "jw_min_rejected": jw_min_rejected,
         }
     finally:
-        for report_name in created_reports:
+        for report_name in reversed(created_reports):
             try:
                 delete_surface_field_report(solution, report_name)
             except Exception:
                 pass
-        try:
-            delete_iso_clip(solver, clip_name)
-        except Exception:
-            pass
+        for name in reversed(created_clips):
+            try:
+                delete_iso_clip(solver, name)
+            except Exception:
+                pass
 
 
 def _segment_metrics_from_reductions(
@@ -885,6 +989,13 @@ def _segment_metrics_from_reductions(
         f"pp_cp_canon_max_cell_{cell_number}": cp_canon_max,
         f"pp_cp_L1_max_cell_{cell_number}": cp_l1_max,
         f"pp_cp_L2_max_cell_{cell_number}": cp_l2_max,
+        f"cp_facet_min_rejected_cell_{cell_number}": bool(
+            segment.get("facet_min_rejected", False)
+        ),
+        f"cm_min_raw_cell_{cell_number}": segment.get("cm_min_raw"),
+        f"cm_min_used_cell_{cell_number}": segment.get("cm_min_used"),
+        f"jw_min_raw_cell_{cell_number}": segment.get("jw_min_raw"),
+        f"jw_min_used_cell_{cell_number}": segment.get("jw_min_used"),
     }
     return metrics
 

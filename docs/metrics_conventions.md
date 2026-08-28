@@ -74,6 +74,17 @@ M_{\mathrm{canon},N} = M_{\mathrm{UDM9},N}\, k_N
 using min/max of the per-face \(c_p\) expression as the spread. If
 \(\delta > 10^{-3}\), extraction raises.
 
+**Area-backed facet minima:** `surface-facetmin` on an x-range iso_clip can
+return a zero-area cut facet that samples a non-membrane neighbour cell
+(UDM reads exactly 0). Before forming unpaired \(c_{p,\min}/c_{p,\max}\),
+extraction checks that the facet minimum has area support via a nested
+iso_clip: if the area fraction with field below
+\(\mathrm{facet\_min}\,(1+10^{-3})\) is \(< 10^{-9}\), that extremum is
+rejected and replaced by the lowest threshold whose area fraction reaches
+\(10^{-4}\) (bisection on iso_clip). Summary columns
+`cp_facet_min_rejected_cell_{N}`, `cm_min_raw_cell_{N}`, and
+`cm_min_used_cell_{N}` record substitutions (`jw_min_raw/used` likewise).
+
 **Why \(10^{-3}\):** the previous \(10^{-4}\) threshold came from
 \(\partial k/\partial c_p \sim 2\times10^{-6}\), which assumes
 \(|c_0 - c_b| \sim 0.7\) mol/m³. Measured window values at \(p=6\) MPa are
@@ -140,3 +151,21 @@ all-active aggregates so sensitivity to window choice can be read directly.
 
 Run manifests record `analytic_cwall` parsed from the case-local dated UDF.
 CP extraction requires `RO_ANALYTIC_CWALL = 1`.
+
+## Known field artifacts
+
+At \(u = 0.1\) m/s, salt accumulates in the stagnation region adjacent to the
+filament-membrane contact band (within \(\sim 5\,\mu\mathrm{m}\) of the
+membrane, \(\sim 100\times 80\,\mu\mathrm{m}\) footprint, inside the
+\(152\,\mu\mathrm{m}\) contact flat; \(z = 0.380\)–\(0.383\,\mathrm{mm}\)
+against membranes at \(z = \pm 0.385\,\mathrm{mm}\)). Enrichment above
+\(Y_i = 0.05\) appears in all four evaluation cells (area fraction
+\(1.1\)–\(2.1\times 10^{-3}\)); in cell 7 only it reaches NaCl saturation,
+with 3 interior cells clamping at \(Y_i = 1\). Wall area fraction above
+\(Y_i = 0.26\) is \(2.3\times 10^{-5}\), four orders below the \(\sim 0.6\%\)
+CP discriminability signal, so window CP is unaffected. Absent at
+\(u = 0.2\) and \(u = 0.3\), where no wall area exceeds even \(Y_i = 0.05\).
+`probe_cp_reconstruction` gives CP raw \(1.06505\) vs reconstructed
+\(1.08708\), the documented \(\sim 2\%\) lift with no sign of divergence.
+Localised to one evaluation cell and not explained by geometry, which
+repeats every pitch.
