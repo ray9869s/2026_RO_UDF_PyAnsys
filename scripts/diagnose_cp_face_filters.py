@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
 import traceback
 from pathlib import Path
@@ -45,6 +44,7 @@ from ro.fluent_report_helpers import (
 )
 from ro.manifest import read_run_manifest
 from ro.paths import data_root, project_root
+from ro.solver_common import path_to_fluent_str
 from ro.udm_layout import FIELD_UDM_CM, FIELD_UDM_CP_INLET, FIELD_UDM_JW
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -732,13 +732,13 @@ def diagnose_run(
             processor_count=args.processor_count,
             ui_mode=args.ui_mode,
             graphics_driver=args.graphics_driver,
-            cwd=as_fluent_path(case_dir),
+            cwd=path_to_fluent_str(case_dir),
         )
         solver = meshing.switch_to_solver()
         meshing = None
         setup = solver.settings.setup
         solution = solver.settings.solution
-        solver.settings.file.read_case_data(file_name=as_fluent_path(cas))
+        solver.settings.file.read_case_data(file_name=path_to_fluent_str(cas))
 
         wall_names = collect_membrane_walls(setup)
         print(f"  membrane walls: {wall_names}")
@@ -964,37 +964,49 @@ def main(argv: Optional[list[str]] = None) -> int:
             }
             print(f"\nERROR on {run_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    # Decision hints (numbers only; no code changes).
-    print("\n" + "=" * 78)
-    print("DECISION HINTS (from measured numbers)")
-    print("=" * 78)
-    for run_id, payload in report["runs"].items():
-        win = payload.get("window") or {}
-        d0 = win.get("delta_max_baseline")
-        dnz = win.get("delta_max_cm_nz")
-        print(f"\n{run_id}:")
-        print(f"  unpaired delta_max          = {fmt(d0)}")
-        print(f"  delta_max after drop cm==0  = {fmt(dnz)}")
-        if isinstance(dnz, float) and math.isfinite(dnz):
-            if dnz < DISCRIMINABILITY / 10.0:
+    # Decision hints only when at least one run produced numbers.
+    if report["runs"]:
+        print("\n" + "=" * 78)
+        print("DECISION HINTS (from measured numbers)")
+        print("=" * 78)
+        for run_id, payload in report["runs"].items():
+            win = payload.get("window") or {}
+            d0 = win.get("delta_max_baseline")
+            dnz = win.get("delta_max_cm_nz")
+            print(f"\n{run_id}:")
+            print(f"  unpaired delta_max          = {fmt(d0)}")
+            print(f"  delta_max after drop cm==0  = {fmt(dnz)}")
+            if isinstance(dnz, float) and math.isfinite(dnz):
+                if dnz < DISCRIMINABILITY / 10.0:
+                    print(
+                        "  -> Axis A alone puts delta ≪ discriminability "
+                        "(data hygiene, not a redefinition)."
+                    )
+                elif dnz < DISCRIMINABILITY:
+                    print(
+                        "  -> Axis A alone puts delta under discriminability; "
+                        "still check Axis B area fractions."
+                    )
+                else:
+                    print(
+                        "  -> Axis A alone is NOT enough; inspect Axis B alphas."
+                    )
+            for a in ALPHAS:
                 print(
-                    "  -> Axis A alone puts delta ≪ discriminability "
-                    "(data hygiene, not a redefinition)."
+                    f"  alpha={a:g}: excl_max="
+                    f"{fmt(win.get(f'excl_area_frac_max_alpha_{a:g}'))} "
+                    f"(geom~{CONTACT_WIDTH_OVER_PITCH:.3f}–"
+                    f"{3*CONTACT_WIDTH_OVER_PITCH:.3f}) "
+                    f"delta_max={fmt(win.get(f'delta_max_alpha_{a:g}'))}"
                 )
-            elif dnz < DISCRIMINABILITY:
-                print(
-                    "  -> Axis A alone puts delta under discriminability; "
-                    "still check Axis B area fractions."
-                )
-            else:
-                print(
-                    "  -> Axis A alone is NOT enough; inspect Axis B alphas."
-                )
-        for a in ALPHAS:
+    else:
+        print("\n" + "=" * 78)
+        print("DIAGNOSTIC FAILED: no runs succeeded")
+        print("=" * 78)
+        for run_id, err in report["errors"].items():
             print(
-                f"  alpha={a:g}: excl_max={fmt(win.get(f'excl_area_frac_max_alpha_{a:g}'))} "
-                f"(geom~{CONTACT_WIDTH_OVER_PITCH:.3f}–{3*CONTACT_WIDTH_OVER_PITCH:.3f}) "
-                f"delta_max={fmt(win.get(f'delta_max_alpha_{a:g}'))}"
+                f"  {run_id}: {err.get('type')}: {err.get('message')}",
+                file=sys.stderr,
             )
 
     out_path = args.output_json
@@ -1011,10 +1023,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     print(f"\nWrote JSON: {out_path}")
 
-    if report["errors"] and not report["runs"]:
+    n_ok = len(report["runs"])
+    n_err = len(report["errors"])
+    if n_ok == 0:
+        print(
+            f"FAILED: 0/{n_ok + n_err} runs succeeded "
+            f"({n_err} error(s)). See JSON for tracebacks.",
+            file=sys.stderr,
+        )
         return 1
-    if report["errors"]:
+    if n_err:
+        print(
+            f"PARTIAL: {n_ok} succeeded, {n_err} failed. "
+            "See JSON for tracebacks.",
+            file=sys.stderr,
+        )
         return 1
+    print(f"OK: {n_ok}/{n_ok} runs succeeded.")
     return 0
 
 
