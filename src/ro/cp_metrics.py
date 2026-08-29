@@ -8,6 +8,7 @@ canonical rescaling applies a per-cell scalar factor to those stored values.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 # Bound on face-dependence of the scalar rescale factor k_N.
@@ -31,6 +32,22 @@ FACET_MIN_AREA_CHECK_REL = 1.0e-3
 FACET_MIN_REJECT_AREA_FRAC = 1.0e-9
 FACET_MIN_TARGET_AREA_FRAC = 1.0e-4
 
+# Shared iso_clip area-fraction bisection limits. Fluent surface-area reports
+# have ~8 significant figures; chasing tighter than AREA_FRAC_TOL is noise.
+BISECT_MAX_ITER = 40
+BISECT_INTERVAL_REL_TOL = 1.0e-9
+BISECT_AREA_FRAC_TOL = 1.0e-7
+
+
+@dataclass(frozen=True)
+class AreaFractionBisectResult:
+    """Outcome of ``bisect_area_fraction_threshold``."""
+
+    value: float
+    iterations: int
+    stop_reason: str  # "area_tol" | "interval_tol" | "max_iter"
+    area_frac: float
+
 
 def facet_min_check_threshold(
     facet_min: float,
@@ -45,6 +62,99 @@ def facet_min_check_threshold(
     return value * (1.0 + r)
 
 
+def bisect_area_fraction_threshold(
+    area_frac_below_fn,
+    *,
+    target_frac: float,
+    lo: float,
+    hi: float,
+    max_iter: int = BISECT_MAX_ITER,
+    interval_rel_tol: float = BISECT_INTERVAL_REL_TOL,
+    area_frac_tol: float = BISECT_AREA_FRAC_TOL,
+) -> AreaFractionBisectResult:
+    """Lowest threshold ``T`` with ``area_frac_below_fn(T) >= target_frac``.
+
+    Stops on the first of:
+      - ``area_tol``: ``|frac - target| <= area_frac_tol`` with ``frac`` not
+        materially below target (Fluent report noise floor ~1e-7);
+      - ``interval_tol``: ``(hi - lo) / max(|hi|, |lo|) < interval_rel_tol``;
+      - ``max_iter``: iteration budget exhausted (returns current ``hi``).
+    """
+    target = float(target_frac)
+    lo_v = float(lo)
+    hi_v = float(hi)
+    if not math.isfinite(target) or target < 0.0 or target > 1.0:
+        raise ValueError(f"target_frac must be in [0, 1], got {target_frac!r}.")
+    if not math.isfinite(lo_v) or not math.isfinite(hi_v):
+        raise ValueError(f"lo/hi must be finite, got lo={lo!r}, hi={hi!r}.")
+    if hi_v < lo_v:
+        lo_v, hi_v = hi_v, lo_v
+    tol = float(area_frac_tol)
+    if tol < 0.0:
+        raise ValueError(f"area_frac_tol must be non-negative, got {area_frac_tol!r}.")
+
+    def _frac(threshold: float) -> float:
+        value = float(area_frac_below_fn(threshold))
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"area_frac_below_fn must return a non-negative finite float, "
+                f"got {value!r} at threshold={threshold!r}."
+            )
+        return value
+
+    frac_hi = _frac(hi_v)
+    if frac_hi < target - tol:
+        return AreaFractionBisectResult(
+            value=hi_v,
+            iterations=0,
+            stop_reason="max_iter",
+            area_frac=frac_hi,
+        )
+    frac_lo = _frac(lo_v)
+    if frac_lo >= target - tol:
+        return AreaFractionBisectResult(
+            value=lo_v,
+            iterations=0,
+            stop_reason="area_tol" if abs(frac_lo - target) <= tol else "interval_tol",
+            area_frac=frac_lo,
+        )
+
+    best_hi = hi_v
+    best_frac = frac_hi
+    for iteration in range(1, int(max_iter) + 1):
+        mid = 0.5 * (lo_v + hi_v)
+        frac_mid = _frac(mid)
+        # Area tolerance: measured fraction is within Fluent noise of target.
+        if abs(frac_mid - target) <= tol and frac_mid >= target - tol:
+            return AreaFractionBisectResult(
+                value=mid,
+                iterations=iteration,
+                stop_reason="area_tol",
+                area_frac=frac_mid,
+            )
+        if frac_mid < target:
+            lo_v = mid
+        else:
+            hi_v = mid
+            best_hi = mid
+            best_frac = frac_mid
+        scale = max(abs(hi_v), abs(lo_v), 1.0e-30)
+        if (hi_v - lo_v) / scale < float(interval_rel_tol):
+            return AreaFractionBisectResult(
+                value=best_hi,
+                iterations=iteration,
+                stop_reason="interval_tol",
+                area_frac=best_frac,
+            )
+
+    return AreaFractionBisectResult(
+        value=best_hi,
+        iterations=int(max_iter),
+        stop_reason="max_iter",
+        area_frac=best_frac,
+    )
+
+
 def resolve_area_backed_minimum(
     facet_min: float,
     *,
@@ -53,7 +163,7 @@ def resolve_area_backed_minimum(
     search_upper: float,
     reject_frac: float = FACET_MIN_REJECT_AREA_FRAC,
     target_frac: float = FACET_MIN_TARGET_AREA_FRAC,
-    max_iter: int = 50,
+    max_iter: int = BISECT_MAX_ITER,
 ) -> tuple[float, bool]:
     """Return ``(value_used, rejected)`` for an area-backed field minimum.
 
@@ -96,17 +206,16 @@ def resolve_area_backed_minimum(
         hi = hi + span
         expand_guard += 1
     if _frac(hi) < float(target_frac):
-        # No area-backed threshold found; keep the best available upper.
         return hi, True
 
-    lo = raw
-    for _ in range(int(max_iter)):
-        mid = 0.5 * (lo + hi)
-        if _frac(mid) < float(target_frac):
-            lo = mid
-        else:
-            hi = mid
-    return hi, True
+    result = bisect_area_fraction_threshold(
+        _frac,
+        target_frac=float(target_frac),
+        lo=raw,
+        hi=hi,
+        max_iter=int(max_iter),
+    )
+    return result.value, True
 
 
 def film_theory_cp_perm_mol_m3(

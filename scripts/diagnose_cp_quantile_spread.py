@@ -30,12 +30,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ro.cp_metrics import (
+    BISECT_AREA_FRAC_TOL,
+    BISECT_INTERVAL_REL_TOL,
+    BISECT_MAX_ITER,
+    FACET_MIN_REJECT_AREA_FRAC,
     FACET_MIN_TARGET_AREA_FRAC,
+    bisect_area_fraction_threshold,
+    facet_min_check_threshold,
     film_theory_cp_perm_mol_m3,
     resolve_area_backed_minimum,
     scalar_rescale_guard_delta,
-    facet_min_check_threshold,
-    FACET_MIN_REJECT_AREA_FRAC,
 )
 from ro.domain_layout import layout_from_run_directory
 from ro.fluent_report_helpers import (
@@ -183,8 +187,8 @@ def area_quantile_threshold(
     hi_bound: float,
     tag: str,
     *,
-    max_iter: int = 50,
-) -> float:
+    max_iter: int = BISECT_MAX_ITER,
+) -> dict[str, Any]:
     """Lowest T such that area(field <= T)/A >= quantile (area CDF inverse)."""
     q = float(quantile)
     lo = float(lo_bound)
@@ -192,28 +196,70 @@ def area_quantile_threshold(
     if hi < lo:
         lo, hi = hi, lo
 
+    call_count = 0
+
     def frac(t: float) -> float:
+        nonlocal call_count
+        call_count += 1
+        # Stable clip tag (iteration index), not t:.6g — otherwise distinct
+        # midpoints that print identically reuse one name and look hung.
         return area_frac_field_le(
-            solver, solution, parent_clip, field, t, total_area, f"{tag}_{t:.6g}"
+            solver,
+            solution,
+            parent_clip,
+            field,
+            t,
+            total_area,
+            f"{tag}_i{call_count}",
         )
 
     # Expand upper if needed for high quantiles.
     expand = 0
-    while frac(hi) < q and expand < 8:
+    frac_hi = frac(hi)
+    while frac_hi < q and expand < 8:
         span = max(hi - lo, abs(hi), 1.0e-30)
         hi = hi + span
         expand += 1
-    if frac(hi) < q:
-        return hi
-    if frac(lo) >= q:
-        return lo
-    for _ in range(max_iter):
-        mid = 0.5 * (lo + hi)
-        if frac(mid) < q:
-            lo = mid
-        else:
-            hi = mid
-    return hi
+        frac_hi = frac(hi)
+    expand_calls = call_count
+    if frac_hi < q - BISECT_AREA_FRAC_TOL:
+        print(
+            f"    quantile {tag}: expand failed at T={hi:.6g} "
+            f"frac={frac_hi:.6g} fluent_calls={call_count} stop=expand_failed"
+        )
+        return {
+            "value": hi,
+            "iterations": 0,
+            "fluent_calls": call_count,
+            "expand_calls": expand_calls,
+            "stop_reason": "expand_failed",
+            "area_frac": frac_hi,
+        }
+
+    result = bisect_area_fraction_threshold(
+        frac,
+        target_frac=q,
+        lo=lo,
+        hi=hi,
+        max_iter=int(max_iter),
+        interval_rel_tol=BISECT_INTERVAL_REL_TOL,
+        area_frac_tol=BISECT_AREA_FRAC_TOL,
+    )
+    print(
+        f"    quantile {tag}: T={result.value:.6g} "
+        f"frac={result.area_frac:.6g} "
+        f"iters={result.iterations} "
+        f"fluent_calls={call_count} "
+        f"stop={result.stop_reason}"
+    )
+    return {
+        "value": result.value,
+        "iterations": result.iterations,
+        "fluent_calls": call_count,
+        "expand_calls": expand_calls,
+        "stop_reason": result.stop_reason,
+        "area_frac": result.area_frac,
+    }
 
 
 def read_q1_from_wide_csv(case_dir: Path, eval_cells: list[int]) -> dict[str, Any]:
@@ -401,8 +447,12 @@ def diagnose_cell_fluent(
 
         # Unpaired quantile bound mirrors production pairing:
         # cp_lo from (cm_q_lo, jw_q_hi), cp_hi from (cm_q_hi, jw_q_lo).
-        cp_min_q = film_theory_cp_perm_mol_m3(cm_q_lo, jw_q_hi, b_perm)
-        cp_max_q = film_theory_cp_perm_mol_m3(cm_q_hi, jw_q_lo, b_perm)
+        cp_min_q = film_theory_cp_perm_mol_m3(
+            cm_q_lo["value"], jw_q_hi["value"], b_perm
+        )
+        cp_max_q = film_theory_cp_perm_mol_m3(
+            cm_q_hi["value"], jw_q_lo["value"], b_perm
+        )
         try:
             delta_q = scalar_rescale_guard_delta(c0, cb, cp_min_q, cp_max_q)
         except ValueError as exc:
@@ -411,6 +461,10 @@ def diagnose_cell_fluent(
         else:
             delta_q_err = ""
 
+        fluent_calls = sum(
+            int(q.get("fluent_calls") or 0)
+            for q in (cm_q_lo, cm_q_hi, jw_q_lo, jw_q_hi)
+        )
         return {
             "cell_number": cell_number,
             "area_m2": area,
@@ -430,10 +484,17 @@ def diagnose_cell_fluent(
             "cp_max_current": cp_max_cur,
             "delta_current": delta_cur,
             "delta_current_error": delta_cur_err,
-            "cm_q_lo": cm_q_lo,
-            "cm_q_hi": cm_q_hi,
-            "jw_q_lo": jw_q_lo,
-            "jw_q_hi": jw_q_hi,
+            "cm_q_lo": cm_q_lo["value"],
+            "cm_q_hi": cm_q_hi["value"],
+            "jw_q_lo": jw_q_lo["value"],
+            "jw_q_hi": jw_q_hi["value"],
+            "quantile_details": {
+                "cm_q_lo": cm_q_lo,
+                "cm_q_hi": cm_q_hi,
+                "jw_q_lo": jw_q_lo,
+                "jw_q_hi": jw_q_hi,
+            },
+            "quantile_fluent_calls": fluent_calls,
             "cp_min_quantile": cp_min_q,
             "cp_max_quantile": cp_max_q,
             "spread_current": cp_max_cur - cp_min_cur,
@@ -594,8 +655,10 @@ def print_q2_table(run_id: str, payload: dict[str, Any]) -> None:
     print("=" * 78)
     print(
         f"  {'cell':>4} {'d_cur':>10} {'d_q':>10} {'ratio':>8} "
-        f"{'cm_qhi':>10} {'cm_max':>10} {'jw_qlo':>12} {'jw_min_u':>12}"
+        f"{'cm_qhi':>10} {'cm_max':>10} {'calls':>6}"
     )
+    total_calls = 0
+    iter_samples: list[int] = []
     for cell in payload.get("cells") or []:
         d0 = cell.get("delta_current")
         dq = cell.get("delta_quantile")
@@ -608,11 +671,17 @@ def print_q2_table(run_id: str, payload: dict[str, Any]) -> None:
             and dq != 0.0
         ):
             ratio = d0 / dq
+        calls = int(cell.get("quantile_fluent_calls") or 0)
+        total_calls += calls
+        details = cell.get("quantile_details") or {}
+        for detail in details.values():
+            if isinstance(detail, dict) and detail.get("iterations") is not None:
+                iter_samples.append(int(detail["iterations"]))
         print(
             f"  {cell.get('cell_number'):>4} {fmt(d0):>10} {fmt(dq):>10} "
             f"{fmt(ratio, 3):>8} "
             f"{fmt(cell.get('cm_q_hi')):>10} {fmt(cell.get('cm_max_raw')):>10} "
-            f"{fmt(cell.get('jw_q_lo')):>12} {fmt(cell.get('jw_min_used')):>12}"
+            f"{calls:>6}"
         )
     deltas_q = [
         c.get("delta_quantile")
@@ -631,6 +700,21 @@ def print_q2_table(run_id: str, payload: dict[str, Any]) -> None:
             f"  max delta_current={fmt(max(deltas_c))}  "
             f"max delta_quantile={fmt(max(deltas_q))}  "
             f"ratio={fmt(max(deltas_c)/max(deltas_q) if max(deltas_q) else None, 3)}"
+        )
+    if iter_samples:
+        print(
+            f"  bisection iters/quantile: "
+            f"min={min(iter_samples)} median={sorted(iter_samples)[len(iter_samples)//2]} "
+            f"max={max(iter_samples)}; "
+            f"Fluent area reports this run (quantiles only)={total_calls}"
+        )
+        # Rough wall-time hint assuming ~1–3 s per surface-area report.
+        lo_min = total_calls * 1.0 / 60.0
+        hi_min = total_calls * 3.0 / 60.0
+        print(
+            f"  estimated quantile wall time this run: "
+            f"~{lo_min:.1f}–{hi_min:.1f} min "
+            f"(×3 runs ⇒ ~{3*lo_min:.0f}–{3*hi_min:.0f} min for the full diagnostic)"
         )
 
 

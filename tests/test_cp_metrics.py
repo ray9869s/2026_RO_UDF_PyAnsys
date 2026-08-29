@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from ro.cp_metrics import (
+    BISECT_AREA_FRAC_TOL,
+    BISECT_MAX_ITER,
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
     FACET_MIN_REJECT_AREA_FRAC,
     FACET_MIN_TARGET_AREA_FRAC,
     average_of_ratios_cp_bae_approx,
+    bisect_area_fraction_threshold,
     canonical_rescale_factor,
     cp_l1_gu2017,
     facet_min_check_threshold,
@@ -153,3 +156,52 @@ def test_resolve_area_backed_minimum_rejects_zero_area_poison():
     assert rejected is True
     assert used == pytest.approx(true_min, rel=1e-4)
     assert used > 600.0
+
+
+def test_bisect_stops_on_fluent_area_noise_oscillation():
+    """High-quantile hang: measured area oscillates in the last digit."""
+    target = 0.999
+    true_t = 713.85
+    calls = {"n": 0}
+
+    def noisy_frac(threshold: float) -> float:
+        calls["n"] += 1
+        # Step to target at true_t; then oscillate by one ulp of the report.
+        if threshold < true_t:
+            return target - 1.0e-5
+        base = target
+        return base + (1.0e-10 if calls["n"] % 2 else -1.0e-10)
+
+    result = bisect_area_fraction_threshold(
+        noisy_frac,
+        target_frac=target,
+        lo=600.0,
+        hi=800.0,
+        max_iter=BISECT_MAX_ITER,
+        area_frac_tol=BISECT_AREA_FRAC_TOL,
+    )
+    assert result.stop_reason == "area_tol"
+    assert result.iterations < BISECT_MAX_ITER
+    assert result.iterations <= 20
+    # Any T at/above the step is within area_tol of the target fraction.
+    assert result.value >= true_t
+    assert result.value <= 800.0
+    assert calls["n"] < BISECT_MAX_ITER + 5
+
+
+def test_bisect_stops_on_interval_tol_when_frac_plateaus():
+    target = 1.0e-4
+    true_t = 618.0
+
+    def step_frac(threshold: float) -> float:
+        return 0.0 if threshold < true_t else 1.0e-3
+
+    result = bisect_area_fraction_threshold(
+        step_frac,
+        target_frac=target,
+        lo=0.0,
+        hi=700.0,
+    )
+    assert result.stop_reason in {"area_tol", "interval_tol"}
+    assert result.value == pytest.approx(true_t, rel=1e-6)
+    assert result.iterations < BISECT_MAX_ITER
