@@ -6,7 +6,9 @@ Does NOT change the production CP path. Answers the pre-decision questions:
 
   Q1  Print cm_min_raw/used and jw_min_raw/used from summary_metrics_wide.csv
       when present; otherwise recompute them from the case via the same
-      area-backed rule as production.
+      area-backed rule as production. Mid-plane c_b is taken from the wide
+      CSV when available, else computed on the live session (needed when
+      extract aborted on the rescale guard, typical for u=0.1).
   Q2  For each eval cell, also compute unpaired delta using area quantiles
       at lo=0.001 and hi=0.999 (central 99.8% of membrane area) for cm and
       Jw, and report that hypothetical delta beside the current one.
@@ -49,6 +51,7 @@ from ro.fluent_report_helpers import (
     create_x_range_iso_clip,
     delete_iso_clip,
     delete_surface_field_report,
+    evaluation_window_midplane_bulk_concentrations,
     list_named_object_names,
 )
 from ro.manifest import read_run_manifest
@@ -112,6 +115,87 @@ def collect_membrane_walls(setup) -> list[str]:
     except Exception:
         walls = []
     return sorted(walls) if walls else ["wall_top_mem", "wall_bottom_mem"]
+
+
+def create_z_normal_plane(solver_obj, surface_name: str, z_value_m: float) -> None:
+    """Create a z-normal iso-surface (settings API, TUI fallback)."""
+    settings_error = None
+    try:
+        iso_group = solver_obj.settings.results.surfaces.iso_surface
+        existing = list_named_object_names(
+            iso_group, "results.surfaces.iso_surface"
+        )
+        if surface_name in existing:
+            iso_group.delete(surface_name)
+        iso_group.create(surface_name)
+        iso_group[surface_name].field = "z-coordinate"
+        iso_group[surface_name].iso_values = [float(z_value_m)]
+        return
+    except Exception as exc:
+        settings_error = exc
+    try:
+        solver_obj.tui.surface.iso_surface(
+            "z-coordinate",
+            surface_name,
+            "()",
+            "()",
+            str(z_value_m),
+            "0",
+        )
+    except Exception as tui_error:
+        raise RuntimeError(
+            f"Could not create iso-surface {surface_name!r}. "
+            f"Settings error: {settings_error}. TUI error: {tui_error}"
+        ) from tui_error
+
+
+def compute_c_b_by_cell(
+    solver,
+    solution,
+    *,
+    boundaries: list[float],
+    eval_cells: list[int],
+    density: float,
+    mw: float,
+    channel_height_m: float = 0.00077,
+) -> dict[int, float]:
+    """Mixing-cup c_b on z=h/2 mid-plane, clipped per evaluation cell."""
+    z_center = channel_height_m / 2.0
+    plane_name = None
+    for z_val in (z_center, 0.0):
+        pname = f"pp_q_zc_{abs(z_val):.7f}".replace(".", "p")
+        try:
+            create_z_normal_plane(solver, pname, z_val)
+            plane_name = pname
+            break
+        except Exception as exc:
+            print(f"  mid-plane at z={z_val} failed: {exc}")
+    if plane_name is None:
+        raise RuntimeError("Could not create mid-plane iso-surface for c_b.")
+
+    last_error = None
+    for salt_field in ("nacl", "mass-fraction-of-nacl", "yi-0"):
+        try:
+            c_b_by_cell, _areas, _window = (
+                evaluation_window_midplane_bulk_concentrations(
+                    solver=solver,
+                    solution=solution,
+                    midplane_surface_names=[plane_name],
+                    unit_cell_boundary_x_m=boundaries,
+                    evaluation_cell_numbers=eval_cells,
+                    salt_field=salt_field,
+                    density_kg_per_m3=density,
+                    molecular_weight_kg_per_mol=mw,
+                    salt_is_mass_fraction=True,
+                )
+            )
+            print(f"  mid-plane c_b via salt field {salt_field!r}")
+            return {int(k): float(v) for k, v in c_b_by_cell.items()}
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(
+        f"Could not compute mid-plane c_b (last error: {last_error!r})."
+    )
 
 
 def surface_area(solution, surface_names: list[str], tag: str) -> float:
@@ -552,17 +636,50 @@ def diagnose_run_fluent(args, case_dir: Path, geo_id: str, run_id: str) -> dict[
         solver.settings.file.read_case_data(file_name=path_to_fluent_str(cas))
         walls = collect_membrane_walls(setup)
 
-        # Prefer published c_b; fall back requires midplane (skip — use CSV).
+        # Prefer published mid-plane c_b from the wide CSV. u0p1 often lacks
+        # those columns when extract aborted on the rescale guard — fall back
+        # to computing mixing-cup c_b on the live session (same as the
+        # face-filter diagnostic).
+        c_b_by_cell: dict[int, float] = {}
+        missing_cb: list[int] = []
+        for cell in eval_cells:
+            raw = (csv_q1.get("cells") or {}).get(cell, {}).get("c_b")
+            if raw is None:
+                missing_cb.append(cell)
+                continue
+            try:
+                c_b_by_cell[cell] = float(raw)
+            except (TypeError, ValueError):
+                missing_cb.append(cell)
+        if missing_cb:
+            print(
+                f"  c_b missing in wide CSV for cells {missing_cb}; "
+                "computing mid-plane mixing-cup c_b..."
+            )
+            computed = compute_c_b_by_cell(
+                solver,
+                solution,
+                boundaries=boundaries,
+                eval_cells=missing_cb,
+                density=float(run_manifest.get("density_kg_per_m3") or 998.2),
+                mw=float(
+                    run_manifest.get("molecular_weight_kg_per_mol") or 0.05844
+                ),
+                channel_height_m=float(
+                    run_manifest.get("channel_height_m") or 0.00077
+                ),
+            )
+            c_b_by_cell.update(computed)
+        still_missing = [c for c in eval_cells if c not in c_b_by_cell]
+        if still_missing:
+            raise RuntimeError(
+                f"c_b still missing for cells {still_missing} after mid-plane "
+                "fallback."
+            )
+
         cells_out = []
         for cell in eval_cells:
-            cb = None
-            if csv_q1.get("cells", {}).get(cell, {}).get("c_b") is not None:
-                cb = float(csv_q1["cells"][cell]["c_b"])
-            if cb is None:
-                raise RuntimeError(
-                    f"c_b missing for cell {cell} in wide CSV; "
-                    "re-run extract or supply published c_b."
-                )
+            cb = float(c_b_by_cell[cell])
             print(f"  cell {cell}: c_b={cb:.6g}")
             cells_out.append(
                 diagnose_cell_fluent(
@@ -586,6 +703,8 @@ def diagnose_run_fluent(args, case_dir: Path, geo_id: str, run_id: str) -> dict[
             "q_lo": Q_LO,
             "q_hi": Q_HI,
             "csv_q1": csv_q1,
+            "c_b_by_cell": c_b_by_cell,
+            "c_b_from_midplane_cells": missing_cb,
             "cells": cells_out,
         }
     finally:
