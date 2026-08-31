@@ -71,19 +71,69 @@ M_{\mathrm{canon},N} = M_{\mathrm{UDM9},N}\, k_N
 \delta = \frac{|c_0 - c_{b,N}| \cdot \mathrm{spread}(c_p)}{{(c_{b,N} - c_{p,\min})^2}}
 \]
 
-using min/max of the per-face \(c_p\) expression as the spread. If
-\(\delta > 10^{-3}\), extraction raises.
+If \(\delta > 10^{-3}\), extraction raises.
 
-**Area-backed facet minima:** `surface-facetmin` on an x-range iso_clip can
-return a zero-area cut facet that samples a non-membrane neighbour cell
-(UDM reads exactly 0). Before forming unpaired \(c_{p,\min}/c_{p,\max}\),
-extraction checks that the facet minimum has area support via a nested
-iso_clip: if the area fraction with field below
-\(\mathrm{facet\_min}\,(1+10^{-3})\) is \(< 10^{-9}\), that extremum is
-rejected and replaced by the lowest threshold whose area fraction reaches
-\(10^{-4}\) (bisection on iso_clip). Summary columns
-`cp_facet_min_rejected_cell_{N}`, `cm_min_raw_cell_{N}`, and
-`cm_min_used_cell_{N}` record substitutions (`jw_min_raw/used` likewise).
+**Old spread (retired):** \(\mathrm{spread}(c_p)=c_{p,\max}-c_{p,\min}\)
+from `surface-facetmax` / `surface-facetmin` of film-theory \(c_p\)
+(unpaired extrema of \(c_m\) and \(J_w\)). After the area-backed
+facet-min hygiene step, the low end used an area-backed substitute when
+facetmin had no area support; the high end remained a raw facet maximum.
+
+**New spread (production):** \(\mathrm{spread}(c_p)=c_{p,q_{\mathrm{hi}}}-c_{p,q_{\mathrm{lo}}}\)
+at 99.9% / 0.1% of membrane area per evaluation cell. Resolve the
+membrane-area CDF of \(c_m\) and \(J_w\) by bisection on nested
+iso_clip, then form unpaired film-theory bounds
+
+\[
+c_{p,\min} = \frac{B\,c_{m,q_{0.1\%}}}{J_{w,q_{99.9\%}}+B},\quad
+c_{p,\max} = \frac{B\,c_{m,q_{99.9\%}}}{J_{w,q_{0.1\%}}+B}.
+\]
+
+**Why not facet extrema:** CP itself is area-weighted
+(`cp_udm9_avg`). A raw facetmax / facetmin spread lets a
+\({\sim}10^{-4}\) area region dominate \(\delta\) while leaving the
+averaged CP unchanged to \({\sim}0.2\%\). The low end was already
+area-backed (`FACET_MIN_TARGET_AREA_FRAC` \(=10^{-4}\), the 0.01% low
+quantile); the high end remained a raw facet maximum — asymmetric.
+Applying the same area treatment at both ends (0.1% / 99.9%, central
+99.8% of membrane area) makes the error bound consistent with the
+quantity it validates.
+
+This choice is **not** sized around the \(u=0.1\) saturation patch
+(Yi \(\ge 0.26\) area fraction \(1.64\times10^{-4}\) on u0p1 cell 7). The
+99.9% high quantile excludes \(10^{-3}\) of area, about \(6\times\) that
+patch — under one decade of margin. Do not claim “two orders above the
+patch.”
+
+**Before / after on D2450_a45 `max085_…_peel2` (p = 6 MPa):**
+
+| run | \(\delta_{\max}\) facet / area-backed min | \(\delta_{\max}\) 0.1%/99.9% quantile | ratio |
+| --- | ---: | ---: | ---: |
+| u0p1_p6M | 0.0279 | \(3.93\times10^{-4}\) | 71 |
+| u0p2_p6M | \(8.07\times10^{-5}\) | \(6.42\times10^{-5}\) | 1.26 |
+| u0p3_p6M | \(3.97\times10^{-5}\) | \(3.27\times10^{-5}\) | 1.21 |
+
+Healthy runs move by 21–26% (tighter), inside a \(2\times\) revisit
+threshold. u0p1 cell 7 clears the \(10^{-3}\) guard; `cm_q_hi` = 853
+against facet `cm_max` = 17072.
+
+**Area-backed facet-min substitutions (same campaign, prior step):**
+`surface-facetmin` on an x-range iso_clip can return a zero-area cut
+facet (UDM from a non-membrane neighbour → exactly 0). Before the
+quantile spread, those minima were replaced when the area fraction below
+\(\mathrm{facet\_min}\,(1+10^{-3})\) was \(<10^{-9}\). On u0p1:
+
+| cell | cm raw → used | jw raw → used | note |
+| --- | --- | --- | --- |
+| 5 | 617.9 → 617.9 | \(3.81\times10^{-6}\) kept | no rejection |
+| 6 | 0 → 369 | \(1.69\times10^{-7}\) → \(2.31\times10^{-6}\) | |
+| 7 | 0 → 366 | \(1.91\times10^{-9}\) → \(9.30\times10^{-7}\) | \(\sim 487\times\) in jw; most of the 35× \(\delta\) drop |
+| 8 | 0 → 322 | \(3.36\times10^{-6}\) kept | cm rejected only |
+
+Summary columns still record `cm_min_raw/used`, `jw_min_raw/used`,
+`cp_facet_min_rejected_cell_{N}`, plus `cm_q_lo/hi_cell_{N}` and
+`jw_q_lo/hi_cell_{N}`. `cm_min_used` / `jw_min_used` are the 0.1%
+quantiles used in the unpaired bound.
 
 **Why \(10^{-3}\):** the previous \(10^{-4}\) threshold came from
 \(\partial k/\partial c_p \sim 2\times10^{-6}\), which assumes
@@ -93,11 +143,10 @@ rejected and replaced by the lowest threshold whose area fraction reaches
 and \(8\times10^{-5}\) — the 2e-6 premise does not hold anywhere in the
 matrix. \(\delta\) bounds the relative error on \(M\) at about \(\delta\)
 itself. Campaign accuracy is set by CP discriminability within the Diamond
-family (\(\sim 0.6\%\)); \(10^{-3}\) sits a factor of 6 below that. Observed
-\(\delta\) at \(u=0.1\), \(p=6\) MPa is \(2.32\times10^{-4}\); low velocity
-and high pressure raise CP and therefore \(\delta\), so \(p=8\) MPa at
-\(u=0.1\) is expected in the few-times-\(10^{-4}\) range. \(10^{-3}\) leaves
-margin without approaching the discriminability floor.
+family (\(\sim 0.6\%\)); \(10^{-3}\) sits a factor of 6 below that. With
+the quantile spread, observed \(\delta_{\max}\) at \(u=0.1\), \(p=6\) MPa
+is \({\sim}4\times10^{-4}\); \(10^{-3}\) leaves margin without approaching
+the discriminability floor.
 
 Every successful extract writes `cp_canon_rescale_delta_max`,
 `cp_scalar_rescale_guard_threshold`, and per-cell

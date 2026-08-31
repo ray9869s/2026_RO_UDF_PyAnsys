@@ -17,10 +17,11 @@ from typing import Any, Mapping, Optional, Sequence
 # is 7.1 (u=0.3), 12.7 (u=0.2), ~29 (u=0.1), so dk/dc_p is ~2e-5–8e-5
 # across the matrix — the 2e-6 premise never held. delta bounds relative
 # error on M at about delta itself; Diamond-family CP discriminability is
-# ~0.6%, so 1e-3 leaves a factor-of-6 margin. Observed delta at u=0.1,
-# p=6 MPa is 2.32e-4; low-u / high-p cases sit in the few-times-1e-4
-# range. Per-face canonical CP would remove the approximation but is
-# blocked by Fluent 25.1's F_UDMI consumption defect.
+# ~0.6%, so 1e-3 leaves a factor-of-6 margin. Spread(c_p) uses the 0.1% /
+# 99.9% membrane-area quantiles of cm and Jw (not facet extrema); with
+# that definition observed delta_max at u=0.1, p=6 MPa is ~4e-4.
+# Per-face canonical CP would remove the approximation but is blocked by
+# Fluent 25.1's F_UDMI consumption defect.
 CP_SCALAR_RESCALE_GUARD_THRESHOLD = 1.0e-3
 
 # Area-backed facet-minimum hygiene for the unpaired cp_min/cp_max bound.
@@ -31,6 +32,12 @@ CP_SCALAR_RESCALE_GUARD_THRESHOLD = 1.0e-3
 FACET_MIN_AREA_CHECK_REL = 1.0e-3
 FACET_MIN_REJECT_AREA_FRAC = 1.0e-9
 FACET_MIN_TARGET_AREA_FRAC = 1.0e-4
+
+# Area quantiles for the unpaired cp spread used by the scalar-rescale guard.
+# Low/high ends of the membrane-area CDF (central 99.8%). Same treatment at
+# both ends so the error bound matches the area-weighted CP it validates.
+CP_SPREAD_AREA_QUANTILE_LO = 1.0e-3
+CP_SPREAD_AREA_QUANTILE_HI = 1.0 - CP_SPREAD_AREA_QUANTILE_LO
 
 # Shared iso_clip area-fraction bisection limits. Fluent surface-area reports
 # have ~8 significant figures; chasing tighter than AREA_FRAC_TOL is noise.

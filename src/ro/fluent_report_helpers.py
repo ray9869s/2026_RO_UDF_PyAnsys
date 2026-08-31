@@ -8,14 +8,15 @@ from typing import Any, Mapping, Optional
 
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
+    CP_SPREAD_AREA_QUANTILE_HI,
+    CP_SPREAD_AREA_QUANTILE_LO,
     FACET_MIN_REJECT_AREA_FRAC,
-    FACET_MIN_TARGET_AREA_FRAC,
+    bisect_area_fraction_threshold,
     canonical_rescale_factor,
     cp_l1_gu2017,
     facet_min_check_threshold,
     film_theory_cp_perm_mol_m3,
     midplane_window_bulk_aggregate,
-    resolve_area_backed_minimum,
     window_area_weighted_average,
     window_pointwise_max,
 )
@@ -765,14 +766,11 @@ def _compute_membrane_segment_via_iso_clip(
     """Area-weighted membrane metrics on one x-clipped wall surface set.
 
     iso_clip + surface-area / surface-areaavg / surface-facetmax|min on UDM
-    fields only. Film-theory c_p for the rescale guard is derived from cm/Jw
-    facet stats — Fluent 25.1 surface-report ``field`` does not accept setup
-    named expressions (``'field' has no attribute 'pp_expr_cp_perm'``).
-
-    Facet minima for cm and Jw are area-backed: a surface-facetmin that has
-    negligible iso_clip area below facet_min*(1+1e-3) is rejected (zero-area
-    clip-cut artifact) and replaced by the lowest threshold whose area
-    fraction reaches 1e-4.
+    fields only. Film-theory c_p for the rescale guard uses unpaired bounds
+    from the 0.1% / 99.9% membrane-area quantiles of cm and Jw (bisection on
+    iso_clip), not raw facet extrema — so the error bound matches the
+    area-weighted CP it validates. Facet minima are still recorded; a
+    zero-area facetmin is flagged via the area-support check.
     """
     if not wall_surface_names:
         return None
@@ -833,12 +831,15 @@ def _compute_membrane_segment_via_iso_clip(
             created_reports.append(reports[report_key])
             return float(compute_surface_report_value(solution, reports[report_key]))
 
+        call_i = {"n": 0}
+
         def _area_frac_field_below(field: str, threshold: float, sub_tag: str) -> float:
             """Area fraction on the x-clip with field in [0, threshold]."""
             thr = float(threshold)
             if thr < 0.0:
                 return 0.0
-            child = f"pp_mem_ab_{sub_tag}_{tag}"
+            call_i["n"] += 1
+            child = f"pp_mem_ab_{sub_tag}_{tag}_i{call_i['n']}"
             create_field_iso_clip(
                 solver,
                 child,
@@ -847,9 +848,8 @@ def _compute_membrane_segment_via_iso_clip(
                 0.0,
                 thr,
             )
-            if child not in created_clips:
-                created_clips.append(child)
-            area_name = f"pp_mem_ab_area_{sub_tag}_{tag}"
+            created_clips.append(child)
+            area_name = f"pp_mem_ab_area_{sub_tag}_{tag}_i{call_i['n']}"
             create_or_update_surface_field_report(
                 solution,
                 area_name,
@@ -857,57 +857,95 @@ def _compute_membrane_segment_via_iso_clip(
                 None,
                 [child],
             )
-            if area_name not in created_reports:
-                created_reports.append(area_name)
+            created_reports.append(area_name)
             try:
                 sub_area = float(compute_surface_report_value(solution, area_name))
             except Exception:
                 sub_area = 0.0
             return max(0.0, sub_area) / area_m2
 
-        def _area_backed_min(field: str, facet_min: float, search_upper: float, label: str):
+        def _area_quantile(
+            field: str,
+            quantile: float,
+            lo_bound: float,
+            hi_bound: float,
+            label: str,
+        ) -> float:
+            lo = float(lo_bound)
+            hi = float(hi_bound)
+            if hi < lo:
+                lo, hi = hi, lo
+
+            def frac(t: float, _f=field, _l=label) -> float:
+                return _area_frac_field_below(_f, t, _l)
+
+            # Expand upper bracket when the high quantile exceeds hi_bound.
+            expand = 0
+            frac_hi = frac(hi)
+            while frac_hi < float(quantile) and expand < 8:
+                span = max(hi - lo, abs(hi), 1.0e-30)
+                hi = hi + span
+                expand += 1
+                frac_hi = frac(hi)
+            result = bisect_area_fraction_threshold(
+                frac,
+                target_frac=float(quantile),
+                lo=lo,
+                hi=hi,
+            )
+            return result.value
+
+        def _facet_min_rejected(field: str, facet_min: float, label: str) -> bool:
             check_hi = facet_min_check_threshold(facet_min)
             frac_at_check = _area_frac_field_below(field, check_hi, f"{label}_chk")
-            used, rejected = resolve_area_backed_minimum(
-                facet_min,
-                area_frac_at_check=frac_at_check,
-                area_frac_below_fn=lambda thr, _f=field, _l=label: (
-                    _area_frac_field_below(_f, thr, f"{_l}_bis")
-                ),
-                search_upper=search_upper,
-                reject_frac=FACET_MIN_REJECT_AREA_FRAC,
-                target_frac=FACET_MIN_TARGET_AREA_FRAC,
-            )
-            return used, rejected, frac_at_check
+            return frac_at_check < FACET_MIN_REJECT_AREA_FRAC
 
         cm_avg = _avg("cm", cm_field)
         jw_avg = _avg("jw", jw_field)
         cp_udm9_avg = _avg("cp", cp_field)
         cp_udm9_max = _facet("cp_max", _SURFACE_FACET_MAX, cp_field)
-        cm_max = _facet("cm_max", _SURFACE_FACET_MAX, cm_field)
+        cm_max_raw = _facet("cm_max", _SURFACE_FACET_MAX, cm_field)
         cm_min_raw = _facet("cm_min", _SURFACE_FACET_MIN, cm_field)
-        jw_max = _facet("jw_max", _SURFACE_FACET_MAX, jw_field)
+        jw_max_raw = _facet("jw_max", _SURFACE_FACET_MAX, jw_field)
         jw_min_raw = _facet("jw_min", _SURFACE_FACET_MIN, jw_field)
 
-        cm_min_used, cm_min_rejected, _cm_frac = _area_backed_min(
+        cm_q_lo = _area_quantile(
             cm_field,
+            CP_SPREAD_AREA_QUANTILE_LO,
             cm_min_raw,
             max(cm_avg, cm_min_raw),
-            "cm",
+            "cmqlo",
         )
-        jw_min_used, jw_min_rejected, _jw_frac = _area_backed_min(
+        cm_q_hi = _area_quantile(
+            cm_field,
+            CP_SPREAD_AREA_QUANTILE_HI,
+            max(cm_avg, cm_min_raw),
+            max(cm_max_raw, cm_avg),
+            "cmqhi",
+        )
+        jw_q_lo = _area_quantile(
             jw_field,
+            CP_SPREAD_AREA_QUANTILE_LO,
             jw_min_raw,
             max(jw_avg, jw_min_raw),
-            "jw",
+            "jwqlo",
         )
+        jw_q_hi = _area_quantile(
+            jw_field,
+            CP_SPREAD_AREA_QUANTILE_HI,
+            max(jw_avg, jw_min_raw),
+            max(jw_max_raw, jw_avg),
+            "jwqhi",
+        )
+
+        cm_min_rejected = _facet_min_rejected(cm_field, cm_min_raw, "cm")
+        jw_min_rejected = _facet_min_rejected(jw_field, jw_min_raw, "jw")
         facet_min_rejected = bool(cm_min_rejected or jw_min_rejected)
 
-        # c_p = B*cm/(Jw+B): increases with cm, decreases with Jw.
-        # Unpaired bounds use area-backed minima for cm_min and jw_min.
+        # Unpaired quantile bounds: cp rises with cm, falls with Jw.
         cp_perm_avg = film_theory_cp_perm_mol_m3(cm_avg, jw_avg, b_perm)
-        cp_perm_min = film_theory_cp_perm_mol_m3(cm_min_used, jw_max, b_perm)
-        cp_perm_max = film_theory_cp_perm_mol_m3(cm_max, jw_min_used, b_perm)
+        cp_perm_min = film_theory_cp_perm_mol_m3(cm_q_lo, jw_q_hi, b_perm)
+        cp_perm_max = film_theory_cp_perm_mol_m3(cm_q_hi, jw_q_lo, b_perm)
 
         return {
             "area_m2": area_m2,
@@ -918,11 +956,15 @@ def _compute_membrane_segment_via_iso_clip(
             "cp_perm_min": cp_perm_min,
             "cp_perm_max": cp_perm_max,
             "cp_udm9_max": cp_udm9_max,
-            "cm_max": cm_max,
+            "cm_max": cm_max_raw,
             "cm_min_raw": cm_min_raw,
-            "cm_min_used": cm_min_used,
+            "cm_min_used": cm_q_lo,
             "jw_min_raw": jw_min_raw,
-            "jw_min_used": jw_min_used,
+            "jw_min_used": jw_q_lo,
+            "cm_q_lo": cm_q_lo,
+            "cm_q_hi": cm_q_hi,
+            "jw_q_lo": jw_q_lo,
+            "jw_q_hi": jw_q_hi,
             "facet_min_rejected": facet_min_rejected,
             "cm_min_rejected": cm_min_rejected,
             "jw_min_rejected": jw_min_rejected,
@@ -996,6 +1038,10 @@ def _segment_metrics_from_reductions(
         f"cm_min_used_cell_{cell_number}": segment.get("cm_min_used"),
         f"jw_min_raw_cell_{cell_number}": segment.get("jw_min_raw"),
         f"jw_min_used_cell_{cell_number}": segment.get("jw_min_used"),
+        f"cm_q_lo_cell_{cell_number}": segment.get("cm_q_lo"),
+        f"cm_q_hi_cell_{cell_number}": segment.get("cm_q_hi"),
+        f"jw_q_lo_cell_{cell_number}": segment.get("jw_q_lo"),
+        f"jw_q_hi_cell_{cell_number}": segment.get("jw_q_hi"),
     }
     return metrics
 

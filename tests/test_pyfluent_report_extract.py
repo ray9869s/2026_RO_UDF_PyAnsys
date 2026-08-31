@@ -474,6 +474,7 @@ class FakeIsoClipSession:
         field_max=None,
         field_min=None,
         true_field_min=None,
+        true_field_max=None,
     ):
         self.iso_clip = FakeNamedGroup()
         self.iso_surface = FakeNamedGroup()
@@ -494,12 +495,17 @@ class FakeIsoClipSession:
             "udm-7": 550.0,
             "udm-6": 0.8e-5,
         }
-        # Area-bearing floor per field. Defaults to facetmin (full support).
-        # Set below facetmin to simulate a zero-area facetmin poison.
+        # Area-bearing floor/ceiling per field for the fake CDF.
+        # Defaults: floor = facetmin, ceiling = facetmax.
         self.true_field_min = (
             true_field_min
             if true_field_min is not None
             else dict(self.field_min)
+        )
+        self.true_field_max = (
+            true_field_max
+            if true_field_max is not None
+            else dict(self.field_max)
         )
         self.compute_calls = []
 
@@ -525,11 +531,20 @@ class FakeIsoClipSession:
                             true_min = float(
                                 self.true_field_min.get(clip_field, 0.0)
                             )
+                            true_max = float(
+                                self.true_field_max.get(
+                                    clip_field,
+                                    self.field_max.get(clip_field, true_min),
+                                )
+                            )
                             if thr + 1.0e-15 < true_min:
                                 return {name: 0.0}
-                            # Enough area that TARGET_FRAC (1e-4) is met once
-                            # the threshold reaches the area-bearing floor.
-                            return {name: self.area * 1.0e-3}
+                            if true_max <= true_min:
+                                return {name: self.area}
+                            if thr >= true_max:
+                                return {name: self.area}
+                            frac = (thr - true_min) / (true_max - true_min)
+                            return {name: self.area * max(0.0, min(1.0, frac))}
                 return {name: self.area}
             if rtype == "surface-massavg":
                 return {name: self.salt_massavg}
@@ -639,16 +654,23 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
     assert metrics["c_b_window_mol_m3"] == pytest.approx(615.0)
     assert metrics["cp_facet_min_rejected_cell_3"] is False
     assert metrics["cm_min_raw_cell_3"] == pytest.approx(550.0)
-    assert metrics["cm_min_used_cell_3"] == pytest.approx(550.0)
+    # cm_min_used is the 0.1% area quantile (near the area-bearing floor).
+    assert metrics["cm_min_used_cell_3"] == pytest.approx(550.0, rel=1e-2)
+    assert metrics["cm_q_lo_cell_3"] == pytest.approx(
+        metrics["cm_min_used_cell_3"]
+    )
+    assert metrics["cm_q_hi_cell_3"] == pytest.approx(650.0, rel=1e-2)
+    assert metrics["pp_cp_canon_rescale_delta_cell_3"] < 1.0e-3
 
 
 def test_segmented_membrane_cp_rejects_zero_area_facetmin():
-    """Facetmin=0 with no iso_clip area is replaced by an area-backed floor."""
+    """Facetmin=0 with no iso_clip area is flagged; delta uses quantiles."""
     session = FakeIsoClipSession(
         field_avgs={"udm-7": 620.0, "udm-6": 1.0e-5, "udm-9": 1.087},
         field_max={"udm-7": 700.0, "udm-6": 1.2e-5, "udm-9": 1.2},
         field_min={"udm-7": 0.0, "udm-6": 0.8e-5},
         true_field_min={"udm-7": 618.0, "udm-6": 0.8e-5},
+        true_field_max={"udm-7": 700.0, "udm-6": 1.2e-5},
     )
     metrics = segmented_membrane_cp_metrics(
         solver=session.solver,
@@ -667,7 +689,8 @@ def test_segmented_membrane_cp_rejects_zero_area_facetmin():
     )
     assert metrics["cp_facet_min_rejected_cell_2"] is True
     assert metrics["cm_min_raw_cell_2"] == pytest.approx(0.0)
-    assert metrics["cm_min_used_cell_2"] == pytest.approx(618.0, rel=1e-3)
+    assert metrics["cm_min_used_cell_2"] == pytest.approx(618.0, rel=1e-2)
+    assert metrics["cm_q_hi_cell_2"] == pytest.approx(700.0, rel=1e-2)
     assert metrics["pp_cp_canon_rescale_delta_cell_2"] < 1.0e-3
     assert metrics["pp_cp_L2_cell_2"] == pytest.approx(1.087)
 
