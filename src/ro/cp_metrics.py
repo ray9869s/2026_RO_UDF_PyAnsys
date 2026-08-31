@@ -34,15 +34,21 @@ FACET_MIN_REJECT_AREA_FRAC = 1.0e-9
 FACET_MIN_TARGET_AREA_FRAC = 1.0e-4
 
 # Area quantiles for the unpaired cp spread used by the scalar-rescale guard.
-# Low/high ends of the membrane-area CDF (central 99.8%). Same treatment at
-# both ends so the error bound matches the area-weighted CP it validates.
+# High end (cp_max): 99.9% of cm and 0.1% of Jw via iso_clip bisection.
+# Low end (cp_min): area-backed facet minima (FACET_MIN_TARGET_AREA_FRAC) +
+# facetmax Jw — the lo quantiles barely move spread once zero-area facetmin
+# is handled, and cost two full bisections per cell.
 CP_SPREAD_AREA_QUANTILE_LO = 1.0e-3
 CP_SPREAD_AREA_QUANTILE_HI = 1.0 - CP_SPREAD_AREA_QUANTILE_LO
 
-# Shared iso_clip area-fraction bisection limits. Fluent surface-area reports
-# have ~8 significant figures; chasing tighter than AREA_FRAC_TOL is noise.
-BISECT_MAX_ITER = 40
-BISECT_INTERVAL_REL_TOL = 1.0e-9
+# Shared iso_clip area-fraction bisection limits.
+# AREA_FRAC_TOL: stop when |frac - target| is within Fluent report noise.
+# INTERVAL_REL_TOL: stop when the threshold bracket is tight enough for film
+# theory (1e-3 ≈ 10–14 halvings from an O(1) relative width). The old 1e-9
+# never fired before max_iter on discrete membrane CDFs, where frac jumps
+# from below-target to 1.0 in one face and never lands inside AREA_FRAC_TOL.
+BISECT_MAX_ITER = 20
+BISECT_INTERVAL_REL_TOL = 1.0e-3
 BISECT_AREA_FRAC_TOL = 1.0e-7
 
 
@@ -131,7 +137,12 @@ def bisect_area_fraction_threshold(
     for iteration in range(1, int(max_iter) + 1):
         mid = 0.5 * (lo_v + hi_v)
         frac_mid = _frac(mid)
-        # Area tolerance: measured fraction is within Fluent noise of target.
+        # Area tolerance expression (both must hold):
+        #   abs(frac_mid - target) <= area_frac_tol
+        #   and frac_mid >= target - area_frac_tol
+        # On a discrete membrane CDF, frac often jumps from below-target to
+        # ~1.0 in one face, so this band is never hit — interval_tol then
+        # stops the search (see BISECT_INTERVAL_REL_TOL).
         if abs(frac_mid - target) <= tol and frac_mid >= target - tol:
             return AreaFractionBisectResult(
                 value=mid,

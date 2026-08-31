@@ -654,17 +654,17 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
     assert metrics["c_b_window_mol_m3"] == pytest.approx(615.0)
     assert metrics["cp_facet_min_rejected_cell_3"] is False
     assert metrics["cm_min_raw_cell_3"] == pytest.approx(550.0)
-    # cm_min_used is the 0.1% area quantile (near the area-bearing floor).
+    # Low end: area-backed facetmin (kept when it has area support).
     assert metrics["cm_min_used_cell_3"] == pytest.approx(550.0, rel=1e-2)
-    assert metrics["cm_q_lo_cell_3"] == pytest.approx(
-        metrics["cm_min_used_cell_3"]
-    )
+    # High end: 99.9% area quantile (near facetmax on the linear fake CDF).
+    assert metrics["cm_q_lo_cell_3"] is None
     assert metrics["cm_q_hi_cell_3"] == pytest.approx(650.0, rel=1e-2)
+    assert metrics["jw_q_lo_cell_3"] == pytest.approx(0.8e-5, rel=1e-2)
     assert metrics["pp_cp_canon_rescale_delta_cell_3"] < 1.0e-3
 
 
 def test_segmented_membrane_cp_rejects_zero_area_facetmin():
-    """Facetmin=0 with no iso_clip area is flagged; delta uses quantiles."""
+    """Facetmin=0 with no iso_clip area is replaced; cp_max uses quantiles."""
     session = FakeIsoClipSession(
         field_avgs={"udm-7": 620.0, "udm-6": 1.0e-5, "udm-9": 1.087},
         field_max={"udm-7": 700.0, "udm-6": 1.2e-5, "udm-9": 1.2},

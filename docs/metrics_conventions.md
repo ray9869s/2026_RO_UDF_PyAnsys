@@ -79,25 +79,30 @@ from `surface-facetmax` / `surface-facetmin` of film-theory \(c_p\)
 facet-min hygiene step, the low end used an area-backed substitute when
 facetmin had no area support; the high end remained a raw facet maximum.
 
-**New spread (production):** \(\mathrm{spread}(c_p)=c_{p,q_{\mathrm{hi}}}-c_{p,q_{\mathrm{lo}}}\)
-at 99.9% / 0.1% of membrane area per evaluation cell. Resolve the
-membrane-area CDF of \(c_m\) and \(J_w\) by bisection on nested
-iso_clip, then form unpaired film-theory bounds
+**New spread (production):** unpaired film-theory bounds per evaluation
+cell on the **combined** top+bottom membrane clip:
+
+- \(c_{p,\min}\): area-backed facetmin of \(c_m\) and facetmax of \(J_w\)
+  (same hygiene as before; the 0.1% lo quantiles barely move this end
+  once zero-area facetmin is handled).
+- \(c_{p,\max}\): \(c_m\) at 99.9% and \(J_w\) at 0.1% of membrane area,
+  each resolved by bisection on a **single reused** nested iso_clip
+  (deleted after every area probe — no per-iteration surface accumulation).
 
 \[
-c_{p,\min} = \frac{B\,c_{m,q_{0.1\%}}}{J_{w,q_{99.9\%}}+B},\quad
-c_{p,\max} = \frac{B\,c_{m,q_{99.9\%}}}{J_{w,q_{0.1\%}}+B}.
+c_{p,\max} = \frac{B\,c_{m,q_{99.9\%}}}{J_{w,q_{0.1\%}}+B},\quad
+\mathrm{spread}(c_p)=c_{p,\max}-c_{p,\min}.
 \]
 
-**Why not facet extrema:** CP itself is area-weighted
-(`cp_udm9_avg`). A raw facetmax / facetmin spread lets a
-\({\sim}10^{-4}\) area region dominate \(\delta\) while leaving the
-averaged CP unchanged to \({\sim}0.2\%\). The low end was already
-area-backed (`FACET_MIN_TARGET_AREA_FRAC` \(=10^{-4}\), the 0.01% low
-quantile); the high end remained a raw facet maximum — asymmetric.
-Applying the same area treatment at both ends (0.1% / 99.9%, central
-99.8% of membrane area) makes the error bound consistent with the
-quantity it validates.
+Per-wall (`upper`/`lower`) aggregates reuse the combined-membrane
+\(k_N\); they do not re-run quantile bisection. Brackets warm-start from
+the previous evaluation cell within a run.
+
+**Why not facet extrema at the high end:** CP itself is area-weighted
+(`cp_udm9_avg`). A raw facetmax spread lets a \({\sim}10^{-4}\) area
+region dominate \(\delta\) while leaving the averaged CP unchanged to
+\({\sim}0.2\%\). Applying an area treatment at the high end makes the
+error bound consistent with the quantity it validates.
 
 This choice is **not** sized around the \(u=0.1\) saturation patch
 (Yi \(\ge 0.26\) area fraction \(1.64\times10^{-4}\) on u0p1 cell 7). The
@@ -131,9 +136,9 @@ quantile spread, those minima were replaced when the area fraction below
 | 8 | 0 → 322 | \(3.36\times10^{-6}\) kept | cm rejected only |
 
 Summary columns still record `cm_min_raw/used`, `jw_min_raw/used`,
-`cp_facet_min_rejected_cell_{N}`, plus `cm_q_lo/hi_cell_{N}` and
-`jw_q_lo/hi_cell_{N}`. `cm_min_used` / `jw_min_used` are the 0.1%
-quantiles used in the unpaired bound.
+`cp_facet_min_rejected_cell_{N}`, plus `cm_q_hi_cell_{N}` and
+`jw_q_lo_cell_{N}`. `cm_min_used` / `jw_min_used` are the area-backed
+facet minima used in \(c_{p,\min}\).
 
 **Why \(10^{-3}\):** the previous \(10^{-4}\) threshold came from
 \(\partial k/\partial c_p \sim 2\times10^{-6}\), which assumes

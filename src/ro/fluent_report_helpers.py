@@ -11,12 +11,14 @@ from ro.cp_metrics import (
     CP_SPREAD_AREA_QUANTILE_HI,
     CP_SPREAD_AREA_QUANTILE_LO,
     FACET_MIN_REJECT_AREA_FRAC,
+    FACET_MIN_TARGET_AREA_FRAC,
     bisect_area_fraction_threshold,
     canonical_rescale_factor,
     cp_l1_gu2017,
     facet_min_check_threshold,
     film_theory_cp_perm_mol_m3,
     midplane_window_bulk_aggregate,
+    resolve_area_backed_minimum,
     window_area_weighted_average,
     window_pointwise_max,
 )
@@ -579,15 +581,20 @@ def create_field_iso_clip(
     range_min: float,
     range_max: float,
 ) -> str:
-    """Create a field-value iso-clip of named surfaces (Fluent 25.1 path)."""
+    """Create or update a field-value iso-clip (Fluent 25.1 path).
+
+    Reuses ``clip_name`` in place when it already exists (update field /
+    surfaces / range) so bisection does not accumulate surfaces.
+    """
     if not surface_names:
         raise ValueError(f"Cannot create iso-clip {clip_name!r}: no surfaces.")
     iso_group = solver.settings.results.surfaces.iso_clip
     existing = list_named_object_names(iso_group, "results.surfaces.iso_clip")
     if clip_name in existing:
-        iso_group.delete(clip_name)
-    iso_group.create(clip_name)
-    clip = iso_group[clip_name]
+        clip = iso_group[clip_name]
+    else:
+        iso_group.create(clip_name)
+        clip = iso_group[clip_name]
     clip.field = field
     clip.surfaces = list(surface_names)
     clip.range.minimum = float(range_min)
@@ -762,15 +769,21 @@ def _compute_membrane_segment_via_iso_clip(
     cm_field="udm-7",
     jw_field="udm-6",
     cp_field="udm-9",
+    compute_spread=True,
+    warm_start=None,
 ):
     """Area-weighted membrane metrics on one x-clipped wall surface set.
 
     iso_clip + surface-area / surface-areaavg / surface-facetmax|min on UDM
-    fields only. Film-theory c_p for the rescale guard uses unpaired bounds
-    from the 0.1% / 99.9% membrane-area quantiles of cm and Jw (bisection on
-    iso_clip), not raw facet extrema — so the error bound matches the
-    area-weighted CP it validates. Facet minima are still recorded; a
-    zero-area facetmin is flagged via the area-support check.
+    fields only. When ``compute_spread`` is True, the rescale-guard spread
+    uses:
+      - cp_min from area-backed facet minima (cm) + facetmax (Jw)
+      - cp_max from 99.9% cm / 0.1% Jw area quantiles (iso_clip bisection)
+
+    Nested field clips reuse one name per quantity and are deleted after each
+    area probe (same pattern as the quantile diagnostic) so surfaces do not
+    accumulate. ``warm_start`` may supply prior-cell ``cm_q_hi`` / ``jw_q_lo``
+    to seed the bisection brackets.
     """
     if not wall_surface_names:
         return None
@@ -831,15 +844,17 @@ def _compute_membrane_segment_via_iso_clip(
             created_reports.append(reports[report_key])
             return float(compute_surface_report_value(solution, reports[report_key]))
 
-        call_i = {"n": 0}
-
         def _area_frac_field_below(field: str, threshold: float, sub_tag: str) -> float:
-            """Area fraction on the x-clip with field in [0, threshold]."""
+            """Area fraction on the x-clip with field in [0, threshold].
+
+            One reusable clip + area report per ``sub_tag``; deleted after the
+            probe so Fluent never accumulates bisection surfaces.
+            """
             thr = float(threshold)
             if thr < 0.0:
                 return 0.0
-            call_i["n"] += 1
-            child = f"pp_mem_ab_{sub_tag}_{tag}_i{call_i['n']}"
+            child = f"pp_mem_ab_{sub_tag}_{tag}"
+            area_name = f"pp_mem_ab_area_{sub_tag}_{tag}"
             create_field_iso_clip(
                 solver,
                 child,
@@ -848,8 +863,6 @@ def _compute_membrane_segment_via_iso_clip(
                 0.0,
                 thr,
             )
-            created_clips.append(child)
-            area_name = f"pp_mem_ab_area_{sub_tag}_{tag}_i{call_i['n']}"
             create_or_update_surface_field_report(
                 solution,
                 area_name,
@@ -857,11 +870,19 @@ def _compute_membrane_segment_via_iso_clip(
                 None,
                 [child],
             )
-            created_reports.append(area_name)
             try:
                 sub_area = float(compute_surface_report_value(solution, area_name))
             except Exception:
                 sub_area = 0.0
+            finally:
+                try:
+                    delete_surface_field_report(solution, area_name)
+                except Exception:
+                    pass
+                try:
+                    delete_iso_clip(solver, child)
+                except Exception:
+                    pass
             return max(0.0, sub_area) / area_m2
 
         def _area_quantile(
@@ -870,6 +891,7 @@ def _compute_membrane_segment_via_iso_clip(
             lo_bound: float,
             hi_bound: float,
             label: str,
+            seed=None,
         ) -> float:
             lo = float(lo_bound)
             hi = float(hi_bound)
@@ -878,6 +900,16 @@ def _compute_membrane_segment_via_iso_clip(
 
             def frac(t: float, _f=field, _l=label) -> float:
                 return _area_frac_field_below(_f, t, _l)
+
+            # Warm-start: collapse one side of the bracket using the prior cell.
+            if seed is not None and math.isfinite(float(seed)):
+                s = float(seed)
+                if lo < s < hi:
+                    fs = frac(s)
+                    if fs >= float(quantile):
+                        hi = s
+                    else:
+                        lo = s
 
             # Expand upper bracket when the high quantile exceeds hi_bound.
             expand = 0
@@ -895,10 +927,20 @@ def _compute_membrane_segment_via_iso_clip(
             )
             return result.value
 
-        def _facet_min_rejected(field: str, facet_min: float, label: str) -> bool:
+        def _area_backed_min(field: str, facet_min: float, search_upper: float, label: str):
             check_hi = facet_min_check_threshold(facet_min)
             frac_at_check = _area_frac_field_below(field, check_hi, f"{label}_chk")
-            return frac_at_check < FACET_MIN_REJECT_AREA_FRAC
+            used, rejected = resolve_area_backed_minimum(
+                facet_min,
+                area_frac_at_check=frac_at_check,
+                area_frac_below_fn=lambda thr, _f=field, _l=label: (
+                    _area_frac_field_below(_f, thr, f"{_l}_bis")
+                ),
+                search_upper=search_upper,
+                reject_frac=FACET_MIN_REJECT_AREA_FRAC,
+                target_frac=FACET_MIN_TARGET_AREA_FRAC,
+            )
+            return used, rejected
 
         cm_avg = _avg("cm", cm_field)
         jw_avg = _avg("jw", jw_field)
@@ -909,19 +951,57 @@ def _compute_membrane_segment_via_iso_clip(
         jw_max_raw = _facet("jw_max", _SURFACE_FACET_MAX, jw_field)
         jw_min_raw = _facet("jw_min", _SURFACE_FACET_MIN, jw_field)
 
-        cm_q_lo = _area_quantile(
+        cp_perm_avg = film_theory_cp_perm_mol_m3(cm_avg, jw_avg, b_perm)
+
+        if not compute_spread:
+            return {
+                "area_m2": area_m2,
+                "cm_avg": cm_avg,
+                "jw_avg": jw_avg,
+                "cp_udm9_avg": cp_udm9_avg,
+                "cp_perm_avg": cp_perm_avg,
+                "cp_perm_min": cp_perm_avg,
+                "cp_perm_max": cp_perm_avg,
+                "cp_udm9_max": cp_udm9_max,
+                "cm_max": cm_max_raw,
+                "cm_min_raw": cm_min_raw,
+                "cm_min_used": cm_min_raw,
+                "jw_min_raw": jw_min_raw,
+                "jw_min_used": jw_min_raw,
+                "cm_q_lo": None,
+                "cm_q_hi": None,
+                "jw_q_lo": None,
+                "jw_q_hi": None,
+                "facet_min_rejected": False,
+                "cm_min_rejected": False,
+                "jw_min_rejected": False,
+                "has_spread": False,
+            }
+
+        warm = warm_start or {}
+        cm_min_used, cm_min_rejected = _area_backed_min(
             cm_field,
-            CP_SPREAD_AREA_QUANTILE_LO,
             cm_min_raw,
             max(cm_avg, cm_min_raw),
-            "cmqlo",
+            "cm",
         )
+        jw_min_used, jw_min_rejected = _area_backed_min(
+            jw_field,
+            jw_min_raw,
+            max(jw_avg, jw_min_raw),
+            "jw",
+        )
+        facet_min_rejected = bool(cm_min_rejected or jw_min_rejected)
+
+        # High-end quantiles only (drive cp_max / spread). Low end uses
+        # area-backed mins + facetmax Jw.
         cm_q_hi = _area_quantile(
             cm_field,
             CP_SPREAD_AREA_QUANTILE_HI,
             max(cm_avg, cm_min_raw),
             max(cm_max_raw, cm_avg),
             "cmqhi",
+            seed=warm.get("cm_q_hi"),
         )
         jw_q_lo = _area_quantile(
             jw_field,
@@ -929,22 +1009,10 @@ def _compute_membrane_segment_via_iso_clip(
             jw_min_raw,
             max(jw_avg, jw_min_raw),
             "jwqlo",
-        )
-        jw_q_hi = _area_quantile(
-            jw_field,
-            CP_SPREAD_AREA_QUANTILE_HI,
-            max(jw_avg, jw_min_raw),
-            max(jw_max_raw, jw_avg),
-            "jwqhi",
+            seed=warm.get("jw_q_lo"),
         )
 
-        cm_min_rejected = _facet_min_rejected(cm_field, cm_min_raw, "cm")
-        jw_min_rejected = _facet_min_rejected(jw_field, jw_min_raw, "jw")
-        facet_min_rejected = bool(cm_min_rejected or jw_min_rejected)
-
-        # Unpaired quantile bounds: cp rises with cm, falls with Jw.
-        cp_perm_avg = film_theory_cp_perm_mol_m3(cm_avg, jw_avg, b_perm)
-        cp_perm_min = film_theory_cp_perm_mol_m3(cm_q_lo, jw_q_hi, b_perm)
+        cp_perm_min = film_theory_cp_perm_mol_m3(cm_min_used, jw_max_raw, b_perm)
         cp_perm_max = film_theory_cp_perm_mol_m3(cm_q_hi, jw_q_lo, b_perm)
 
         return {
@@ -958,16 +1026,17 @@ def _compute_membrane_segment_via_iso_clip(
             "cp_udm9_max": cp_udm9_max,
             "cm_max": cm_max_raw,
             "cm_min_raw": cm_min_raw,
-            "cm_min_used": cm_q_lo,
+            "cm_min_used": cm_min_used,
             "jw_min_raw": jw_min_raw,
-            "jw_min_used": jw_q_lo,
-            "cm_q_lo": cm_q_lo,
+            "jw_min_used": jw_min_used,
+            "cm_q_lo": None,
             "cm_q_hi": cm_q_hi,
             "jw_q_lo": jw_q_lo,
-            "jw_q_hi": jw_q_hi,
+            "jw_q_hi": None,
             "facet_min_rejected": facet_min_rejected,
             "cm_min_rejected": cm_min_rejected,
             "jw_min_rejected": jw_min_rejected,
+            "has_spread": True,
         }
     finally:
         for report_name in reversed(created_reports):
@@ -1155,8 +1224,13 @@ def segmented_membrane_cp_metrics(
 
     metrics: dict[str, Any] = {}
     segment_cache: dict[int, dict] = {}
+    eval_set = (
+        set(int(c) for c in evaluation_cell_numbers)
+        if evaluation_cell_numbers is not None
+        else set()
+    )
 
-    def _segment_for(cell_number, surfaces, tag_prefix):
+    def _segment_for(cell_number, surfaces, tag_prefix, *, compute_spread, warm_start=None):
         x_min_m = unit_cell_boundary_x_m[cell_number - 1]
         x_max_m = unit_cell_boundary_x_m[cell_number]
         return _compute_membrane_segment_via_iso_clip(
@@ -1167,15 +1241,30 @@ def segmented_membrane_cp_metrics(
             x_max_m,
             b_perm,
             tag=f"{tag_prefix}_{cell_number}",
+            compute_spread=compute_spread,
+            warm_start=warm_start,
         )
 
+    warm_start = None
     for cell_number in spacer_cells:
-        segment = _segment_for(cell_number, wall_surface_names, "comb")
+        need_spread = cell_number in eval_set
+        segment = _segment_for(
+            cell_number,
+            wall_surface_names,
+            "comb",
+            compute_spread=need_spread,
+            warm_start=warm_start if need_spread else None,
+        )
         if segment is None:
             raise ValueError(
                 f"Membrane segment for cell {cell_number} has no positive area."
             )
         segment_cache[cell_number] = segment
+        if need_spread and segment.get("has_spread"):
+            warm_start = {
+                "cm_q_hi": segment.get("cm_q_hi"),
+                "jw_q_lo": segment.get("jw_q_lo"),
+            }
         area_m2 = segment["area_m2"]
         cm_avg = segment["cm_avg"]
         jw_avg = segment["jw_avg"]
@@ -1233,14 +1322,27 @@ def segmented_membrane_cp_metrics(
         delta_values: dict[int, float] = {}
 
         for cell_number in evaluation_cell_numbers:
-            if cell_number not in segment_cache:
-                segment = _segment_for(cell_number, wall_surface_names, "comb")
+            if cell_number not in segment_cache or not segment_cache[cell_number].get(
+                "has_spread"
+            ):
+                segment = _segment_for(
+                    cell_number,
+                    wall_surface_names,
+                    "comb",
+                    compute_spread=True,
+                    warm_start=warm_start,
+                )
                 if segment is None:
                     raise ValueError(
                         f"Membrane segment for evaluation cell {cell_number} "
                         "has no positive area."
                     )
                 segment_cache[cell_number] = segment
+                if segment.get("has_spread"):
+                    warm_start = {
+                        "cm_q_hi": segment.get("cm_q_hi"),
+                        "jw_q_lo": segment.get("jw_q_lo"),
+                    }
             segment = segment_cache[cell_number]
             c_b_cell = c_b_by_cell_mol_per_m3[cell_number]
             cell_metrics = _segment_metrics_from_reductions(
@@ -1374,6 +1476,9 @@ def segmented_membrane_cp_metrics(
             )
 
         if wall_surfaces_by_name:
+            # Per-wall breakdown reuses the combined-membrane k_N. Independent
+            # top/bottom quantile bisection is not needed for the guard and
+            # previously tripled the Fluent surface traffic (w_lower / w_upper).
             for wall_name, wall_names in wall_surfaces_by_name.items():
                 suffix = _wall_metric_suffix(wall_name)
                 per_wall_canon_avg: dict[int, float] = {}
@@ -1384,26 +1489,23 @@ def segmented_membrane_cp_metrics(
                         cell_number,
                         wall_names,
                         f"w_{suffix}",
+                        compute_spread=False,
                     )
                     if segment is None:
                         raise ValueError(
                             f"Membrane segment for {wall_name} cell "
                             f"{cell_number} has no positive area."
                         )
-                    c_b_cell = c_b_by_cell_mol_per_m3[cell_number]
-                    cell_metrics = _segment_metrics_from_reductions(
-                        segment,
-                        cell_number,
-                        c_b_cell,
-                        c0,
+                    k_n = float(
+                        metrics[f"pp_cp_canon_rescale_k_cell_{cell_number}"]
                     )
                     per_wall_area[cell_number] = segment["area_m2"]
-                    per_wall_canon_avg[cell_number] = cell_metrics[
-                        f"pp_cp_canon_cell_{cell_number}"
-                    ]
-                    per_wall_canon_max[cell_number] = cell_metrics[
-                        f"pp_cp_canon_max_cell_{cell_number}"
-                    ]
+                    per_wall_canon_avg[cell_number] = (
+                        float(segment["cp_udm9_avg"]) * k_n
+                    )
+                    per_wall_canon_max[cell_number] = (
+                        float(segment["cp_udm9_max"]) * k_n
+                    )
                 wall_agg = _cp_scope_aggregates(
                     evaluation_cell_numbers,
                     per_wall_area,

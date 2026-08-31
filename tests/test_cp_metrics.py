@@ -154,7 +154,7 @@ def test_resolve_area_backed_minimum_rejects_zero_area_poison():
         target_frac=FACET_MIN_TARGET_AREA_FRAC,
     )
     assert rejected is True
-    assert used == pytest.approx(true_min, rel=1e-4)
+    assert used == pytest.approx(true_min, rel=1e-3)
     assert used > 600.0
 
 
@@ -203,5 +203,29 @@ def test_bisect_stops_on_interval_tol_when_frac_plateaus():
         hi=700.0,
     )
     assert result.stop_reason in {"area_tol", "interval_tol"}
-    assert result.value == pytest.approx(true_t, rel=1e-6)
+    assert result.value == pytest.approx(true_t, rel=1e-3)
     assert result.iterations < BISECT_MAX_ITER
+
+
+def test_bisect_stops_on_discrete_high_quantile_jump():
+    """High-quantile: frac jumps over the area_tol band; interval_tol fires."""
+    target = 0.999
+    true_t = 850.0
+    calls = {"n": 0}
+
+    def jump_frac(threshold: float) -> float:
+        calls["n"] += 1
+        # Below the last face: 0.998; at/above: 1.0 — never inside 1e-7 of 0.999.
+        return 0.998 if threshold < true_t else 1.0
+
+    result = bisect_area_fraction_threshold(
+        jump_frac,
+        target_frac=target,
+        lo=600.0,
+        hi=17000.0,
+    )
+    assert result.stop_reason == "interval_tol"
+    assert result.iterations <= BISECT_MAX_ITER
+    assert result.iterations <= 20
+    assert result.value == pytest.approx(true_t, rel=1e-3)
+    assert calls["n"] < 30
