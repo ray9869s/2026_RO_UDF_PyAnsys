@@ -320,13 +320,16 @@ def volume_fractions_above(
     """Volume fraction of fluid domain with Yi > thresh (reduction API).
 
     Prefers sum_if(expression="1", weight="Volume") under a MassFraction
-    condition. Also reports cell-count fractions so a broken sum_if still
-    yields a usable signal.
+    condition, divided by the same Sum(1*Volume) over all fluid cells.
+    Also reports cell-count fractions so a broken sum_if still yields a
+    usable signal. ``volume_total_m3`` from ``reduction.volume()`` is kept
+    as a diagnostic only — do not use it as the volume-fraction denominator.
     """
     out: dict[str, Any] = {
         "fluid_zones": list(fluid_zones),
         "species_name": species_name,
         "volume_total_m3": None,
+        "vol_sum_total": None,
         "cell_count_total": None,
         "vol_frac_yi_gt": {},
         "vol_m3_yi_gt": {},
@@ -390,7 +393,11 @@ def volume_fractions_above(
                 f"count_if>{thresh}: {type(exc).__name__}: {exc}"
             )
 
-        # True volume: sum_if requires weight= on Fluent 25.1 / PyFluent 0.38.
+        # Conditional volume via SumIf(1, weight=Volume). Do NOT divide by
+        # reduction.volume(): on Fluent 25.1 / PyFluent 0.38 those two paths
+        # do not share a common scale (observed vol_frac ~ 4.75e7). Use the
+        # same Sum(1*Volume) measure for the denominator so the ratio is a
+        # true volume fraction.
         try:
             v = float(
                 reduction.sum_if(
@@ -401,7 +408,15 @@ def volume_fractions_above(
                 )
             )
             out["vol_m3_yi_gt"][str(thresh)] = v
-            total_v = out.get("volume_total_m3")
+            if out.get("vol_sum_total") is None:
+                out["vol_sum_total"] = float(
+                    reduction.sum(
+                        expression="1",
+                        weight="Volume",
+                        locations=locations,
+                    )
+                )
+            total_v = out.get("vol_sum_total")
             if isinstance(total_v, float) and total_v > 0.0:
                 out["vol_frac_yi_gt"][str(thresh)] = v / total_v
                 vol_ok = True
@@ -410,7 +425,7 @@ def volume_fractions_above(
                 f"sum_if_vol>{thresh}: {type(exc).__name__}: {exc}"
             )
 
-    out["method"] = "sum_if_Volume" if vol_ok else "count_if_only"
+    out["method"] = "sum_if_Volume_ratio" if vol_ok else "count_if_only"
     return out
 
 
@@ -774,6 +789,7 @@ def print_run_tables(run_id: str, payload: dict[str, Any]) -> None:
         f"\n  Fluid VOLUME fractions "
         f"(method={vol.get('method')}; "
         f"V_tot={fmt(vol.get('volume_total_m3'))} m3; "
+        f"sumV={fmt(vol.get('vol_sum_total'))}; "
         f"Yi_max={fmt(vol.get('yi_max'))}):"
     )
     print(

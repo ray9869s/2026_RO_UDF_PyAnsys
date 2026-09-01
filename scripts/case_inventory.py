@@ -23,6 +23,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from ro.convergence_quality import (
+    QUALITY_FAIL,
+    continuity_final_from_case_dir,
+    evaluate_convergence_quality,
+    metrics_from_summary_row,
+)
 from ro.manifest import iter_run_manifests, read_run_manifest
 from ro.paths import (
     any_id_filter,
@@ -51,6 +57,7 @@ POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
 POSTPROCESSED_UNCONVERGED = "POSTPROCESSED_UNCONVERGED"
 NEEDS_SHEAR_POSTPROCESSING = "NEEDS_SHEAR_POSTPROCESSING"
 NEEDS_SOLVER_RERUN = "NEEDS_SOLVER_RERUN"
+NEEDS_LONGER_SOLVE = "NEEDS_LONGER_SOLVE"
 NEEDS_REPORT_EXTRACTION = "NEEDS_REPORT_EXTRACTION"
 MISSING_CASE_OR_DATA = "MISSING_CASE_OR_DATA"
 UNKNOWN_REVIEW_REQUIRED = "UNKNOWN_REVIEW_REQUIRED"
@@ -1274,6 +1281,58 @@ def detect_report_status(case_record: dict[str, Any]) -> None:
         update[canonical] = value
         update[f"{canonical}_column"] = summary_columns.get(canonical, "")
     case_record.update(update)
+    case_record["_summary_row"] = row
+
+
+def detect_convergence_quality(case_record: dict[str, Any]) -> None:
+    """Post-hoc gate from summary metrics + continuity; separate from stop_reason."""
+    row = case_record.get("_summary_row")
+    if not isinstance(row, dict) or not row:
+        case_record.update(
+            {
+                "convergence_quality": "",
+                "needs_longer_solve": False,
+                "convergence_quality_failures": [],
+                "continuity_final": "",
+                "lmh_relative_difference": "",
+                "mass_balance_relative_error": "",
+                "pp_pressure_drop_rel_spread_cells_4_7": "",
+            }
+        )
+        return
+
+    metrics = metrics_from_summary_row(row)
+    case_dir = case_record.get("_case_dir_path")
+    continuity = None
+    if isinstance(case_dir, Path):
+        continuity = continuity_final_from_case_dir(case_dir)
+    result = evaluate_convergence_quality(metrics, continuity_final=continuity)
+    case_record.update(
+        {
+            "convergence_quality": result["convergence_quality"],
+            "needs_longer_solve": bool(result["needs_longer_solve"]),
+            "convergence_quality_failures": list(result["failures"]),
+            "convergence_quality_unavailable": list(result["unavailable"]),
+            "continuity_final": (
+                "" if result["continuity_final"] is None else result["continuity_final"]
+            ),
+            "lmh_relative_difference": (
+                ""
+                if result["lmh_relative_difference"] is None
+                else result["lmh_relative_difference"]
+            ),
+            "mass_balance_relative_error": (
+                ""
+                if result["mass_balance_relative_error"] is None
+                else result["mass_balance_relative_error"]
+            ),
+            "pp_pressure_drop_rel_spread_cells_4_7": (
+                ""
+                if result["pp_pressure_drop_rel_spread_cells_4_7"] is None
+                else result["pp_pressure_drop_rel_spread_cells_4_7"]
+            ),
+        }
+    )
 
 
 def pngs_matching(contours_dir: Path, required_terms: tuple[str, ...]) -> list[Path]:
@@ -1492,6 +1551,14 @@ def detect_contour_status(case_record: dict[str, Any]) -> None:
 
 
 def suggested_action(record: dict[str, Any]) -> str:
+    if record.get("case_status") == NEEDS_LONGER_SOLVE:
+        failures = record.get("convergence_quality_failures") or []
+        detail = ", ".join(str(item) for item in failures) if failures else "gate failed"
+        return (
+            "Convergence quality gate failed "
+            f"({detail}). Continue from final.dat with a longer iteration budget "
+            "(QoI stop disabled); do not treat stop_reason alone as sufficient."
+        )
     if record.get("case_status") == POSTPROCESSED_BASIC:
         if record.get("has_report_expression_warnings") or record.get("has_postprocessing_graphics_errors"):
             return "Basic post-processing is complete; review warning flags only if outputs look suspect."
@@ -1639,11 +1706,17 @@ def classify_case(record: dict[str, Any]) -> None:
         or record.get("shear_status_parse_error")
     )
 
+    quality_fail = str(record.get("convergence_quality") or "") == QUALITY_FAIL
+    needs_longer = bool(record.get("needs_longer_solve")) or quality_fail
+
     if not has_pair:
         case_status = MISSING_CASE_OR_DATA
     elif hard_failure or convergence_status == FAILED_OR_DIVERGED:
         # Solve-untrusted hard failure wins over artifact completeness (F-02c).
         case_status = NEEDS_SOLVER_RERUN
+    elif needs_longer and has_summary:
+        # Post-hoc gate is independent of stop_reason (QoI/residual can lie).
+        case_status = NEEDS_LONGER_SOLVE
     elif has_all_basic:
         # Completeness claim is gated by solve-trust (F-02c).
         if convergence_status == CONVERGED:
@@ -1676,6 +1749,7 @@ def classify_case(record: dict[str, Any]) -> None:
             POSTPROCESSED_BASIC,
             POSTPROCESSED_UNCONVERGED,
             NEEDS_SHEAR_POSTPROCESSING,
+            NEEDS_LONGER_SOLVE,
         )
     )
     failure_evidence_short = shorten_evidence(combined_failure_evidence(record))
@@ -1683,14 +1757,15 @@ def classify_case(record: dict[str, Any]) -> None:
     record.update(
         {
             "case_status": case_status,
-            "likely_complete": likely_complete,
+            "likely_complete": likely_complete and not needs_longer,
             "needs_solver_rerun": needs_solver,
+            "needs_longer_solve": needs_longer and case_status == NEEDS_LONGER_SOLVE,
             "needs_report_extraction": needs_reports,
             "needs_basic_contours": needs_basic_contours,
             "needs_shear_contour": needs_shear_contour,
             "needs_shear_postprocessing": needs_shear_postprocessing,
             "needs_manual_review": needs_manual_review,
-            "ready_for_batch_contours": ready_for_batch_contours,
+            "ready_for_batch_contours": ready_for_batch_contours and not needs_longer,
             "failure_evidence_short": failure_evidence_short,
         }
     )
@@ -1739,6 +1814,13 @@ CASE_INVENTORY_FIELDNAMES = [
     "unknown_log_files",
     "convergence_status",
     "stop_reason",
+    "convergence_quality",
+    "needs_longer_solve",
+    "convergence_quality_failures",
+    "continuity_final",
+    "lmh_relative_difference",
+    "mass_balance_relative_error",
+    "pp_pressure_drop_rel_spread_cells_4_7",
     "max_iteration_detected",
     "max_iter_target",
     "hit_max_iter_target",
@@ -1828,6 +1910,8 @@ RERUN_FIELDNAMES = [
     "max_iteration_detected",
     "convergence_status",
     "stop_reason",
+    "convergence_quality",
+    "needs_longer_solve",
     "hard_solver_failure_detected",
     "max_iter_only",
     "failure_evidence_short",
@@ -1845,6 +1929,8 @@ COMPACT_FIELDNAMES = [
     "case_dir",
     "convergence_status",
     "stop_reason",
+    "convergence_quality",
+    "needs_longer_solve",
     "case_status",
     "max_iteration_detected",
     "has_final_cas",
@@ -1922,6 +2008,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
         r for r in records if r.get("case_status") == POSTPROCESSED_UNCONVERGED
     ]
     needs_shear_records = [r for r in records if r.get("case_status") == NEEDS_SHEAR_POSTPROCESSING]
+    needs_longer_records = [r for r in records if r.get("case_status") == NEEDS_LONGER_SOLVE]
     missing_records = [r for r in records if r.get("case_status") == MISSING_CASE_OR_DATA]
     report_extraction_records = [r for r in records if r.get("case_status") == NEEDS_REPORT_EXTRACTION]
 
@@ -1963,6 +2050,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
         POSTPROCESSED_BASIC,
         POSTPROCESSED_UNCONVERGED,
         NEEDS_SHEAR_POSTPROCESSING,
+        NEEDS_LONGER_SOLVE,
         NEEDS_SOLVER_RERUN,
         NEEDS_REPORT_EXTRACTION,
         MISSING_CASE_OR_DATA,
@@ -1980,6 +2068,7 @@ def build_summary_text(records: list[dict[str, Any]]) -> str:
 
     append_case_list(lines, "True hard solver rerun candidates:", hard_rerun_records)
     append_case_list(lines, "Max-iter-only candidates:", max_iter_records)
+    append_case_list(lines, "NEEDS_LONGER_SOLVE cases (quality gate):", needs_longer_records)
     append_case_list(lines, "READY_FOR_POSTPROCESSING cases:", ready_records)
     append_case_list(lines, "Already postprocessed cases:", postprocessed_records)
     append_case_list(
@@ -2021,6 +2110,7 @@ def print_console_summary(
     by_convergence = Counter(str(r.get("convergence_status")) for r in records)
     by_case_status = Counter(str(r.get("case_status")) for r in records)
     needs_rerun = sum(1 for r in records if r.get("needs_solver_rerun"))
+    needs_longer = sum(1 for r in records if r.get("needs_longer_solve"))
 
     label = "Case inventory dry run complete." if dry_run else "Case inventory complete."
     print(label)
@@ -2030,8 +2120,10 @@ def print_console_summary(
     print(f"Failed/diverged: {by_convergence.get(FAILED_OR_DIVERGED, 0)}")
     print(f"Postprocessed basic: {by_case_status.get(POSTPROCESSED_BASIC, 0)}")
     print(f"Postprocessed unconverged: {by_case_status.get(POSTPROCESSED_UNCONVERGED, 0)}")
+    print(f"Needs longer solve (quality gate): {by_case_status.get(NEEDS_LONGER_SOLVE, 0)}")
     print(f"Needs shear postprocessing: {by_case_status.get(NEEDS_SHEAR_POSTPROCESSING, 0)}")
     print(f"Needs solver rerun: {needs_rerun}")
+    print(f"Needs longer solve flag: {needs_longer}")
     print(f"Ready for postprocessing: {by_case_status.get(READY_FOR_POSTPROCESSING, 0)}")
     if dry_run:
         print(f"Dry run: inventory would be written to: {output_dir}")
@@ -2084,19 +2176,21 @@ def run_inventory(args: argparse.Namespace) -> int:
         detect_report_status(record)
         detect_contour_status(record)
         detect_logs_and_convergence(record, args.max_iter)
+        detect_convergence_quality(record)
         classify_case(record)
         records.append(strip_internal_paths(record))
 
     rerun_candidates = [
         r for r in records
-        if r.get("needs_solver_rerun")
+        if r.get("needs_solver_rerun") or r.get("needs_longer_solve")
     ]
     postprocess_candidates = [
         r for r in records
         if r.get("has_case_data_pair")
         and r.get("case_status")
-        not in (POSTPROCESSED_BASIC, POSTPROCESSED_UNCONVERGED)
+        not in (POSTPROCESSED_BASIC, POSTPROCESSED_UNCONVERGED, NEEDS_LONGER_SOLVE)
         and not r.get("needs_solver_rerun")
+        and not r.get("needs_longer_solve")
     ]
 
     if args.dry_run:

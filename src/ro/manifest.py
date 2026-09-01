@@ -692,6 +692,18 @@ def sync_run_manifest_analytic_cwall(run_directory: str | Path) -> int:
     return value
 
 
+def update_run_manifest_fields(
+    run_directory: str | Path,
+    updates: Mapping[str, Any],
+) -> Path:
+    """Merge non-parameter fields onto an existing run manifest and rewrite."""
+    directory = Path(run_directory)
+    payload = read_run_manifest(directory)
+    merged = dict(payload)
+    merged.update(updates)
+    return write_run_manifest(directory, merged)
+
+
 def read_mesh_manifest(mesh_directory: str | Path) -> dict[str, Any]:
     directory = Path(mesh_directory)
     payload = _read_json(directory / "manifest.json")

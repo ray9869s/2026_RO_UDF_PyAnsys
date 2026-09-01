@@ -32,7 +32,16 @@ except Exception:
 # ----------------------------------------------------------
 from ro.paths import project_root  # noqa: E402
 from ro.lmh_metrics import lmh_mass_balance_expression
-from ro.manifest import read_run_manifest, sync_run_manifest_analytic_cwall  # noqa: E402
+from ro.convergence_quality import (
+    continuity_final_from_case_dir,
+    evaluate_convergence_quality,
+    manifest_quality_payload,
+)
+from ro.manifest import (  # noqa: E402
+    read_run_manifest,
+    sync_run_manifest_analytic_cwall,
+    update_run_manifest_fields,
+)
 
 DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
@@ -2035,6 +2044,33 @@ if __name__ == "__main__":
 
         summary_wide_df.to_csv(summary_wide_csv_path, index=False, encoding="utf-8-sig")
 
+        # Post-hoc convergence quality (independent of stop_reason).
+        wide_record = summary_wide_df.iloc[0].to_dict()
+        continuity_final = continuity_final_from_case_dir(case_path)
+        quality_result = evaluate_convergence_quality(
+            wide_record,
+            continuity_final=continuity_final,
+        )
+        try:
+            update_run_manifest_fields(
+                case_path,
+                manifest_quality_payload(quality_result),
+            )
+            print(
+                "Convergence quality    :",
+                quality_result["convergence_quality"],
+                (
+                    f"(failures={quality_result['failures']})"
+                    if quality_result["failures"]
+                    else ""
+                ),
+            )
+        except Exception as exc:
+            print(
+                "WARNING: could not write convergence_quality to run manifest:",
+                f"{type(exc).__name__}: {exc}",
+            )
+
         # ----------------------------------------------------------
         # Save raw report values for debugging/reproducibility
         # ----------------------------------------------------------
@@ -2058,6 +2094,13 @@ if __name__ == "__main__":
                 "mass_balance_relative_error": mass_balance_relative_error,
                 "lmh_difference_mass_balance_minus_udm": lmh_difference,
                 "lmh_relative_difference": lmh_relative_difference,
+                "convergence_quality": quality_result["convergence_quality"],
+                "needs_longer_solve": quality_result["needs_longer_solve"],
+                "convergence_quality_failures": quality_result["failures"],
+                "continuity_final": quality_result["continuity_final"],
+                "pp_pressure_drop_rel_spread_cells_4_7": quality_result[
+                    "pp_pressure_drop_rel_spread_cells_4_7"
+                ],
                 "domain_length_m": domain_length_m,
                 "pressure_drop_per_m": pressure_drop_per_m,
                 "spacer_x_in_m": spacer_x_in_m,

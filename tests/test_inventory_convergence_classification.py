@@ -213,7 +213,7 @@ class TestInventoryConvergenceClassification:
 class TestClassifyCaseLikelyComplete:
     def test_inventory_csv_schema_unchanged(self, inventory):
         fieldnames = inventory.CASE_INVENTORY_FIELDNAMES
-        assert len(fieldnames) == 113
+        assert len(fieldnames) == 120
         assert fieldnames[2:8] == [
             "family",
             "geo_id",
@@ -226,6 +226,8 @@ class TestClassifyCaseLikelyComplete:
         assert fieldnames[fieldnames.index("likely_complete_from_logs") + 1] == "likely_complete"
         assert "stop_reason" in fieldnames
         assert fieldnames[fieldnames.index("convergence_status") + 1] == "stop_reason"
+        assert fieldnames[fieldnames.index("stop_reason") + 1] == "convergence_quality"
+        assert "needs_longer_solve" in fieldnames
         assert fieldnames == list(dict.fromkeys(fieldnames))
 
     def test_max_iter_with_full_artifacts_is_postprocessed_unconverged(self, inventory):

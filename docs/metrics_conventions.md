@@ -104,11 +104,13 @@ region dominate \(\delta\) while leaving the averaged CP unchanged to
 \({\sim}0.2\%\). Applying an area treatment at the high end makes the
 error bound consistent with the quantity it validates.
 
-This choice is **not** sized around the \(u=0.1\) saturation patch
-(Yi \(\ge 0.26\) area fraction \(1.64\times10^{-4}\) on u0p1 cell 7). The
-99.9% high quantile excludes \(10^{-3}\) of area, about \(6\times\) that
-patch — under one decade of margin. Do not claim “two orders above the
-patch.”
+This choice is **not** sized around the \(u=0.1\) entrance-buffer saturation
+patch (see Known field artifacts). At the under-converged 301-iteration stop
+that patch had Yi \(\ge 0.26\) wall area fraction \(1.64\times10^{-4}\) on
+u0p1 cell 7; at 2000 iterations evaluation cells 5–8 have zero such wall
+area. The 99.9% high quantile excludes \(10^{-3}\) of area — under one decade
+of margin relative to that transient patch. Do not claim “two orders above
+the patch.”
 
 **Before / after on D2450_a45 `max085_…_peel2` (p = 6 MPa):**
 
@@ -169,6 +171,16 @@ This is valid only because \(k_N\) is treated as face-independent within a cell,
 which is exactly what the \(\delta\) guard enforces. The guard therefore covers
 the max path as well as the average — do not re-litigate max separately.
 
+## Iteration-robust QoIs
+
+For spacer comparison, use **`cp_canon_window_avg`** and
+**`pressure_drop_spacer`** only. **`cp_canon_window_max` is not usable** for
+that purpose: between the 301-iteration QoI stop and a 2000-iteration solve on
+D2450_a45 u0p1 (p = 6 MPa) it moved \(2.73751 \rightarrow 125.245\)
+(\(+4475\%\)) while `cp_canon_window_avg` moved only \(0.25\%\). The window
+maximum is set by the single lowest-\(J_w\) face and keeps decreasing with
+iteration count; treat it as a diagnostic extremum, not a campaign metric.
+
 ## Why \(c_b\) and not \(c_0\)
 
 Bulk concentration rises along the channel by roughly \(2 J_w L_{\mathrm{active}}
@@ -204,22 +216,26 @@ all-active aggregates so sensitivity to window choice can be read directly.
 ## Manifest
 
 Run manifests record `analytic_cwall` parsed from the case-local dated UDF.
-CP extraction requires `RO_ANALYTIC_CWALL = 1`.
+CP extraction requires `RO_ANALYTIC_CWALL = 1`. Report extraction also writes
+post-hoc `convergence_quality` / `needs_longer_solve` (LMH cross-check,
+mass-balance relative error, continuity final, and pressure-drop spread on
+cells 4–7). That gate is independent of `stop_reason`.
 
 ## Known field artifacts
 
-At \(u = 0.1\) m/s, salt accumulates in the stagnation region adjacent to the
-filament-membrane contact band (within \(\sim 5\,\mu\mathrm{m}\) of the
-membrane, \(\sim 100\times 80\,\mu\mathrm{m}\) footprint, inside the
-\(152\,\mu\mathrm{m}\) contact flat; \(z = 0.380\)–\(0.383\,\mathrm{mm}\)
-against membranes at \(z = \pm 0.385\,\mathrm{mm}\)). Enrichment above
-\(Y_i = 0.05\) appears in all four evaluation cells (area fraction
-\(1.1\)–\(2.1\times 10^{-3}\)); in cell 7 only it reaches NaCl saturation,
-with 3 interior cells clamping at \(Y_i = 1\). Wall area fraction above
-\(Y_i = 0.26\) is \(2.3\times 10^{-5}\), four orders below the \(\sim 0.6\%\)
-CP discriminability signal, so window CP is unaffected. Absent at
-\(u = 0.2\) and \(u = 0.3\), where no wall area exceeds even \(Y_i = 0.05\).
+At \(u = 0.1\) m/s the remaining near-saturation patch is an **entrance-buffer
+feature**, not a filament–membrane contact band inside an evaluation cell.
+At 2000 iterations (QoI stop disabled), evaluation cells 5–8 have **zero**
+wall area above \(Y_i = 0.26\) (cell 7 had wall area fraction
+\(1.64\times 10^{-4}\) at the 301-iteration stop). The leftover region sits at
+\(x = 0.003515\)–\(0.003731\,\mathrm{m}\), i.e. \(50\)–\(266\,\mu\mathrm{m}\)
+past the buffer end at \(0.003465\,\mathrm{m}\), spanning the full spanwise
+width (\(\Delta y = 3.42\,\mathrm{mm}\)) along the first filament.
+`n_lead_excluded = 3` excludes it from the CP window. \(Y_{i,\max}\) fell from
+\(1.0\) (clamped, 3 cells) at 301 iterations to \(0.999474\) (1 cell) at 2000.
+Earlier notes that placed the saturation region at the contact band inside
+cell 7 describe the under-converged 301-iteration field, not the converged
+solution. Absent at \(u = 0.2\) and \(u = 0.3\), where no wall area exceeds
+even \(Y_i = 0.05\).
 `probe_cp_reconstruction` gives CP raw \(1.06505\) vs reconstructed
 \(1.08708\), the documented \(\sim 2\%\) lift with no sign of divergence.
-Localised to one evaluation cell and not explained by geometry, which
-repeats every pitch.

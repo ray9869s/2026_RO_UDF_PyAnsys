@@ -144,10 +144,11 @@ common_solver_settings = {
 #     Np=100 is comparable to the LMH oscillation period (~80-100 iterations),
 #     so it sampled one phase and called it flat.
 #
-#   u0p1_p6M passed every global check yet has a stagnation region above NaCl
-#     saturation in evaluation cell 7 (wall area fraction 2.3e-05, 3 interior
-#     cells clamped at Yi=1). Open question: does it grow, shrink or hold with
-#     more iterations?
+#   u0p1_p6M passed every global check yet had a transient near-saturation
+#     patch at the entrance buffer at 301 iterations. At 2000 iterations that
+#     patch leaves evaluation cells 5–8 (zero wall area Yi>=0.26); see
+#     docs/metrics_conventions.md. Continuity floors ~4e-7 while stop_reason
+#     remains max_iter_reached — quality gate must still PASS.
 #
 # Canonical CP at the 301-iteration stop, for comparison afterwards:
 #   u0p1  cp_canon 1.045493  cp_max 2.73751  c_b 621.647  dP  291.455
