@@ -12,6 +12,7 @@ pass explicit settings into pure functions rather than reading campaign state.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -392,3 +393,60 @@ class TestManifestStopReasonClassification:
         assert record["stop_reason"] == "max_iter_reached"
         assert record["convergence_status"] == inventory.MAX_ITER_REACHED
         assert record["max_iter_only"] is True
+
+
+class TestPostprocessingNodeErrorLogResidue:
+    def test_fluent_node_error_log_is_not_solver_run_role(self, inventory):
+        path = Path("/tmp/fluent-999999-error.log")
+        assert inventory.is_fluent_node_error_log(path)
+        assert not inventory.is_fluent_solver_transcript(path)
+        role = inventory.classify_log_role(
+            path,
+            "Error [node 999999] [time 8/31/26 18:47:33] Abnormal Exit!\n",
+        )
+        assert role == inventory.ROLE_POSTPROCESSING_GRAPHICS
+
+    def test_postdated_node_error_log_does_not_force_solver_rerun(
+        self, inventory, tmp_path
+    ):
+        """u0p1/u0p3 residue: Abnormal Exit after a finished qoi_converged solve."""
+        case_dir = tmp_path / "u0p1_p6M"
+        case_dir.mkdir()
+        trn = case_dir / "fluent-20260827-170215-92588.trn"
+        trn.write_text(
+            "iterate\nresidual\ncontinuity\nx-velocity\n"
+            "Solution is converged.\nwriting final.cas\nwriting final.dat\n",
+            encoding="utf-8",
+        )
+        err = case_dir / "fluent-999999-error.log"
+        err.write_text(
+            "Error [node 999999] [time 8/31/26 18:47:33] Abnormal Exit!\n",
+            encoding="utf-8",
+        )
+        solver_mtime = 1_724_760_000.0  # ordering matters, not calendar
+        post_mtime = solver_mtime + 4 * 86400.0
+        os.utime(trn, (solver_mtime, solver_mtime))
+        os.utime(err, (post_mtime, post_mtime))
+
+        record = {
+            "geo_name": "D2450_a45",
+            "case_name": "u0p1_p6M",
+            "stop_reason": "qoi_converged",
+            "_case_dir_path": case_dir,
+            "has_case_data_pair": True,
+            "has_summary_metrics_wide": False,
+            "has_all_basic_contours": False,
+            "has_all_pyensight_contours": False,
+            "has_shear_contour": False,
+            "final_cas_file": str(case_dir / "final.cas.h5"),
+            "final_dat_file": str(case_dir / "final.dat.h5"),
+        }
+        inventory.detect_logs_and_convergence(record, 2000)
+        inventory.classify_case(record)
+
+        assert record["convergence_status"] == inventory.CONVERGED
+        assert record["hard_solver_failure_detected"] is False
+        assert record["case_status"] == inventory.NEEDS_REPORT_EXTRACTION
+        assert record["needs_report_extraction"] is True
+        assert "report extraction" in record["suggested_next_action"].lower()
+        assert record["case_status"] != inventory.NEEDS_SOLVER_RERUN

@@ -55,10 +55,14 @@ NEEDS_REPORT_EXTRACTION = "NEEDS_REPORT_EXTRACTION"
 MISSING_CASE_OR_DATA = "MISSING_CASE_OR_DATA"
 UNKNOWN_REVIEW_REQUIRED = "UNKNOWN_REVIEW_REQUIRED"
 
-# Fluent writes fluent-<node>-error.log when a session crashes. When this
-# happens during post-processing graphics (after the case was already
-# solved), it must not be mistaken for solver-run evidence.
+# Fluent writes fluent-<node>-error.log when a session ends (including normal
+# post-processing shutdown). These must not be mistaken for solver-run
+# evidence. Real solver transcripts are fluent-YYYYMMDD-HHMMSS-PID.trn.
 FLUENT_NODE_ERROR_LOG_PATTERN = re.compile(r"fluent-\d+-error\.log$", re.IGNORECASE)
+FLUENT_SOLVER_TRANSCRIPT_PATTERN = re.compile(
+    r"fluent-\d{8}-\d{6}-\d+\.trn$",
+    re.IGNORECASE,
+)
 
 LOG_WALK_SKIP_DIRS = {
     "__pycache__",
@@ -645,13 +649,24 @@ def is_log_candidate(path: Path) -> bool:
 
 
 def is_fluent_node_error_log(path: Path) -> bool:
-    """True for Fluent's auto-generated fluent-<node>-error.log crash files.
+    """True for Fluent's auto-generated fluent-<node>-error.log files.
 
-    These are written whenever a Fluent session dies for any reason,
-    including a post-processing graphics crash long after the case was
-    solved successfully; they are not on their own evidence of a bad solve.
+    Written whenever a Fluent session ends for any reason — including a
+    successful post-processing shutdown days after the solve. Filename has
+    no timestamp, unlike solver transcripts (fluent-YYYYMMDD-HHMMSS-PID.trn).
     """
     return bool(FLUENT_NODE_ERROR_LOG_PATTERN.search(path.name))
+
+
+def is_fluent_solver_transcript(path: Path) -> bool:
+    """True for Fluent solver transcripts fluent-YYYYMMDD-HHMMSS-PID.trn."""
+    return bool(FLUENT_SOLVER_TRANSCRIPT_PATTERN.search(path.name))
+
+
+def newest_solver_transcript_mtime(log_files: list[Path]) -> float:
+    """Latest mtime among fluent-YYYYMMDD-HHMMSS-PID.trn files, else 0."""
+    mtimes = [safe_mtime(p) for p in log_files if is_fluent_solver_transcript(p)]
+    return max(mtimes) if mtimes else 0.0
 
 
 def find_log_files(case_dir: Path) -> tuple[list[Path], list[Path], Optional[Path]]:
@@ -769,6 +784,11 @@ def role_filename_score(path: Path, role: str) -> int:
 
 
 def classify_log_role(path: Path, text: str) -> str:
+    # Node error dumps are post-session residue, never solver transcripts.
+    # Filename alone separates them from fluent-YYYYMMDD-HHMMSS-PID.trn.
+    if is_fluent_node_error_log(path):
+        return ROLE_POSTPROCESSING_GRAPHICS
+
     content = text.lower()
     scores: dict[str, int] = {}
     for role in LOG_ROLES:
@@ -1028,55 +1048,52 @@ def reclassify_postprocessing_crash_logs(
     log_files: list[Path],
     parsed: LogParseResult,
 ) -> tuple[bool, list[str], str]:
-    """Detect fluent-<node>-error.log crashes that happened during
-    post-processing graphics (after the case was already solved), and strip
-    their contribution to hard-solver-failure evidence so they do not force
-    NEEDS_SOLVER_RERUN on an otherwise-good case.
+    """Strip fluent-<node>-error.log contribution from hard-solver evidence.
 
-    Only reclassifies when the case already has a final cas/dat pair,
-    summary_metrics_wide.csv, and all basic PyEnSight contour outputs — i.e.
-    the solve is demonstrably already complete. Mutates `parsed` in place
-    (filtering out evidence attributable only to the crash log) when the
-    reclassification applies. Returns
-    (has_postprocessing_runtime_crash, crash_evidence_files, failed_stage).
+    These files are written by Fluent session shutdown (including normal
+    post-processing exit) and are not solver failures. Requires a final
+    cas/dat pair so the solve is known to have completed; does **not**
+    require summary_metrics_wide.csv (that precondition deadlocked report
+    extraction behind NEEDS_SOLVER_RERUN).
+
+    Strips node-error logs that postdate the newest solver transcript (or
+    final cas/dat when no .trn is present). Mutates ``parsed`` in place.
+    Returns (has_postprocessing_runtime_crash, crash_evidence_files,
+    failed_stage).
     """
     crash_files = [p for p in log_files if is_fluent_node_error_log(p)]
     if not crash_files:
         return False, [], ""
 
     has_pair = bool(case_record.get("has_case_data_pair"))
-    has_summary = bool(case_record.get("has_summary_metrics_wide"))
-    has_all_pyensight = bool(case_record.get("has_all_pyensight_contours"))
-    if not (has_pair and has_summary and has_all_pyensight):
+    if not has_pair:
         return False, [], ""
 
     final_cas_str = str(case_record.get("final_cas_file") or "")
     final_dat_str = str(case_record.get("final_dat_file") or "")
     solved_mtime = max(
+        newest_solver_transcript_mtime(log_files),
         safe_mtime(Path(final_cas_str)) if final_cas_str else 0.0,
         safe_mtime(Path(final_dat_str)) if final_dat_str else 0.0,
     )
-    contour_output_mtimes = [
-        safe_mtime(Path(p))
-        for key in (
-            "cp_contour_files",
-            "water_flux_contour_files",
-            "lmh_contour_files",
-            "salt_flux_contour_files",
-        )
-        for p in case_record.get(key, [])
-    ]
-    outputs_mtime = max([solved_mtime] + contour_output_mtimes) if contour_output_mtimes else solved_mtime
-    newest_crash_mtime = max(safe_mtime(p) for p in crash_files)
+    if solved_mtime <= 0.0:
+        # Pair flag set but no transcript/cas/dat mtime available — still
+        # strip: with a completed pair, node-error logs are not solver runs.
+        postdated_crashes = list(crash_files)
+    else:
+        postdated_crashes = [
+            p for p in crash_files if safe_mtime(p) >= solved_mtime
+        ]
+        if not postdated_crashes:
+            return False, [], ""
 
-    if newest_crash_mtime < outputs_mtime:
-        # The crash predates the already-present solve/contour outputs; leave
-        # any hard-failure evidence it contributed as-is.
-        return False, [], ""
-
-    crash_paths = {path_to_str(p) for p in crash_files}
-    parsed.failure_evidence = _exclude_evidence_from_paths(parsed.failure_evidence, crash_paths)
-    parsed.launch_error_evidence = _exclude_evidence_from_paths(parsed.launch_error_evidence, crash_paths)
+    crash_paths = {path_to_str(p) for p in postdated_crashes}
+    parsed.failure_evidence = _exclude_evidence_from_paths(
+        parsed.failure_evidence, crash_paths
+    )
+    parsed.launch_error_evidence = _exclude_evidence_from_paths(
+        parsed.launch_error_evidence, crash_paths
+    )
     parsed.launch_error_files = _exclude_files(parsed.launch_error_files, crash_paths)
 
     shear_status_upper = str(case_record.get("shear_export_status") or "").upper()
@@ -1497,6 +1514,13 @@ def suggested_action(record: dict[str, Any]) -> str:
             "Basic PyEnSight contours are complete; shear contour export is missing or "
             "failed. Rerun pyfluent_shear_contour_export.py "
             "(--shear-export-mode fallback avoids native Fluent graphics)."
+        )
+    if record.get("case_status") == NEEDS_REPORT_EXTRACTION:
+        return "Run report extraction to create post/reports/summary_metrics_wide.csv."
+    if record.get("case_status") == NEEDS_SOLVER_RERUN:
+        return (
+            "Review hard solver/UDF/launch failure evidence, then rerun or repair "
+            "the failed stage."
         )
     if record.get("convergence_status") == MAX_ITER_REACHED:
         return "Review max-iter residual/report trends; consider continuing from final data or relaxed solver settings."
