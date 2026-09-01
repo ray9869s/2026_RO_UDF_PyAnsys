@@ -158,7 +158,8 @@ _SWEEP_MESH_ID = "max085_min006_cpg5_bl4_peel2"
 _SWEEP_P = 6.0e6
 
 solver_sweep_cases = []
-for _u in (0.1, 0.3):
+solver_sweep_cases = []
+for _u in (0.2,):
     _base = make_base_case_name(_u, _SWEEP_P)
     solver_sweep_cases.append({
         "family": _FAMILY,
