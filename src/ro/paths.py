@@ -13,7 +13,7 @@ from ro.campaign_geo_ids import validate_campaign_geo_id
 
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
-MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+_peel\d+$")
+MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+(?:_f\d{3})?_peel\d+$")
 # Optional _label suffix (letter-led). Bare u0p2_p6M remains the campaign form.
 # A digits-only suffix is rejected so u0p2_p6M_20 cannot look like a new u or p.
 RUN_ID_RE = re.compile(r"^u\d+p\d+_p\d+M(?:_[a-z][a-z0-9]*)?$")

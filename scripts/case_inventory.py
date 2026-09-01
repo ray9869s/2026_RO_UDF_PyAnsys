@@ -25,6 +25,7 @@ from typing import Any, Iterable, Optional
 
 from ro.convergence_quality import (
     QUALITY_FAIL,
+    QUALITY_PASS,
     continuity_final_from_case_dir,
     evaluate_convergence_quality,
     metrics_from_summary_row,
@@ -1564,6 +1565,12 @@ def suggested_action(record: dict[str, Any]) -> str:
             return "Basic post-processing is complete; review warning flags only if outputs look suspect."
         return "Basic post-processing is complete."
     if record.get("case_status") == POSTPROCESSED_UNCONVERGED:
+        if str(record.get("convergence_quality") or "") == QUALITY_PASS:
+            return (
+                "Basic post-processing is complete. stop_reason is max_iter_reached "
+                "but the convergence quality gate PASSed — no solver rerun needed "
+                "(continuity may floor above residual_target while LMH is stationary)."
+            )
         return (
             "Basic post-processing artifacts are complete, but the solve did not converge "
             "(max-iter). Treat as usable-but-capped for screening; do not treat as "
@@ -1589,10 +1596,6 @@ def suggested_action(record: dict[str, Any]) -> str:
             "Review hard solver/UDF/launch failure evidence, then rerun or repair "
             "the failed stage."
         )
-    if record.get("convergence_status") == MAX_ITER_REACHED:
-        return "Review max-iter residual/report trends; consider continuing from final data or relaxed solver settings."
-    if record.get("needs_solver_rerun"):
-        return "Review hard solver/UDF/launch failure evidence, then rerun or repair the failed stage."
     if not record.get("has_case_data_pair"):
         return "Generate or locate the final case/data pair before post-processing."
     if record.get("needs_report_extraction"):
@@ -1603,6 +1606,13 @@ def suggested_action(record: dict[str, Any]) -> str:
         return "Run PyEnSight contour export for missing membrane fields."
     if record.get("needs_shear_contour"):
         return "Run PyFluent shear contour export."
+    if (
+        record.get("convergence_status") == MAX_ITER_REACHED
+        and str(record.get("convergence_quality") or "") != QUALITY_PASS
+    ):
+        return "Review max-iter residual/report trends; consider continuing from final data or relaxed solver settings."
+    if record.get("needs_solver_rerun"):
+        return "Review hard solver/UDF/launch failure evidence, then rerun or repair the failed stage."
     if record.get("needs_manual_review"):
         return "Review logs and files manually before batch processing."
     return "No immediate action detected."
@@ -1672,7 +1682,16 @@ def classify_case(record: dict[str, Any]) -> None:
         record["has_postprocessing_graphics_errors"] = True
     likely_complete = convergence_status == CONVERGED
 
-    solver_status_needs_rerun = convergence_status in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
+    quality = str(record.get("convergence_quality") or "")
+    quality_fail = quality == QUALITY_FAIL
+    quality_pass = quality == QUALITY_PASS
+    needs_longer = bool(record.get("needs_longer_solve")) or quality_fail
+
+    # MAX_ITER alone is not a rerun signal once the post-hoc gate PASSES
+    # (u=0.1 continuity can floor above residual_target with fixed LMH).
+    solver_status_needs_rerun = convergence_status == FAILED_OR_DIVERGED or (
+        convergence_status == MAX_ITER_REACHED and not quality_pass
+    )
     needs_reports = bool(has_pair and not has_summary and not hard_failure)
     needs_basic_contours = bool(
         has_pair
@@ -1696,7 +1715,8 @@ def classify_case(record: dict[str, Any]) -> None:
         has_pair
         and has_summary
         and not has_all_basic
-        and convergence_status not in {MAX_ITER_REACHED, FAILED_OR_DIVERGED}
+        and convergence_status != FAILED_OR_DIVERGED
+        and (convergence_status != MAX_ITER_REACHED or quality_pass)
     )
     needs_manual_review = bool(
         convergence_status in {UNKNOWN_NO_LOG, UNKNOWN_UNPARSED, POSSIBLY_INCOMPLETE}
@@ -1706,9 +1726,14 @@ def classify_case(record: dict[str, Any]) -> None:
         or record.get("shear_status_parse_error")
     )
 
-    quality_fail = str(record.get("convergence_quality") or "") == QUALITY_FAIL
-    needs_longer = bool(record.get("needs_longer_solve")) or quality_fail
-
+    # Branch order (first match wins):
+    # 1 missing pair
+    # 2 hard failure / diverged → NEEDS_SOLVER_RERUN
+    # 3 quality FAIL → NEEDS_LONGER_SOLVE
+    # 4 has_all_basic → POSTPROCESSED_* / UNKNOWN (MAX_ITER → UNCONVERGED)
+    # 5 needs shear postprocessing
+    # 6 solver_status_needs_rerun (MAX_ITER only if gate did not PASS)
+    # 7 needs reports / ready for postprocessing / unknown
     if not has_pair:
         case_status = MISSING_CASE_OR_DATA
     elif hard_failure or convergence_status == FAILED_OR_DIVERGED:
@@ -1931,6 +1956,7 @@ COMPACT_FIELDNAMES = [
     "stop_reason",
     "convergence_quality",
     "needs_longer_solve",
+    "pp_pressure_drop_rel_spread_cells_4_7",
     "case_status",
     "max_iteration_detected",
     "has_final_cas",

@@ -14,6 +14,7 @@
 #   PYFLUENT_SKIP_VALIDATION   - set to 1/true/yes to skip validate_for_* after overrides
 
 import os
+import re
 import types
 
 from ro.mesh_common import (
@@ -625,12 +626,15 @@ def validate_for_meshing():
         m_cpg,
         bl_layers,
     ).removeprefix("mesh_")
-    expected_mesh_id_prefix = f"{mesh_stem}_peel"
-    if not mesh_id.startswith(expected_mesh_id_prefix):
+    # Optional _fNNN (bl_height_factor ×1000 token) between bl and peel.
+    expected_mesh_id = re.compile(
+        rf"^{re.escape(mesh_stem)}(?:_f\d{{3}})?_peel{int(peel_layers)}$"
+    )
+    if expected_mesh_id.fullmatch(mesh_id) is None:
         raise ValueError(
             "run_config.py mesh_id does not match the supplied mesh parameters: "
-            f"mesh_id={mesh_id!r}, expected to start with "
-            f"{expected_mesh_id_prefix!r}."
+            f"mesh_id={mesh_id!r}, expected {mesh_stem}_peel{peel_layers} "
+            f"or {mesh_stem}_fNNN_peel{peel_layers}."
         )
 
     _require_set("wall_spacer_labels", wall_spacer_labels)

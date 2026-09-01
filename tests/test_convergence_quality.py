@@ -129,6 +129,25 @@ def inventory():
 
 
 class TestInventoryQualityClassification:
+    def test_detect_convergence_quality_records_dP_spread_diagnostic(self, inventory):
+        record = {
+            "_summary_row": {
+                "lmh_relative_difference": "1.01e-4",
+                "mass_balance_relative_error": "1e-4",
+                "pp_pressure_drop_cell_4": "117.44",
+                "pp_pressure_drop_cell_5": "114.47",
+                "pp_pressure_drop_cell_6": "114.47",
+                "pp_pressure_drop_cell_7": "115.92",
+            },
+            "_case_dir_path": None,
+        }
+        inventory.detect_convergence_quality(record)
+        assert record["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            0.0258, rel=1e-2
+        )
+        assert "pp_pressure_drop_rel_spread_cells_4_7" in inventory.COMPACT_FIELDNAMES
+        assert "pp_pressure_drop_rel_spread_cells_4_7" in inventory.CASE_INVENTORY_FIELDNAMES
+
     def test_quality_fail_flags_longer_solve_despite_qoi_converged(self, inventory):
         record = {
             "convergence_status": inventory.CONVERGED,
@@ -173,5 +192,36 @@ class TestInventoryQualityClassification:
         }
         inventory.classify_case(record)
         assert record["case_status"] == inventory.POSTPROCESSED_UNCONVERGED
+        assert record["needs_solver_rerun"] is False
         assert record["needs_longer_solve"] is False
         assert record["convergence_quality"] == QUALITY_PASS
+
+    def test_max_iter_quality_pass_incomplete_artifacts_not_solver_rerun(
+        self, inventory
+    ):
+        """Gate PASS clears MAX_ITER from the NEEDS_SOLVER_RERUN / rerun queue."""
+        record = {
+            "convergence_status": inventory.MAX_ITER_REACHED,
+            "has_case_data_pair": True,
+            "has_summary_metrics_wide": True,
+            "has_all_basic_contours": False,
+            "has_all_pyensight_contours": False,
+            "has_shear_contour": False,
+            "hard_solver_failure_detected": False,
+            "likely_complete_from_logs": False,
+            "contour_failed_count": 0,
+            "contour_export_overall_status": "",
+            "shear_export_status": "",
+            "convergence_quality": QUALITY_PASS,
+            "needs_longer_solve": False,
+            "convergence_quality_failures": [],
+        }
+        inventory.classify_case(record)
+        assert record["case_status"] != inventory.NEEDS_SOLVER_RERUN
+        assert record["case_status"] == inventory.READY_FOR_POSTPROCESSING
+        assert record["needs_solver_rerun"] is False
+        # Same filter as run_inventory → rerun_candidates.csv
+        is_rerun_candidate = bool(
+            record.get("needs_solver_rerun") or record.get("needs_longer_solve")
+        )
+        assert is_rerun_candidate is False

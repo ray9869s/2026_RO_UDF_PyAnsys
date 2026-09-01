@@ -74,6 +74,36 @@ def test_invalid_ids_raise(monkeypatch, tmp_path, family, geo_id, mesh_id, messa
 
 
 @pytest.mark.parametrize(
+    "mesh_id",
+    [
+        "max085_min006_cpg5_bl4_peel2",
+        "max060_min006_cpg5_bl4_peel2",
+        "max085_min006_cpg5_bl4_f040_peel2",
+        "max085_min006_cpg5_bl8_f120_peel0",
+    ],
+)
+def test_mesh_id_accepts_campaign_and_optional_bl_height_factor(mesh_id):
+    assert paths.MESH_ID_RE.fullmatch(mesh_id)
+
+
+@pytest.mark.parametrize(
+    "mesh_id",
+    [
+        "max085_min006_cpg5_bl4_f40_peel2",  # factor must be 3 digits
+        "max085_min006_cpg5_bl4_f0400_peel2",
+        "max085_min006_cpg5_bl4_f_peel2",
+        "max085_min006_cpg5_bl4_x040_peel2",
+        "max085_min006_cpg5_bl4_f040_peel",  # missing peel digits
+        "max085_min006_cpg5_bl4",  # missing peel
+    ],
+)
+def test_mesh_id_rejects_malformed_bl_height_factor_token(mesh_id):
+    assert paths.MESH_ID_RE.fullmatch(mesh_id) is None
+    with pytest.raises(ValueError, match="mesh_id"):
+        paths._validate_mesh_id(mesh_id)
+
+
+@pytest.mark.parametrize(
     "run_id",
     [
         "u0p2_p6M",
