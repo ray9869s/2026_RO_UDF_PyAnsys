@@ -217,9 +217,13 @@ all-active aggregates so sensitivity to window choice can be read directly.
 
 Run manifests record `analytic_cwall` parsed from the case-local dated UDF.
 CP extraction requires `RO_ANALYTIC_CWALL = 1`. Report extraction also writes
-post-hoc `convergence_quality` / `needs_longer_solve` (LMH cross-check,
-mass-balance relative error, continuity final, and pressure-drop spread on
-cells 4–7). That gate is independent of `stop_reason`.
+post-hoc `convergence_quality` / `needs_longer_solve` from
+`|lmh_relative_difference| < 1e-3`, `|mass_balance_relative_error| < 1e-3`,
+and `continuity_final < 1e-4`. That gate is independent of `stop_reason`.
+`pp_pressure_drop_rel_spread_cells_4_7` is recorded alongside as a diagnostic
+only: on D2450_a45 the converged (max−min)/mean is ~2.58% at \(u=0.2\) and
+~14.7% at \(u=0.3\), unchanged between short and long solves, so it measures
+evaluation-window uniformity rather than convergence.
 
 ## Known field artifacts
 

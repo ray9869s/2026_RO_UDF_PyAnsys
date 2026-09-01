@@ -139,10 +139,12 @@ common_solver_settings = {
 # the two runs that exposed the single-QoI weakness.
 #
 #   u0p3_p6M stopped at 301 with continuity 6.4e-03, lmh_relative_difference
-#     -0.2925 (u0p1 1.70e-04, u0p2 2.80e-04) and 8% pressure-drop scatter
-#     across cells 4-7 where the other two hold to 1.3%. The QoI window
-#     Np=100 is comparable to the LMH oscillation period (~80-100 iterations),
-#     so it sampled one phase and called it flat.
+#     -0.2925 (u0p1 1.70e-04, u0p2 2.80e-04). Cell dP spread across 4–7 is a
+#     converged physics/window property (~2.58% at u=0.2, ~14.7% at u=0.3),
+#     not a convergence signal — identical between 301-stop and residual-
+#     converged solves. The QoI window Np=100 is comparable to the LMH
+#     oscillation period (~80-100 iterations), so it sampled one phase and
+#     called it flat.
 #
 #   u0p1_p6M passed every global check yet had a transient near-saturation
 #     patch at the entrance buffer at 301 iterations. At 2000 iterations that

@@ -15,38 +15,48 @@ from ro.convergence_quality import (
 )
 
 
-# Study values (D2450_a45, p=6 MPa). Pressure cells approximate the reported
-# 1.3% vs 8% relative spreads when mean-normalized.
-U0P1_PASS = {
-    "lmh_relative_difference": 1.01e-4,
+# Study values (D2450_a45, p=6 MPa). Cell dP spreads are diagnostics only;
+# real (max-min)/mean is ~2.58% at u=0.2 and ~14.7% at u=0.3 (converged).
+U0P2_PASS = {
+    "lmh_relative_difference": 1.33e-4,
     "mass_balance_relative_error": 1.0e-4,
-    "pp_pressure_drop_cell_4": 291.0,
-    "pp_pressure_drop_cell_5": 292.0,
-    "pp_pressure_drop_cell_6": 294.0,
-    "pp_pressure_drop_cell_7": 293.0,
+    "pp_pressure_drop_cell_4": 117.44,
+    "pp_pressure_drop_cell_5": 114.47,
+    "pp_pressure_drop_cell_6": 114.47,
+    "pp_pressure_drop_cell_7": 115.92,
 }
 U0P3_FAIL_301 = {
     "lmh_relative_difference": -2.92e-1,
-    "mass_balance_relative_error": 2.0e-1,
-    "pp_pressure_drop_cell_4": 1600.0,
-    "pp_pressure_drop_cell_5": 1650.0,
-    "pp_pressure_drop_cell_6": 1700.0,
-    "pp_pressure_drop_cell_7": 1730.0,
+    "mass_balance_relative_error": 2.264e-1,
+    "pp_pressure_drop_cell_4": 219.07,
+    "pp_pressure_drop_cell_5": 201.94,
+    "pp_pressure_drop_cell_6": 234.75,
+    "pp_pressure_drop_cell_7": 233.22,
+}
+U0P3_PASS_CONV2000 = {
+    "lmh_relative_difference": 1.30e-4,
+    "mass_balance_relative_error": -4.850e-6,
+    "pp_pressure_drop_cell_4": 219.05,
+    "pp_pressure_drop_cell_5": 201.93,
+    "pp_pressure_drop_cell_6": 234.70,
+    "pp_pressure_drop_cell_7": 233.67,
 }
 
 
 class TestEvaluateConvergenceQuality:
-    def test_u0p1_style_max_iter_still_passes(self):
+    def test_u0p2_passes_despite_2p58_percent_dP_spread(self):
         result = evaluate_convergence_quality(
-            U0P1_PASS,
-            continuity_final=4.2e-7,
+            U0P2_PASS,
+            continuity_final=4e-6,
         )
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["needs_longer_solve"] is False
         assert result["failures"] == []
-        assert result["pp_pressure_drop_rel_spread_cells_4_7"] < 0.03
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            0.0258, rel=1e-2
+        )
 
-    def test_u0p3_301_fails_on_lmh_and_continuity(self):
+    def test_u0p3_301_fails_on_lmh_and_mass_balance_not_spread(self):
         result = evaluate_convergence_quality(
             U0P3_FAIL_301,
             continuity_final=6.4e-3,
@@ -54,8 +64,23 @@ class TestEvaluateConvergenceQuality:
         assert result["convergence_quality"] == QUALITY_FAIL
         assert result["needs_longer_solve"] is True
         assert "lmh_relative_difference" in result["failures"]
+        assert "mass_balance_relative_error" in result["failures"]
         assert "continuity_final" in result["failures"]
-        assert "pp_pressure_drop_rel_spread_cells_4_7" in result["failures"]
+        assert "pp_pressure_drop_rel_spread_cells_4_7" not in result["failures"]
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            0.1476, rel=1e-2
+        )
+
+    def test_u0p3_conv2000_passes_with_same_large_dP_spread(self):
+        result = evaluate_convergence_quality(
+            U0P3_PASS_CONV2000,
+            continuity_final=1e-6,
+        )
+        assert result["convergence_quality"] == QUALITY_PASS
+        assert result["needs_longer_solve"] is False
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            0.1474, rel=1e-2
+        )
 
     def test_unknown_when_inputs_missing(self):
         result = evaluate_convergence_quality({})
@@ -65,8 +90,8 @@ class TestEvaluateConvergenceQuality:
             "lmh_relative_difference",
             "mass_balance_relative_error",
             "continuity_final",
-            "pp_pressure_drop_rel_spread_cells_4_7",
         }
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] is None
 
     def test_fail_even_if_some_checks_unavailable(self):
         result = evaluate_convergence_quality(
@@ -90,6 +115,7 @@ class TestEvaluateConvergenceQuality:
         assert metrics["lmh_relative_difference"] == "1.7e-4"
         result = evaluate_convergence_quality(metrics, continuity_final=1e-6)
         assert result["convergence_quality"] == QUALITY_PASS
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(0.0)
 
     def test_relative_spread_definition(self):
         assert relative_spread([100.0, 101.0, 102.0, 101.3]) == pytest.approx(

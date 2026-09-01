@@ -1,10 +1,14 @@
 """Post-hoc convergence quality gate (independent of stop_reason).
 
 The QoI / residual stop can declare convergence while two LMH paths still
-disagree, continuity sits above 1e-4, or unit-cell pressure drops scatter.
-Those signals are the only checks that caught under-converged u0p3 at the
-301-iteration QoI stop on D2450_a45 (p=6 MPa), where CP and spacer dP were
-already within 0.1% of the 2000-iteration solution.
+disagree or continuity sits above 1e-4. Those checks caught under-converged
+u0p3 at the 301-iteration QoI stop on D2450_a45 (p=6 MPa), where CP and
+spacer dP were already within 0.1% of the longer residual-converged solution.
+
+Unit-cell pressure-drop spread across evaluation cells 4–7 is recorded as a
+diagnostic only. On D2450_a45 it is essentially unchanged between the short
+and long solves (u0p2 ~2.58%, u0p3 ~14.7%) — a steady-state property of the
+flow field / evaluation window, not a convergence signal.
 
 Keep this separate from stop_reason: a max_iter_reached run (e.g. u0p1 with
 continuity floored at ~4e-7) can still PASS.
@@ -22,7 +26,6 @@ QUALITY_UNKNOWN = "UNKNOWN"
 LMH_REL_ABS_MAX = 1e-3
 MASS_BALANCE_REL_ABS_MAX = 1e-3
 CONTINUITY_FINAL_MAX = 1e-4
-PRESSURE_DROP_REL_SPREAD_MAX = 0.03  # 3% across cells 4..7
 PRESSURE_DROP_CELLS = (4, 5, 6, 7)
 
 
@@ -93,7 +96,8 @@ def evaluate_convergence_quality(
     dict
         ``convergence_quality`` in {PASS, FAIL, UNKNOWN},
         ``needs_longer_solve`` (True only on FAIL),
-        per-check values / pass flags, and ``failures`` (list of check ids).
+        per-check values / pass flags, ``failures``, and diagnostic
+        ``pp_pressure_drop_rel_spread_cells_4_7`` (not gated).
     """
     lmh_rel = _as_float(metrics.get("lmh_relative_difference"))
     mb_rel = _as_float(metrics.get("mass_balance_relative_error"))
@@ -127,16 +131,6 @@ def evaluate_convergence_quality(
                 continuity is not None and continuity < CONTINUITY_FINAL_MAX
             ),
         },
-        "pp_pressure_drop_rel_spread_cells_4_7": {
-            "value": dP_spread,
-            "threshold_max": PRESSURE_DROP_REL_SPREAD_MAX,
-            "available": dP_spread is not None,
-            "missing_columns": dP_missing,
-            "passed": (
-                dP_spread is not None
-                and dP_spread < PRESSURE_DROP_REL_SPREAD_MAX
-            ),
-        },
     }
 
     failures = [
@@ -160,7 +154,9 @@ def evaluate_convergence_quality(
         "lmh_relative_difference": lmh_rel,
         "mass_balance_relative_error": mb_rel,
         "continuity_final": continuity,
+        # Diagnostic only — not part of the gate (converged physics / window).
         "pp_pressure_drop_rel_spread_cells_4_7": dP_spread,
+        "pp_pressure_drop_rel_spread_cells_4_7_missing": dP_missing,
     }
 
 
@@ -186,7 +182,7 @@ def continuity_final_from_case_dir(case_dir: str | Path) -> Optional[float]:
 
 
 def metrics_from_summary_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Pull gate inputs from a summary_metrics_wide first-row mapping."""
+    """Pull gate inputs and dP diagnostic from a summary_metrics_wide row."""
     keys = (
         "lmh_relative_difference",
         "mass_balance_relative_error",
