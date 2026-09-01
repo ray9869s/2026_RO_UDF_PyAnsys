@@ -132,39 +132,41 @@ common_solver_settings = {
         "wall_bottom_buffer_in", "wall_bottom_buffer_out",
     ],
     "use_inlet_velocity_profile": True,
+    "enable_qoi_convergence_stop": False,
 }
 
-# First multi-case solver run after the mesh rebuild. D2450_a45 only, three
-# velocities at p6M.
+# Convergence-independence probe. QoI stop disabled, full 2000 iterations, on
+# the two runs that exposed the single-QoI weakness.
 #
-# The pre-rebuild u0p2_p6M run must be deleted before this batch: its
-# mesh_sha256 (222e7886...) predates the rebuild while the current mesh is
-# dcf1bea4... Cell count and all four quality metrics reproduced exactly, so
-# the geometry is identical and u0p2 should return u_mean 0.1992807169514518
-# with inlet_profile_G 1.00360939613. The mesh manifest G is currently None:
-# the rebuild reset the lazy-fill and the first run repopulates it.
+#   u0p3_p6M stopped at 301 with continuity 6.4e-03, lmh_relative_difference
+#     -0.2925 (u0p1 1.70e-04, u0p2 2.80e-04) and 8% pressure-drop scatter
+#     across cells 4-7 where the other two hold to 1.3%. The QoI window
+#     Np=100 is comparable to the LMH oscillation period (~80-100 iterations),
+#     so it sampled one phase and called it flat.
 #
-# u0p1 is expected to quasi-converge (LMH stable, residual ~1.4e-6 at the
-# iteration cap) rather than reach qoi_converged.
+#   u0p1_p6M passed every global check yet has a stagnation region above NaCl
+#     saturation in evaluation cell 7 (wall area fraction 2.3e-05, 3 interior
+#     cells clamped at Yi=1). Open question: does it grow, shrink or hold with
+#     more iterations?
 #
-# batch_solver_sweep.py has none of the session-lifecycle hardening added to
-# batch_meshing.py (no retry, no teardown wait, no settle delay). This batch
-# is partly a test of whether the solver hits the same AttachAssembly /
-# socket-reset contention across cases.
+# Canonical CP at the 301-iteration stop, for comparison afterwards:
+#   u0p1  cp_canon 1.045493  cp_max 2.73751  c_b 621.647  dP  291.455
+#   u0p2  cp_canon 1.038702  cp_max 1.35406  c_b 610.485  dP  846.265
+#   u0p3  cp_canon 1.031306  cp_max 1.26691  c_b 604.882  dP 1685.667
 _SWEEP_GEO = "D2450_a45"
 _SWEEP_MESH_ID = "max085_min006_cpg5_bl4_peel2"
 _SWEEP_P = 6.0e6
 
 solver_sweep_cases = []
-for _u in (0.1, 0.2, 0.3):
-    _run_id = make_base_case_name(_u, _SWEEP_P)
+for _u in (0.1, 0.3):
+    _base = make_base_case_name(_u, _SWEEP_P)
     solver_sweep_cases.append({
         "family": _FAMILY,
         "geo_id": _SWEEP_GEO,
         "mesh_id": _SWEEP_MESH_ID,
-        "run_id": _run_id,
+        "run_id": f"{_base}_conv2000",
         "geo_name": _SWEEP_GEO,
-        "case_name": _run_id,
+        "case_name": f"{_base}_conv2000",
         "inlet_velocity_value": _u,
         "outlet_gauge_pressure": _SWEEP_P,
     })
