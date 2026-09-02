@@ -1,36 +1,49 @@
 # Mesh sensitivity Phase 0: near-wall (concentration boundary layer) resolution
 # on the most-verified geometry, D2450_a45.
 #
-# Why this study: Sc = nu/D = 1e-6/2e-9 = 500, so the concentration boundary
-# layer is Sc^(-1/3) = 0.126 of the momentum layer, roughly 13-48 um.
-# bl_height = m_min * bl_height_factor = 0.006 * 0.4 = 2.4 um nominal, but the
-# prism first layer measures ~14 um (y1 = 6 um, matching the documented 5-7x
-# inflation), so only 1-3 cells sit inside the concentration layer. Published
-# high-Sc mass-transfer work uses ~3 um cells or 20 inflation layers.
-# Internal evidence: the analytic wall reconstruction cuts CP grid dependence
-# from ~30% to ~8%, i.e. the base mesh does not resolve it.
+# Why: Sc = nu/D = 1e-6/2e-9 = 500, so the concentration boundary layer is
+# Sc^(-1/3) = 0.126 of the momentum layer, roughly 13-48 um. run_config already
+# records the problem: bl4 -> bl6 moved window CP from 1.039 to 1.051, a 1.2%
+# shift against a ~0.6% CP discriminability signal, so CP is NOT grid-converged
+# in that range. Measured y1 (first-cell centroid, area-weighted) is bl4 mean
+# 5.736 um / max 16.14, bl6 mean 3.985 um / max 6.19. Published high-Sc mass-
+# transfer work uses ~3 um cells or 20 inflation layers. And the analytic wall
+# reconstruction cuts CP grid dependence from ~30% to ~8%, which is itself
+# evidence the base mesh does not resolve the layer.
 #
 # Core resolution is NOT the concern. vol_hex_max 59.5 um across a 770 um
-# channel matches published grid convergence at 0.1 mm cell size.
+# channel matches published grid convergence at 0.1 mm.
 #
-# Judge convergence on probe_cp_reconstruction's cp_raw (cell-centre), not
-# cp_recon: the reconstruction masks the grid error. Baseline at bl4/f040 is
-# cp_raw 1.06505 vs cp_recon 1.08708, a 2.07% gap. If bl12/f015 closes that to
-# under 0.5%, the near-wall grid is adequate.
+# AXIS: bl_layers only, bl_height_factor pinned at the run_config default 0.40.
+# The earlier bl8/f020 and bl12/f015 attempts changed BOTH knobs and paid for
+# it in volume quality:
+#   bl4  / f040   796,009 cells  ortho 0.10209  AR  62.77   PASS
+#   bl8  / f020 1,050,560 cells  ortho 0.07463  AR 124.13   PASS
+#   bl12 / f015 1,279,676 cells  ortho 0.05057  AR 251.94   FAILED
+# bl12 hit BOTH gates: AR over the 150 ceiling and ortho at the 0.05 floor.
+# run_config calls AR 150 "a campaign ceiling, not a quality target", but ortho
+# 0.0506 is a real numerical limit. Thinning the first layer (f020, f015) is
+# what flattens cells; adding layers at fixed f040 should keep AR near 62.8
+# while smooth-transition still compresses y1 (the documented bl4 -> bl6 drop
+# from 5.736 to 3.985 um happened at fixed factor).
 #
-# bl4_f040 is geometrically identical to the current campaign mesh, so
-# cell_count must come back as 796009. That also confirms the
-# bl_height_factor override reaches the mesher.
+# JUDGE ON cp_raw, not cp_recon. probe_cp_reconstruction prints both; the
+# reconstruction masks the grid error. Baseline at bl4/f040 is cp_raw 1.06505
+# vs cp_recon 1.08708, a 2.07% gap. Closing that under 0.5% means the near-wall
+# grid resolves the concentration layer on its own.
+#
+# CAUTION for the campaign: D0817_a60 already sits at ortho 0.06759 with bl4.
+# Whatever level wins here may not survive on the a60 geometries, which is the
+# case for splitting membrane and spacer boundary layers. run_config exposes
+# include_spacer_in_boundary_layers as an on/off knob today, but mesh_id has no
+# token for it, so that probe needs a naming decision first.
 #
 # periodic_after_surface_mesh = True is the campaign default: setting periodic
 # boundaries before surface meshing produces shadow-copy node slivers
-# (measured as max skewness 0.88 vs 0.67 on D2450_a45).
+# (max skewness 0.88 vs 0.67 on D2450_a45).
 #
 # buffer_wall_base_names MUST be overridden: this geometry splits buffer walls
 # into _in/_out, and zone_matches_base_name only accepts "base" or "base.N".
-#
-# D0817_a45 depends on the archived 8/11 CAD (1487160 B); the 8/16 re-save
-# passes surface meshing but fails prism generation.
 from ro.solver_common import make_base_case_name
 
 dry_run = False
@@ -53,8 +66,8 @@ clean_fm_scratch_on_success = True
 
 _FAMILY = "diamond"
 
-# bl_layers and bl_height_factor are deliberately NOT set here; each case
-# supplies them so the sensitivity levels are explicit at the case level.
+# bl_layers and bl_height_factor are supplied per case so the sensitivity
+# levels stay explicit; they are deliberately absent here.
 common_mesh_settings = {
     "filament_d_m": 4.0e-4,
     "bridge_radius_m": 1.10e-4,
@@ -79,16 +92,28 @@ common_mesh_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Phase 0 sensitivity cases
+# Phase 0 sensitivity levels
+#
+# The _fNNN token is bl_height_factor x100 (f040 = 0.40), matching the two
+# meshes already on disk. run_config's comment says x1000; that comment needs
+# correcting, but renaming would force a re-mesh.
+#
+# (bl_layers, bl_height_factor)
+#   4 / 0.40  built, 796,009 cells, ortho 0.10209, AR  62.77  <- campaign
+#   6 / 0.40  new; run_config records y1 mean 3.985 um and window CP 1.051
+#   8 / 0.40  new; pure layer-count extension
+#   8 / 0.20  built, 1,050,560 cells, ortho 0.07463, AR 124.13 (factor probe)
+# skip_existing_mesh=True means the two built meshes are skipped and only
+# bl6/f040 and bl8/f040 are generated, while all four get solved.
 # ---------------------------------------------------------------------------
 _SENS_GEO = "D2450_a45"
 _SENS_M_MAX = 0.085
 
-# (bl_layers, bl_height_factor) -> bl_height nominal / measured first layer
 _BL_LEVELS = (
-    ( 4, 0.40),   # 2.4 um / ~14 um   <- current campaign setting
-    ( 8, 0.20),   # 1.2 um / ~7 um
-    (12, 0.15),   # 0.9 um / ~5 um
+    ( 4, 0.40),
+    ( 6, 0.40),
+    ( 8, 0.40),
+    ( 8, 0.20),
 )
 
 
@@ -132,9 +157,9 @@ common_solver_settings = {
 # solution to 6 significant figures on every reported quantity, so it isolates
 # the mesh effect cleanly.
 #
-# The QoI stop stays enabled (run_config default). The convergence-independence
-# study settled that: at p=6 MPa on D2450_a45, running 2000 iterations with the
-# stop off gave
+# The QoI stop stays at the run_config default (enabled). The convergence-
+# independence study settled that: at p=6 MPa on D2450_a45, running 2000
+# iterations with the stop off gave
 #   u0p2  residual_converged at 379; all quantities identical to the 301 stop
 #   u0p3  residual_converged at 765; CP -0.010%, dP +0.074%
 #   u0p1  max_iter_reached; continuity floors at 4.2e-07, lmh_udm_avg fixed to
@@ -156,7 +181,7 @@ for _bl, _f in _BL_LEVELS:
 
 # ---------------------------------------------------------------------------
 # Campaign mesh layouts, reference data. Not used by this Phase 0 config.
-# All nine are already built with bl4 / f040 (mesh_id without the _fNNN token):
+# All nine are built with bl4 / f040 (mesh_id carries no _fNNN token):
 #   geo         mesh_id  cells     skew    ortho    AR      eps
 #   D2450_a30   max085   1499175   0.6160  0.10124  68.42   0.9088
 #   D2450_a45   max085    796009   0.6706  0.10209  62.77   0.9088
@@ -171,17 +196,20 @@ for _bl, _f in _BL_LEVELS:
 # porosity_eps is set by pitch, not angle (D2450 ~0.909, D1225 ~0.817,
 # D0817 ~0.724; spread within a pitch under 0.4 percentage points). Surface
 # skewness and volume ortho are monotone in angle: a30 best, a60 worst.
-# D0817_a60 has the lowest ortho (0.0676) against the 0.05 gate.
+# D0817_a60 has the lowest ortho, 0.06759 against the 0.05 gate.
 #
-# Bridge radius stays 1.10e-4 campaign-wide. brg156 was tried on the a60
-# family and made things worse:
+# Bridge radius stays 1.10e-4 campaign-wide. brg156 on the a60 family made
+# things worse:
 #   D2450_a60  brg110 skew 0.6767 ortho 0.0849 AR  87.7 cells  946741
 #              brg156 skew 0.6681 ortho 0.0804 AR  82.2 cells  861345
 #   D1225_a60  brg110 skew 0.6977 ortho 0.0762 AR  79.4 cells 1059674
 #              brg156 skew 0.6939 ortho 0.0734 AR 120.9 cells  874144
 #   D0817_a60  brg110 skew 0.86115   brg156 skew 0.86783   (both fail 0.85)
 # The worst surface face is not at the bridge node. D0817_a60 uses a finer
-# surface size (m_max 0.060) instead, which drops skewness to 0.746625.
+# surface size (m_max 0.060) instead, dropping skewness to 0.746625.
+#
+# D0817_a45 depends on the archived 8/11 CAD (1487160 B); the 8/16 re-save
+# passes surface meshing but fails prism generation.
 #
 # (geo_id, n_active_cells, pitch_mm, periodic_dy_mm, m_max)
 # ---------------------------------------------------------------------------
