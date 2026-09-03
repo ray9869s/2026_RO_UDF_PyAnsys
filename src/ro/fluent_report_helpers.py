@@ -102,6 +102,245 @@ def create_x_normal_plane(solver_obj, surface_name, x_value_m):
         ) from tui_error
 
 
+
+def create_z_normal_plane(solver_obj, surface_name, z_value_m):
+    """Create a z-normal iso-surface, replacing an existing surface of the same name."""
+    settings_error = None
+    try:
+        iso_group = solver_obj.settings.results.surfaces.iso_surface
+        existing = list_named_object_names(
+            iso_group,
+            "results.surfaces.iso_surface",
+        )
+        if surface_name in existing:
+            try:
+                iso_group.delete(surface_name)
+                print(f"Deleted existing iso-surface: {surface_name}")
+            except Exception as exc:
+                print(f"Could not delete iso-surface {surface_name}: {exc}")
+
+        iso_group.create(surface_name)
+        iso_group[surface_name].field = "z-coordinate"
+        iso_group[surface_name].iso_values = [z_value_m]
+        print(
+            f"Created iso-surface '{surface_name}' at z = "
+            f"{z_value_m:.6e} m (settings API)"
+        )
+        return
+    except Exception as exc:
+        settings_error = exc
+        print(f"Settings API failed for iso-surface '{surface_name}': {exc}")
+
+    try:
+        solver_obj.tui.surface.iso_surface(
+            "z-coordinate",
+            surface_name,
+            "()",
+            "()",
+            str(z_value_m),
+            "0",
+        )
+        print(
+            f"Created iso-surface '{surface_name}' at z = "
+            f"{z_value_m:.6e} m (TUI fallback)"
+        )
+    except Exception as tui_error:
+        raise RuntimeError(
+            f"Could not create iso-surface '{surface_name}'. "
+            f"Settings error: {settings_error}. TUI error: {tui_error}"
+        ) from tui_error
+
+
+def measure_fluid_z_bounds_m(solver, setup, fluid_zone_names):
+    """Return (z_min_m, z_max_m) from reduction min/max of z-coordinate.
+
+    Uses ``solver.fields.reduction`` on fluid cell zones. The Fluent settings
+    tree does not expose domain min/max at the iso-surface creation site, and
+    the mesh manifest only stores ``domain_extent_z_m`` as a length (max-min),
+    so a live reduction is the origin-agnostic source of the mid-plane.
+    """
+    if not fluid_zone_names:
+        raise ValueError("fluid_zone_names must be non-empty to measure z bounds.")
+    locations = fluid_zone_reduction_locations(setup, fluid_zone_names)
+    reduction = solver.fields.reduction
+    z_min = float(
+        reduction.minimum(expression="z-coordinate", locations=locations)
+    )
+    z_max = float(
+        reduction.maximum(expression="z-coordinate", locations=locations)
+    )
+    if not (math.isfinite(z_min) and math.isfinite(z_max)):
+        raise RuntimeError(
+            f"Non-finite fluid z bounds from reduction: z_min={z_min!r}, "
+            f"z_max={z_max!r}."
+        )
+    if z_max <= z_min:
+        raise RuntimeError(
+            f"Degenerate fluid z bounds from reduction: z_min={z_min!r}, "
+            f"z_max={z_max!r}."
+        )
+    return z_min, z_max
+
+
+def resolve_channel_midplane_z_m(
+    solver=None,
+    setup=None,
+    fluid_zone_names=None,
+    *,
+    z_min_m=None,
+    z_max_m=None,
+    fallback_z_m=0.0,
+):
+    """Origin-agnostic channel mid-plane z [m].
+
+    Preference order:
+      1. Explicit ``z_min_m`` / ``z_max_m`` (caller-measured bounds)
+      2. Live ``fields.reduction`` min/max of ``z-coordinate`` on fluid zones
+      3. ``fallback_z_m`` (default 0.0 = campaign channel-centred origin)
+
+    Returns ``(z_mid_m, diagnostics_dict)``. Never uses a candidate list of
+    ``h/2`` vs ``0`` — that trap permanently selects the first iso-value that
+    happens to lie inside ``[z_min, z_max]``.
+    """
+    diag: dict[str, Any] = {
+        "source": None,
+        "z_min_m": None,
+        "z_max_m": None,
+        "z_mid_m": None,
+        "fallback_z_m": float(fallback_z_m),
+        "measure_error": None,
+    }
+    if z_min_m is not None and z_max_m is not None:
+        z0 = float(z_min_m)
+        z1 = float(z_max_m)
+        if not (math.isfinite(z0) and math.isfinite(z1) and z1 > z0):
+            raise ValueError(
+                f"Invalid explicit z bounds: z_min_m={z_min_m!r}, "
+                f"z_max_m={z_max_m!r}."
+            )
+        z_mid = 0.5 * (z0 + z1)
+        diag.update(
+            source="explicit_bounds",
+            z_min_m=z0,
+            z_max_m=z1,
+            z_mid_m=z_mid,
+        )
+        return z_mid, diag
+
+    if solver is not None and setup is not None and fluid_zone_names:
+        try:
+            z0, z1 = measure_fluid_z_bounds_m(solver, setup, fluid_zone_names)
+            z_mid = 0.5 * (z0 + z1)
+            diag.update(
+                source="fluid_reduction",
+                z_min_m=z0,
+                z_max_m=z1,
+                z_mid_m=z_mid,
+            )
+            return z_mid, diag
+        except Exception as exc:
+            diag["measure_error"] = f"{type(exc).__name__}: {exc}"
+
+    z_mid = float(fallback_z_m)
+    diag.update(source="fallback_centred_origin", z_mid_m=z_mid)
+    return z_mid, diag
+
+
+def create_channel_midplane_plane(
+    solver,
+    *,
+    setup=None,
+    fluid_zone_names=None,
+    z_min_m=None,
+    z_max_m=None,
+    surface_name=None,
+    fallback_z_m=0.0,
+):
+    """Create the channel mid-plane iso-surface; return (name, z_mid, diag).
+
+    Mid-plane z is ``0.5 * (z_min + z_max)`` from measured fluid bounds when
+    available. Falls back to ``fallback_z_m`` (default 0.0). Pair with
+    ``assert_midplane_c_b_matches_boundary_mixing_cup`` in report extract so a
+    silent wall-plane sample cannot land in the canonical CP denominator.
+    """
+    z_mid, diag = resolve_channel_midplane_z_m(
+        solver,
+        setup,
+        fluid_zone_names,
+        z_min_m=z_min_m,
+        z_max_m=z_max_m,
+        fallback_z_m=fallback_z_m,
+    )
+    if surface_name is None:
+        surface_name = (
+            f"pp_plane_zc_{abs(z_mid):.7f}".replace(".", "p")
+        )
+    create_z_normal_plane(solver, surface_name, z_mid)
+    diag = dict(diag)
+    diag["plane_name"] = surface_name
+    return surface_name, z_mid, diag
+
+
+# Default relative tolerance for mid-plane c_b vs x-normal mixing-cup.
+# Wall-adjacent mis-placement on D2450_a45 disagreed by ~3.5%; legitimate
+# mid-plane vs local boundary mixing-cup stay within a few tenths of a percent.
+MIDPLANE_CB_MIXING_CUP_REL_TOL = 0.005
+
+
+def assert_midplane_c_b_matches_boundary_mixing_cup(
+    c_b_by_cell_mol_per_m3,
+    mixing_cup_mol_per_m3_by_boundary,
+    cell_numbers,
+    *,
+    rel_tol=MIDPLANE_CB_MIXING_CUP_REL_TOL,
+):
+    """Raise if mid-plane c_b disagrees with flanking x-normal mixing-cups.
+
+    For each cell N, compare mid-plane c_b to the mean of the mixing-cup molar
+    concentrations on boundaries N-1 and N. Those x-normal cups are an
+    independent bulk measure; a wall-placed "mid-plane" fails this check.
+    """
+    if not cell_numbers:
+        raise ValueError("cell_numbers must be non-empty.")
+    failures = []
+    for cell_number in cell_numbers:
+        if cell_number not in c_b_by_cell_mol_per_m3:
+            raise KeyError(
+                f"c_b_by_cell_mol_per_m3 missing evaluation cell {cell_number}."
+            )
+        left = mixing_cup_mol_per_m3_by_boundary.get(cell_number - 1)
+        right = mixing_cup_mol_per_m3_by_boundary.get(cell_number)
+        if left is None or right is None:
+            raise KeyError(
+                f"mixing_cup_mol_per_m3_by_boundary missing boundaries "
+                f"{cell_number - 1} and/or {cell_number} for cell {cell_number}."
+            )
+        left_f = float(left)
+        right_f = float(right)
+        if left_f <= 0.0 or right_f <= 0.0:
+            raise ValueError(
+                f"Non-positive mixing-cup molar concentration for cell "
+                f"{cell_number} boundaries: left={left_f!r}, right={right_f!r}."
+            )
+        ref = 0.5 * (left_f + right_f)
+        c_b = float(c_b_by_cell_mol_per_m3[cell_number])
+        rel_err = abs(c_b - ref) / ref
+        if rel_err > float(rel_tol):
+            failures.append(
+                f"cell {cell_number}: c_b={c_b:.6g} vs mixing-cup mean "
+                f"{ref:.6g} (boundaries {cell_number - 1}/{cell_number} = "
+                f"{left_f:.6g}/{right_f:.6g}), rel_err={rel_err:.4%} "
+                f"> tol={float(rel_tol):.4%}"
+            )
+    if failures:
+        raise RuntimeError(
+            "Mid-plane c_b disagrees with x-normal cell-boundary mixing-cup "
+            "concentrations; the mid-plane iso-surface is likely not at the "
+            "channel centre (wall-adjacent sampling). "
+            + "; ".join(failures)
+        )
+
+
 def _require_positive_int(name, value):
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer, got {value!r}.")
@@ -666,7 +905,7 @@ def evaluation_window_midplane_bulk_concentrations(
     molecular_weight_kg_per_mol,
     salt_is_mass_fraction=True,
 ):
-    """Mid-plane (z = h/2) mixing-cup salt concentration per evaluation cell.
+    """Mid-plane (z = 0.5*(z_min+z_max), channel centre) mixing-cup salt concentration per evaluation cell.
 
     Uses x-range iso_clip on the mid-plane iso-surface plus surface-area and
     surface-massavg reports (no ``reduction.sum_if``). Mass-weighted average

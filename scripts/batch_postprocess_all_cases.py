@@ -192,7 +192,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--manual-view-bounds", type=str, default="0,0.010395,0,0.003465")
+    parser.add_argument("--manual-view-bounds", type=str, default="0,0.010395,-0.0017325,0.0017325")
     parser.add_argument("--manual-view-plane", type=str, default="xy")
     parser.add_argument("--view-margin", type=float, default=1.25)
     parser.add_argument("--zoom-out", type=float, default=1.00)

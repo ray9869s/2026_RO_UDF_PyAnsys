@@ -67,6 +67,10 @@ _ML_COMMON = {
 }
 
 # Per-case ML geometry (all lengths in metres; diameters not radii).
+# layer_axis_z_m / joint_sphere_z_m are bottom-origin CAD/registry
+# coordinates (mid layer near z = h/2 = 0.000385). The Fluent mesh is
+# channel-centred (mid-plane at z = 0); recentre by subtracting h/2 if
+# these absolute z values are ever used for mesh sampling.
 _ML_GEOMETRY: dict[str, dict[str, Any]] = {
     "M_c160": {
         "layer_diameters_m": [0.000320, 0.000160, 0.000320],

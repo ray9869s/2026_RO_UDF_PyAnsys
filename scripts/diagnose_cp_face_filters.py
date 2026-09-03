@@ -34,6 +34,8 @@ from ro.cp_metrics import (
 )
 from ro.domain_layout import layout_from_run_directory
 from ro.fluent_report_helpers import (
+    resolve_channel_midplane_z_m,
+    create_z_normal_plane,
     compute_surface_report_value,
     create_or_update_surface_field_report,
     create_x_range_iso_clip,
@@ -57,38 +59,6 @@ CONTACT_WIDTH_OVER_PITCH = 0.000152 / 0.003465  # ~4.4%
 DISCRIMINABILITY = 0.006
 
 
-def create_z_normal_plane(solver_obj, surface_name: str, z_value_m: float) -> None:
-    """Create a z-normal iso-surface (settings API, TUI fallback)."""
-    settings_error = None
-    try:
-        iso_group = solver_obj.settings.results.surfaces.iso_surface
-        existing = list_named_object_names(
-            iso_group, "results.surfaces.iso_surface"
-        )
-        if surface_name in existing:
-            iso_group.delete(surface_name)
-        iso_group.create(surface_name)
-        iso_group[surface_name].field = "z-coordinate"
-        iso_group[surface_name].iso_values = [float(z_value_m)]
-        return
-    except Exception as exc:
-        settings_error = exc
-    try:
-        solver_obj.tui.surface.iso_surface(
-            "z-coordinate",
-            surface_name,
-            "()",
-            "()",
-            str(z_value_m),
-            "0",
-        )
-    except Exception as tui_error:
-        raise RuntimeError(
-            f"Could not create iso-surface {surface_name!r}. "
-            f"Settings error: {settings_error}. TUI error: {tui_error}"
-        ) from tui_error
-
-
 def compute_c_b_by_cell(
     solver,
     solution,
@@ -97,20 +67,23 @@ def compute_c_b_by_cell(
     eval_cells: list[int],
     density: float,
     mw: float,
-    channel_height_m: float = 0.00077,
+    setup=None,
+    fluid_zone_names=None,
+    plane_prefix: str = "pp_diag_zc",
 ) -> dict[int, float]:
-    z_center = channel_height_m / 2.0
-    plane_name = None
-    for z_val in (z_center, 0.0):
-        pname = f"pp_diag_zc_{abs(z_val):.7f}".replace(".", "p")
-        try:
-            create_z_normal_plane(solver, pname, z_val)
-            plane_name = pname
-            break
-        except Exception as exc:
-            print(f"  mid-plane at z={z_val} failed: {exc}")
-    if plane_name is None:
-        raise RuntimeError("Could not create mid-plane iso-surface for c_b.")
+    """Mixing-cup c_b on measured mid-plane z=0.5*(z_min+z_max)."""
+    if setup is None:
+        setup = solver.settings.setup
+    names = list(fluid_zone_names) if fluid_zone_names else None
+    if not names:
+        fluid_group = setup.cell_zone_conditions.fluid
+        names = list_named_object_names(
+            fluid_group, "setup.cell_zone_conditions.fluid"
+        )
+    z_mid, z_diag = resolve_channel_midplane_z_m(solver, setup, names)
+    plane_name = f"{plane_prefix}_{abs(z_mid):.7f}".replace(".", "p")
+    create_z_normal_plane(solver, plane_name, z_mid)
+    print(f"  mid-plane z={z_mid!r} diag={z_diag}")
 
     last_error = None
     for salt_field in ("nacl", "mass-fraction-of-nacl", "yi-0"):
@@ -770,9 +743,6 @@ def diagnose_run(
                 density=float(run_manifest.get("density_kg_per_m3") or 998.2),
                 mw=float(
                     run_manifest.get("molecular_weight_kg_per_mol") or 0.05844
-                ),
-                channel_height_m=float(
-                    run_manifest.get("channel_height_m") or 0.00077
                 ),
             )
             c_b_by_cell.update(computed)

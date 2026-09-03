@@ -49,6 +49,9 @@ CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PAT
 from ro.fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
     concentration_metric_unit,
+    MIDPLANE_CB_MIXING_CUP_REL_TOL,
+    assert_midplane_c_b_matches_boundary_mixing_cup,
+    create_channel_midplane_plane,
     create_x_normal_plane as _create_x_normal_plane,
     derive_periodic_spacer_pressure_metrics_for_layout,
     derive_spacer_cell_metrics_for_layout,
@@ -1212,13 +1215,16 @@ if __name__ == "__main__":
         # ==========================================================
         # Cell 8.4. Mid-plane bulk c_b per evaluation cell (window only)
         # ==========================================================
-        # Canonical CP denominator. Mixing-cup (surface-massavg) on z=h/2
-        # clipped in x to each evaluation cell. NOT interchangeable with
-        # cp_inlet_avg (L2 / UDM-9 inlet denominator).
+        # Canonical CP denominator. Mixing-cup (surface-massavg) on the
+        # channel mid-plane z = 0.5*(z_min+z_max) (origin-agnostic; z = 0 on
+        # the campaign channel-centred mesh), clipped in x to each evaluation
+        # cell. NOT interchangeable with cp_inlet_avg (L2 / UDM-9 inlet
+        # denominator).
 
-        _CHANNEL_HEIGHT_M = getattr(cfg, "channel_height_m", 0.00077)
-        _z_center_m = _CHANNEL_HEIGHT_M / 2.0
-        _z_candidates_center = [_z_center_m, 0.0]
+        # Mid-plane z from measured fluid bounds: z_mid = 0.5*(z_min+z_max).
+        # Origin-agnostic (z=0 on the campaign channel-centred mesh). Do NOT
+        # use a candidate list of h/2 vs 0 — any iso-value inside [z_min,z_max]
+        # "succeeds", so first-success permanently picks a wrong plane.
         _SALT_FIELD_CANDIDATES_CENTER = [
             "nacl", "mass-fraction-of-nacl", "yi-0", "species-0", "udm-7",
         ]
@@ -1230,26 +1236,29 @@ if __name__ == "__main__":
         _midplane_salt_is_mass_fraction = True
         _found_center_z = None
         _found_center_pname = None
+        _midplane_z_diag = None
 
-        for _z_val in _z_candidates_center:
-            _pname = (
-                f"pp_plane_zc_{abs(_z_val):.7f}"
-                .replace(".", "p")
+        try:
+            (
+                _found_center_pname,
+                _found_center_z,
+                _midplane_z_diag,
+            ) = create_channel_midplane_plane(
+                solver,
+                setup=setup,
+                fluid_zone_names=fluid_zones,
             )
-            try:
-                create_z_normal_plane(solver, _pname, _z_val)
-                _found_center_z = _z_val
-                _found_center_pname = _pname
-                break
-            except Exception as _e_plane:
-                print(f"Center plane creation at z={_z_val} failed: {_e_plane}")
-
-        if _found_center_pname is None:
+            print(
+                f"Mid-plane iso-surface: name={_found_center_pname!r} "
+                f"z={_found_center_z!r} diag={_midplane_z_diag}"
+            )
+        except Exception as _e_plane:
             raise RuntimeError(
                 "Canonical CP cannot be computed: mid-plane iso-surface "
-                "creation failed for all z candidates. "
+                f"creation failed ({_e_plane!r}). "
                 "cp_inlet_avg (L2) is not a substitute for canonical CP."
-            )
+            ) from _e_plane
+
 
         midplane_window_error = None
         for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
@@ -1340,6 +1349,31 @@ if __name__ == "__main__":
         )
         print(f"  per-cell c_b: {c_b_by_cell_mol_per_m3}")
         print(f"  salt field: {_midplane_salt_field!r} (surface-massavg)")
+
+        # Guard: mid-plane c_b must agree with independent x-normal mixing-cup
+        # molar concentrations on the flanking unit-cell boundaries. A wall-
+        # placed plane fails this check (historically ~3.5% high on D2450_a45).
+        _mixing_cup_mol_by_boundary = {}
+        for _b_idx in range(n_unit_cells + 1):
+            _mf = computed_values.get(
+                unit_cell_mixing_cup_report_name(_b_idx)
+            )
+            if _mf is None:
+                continue
+            _mixing_cup_mol_by_boundary[_b_idx] = mass_fraction_to_molar_concentration(
+                _mf,
+                rho,
+                salt_molecular_weight_kg_per_mol,
+            )
+        assert_midplane_c_b_matches_boundary_mixing_cup(
+            c_b_by_cell_mol_per_m3,
+            _mixing_cup_mol_by_boundary,
+            evaluation_cells,
+        )
+        print(
+            "  mid-plane c_b cross-check vs boundary mixing-cup: OK "
+            f"(rel_tol={MIDPLANE_CB_MIXING_CUP_REL_TOL:.3%})"
+        )
 
         # ==========================================================
         # Cell 8.4b. Legacy whole-domain mid-plane average (NOT c_b)

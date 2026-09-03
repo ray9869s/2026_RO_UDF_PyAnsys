@@ -632,19 +632,29 @@ def domain_bbox_from_manifest(run_manifest: dict[str, Any]) -> dict[str, Any]:
     y_len = _get("domain_extent_y_m")
     y_max = _get("domain_extent_y_max_m")
     if y_min is None and y_len is not None:
-        # Often y is periodic about 0; treat [0, Ly] if min unknown.
-        y_min = 0.0
-        y_max = y_len if y_max is None else y_max
+        # Campaign mesh is channel-centred: y runs -W/2..+W/2. Manifest
+        # domain_extent_y_m is a length only, so centre the unknown span.
+        half = 0.5 * float(y_len)
+        y_min = -half
+        y_max = half if y_max is None else y_max
     elif y_max is None and y_min is not None and y_len is not None:
         y_max = y_min + y_len
 
     z_min = _get("domain_extent_z_min_m")
     z_len = _get("domain_extent_z_m", "channel_height_m")
     z_max = _get("domain_extent_z_max_m")
-    if z_min is None:
+    if z_min is None and z_len is not None:
+        # Same centred convention: z runs -h/2..+h/2 with mid-plane at 0.
+        half = 0.5 * float(z_len)
+        z_min = -half
+        if z_max is None:
+            z_max = half
+    elif z_min is None:
         z_min = 0.0
-    if z_max is None and z_len is not None:
-        z_max = z_min + z_len
+    if z_max is None and z_len is not None and z_min is not None:
+        # Prefer length from known min only when min was explicitly stored.
+        if _get("domain_extent_z_min_m") is not None:
+            z_max = z_min + z_len
 
     return {
         "x_min_m": x_min,

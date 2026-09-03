@@ -27,7 +27,7 @@ area-weighted.
   UDM-7 after analytic wall reconstruction).
 - \(c_p\): face-local permeate-side reference \(J_s/J_w = B c_m/(J_w+B)\) (same
   as the flux boundary condition).
-- \(c_b\): mid-plane (\(z = h/2\)) **mass-weighted** (mixing-cup) salt
+- \(c_b\): mid-plane (\(z = \tfrac{1}{2}(z_{\min}+z_{\max})\), equal to \(z = 0\) on the campaign channel-centred mesh) **mass-weighted** (mixing-cup) salt
   concentration [mol/m³], clipped in \(x\) to each evaluation-window unit cell
   (not the whole domain). Implemented as Fluent `surface-massavg` on an
   x-range iso-clip of the mid-plane iso-surface. Do not use
@@ -35,6 +35,21 @@ area-weighted.
   conserved across buffer regions with no membrane source (see campaign
   probe STEP F / `_tmp_cell_profile.py`).
 - \(c_0\): inlet reference concentration (`c_inlet_ref`, 597.8268309 mol/m³).
+
+
+## Mesh coordinate convention
+
+The inlet face centre is the origin. Confirmed on D2450_a45 by the solver
+mesh check:
+
+- \(x\): \(0\) to \(+L\) (inlet at \(x = 0\); D2450_a45 \(L = 3.465\times 10^{-2}\,\mathrm{m}\))
+- \(y\): \(-W/2\) to \(+W/2\) (spanwise; D2450_a45 ≈ \(-1.733\times 10^{-3}\) to \(+1.733\times 10^{-3}\,\mathrm{m}\))
+- \(z\): \(-h/2\) to \(+h/2\) (membrane-normal; mid-plane at \(z = 0\);
+  D2450_a45 ≈ \(-3.851\times 10^{-4}\) to \(+3.852\times 10^{-4}\,\mathrm{m}\))
+
+Do **not** assume a bottom-origin frame where the mid-plane would be
+\(z = h/2\). Post-processing derives the mid-plane as
+\(z = \tfrac{1}{2}(z_{\min}+z_{\max})\) from measured fluid bounds.
 
 ## Averaging order
 

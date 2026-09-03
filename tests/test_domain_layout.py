@@ -64,7 +64,7 @@ SOLVER_EXTENTS_SNIPPET = """\
    Domain Extents:
      x-coordinate: min (m) = -8.673617e-18, max (m) = 1.732500e-02
      y-coordinate: min (m) = -1.732500e-03, max (m) = 1.732500e-03
-     z-coordinate: min (m) = 0.000000e+00, max (m) = 7.700000e-04
+     z-coordinate: min (m) = -3.850000e-04, max (m) = 3.850000e-04
 """
 
 MESHING_EXTENTS_SNIPPET = """\
@@ -505,8 +505,8 @@ class TestSolverLogDomainExtents:
         assert math.isclose(x_min, -8.673617e-18, rel_tol=0.0, abs_tol=1e-30)
         assert math.isclose(y_min, -1.7325e-03, rel_tol=1e-12)
         assert math.isclose(y_max, 1.7325e-03, rel_tol=1e-12)
-        assert math.isclose(z_min, 0.0, abs_tol=0.0)
-        assert math.isclose(z_max, 7.7e-04, rel_tol=1e-12)
+        assert math.isclose(z_min, -3.85e-04, rel_tol=1e-12)
+        assert math.isclose(z_max, 3.85e-04, rel_tol=1e-12)
 
     def test_raises_on_meshing_log_block_without_m_marker(self):
         with pytest.raises(ValueError, match=r"\(m\)"):

@@ -103,7 +103,7 @@ expression (not a Fluent query).
 
 ### Cell 8.4 — Mid-plane bulk \(c_b\) (canonical CP denominator)
 
-1. Create z-normal iso-surface `pp_plane_zc_<z>` at \(z = h/2\) (fallback \(z=0\)).
+1. Create z-normal iso-surface `pp_plane_zc_<z>` at \(z = \tfrac{1}{2}(z_{\min}+z_{\max})\) from measured fluid bounds (equals \(z = 0\) on the campaign channel-centred mesh; never a candidate list of \(h/2\) vs \(0\)).
 2. For **each spacer cell** (not only evaluation cells): create temporary
    x-range iso_clip `pp_mid_clip_cb_cell_{N}`, area + **surface-massavg** salt
    reports, convert to mol/m³, then **delete** clip and reports.
