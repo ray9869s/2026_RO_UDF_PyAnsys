@@ -26,16 +26,21 @@ _STACKED_MEMBRANE_TRIM_M = (_STACKED_SIGMA_D_NOMINAL_M - CAMPAIGN_H_M) / 2.0
 _SINUSOIDAL_WAVE_RADIUS_M = 4.0e-4
 
 _DIAMOND_SPACER_WALL_ZONES = ("wall_spacer",)
+# CAD named selections (same as batch_config wall_spacer_labels), not the
+# design-discussion guesses (layer_top/mid/bot/node) that never shipped.
 _ML_SPACER_WALL_ZONES = (
-    "wall_spacer_layer_top",
-    "wall_spacer_layer_mid",
-    "wall_spacer_layer_bot",
-    "wall_spacer_node",
+    "wall_spacer_top",
+    "wall_spacer_mid",
+    "wall_spacer_bottom",
+    "wall_spacer_bridge",
+    "wall_spacer_buffer",
 )
 _PILLAR_SPACER_WALL_ZONES_BASE = (
     "wall_spacer_filament",
     "wall_spacer_pillar",
 )
+# Appended after optional wall_spacer_hole so h00 never declares the bore zone.
+_PILLAR_SPACER_WALL_BUFFER = "wall_spacer_buffer"
 _SIN_SPACER_WALL_ZONES = (
     "wall_spacer_wave",
     "wall_spacer_rung",
@@ -250,6 +255,7 @@ def _pillar_geometry_entry(geo_id: str) -> dict[str, Any]:
     zones = list(_PILLAR_SPACER_WALL_ZONES_BASE)
     if has_hole:
         zones.append("wall_spacer_hole")
+    zones.append(_PILLAR_SPACER_WALL_BUFFER)
     return {
         "spacing_code": key,
         "attack_angle_deg": 0.0,

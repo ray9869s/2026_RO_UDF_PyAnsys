@@ -125,6 +125,38 @@ def test_pillar_contact_width_is_none():
     assert geometry["membrane_contact_width_m"] is None
 
 
+def test_ml_and_pillar_spacer_wall_zones_match_cad_named_selections():
+    """Registry must list real CAD zones, not design-discussion aliases."""
+    ml_expected = [
+        "wall_spacer_top",
+        "wall_spacer_mid",
+        "wall_spacer_bottom",
+        "wall_spacer_bridge",
+        "wall_spacer_buffer",
+    ]
+    for geo_id in ("M_c160", "M_c267", "M_c400"):
+        assert geometry_parameters_for_geo_id(geo_id)["spacer_wall_zones"] == ml_expected
+
+    h20 = geometry_parameters_for_geo_id("P_p80_h20")["spacer_wall_zones"]
+    assert h20 == [
+        "wall_spacer_filament",
+        "wall_spacer_pillar",
+        "wall_spacer_hole",
+        "wall_spacer_buffer",
+    ]
+    h00 = geometry_parameters_for_geo_id("P_p80_h00")["spacer_wall_zones"]
+    assert h00 == [
+        "wall_spacer_filament",
+        "wall_spacer_pillar",
+        "wall_spacer_buffer",
+    ]
+    assert "wall_spacer_hole" not in h00
+    # Cross-check against Fluent-shaped zone lists (rule 3-3 both ways).
+    validate_spacer_wall_zones(ml_expected, ml_expected, geo_id="M_c160")
+    validate_spacer_wall_zones(h20, h20, geo_id="P_p80_h20")
+    validate_spacer_wall_zones(h00, h00, geo_id="P_p80_h00")
+
+
 def test_sigma_d_invariant_holds_for_diamond():
     validate_sigma_d_invariant(mesh_payload())
 
