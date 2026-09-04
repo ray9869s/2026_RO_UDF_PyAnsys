@@ -1,17 +1,71 @@
-# ML and Pillar meshing. CAD for both families is on the server; Sinusoidal is
-# still being drawn. Diamond's nine meshes are built and its exploration sweep
-# is closed.
+# ML and Pillar meshing, second attempt with the actual CAD named selections.
+#
+# ---------------------------------------------------------------------------
+# What the first attempt found
+# ---------------------------------------------------------------------------
+# 8 of 12 succeeded. The 4 failures were CAD named-selection problems, not
+# quality problems:
+#
+#   M_c160 / M_c267 / M_c400
+#     Fluent reported the only available label as m_c160-solid etc. — the CAD
+#     has NO named selections at all, not even inlet/outlet/periodic.
+#   P_p80_h20
+#     Has all ten common labels but is missing the four wall_spacer_* ones.
+#     Its siblings P_p80_h00 and P_p80_h30 have them.
+#
+# And the label names I had guessed were wrong. The real ones are:
+#   ML      wall_spacer_top, wall_spacer_mid, wall_spacer_bottom,
+#           wall_spacer_bridge, wall_spacer_buffer
+#   Pillar  wall_spacer_filament, wall_spacer_pillar, wall_spacer_hole,
+#           wall_spacer_buffer
+#
+# wall_spacer_buffer is the spacer cross-section where the buffer solid cuts
+# it — a bluff face normal to the incoming flow. It was absent from the first
+# config, so the 8 successful Pillar meshes got NO local sizing and NO
+# boundary layers there. That has to be rebuilt for two reasons:
+#   1. Diamond puts that same cut face inside its single wall_spacer label, so
+#      it does receive sizing and BL there. Leaving it out of ML/Pillar makes
+#      the family comparison uneven.
+#   2. The downstream cut sits at x = 27.72 mm, which is the end of evaluation
+#      cell 8 — inside the window, not in the discarded buffer.
+#   3. Rule 3-3 raises when a wall_spacer_* zone exists in the mesh but is
+#      absent from spacer_wall_zones, so the solver would refuse these meshes
+#      anyway.
+#
+# ---------------------------------------------------------------------------
+# Pillar quality from the first attempt: clearly better than Diamond
+# ---------------------------------------------------------------------------
+#   geo            cells    skew    ortho     AR      eps
+#   P_p60_h00     995231  0.5620  0.24514   31.08  0.8973
+#   P_p60_h20    1234919  0.4551  0.21281   29.36  0.9000
+#   P_p60_h30    1212043  0.4728  0.20026   33.43  0.9040
+#   P_p80_h00     945759  0.5340  0.23893   29.75  0.8795
+#   P_p80_h30    1134808  0.4714  0.20649   30.61  0.8876
+#   P_p100_h00    893858  0.5142  0.13948   47.39  0.8543
+#   P_p100_h20   1141534  0.4969  0.22959   33.45  0.8588
+#   P_p100_h30   1048280  0.5298  0.18165   34.73  0.8645
+#
+# Against Diamond's skew 0.616-0.747, ortho 0.068-0.115, AR 55-100: ortho is
+# 2-3x better and AR is roughly half. The filaments never touch the membrane,
+# so there is no contact wedge, and the pillar ends are flat, so no cusp.
+# eps lands where predicted in order and magnitude (0.854 / 0.880 / 0.897 for
+# D_p 1.00 / 0.80 / 0.60) and matches Qamar 2021's 0.88 pillar / 0.90
+# hole-pillar. Adding a bore raises eps as it should: h00 0.8973 -> h20 0.9000
+# -> h30 0.9040 at D_p 0.60.
+#
+# Note P_p60_h30 has fewer cells than P_p60_h20 (1212043 vs 1234919): a larger
+# bore simplifies the mesh.
 #
 # ---------------------------------------------------------------------------
 # What the Diamond exploration established (all on D2450_a45, u0p2_p6M)
 # ---------------------------------------------------------------------------
-# BUG FOUND AND FIXED: the mid-plane c_b was being sampled at z = h/2 =
-# +0.000385, which is the UPPER MEMBRANE, not the mid-plane. The inlet face
-# centre is the origin, so z runs -h/2 to +h/2 and the mid-plane is z = 0.
-# A candidate list [h/2, 0.0] with "first success wins" always picked the wall.
-# After the fix c_b went 622.63 -> 598.72 and canonical CP moved +2.7%.
-# c_b is now grid-insensitive (0.03% across the whole sweep) where it had
-# looked like a 2.58% core-resolution effect.
+# BUG FOUND AND FIXED: the mid-plane c_b was sampled at z = h/2 = +0.000385,
+# the UPPER MEMBRANE. The inlet face centre is the origin, so z runs -h/2 to
+# +h/2 and the mid-plane is z = 0. A candidate list [h/2, 0.0] with
+# first-success-wins always picked the wall. After the fix c_b went
+# 622.63 -> 598.72, canonical CP moved +2.7%, and c_b became grid-insensitive
+# (0.03% across the whole sweep) where it had looked like a 2.58%
+# core-resolution effect.
 #
 # Cell-count landscape, baseline 796,009 at m_max 0.085 / m_min 0.006 /
 # m_cpg 5 / bl 4 / peel 2:
@@ -34,26 +88,11 @@
 #   cp_canon        contaminated by local facet artifacts, NOT usable
 #   cp_canon_max    varies by orders of magnitude, useless
 #
-# Post-processing costs ~33 min per case and compute_cp_spread=False only
-# saved 9%, so the cost is accepted rather than optimised.
+# Post-processing costs ~33 min per case; compute_cp_spread=False saved only
+# 9%, so the cost is accepted rather than optimised.
 #
-# ---------------------------------------------------------------------------
-# Cross-family caution
-# ---------------------------------------------------------------------------
-# Diamond's a60 geometries already sit near the gates at bl4: D0817_a60 has
-# ortho 0.06759 and AR 99.61 against thresholds 0.05 and 150. ML and Pillar
-# have never been meshed, so this batch is as much a gate probe as a build.
-#
-# Risk cases to watch:
-#   M_c400   outer layers are 0.200 mm diameter, and the joint sphere R =
-#            0.110 exceeds the outer radius 0.100, so the sphere rim cuts
-#            through the outer filament. Measured minimum face width 11.4 um.
-#   M_c267   0.130 um minimum face width, the campaign minimum.
-#   P_p100_h30  largest pillar with the largest bore: side wall 0.150 mm,
-#            and the bore passes through the filament crossing where the
-#            residual shell is r_f - r_h = 0.200 - 0.150 = 0.050 mm.
-#
-# continue_on_failure stays True: a gate failure on a new family is a result.
+# continue_on_failure stays True: a CAD or gate failure on a new family is a
+# result, and the four bad CAD files may still be mid-repair.
 # ---------------------------------------------------------------------------
 from ro.solver_common import make_base_case_name
 
@@ -83,9 +122,11 @@ clean_fm_scratch_on_success = True
 # improvement, because changing it here would confound a family comparison
 # with a resolution change on the very first build.
 #
-# Unit cell is 3.465 x 3.465 mm for every case below, and every family uses
+# Unit cell is 3.465 x 3.465 mm for every case below, every family uses
 # theta = 45 deg, so cell_length_x_m = periodic_shift_y = 3.465 throughout.
-# n_active_cells = 7 with the 1 + 7 + 2 buffer layout.
+# n_active_cells = 7 with the 1 + 7 + 2 buffer layout, giving active cells
+# 2-8 (x = 3.465 to 27.72 mm) and evaluation cells 5-8 after
+# n_lead_excluded = 3.
 # ---------------------------------------------------------------------------
 _COMMON_MESH = {
     "overlap_m": 0.0,
@@ -101,6 +142,10 @@ _COMMON_MESH = {
     "bl_layers": 4,
     "peel_layers": 2,
     "periodic_after_surface_mesh": True,
+    "attack_angle_deg": 45,
+    "n_active_cells": 7,
+    "cell_length_x_m": 0.003465,
+    "periodic_shift_y": 3.465,
     "active_membrane_wall_labels": ["wall_top_mem", "wall_bottom_mem"],
     "buffer_wall_labels": [
         "wall_top_buffer_in", "wall_top_buffer_out",
@@ -119,13 +164,13 @@ _MESH_ID = "max085_min006_cpg5_bl4_peel2"
 # Multi-Layer: three layer-thickness distributions, Sigma_d = 0.800 mm fixed
 #
 # Layers top / middle / bottom at +45 / 90 / -45 degrees. The 90-degree middle
-# layer blocks the flow head-on and is this family's dominant lever, so r200
-# (middle 0.400, the same diameter as a Diamond filament) is expected to give
-# the largest dP and the strongest mixing.
+# layer blocks the flow head-on and is this family's dominant lever, so c400
+# (middle 0.400, the same diameter as a Diamond filament) should give the
+# largest dP and the strongest mixing.
 #
 # Joint spheres: three filaments pass through the same (x, y), so the two
 # tangent contacts sit on one vertical line at z = 0.385 +/- r_middle. Two
-# spheres per node, one at each contact.
+# spheres per node, one at each contact, radius per case.
 #
 #   geo      diameters t/m/b     contact z         sphere R   contact width
 #   M_c160   0.320/0.160/0.320   0.305, 0.465      0.070      0.135
@@ -133,15 +178,25 @@ _MESH_ID = "max085_min006_cpg5_bl4_peel2"
 #   M_c400   0.200/0.400/0.200   0.185, 0.585      0.110      0.105
 #
 # Solid-volume coefficients (2*d_o^2 + sqrt(2)*d_c^2)/h^2 are 0.241 / 0.243 /
-# 0.306, so c160 and c267 are within 0.7% of each other (near-iso-volume, the
-# clean pair for attributing results to vertical distribution alone) while
-# c400 is 26% heavier because the thick filament sits in the denser 90-degree
-# layer at pitch 1732.5.
+# 0.306, so c160 and c267 are within 0.7% of each other — the clean pair for
+# attributing results to vertical distribution alone — while c400 is 26%
+# heavier because the thick filament sits in the denser 90-degree layer at
+# pitch 1732.5. Report eps alongside any c400 conclusion.
+#
+# filament_d_m carries the middle-layer diameter; the manifest's full geometry
+# (all three layer diameters, axis heights, sphere centres) comes from
+# campaign_geometry.py.
 #
 # (geo_id, filament_d_m, bridge_radius_m)
-# filament_d_m carries the middle-layer diameter; the manifest's real geometry
-# comes from campaign_geometry.py, which holds all three layer diameters.
 # ---------------------------------------------------------------------------
+_ML_SPACER_LABELS = [
+    "wall_spacer_top",
+    "wall_spacer_mid",
+    "wall_spacer_bottom",
+    "wall_spacer_bridge",
+    "wall_spacer_buffer",
+]
+
 _ML_CASES = (
     ("M_c160", 1.60e-4, 0.70e-4),
     ("M_c267", 2.66670e-4, 1.10e-4),
@@ -151,30 +206,28 @@ _ML_CASES = (
 # ---------------------------------------------------------------------------
 # Pillar / Hole-Pillar: 3 pillar diameters x 3 bore sizes
 #
-# Single coplanar filament layer at z = 0.385 (mid-height), d_f = 0.400, so
+# Single coplanar filament layer at z = 0 (mid-height), d_f = 0.400, so
 # clearance is (0.770 - 0.400)/2 = 0.185 per side, c/h = 0.240. Qamar 2021
-# maintains 0.35 mm clearance in a 1.2 mm channel, i.e. c/h = 0.292, so this
-# is close to the literature while keeping d_f identical to Diamond. That
-# makes Pillar a single-variable perturbation of Diamond: same diameter, same
-# pitch, two layers merged onto the mid-plane with pillars taking over support.
+# holds 0.35 mm clearance in a 1.2 mm channel, c/h = 0.292, so this is close
+# to the literature while keeping d_f identical to Diamond. That makes Pillar
+# a single-variable perturbation of Diamond: same diameter, same pitch, two
+# layers merged onto the mid-plane with pillars taking over support.
 #
-# No filament-filament joint sphere is needed: coplanar filaments fully
-# interpenetrate at the node and the pillar covers it. bridge_radius_m is
-# therefore 0.
+# No filament-filament joint sphere: coplanar filaments fully interpenetrate
+# at the node and the pillar covers it, so bridge_radius_m is 0.
 #
 # Membrane blockage is the pillar footprint only, since the filaments no
 # longer touch the membrane. Cell footprint at pitch 2450 / theta 45 is
-# 6.0025 mm^2 per node:
-#   D_p 0.600   4.7%    eps ~0.852
-#   D_p 0.800   8.4%    eps ~0.827
-#   D_p 1.000  13.1%    eps ~0.790
+# 6.0025 mm^2 per node, giving 4.7 / 8.4 / 13.1% for D_p 0.60 / 0.80 / 1.00.
 #
 # Bore is a streamwise through-hole on the mid-plane at the crossing, in
 # absolute diameter rather than a ratio of D_p, so the same jet orifice is
 # tested at every pillar size and the two axes stay orthogonal. Residual
-# filament shell at the crossing is r_f - r_h:
-#   d_h 0.200 -> 0.100 mm shell
-#   d_h 0.300 -> 0.050 mm shell   <- thinnest in the campaign
+# filament shell at the crossing is r_f - r_h: 0.100 mm at d_h 0.200 and
+# 0.050 mm at d_h 0.300, the thinnest feature in the campaign.
+#
+# wall_spacer_hole is only listed for h20 and h30. Rule 3-3 raises if an h00
+# case declares it, which is the guard against a misapplied boolean.
 #
 # (pillar_D_mm, bore_d_mm) -> geo_id P_p{D*100}_h{d*100}
 # ---------------------------------------------------------------------------
@@ -186,6 +239,14 @@ def _pillar_geo_id(d_mm, h_mm):
     return f"P_p{int(round(d_mm * 100)):d}_h{int(round(h_mm * 100)):02d}"
 
 
+def _pillar_spacer_labels(h_mm):
+    labels = ["wall_spacer_filament", "wall_spacer_pillar"]
+    if h_mm > 0.0:
+        labels.append("wall_spacer_hole")
+    labels.append("wall_spacer_buffer")
+    return labels
+
+
 mesh_batch_cases = []
 
 for _geo_id, _fil_d_m, _brg_m in _ML_CASES:
@@ -195,46 +256,29 @@ for _geo_id, _fil_d_m, _brg_m in _ML_CASES:
         "geo_id": _geo_id,
         "mesh_id": _MESH_ID,
         "spacing_code": _geo_id,
-        "attack_angle_deg": 45,
-        "n_active_cells": 7,
-        "cell_length_x_m": 0.003465,
-        "periodic_shift_y": 3.465,
         "filament_d_m": _fil_d_m,
         "bridge_radius_m": _brg_m,
-        "wall_spacer_labels": [
-            "wall_spacer_layer_top",
-            "wall_spacer_layer_mid",
-            "wall_spacer_layer_bot",
-            "wall_spacer_node",
-        ],
+        "wall_spacer_labels": list(_ML_SPACER_LABELS),
     })
     mesh_batch_cases.append(_case)
 
 for _d_mm in _PILLAR_D_MM:
     for _h_mm in _PILLAR_H_MM:
-        _geo_id = _pillar_geo_id(_d_mm, _h_mm)
-        _labels = ["wall_spacer_filament", "wall_spacer_pillar"]
-        if _h_mm > 0.0:
-            _labels.append("wall_spacer_hole")
         _case = dict(_COMMON_MESH)
         _case.update({
             "family": "pillar",
-            "geo_id": _geo_id,
+            "geo_id": _pillar_geo_id(_d_mm, _h_mm),
             "mesh_id": _MESH_ID,
-            "spacing_code": _geo_id,
-            "attack_angle_deg": 45,
-            "n_active_cells": 7,
-            "cell_length_x_m": 0.003465,
-            "periodic_shift_y": 3.465,
+            "spacing_code": _pillar_geo_id(_d_mm, _h_mm),
             "filament_d_m": 4.00e-4,
             "bridge_radius_m": 0.0,
-            "wall_spacer_labels": _labels,
+            "wall_spacer_labels": _pillar_spacer_labels(_h_mm),
         })
         mesh_batch_cases.append(_case)
 
 # ---------------------------------------------------------------------------
-# Solver: nothing this round. Meshing is the gate probe; solve after the
-# quality results are in and the CAD is confirmed good.
+# Solver: nothing this round. Meshing is the gate and CAD probe; solve once
+# the quality results are in and all twelve CAD files are confirmed good.
 # ---------------------------------------------------------------------------
 common_solver_settings = {
     "run_calculation_enabled": True,
@@ -273,11 +317,16 @@ solver_sweep_cases = []
 #   D1225_a60  brg110 skew 0.6977 ortho 0.0762 AR  79.4 cells 1059674
 #              brg156 skew 0.6939 ortho 0.0734 AR 120.9 cells  874144
 #   D0817_a60  brg110 skew 0.86115   brg156 skew 0.86783   (both fail 0.85)
-# D0817_a60 uses a finer surface size (m_max 0.060) instead, which dropped
+# D0817_a60 uses a finer surface size (m_max 0.060) instead, dropping
 # skewness to 0.746625.
 #
 # D0817_a45 depends on the archived 8/11 CAD (1487160 B); the 8/16 re-save
 # passes surface meshing but fails prism generation.
+#
+# Diamond keeps a single wall_spacer label while ML and Pillar are split. The
+# asymmetry is intentional: cross-family comparison happens at the total
+# level, decomposition is for within-family interpretation, and re-meshing
+# Diamond would invalidate its verified references.
 #
 # (geo_id, n_active_cells, pitch_mm, periodic_dy_mm, m_max)
 # ---------------------------------------------------------------------------
