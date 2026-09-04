@@ -1,62 +1,59 @@
-# EXPLORATION PHASE, not a convergence study.
-#
-# Purpose: map how each meshing parameter scales cell count, where each hits
-# the quality gates, and which combinations are computationally unreachable.
-# The real mesh-independence study comes later, using the ranges this phase
-# identifies. Nothing here is a final campaign setting.
-#
-# Method: one axis at a time from the campaign baseline (m_max 0.085,
-# m_min 0.006, m_cpg 5, bl 4, peel 2) on D2450_a45. Meshing sweeps wide;
-# the solver runs on six corners afterwards.
+# ML and Pillar meshing. CAD for both families is on the server; Sinusoidal is
+# still being drawn. Diamond's nine meshes are built and its exploration sweep
+# is closed.
 #
 # ---------------------------------------------------------------------------
-# What Phase 0 already established
+# What the Diamond exploration established (all on D2450_a45, u0p2_p6M)
 # ---------------------------------------------------------------------------
-# bl_height_factor is INERT. bl8_f020 and bl8_f040 have different
-# mesh_sha256 but produce byte-identical physics:
-#   cp_canon 1.036991, c_b 622.626, lmh 25.6599, dP 843.791, y1 2.769 um
-# The smooth-transition offset method ignores the specified first height and
-# sets thickness from layer count and growth rate alone. So the BL axis is
-# bl_layers only, and the _fNNN mesh_id token is retired (MESH_ID_RE keeps it
-# optional, we simply stop emitting it).
+# BUG FOUND AND FIXED: the mid-plane c_b was being sampled at z = h/2 =
+# +0.000385, which is the UPPER MEMBRANE, not the mid-plane. The inlet face
+# centre is the origin, so z runs -h/2 to +h/2 and the mid-plane is z = 0.
+# A candidate list [h/2, 0.0] with "first success wins" always picked the wall.
+# After the fix c_b went 622.63 -> 598.72 and canonical CP moved +2.7%.
+# c_b is now grid-insensitive (0.03% across the whole sweep) where it had
+# looked like a 2.58% core-resolution effect.
 #
-# BL sweep at m_max 0.085, all gates passed except bl12:
-#   bl4   796,009 cells  ortho 0.10209  AR  62.77  y1 5.736 um
-#   bl6   913,162        ortho 0.08920  AR  79.49  y1 3.985
-#   bl8 1,050,560        ortho 0.07463  AR 124.13  y1 2.769
-#   bl12/f015 1,279,676  ortho 0.05057  AR 251.94  FAILED AR and ortho
+# Cell-count landscape, baseline 796,009 at m_max 0.085 / m_min 0.006 /
+# m_cpg 5 / bl 4 / peel 2:
+#   m_min 0.003     803,653   x1.01   skew 0.671 -> 0.625   <- near-free
+#   bl 6            913,162   x1.15
+#   m_cpg 7         952,824   x1.20   passed (archive had it failing)
+#   bl 8          1,050,560   x1.32
+#   bl 10         1,162,761   x1.46   ortho 0.0528, AR 139 (7% margin)
+#   bl 12         1,279,676   x1.61   AR 251.9  FAILED
+#   m_min 0.004   1,719,676   x2.16   non-monotone vs 0.003
+#   m_max 0.060   4,280,354   x5.38   <- cliff
+#   m_max 0.045   5,146,805   x6.47
+#   m_max 0.035   6,154,123   x7.73   skew rebounds to 0.704
 #
-# Solver response at u0p2_p6M:
-#          c_b       lmh      dP       cp_canon   delta
-#   bl4  610.485  25.8773  846.265   1.038702  6.44e-05
-#   bl6  616.347  25.7664  846.089   1.033545  2.29e-04
-#   bl8  622.626  25.6599  843.791   1.036991  3.14e-04
+# Metric reliability for the real mesh study:
+#   cm_mol_m3_avg   monotone, artifact-free  <- primary indicator
+#   c_b             stable to 0.03%          <- sanity check
+#   lmh             monotone, gentle
+#   pressure_drop   grid-independent (0.30% across bl4-bl10)
+#   cp_canon        contaminated by local facet artifacts, NOT usable
+#   cp_canon_max    varies by orders of magnitude, useless
 #
-# CP is NOT converged: -0.497% then +0.333%, non-monotone, both steps the size
-# of the ~0.6% discriminability signal. But c_b, lmh and dP are each monotone.
-# c_b rises 2.0% across the sweep despite being a mid-plane (z = 0) quantity
-# the wall BL does not touch directly: adding prism layers pushes the
-# poly-hexcore core inward and changes what the mid-plane clip cuts. Since c_b
-# is the canonical CP denominator, core resolution is implicated too, which is
-# why m_max joins the sweep here.
+# Post-processing costs ~33 min per case and compute_cp_spread=False only
+# saved 9%, so the cost is accepted rather than optimised.
 #
 # ---------------------------------------------------------------------------
-# Axis rationale
+# Cross-family caution
 # ---------------------------------------------------------------------------
-# bl_layers   near-wall. Concentration layer is 13-48 um (Sc = 500 gives
-#             Sc^(-1/3) = 0.126 of the momentum layer); y1 must sit well
-#             inside it. Expect ortho and AR to degrade monotonically.
-# m_max       core. vol_hex_max = 0.7 * m_max, so 59.5 / 42 / 31.5 / 24.5 um
-#             across a 770 um channel = 13 / 18 / 24 / 31 cells. Cell count
-#             should scale near-cubically.
-# m_min       curvature and proximity floor. Drives refinement at the bridge
-#             spheres and the filament-membrane contact flats, so it is the
-#             candidate for the cm_max extremes and the rising delta.
-# m_cpg       cells per gap. Archive records cpg7 FAILING the skewed-face-
-#             fraction gate at 8.22e-05 with max skew 0.9996, so this is a
-#             confirmation probe, not an expected win.
+# Diamond's a60 geometries already sit near the gates at bl4: D0817_a60 has
+# ortho 0.06759 and AR 99.61 against thresholds 0.05 and 150. ML and Pillar
+# have never been meshed, so this batch is as much a gate probe as a build.
 #
-# continue_on_failure stays True: a gate failure is a result, not an abort.
+# Risk cases to watch:
+#   M_c400   outer layers are 0.200 mm diameter, and the joint sphere R =
+#            0.110 exceeds the outer radius 0.100, so the sphere rim cuts
+#            through the outer filament. Measured minimum face width 11.4 um.
+#   M_c267   0.130 um minimum face width, the campaign minimum.
+#   P_p100_h30  largest pillar with the largest bore: side wall 0.150 mm,
+#            and the bore passes through the filament crossing where the
+#            residual shell is r_f - r_h = 0.200 - 0.150 = 0.050 mm.
+#
+# continue_on_failure stays True: a gate failure on a new family is a result.
 # ---------------------------------------------------------------------------
 from ro.solver_common import make_base_case_name
 
@@ -78,13 +75,19 @@ post_failure_settle_s = 15.0
 transient_failure_max_retries = 2
 clean_fm_scratch_on_success = True
 
-_FAMILY = "diamond"
-_EXPLORE_GEO = "D2450_a45"
-
-# Meshing parameters are supplied per case so every level is explicit.
-common_mesh_settings = {
-    "filament_d_m": 4.0e-4,
-    "bridge_radius_m": 1.10e-4,
+# ---------------------------------------------------------------------------
+# Shared meshing controls
+#
+# Held at the Diamond campaign settings so the first ML/Pillar meshes are
+# directly comparable. m_min stays 0.006 rather than the near-free 0.003
+# improvement, because changing it here would confound a family comparison
+# with a resolution change on the very first build.
+#
+# Unit cell is 3.465 x 3.465 mm for every case below, and every family uses
+# theta = 45 deg, so cell_length_x_m = periodic_shift_y = 3.465 throughout.
+# n_active_cells = 7 with the 1 + 7 + 2 buffer layout.
+# ---------------------------------------------------------------------------
+_COMMON_MESH = {
     "overlap_m": 0.0,
     "n_buffer_in": 1,
     "n_buffer_out": 2,
@@ -92,9 +95,12 @@ common_mesh_settings = {
     "buffer_length_out_m": 0.00693,
     "n_lead_excluded": 3,
     "n_trail_excluded": 0,
+    "m_max": 0.085,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 4,
     "peel_layers": 2,
     "periodic_after_surface_mesh": True,
-    "wall_spacer_labels": ["wall_spacer"],
     "active_membrane_wall_labels": ["wall_top_mem", "wall_bottom_mem"],
     "buffer_wall_labels": [
         "wall_top_buffer_in", "wall_top_buffer_out",
@@ -102,60 +108,134 @@ common_mesh_settings = {
     ],
 }
 
+common_mesh_settings = dict(_COMMON_MESH)
+common_mesh_settings["filament_d_m"] = 4.0e-4
+common_mesh_settings["bridge_radius_m"] = 1.10e-4
+common_mesh_settings["wall_spacer_labels"] = ["wall_spacer"]
+
+_MESH_ID = "max085_min006_cpg5_bl4_peel2"
+
 # ---------------------------------------------------------------------------
-# Mesh exploration grid
-# (bl_layers, m_max, m_min, m_cpg)
+# Multi-Layer: three layer-thickness distributions, Sigma_d = 0.800 mm fixed
+#
+# Layers top / middle / bottom at +45 / 90 / -45 degrees. The 90-degree middle
+# layer blocks the flow head-on and is this family's dominant lever, so r200
+# (middle 0.400, the same diameter as a Diamond filament) is expected to give
+# the largest dP and the strongest mixing.
+#
+# Joint spheres: three filaments pass through the same (x, y), so the two
+# tangent contacts sit on one vertical line at z = 0.385 +/- r_middle. Two
+# spheres per node, one at each contact.
+#
+#   geo      diameters t/m/b     contact z         sphere R   contact width
+#   M_c160   0.320/0.160/0.320   0.305, 0.465      0.070      0.135
+#   M_c267   0.266670 x3         0.25167, 0.51833  0.110      0.123
+#   M_c400   0.200/0.400/0.200   0.185, 0.585      0.110      0.105
+#
+# Solid-volume coefficients (2*d_o^2 + sqrt(2)*d_c^2)/h^2 are 0.241 / 0.243 /
+# 0.306, so c160 and c267 are within 0.7% of each other (near-iso-volume, the
+# clean pair for attributing results to vertical distribution alone) while
+# c400 is 26% heavier because the thick filament sits in the denser 90-degree
+# layer at pitch 1732.5.
+#
+# (geo_id, filament_d_m, bridge_radius_m)
+# filament_d_m carries the middle-layer diameter; the manifest's real geometry
+# comes from campaign_geometry.py, which holds all three layer diameters.
 # ---------------------------------------------------------------------------
-_EXPLORE = (
-    # baseline (already built as max085_min006_cpg5_bl4_peel2)
-    ( 4, 0.085, 0.006, 5),
-
-    # BL axis. bl6 and bl8 exist under _f040 names and will be rebuilt here
-    # without the token; identical physics is expected and is itself a check.
-    ( 6, 0.085, 0.006, 5),
-    ( 8, 0.085, 0.006, 5),
-    (10, 0.085, 0.006, 5),
-    (12, 0.085, 0.006, 5),
-
-    # core axis
-    ( 4, 0.060, 0.006, 5),
-    ( 4, 0.045, 0.006, 5),
-    ( 4, 0.035, 0.006, 5),
-
-    # surface-minimum axis
-    ( 4, 0.085, 0.004, 5),
-    ( 4, 0.085, 0.003, 5),
-
-    # cells-per-gap probe
-    ( 4, 0.085, 0.006, 7),
+_ML_CASES = (
+    ("M_c160", 1.60e-4, 0.70e-4),
+    ("M_c267", 2.66670e-4, 1.10e-4),
+    ("M_c400", 4.00e-4, 1.10e-4),
 )
 
+# ---------------------------------------------------------------------------
+# Pillar / Hole-Pillar: 3 pillar diameters x 3 bore sizes
+#
+# Single coplanar filament layer at z = 0.385 (mid-height), d_f = 0.400, so
+# clearance is (0.770 - 0.400)/2 = 0.185 per side, c/h = 0.240. Qamar 2021
+# maintains 0.35 mm clearance in a 1.2 mm channel, i.e. c/h = 0.292, so this
+# is close to the literature while keeping d_f identical to Diamond. That
+# makes Pillar a single-variable perturbation of Diamond: same diameter, same
+# pitch, two layers merged onto the mid-plane with pillars taking over support.
+#
+# No filament-filament joint sphere is needed: coplanar filaments fully
+# interpenetrate at the node and the pillar covers it. bridge_radius_m is
+# therefore 0.
+#
+# Membrane blockage is the pillar footprint only, since the filaments no
+# longer touch the membrane. Cell footprint at pitch 2450 / theta 45 is
+# 6.0025 mm^2 per node:
+#   D_p 0.600   4.7%    eps ~0.852
+#   D_p 0.800   8.4%    eps ~0.827
+#   D_p 1.000  13.1%    eps ~0.790
+#
+# Bore is a streamwise through-hole on the mid-plane at the crossing, in
+# absolute diameter rather than a ratio of D_p, so the same jet orifice is
+# tested at every pillar size and the two axes stay orthogonal. Residual
+# filament shell at the crossing is r_f - r_h:
+#   d_h 0.200 -> 0.100 mm shell
+#   d_h 0.300 -> 0.050 mm shell   <- thinnest in the campaign
+#
+# (pillar_D_mm, bore_d_mm) -> geo_id P_p{D*100}_h{d*100}
+# ---------------------------------------------------------------------------
+_PILLAR_D_MM = (0.60, 0.80, 1.00)
+_PILLAR_H_MM = (0.00, 0.20, 0.30)
 
-def _explore_mesh_id(bl_layers, m_max, m_min, m_cpg):
-    return (
-        f"max{int(round(m_max * 1000)):03d}"
-        f"_min{int(round(m_min * 1000)):03d}"
-        f"_cpg{m_cpg}_bl{bl_layers}_peel2"
-    )
+
+def _pillar_geo_id(d_mm, h_mm):
+    return f"P_p{int(round(d_mm * 100)):d}_h{int(round(h_mm * 100)):02d}"
 
 
 mesh_batch_cases = []
-for _bl, _mmax, _mmin, _cpg in _EXPLORE:
-    mesh_batch_cases.append({
-        "family": _FAMILY,
-        "geo_id": _EXPLORE_GEO,
-        "mesh_id": _explore_mesh_id(_bl, _mmax, _mmin, _cpg),
-        "spacing_code": "D2450",
+
+for _geo_id, _fil_d_m, _brg_m in _ML_CASES:
+    _case = dict(_COMMON_MESH)
+    _case.update({
+        "family": "ml",
+        "geo_id": _geo_id,
+        "mesh_id": _MESH_ID,
+        "spacing_code": _geo_id,
         "attack_angle_deg": 45,
         "n_active_cells": 7,
         "cell_length_x_m": 0.003465,
         "periodic_shift_y": 3.465,
-        "m_max": _mmax,
-        "m_min": _mmin,
-        "m_cpg": _cpg,
-        "bl_layers": _bl,
+        "filament_d_m": _fil_d_m,
+        "bridge_radius_m": _brg_m,
+        "wall_spacer_labels": [
+            "wall_spacer_layer_top",
+            "wall_spacer_layer_mid",
+            "wall_spacer_layer_bot",
+            "wall_spacer_node",
+        ],
     })
+    mesh_batch_cases.append(_case)
 
+for _d_mm in _PILLAR_D_MM:
+    for _h_mm in _PILLAR_H_MM:
+        _geo_id = _pillar_geo_id(_d_mm, _h_mm)
+        _labels = ["wall_spacer_filament", "wall_spacer_pillar"]
+        if _h_mm > 0.0:
+            _labels.append("wall_spacer_hole")
+        _case = dict(_COMMON_MESH)
+        _case.update({
+            "family": "pillar",
+            "geo_id": _geo_id,
+            "mesh_id": _MESH_ID,
+            "spacing_code": _geo_id,
+            "attack_angle_deg": 45,
+            "n_active_cells": 7,
+            "cell_length_x_m": 0.003465,
+            "periodic_shift_y": 3.465,
+            "filament_d_m": 4.00e-4,
+            "bridge_radius_m": 0.0,
+            "wall_spacer_labels": _labels,
+        })
+        mesh_batch_cases.append(_case)
+
+# ---------------------------------------------------------------------------
+# Solver: nothing this round. Meshing is the gate probe; solve after the
+# quality results are in and the CAD is confirmed good.
+# ---------------------------------------------------------------------------
 common_solver_settings = {
     "run_calculation_enabled": True,
     "max_iterations": 2000,
@@ -168,51 +248,10 @@ common_solver_settings = {
     "use_inlet_velocity_profile": True,
 }
 
-# ---------------------------------------------------------------------------
-# Solver corners
-#
-# Six cases at u0p2_p6M, the mid-range operating point and the only one where
-# the 301-iteration QoI stop reproduced the 2000-iteration solution to six
-# significant figures on every reported quantity, so it isolates the mesh
-# effect cleanly.
-#
-# Baseline plus the extreme of each axis plus one crossing point. If the
-# crossing lands where the sum of the two single-axis shifts predicts, the
-# axes are independent and can be converged separately in the real study. If
-# not, the interaction needs a full grid.
-#
-# Any corner whose mesh failed a gate is silently absent from the solver list
-# because the mesh file will not exist; batch_solver_sweep reports it.
-# ---------------------------------------------------------------------------
-_SOLVER_CORNERS = (
-    ( 4, 0.085, 0.006, 5),   # baseline
-    ( 8, 0.085, 0.006, 5),   # BL axis, known-good
-    (10, 0.085, 0.006, 5),   # BL axis, further
-    ( 4, 0.045, 0.006, 5),   # core axis
-    ( 4, 0.085, 0.003, 5),   # surface-minimum axis
-    ( 8, 0.045, 0.006, 5),   # crossing: BL x core
-)
-
-_CORNER_U = 0.2
-_CORNER_P = 6.0e6
-_CORNER_RUN_ID = make_base_case_name(_CORNER_U, _CORNER_P)
-
 solver_sweep_cases = []
-for _bl, _mmax, _mmin, _cpg in _SOLVER_CORNERS:
-    solver_sweep_cases.append({
-        "family": _FAMILY,
-        "geo_id": _EXPLORE_GEO,
-        "mesh_id": _explore_mesh_id(_bl, _mmax, _mmin, _cpg),
-        "run_id": _CORNER_RUN_ID,
-        "geo_name": _EXPLORE_GEO,
-        "case_name": _CORNER_RUN_ID,
-        "inlet_velocity_value": _CORNER_U,
-        "outlet_gauge_pressure": _CORNER_P,
-    })
 
 # ---------------------------------------------------------------------------
-# Campaign mesh layouts, reference data. Not used by this exploration config.
-# All nine are built at m_max as listed, min006, cpg5, bl4, peel2:
+# Diamond campaign meshes, built. Reference data, not used by this config.
 #   geo         m_max  cells     skew    ortho    AR      eps
 #   D2450_a30   0.085  1499175   0.6160  0.10124  68.42   0.9088
 #   D2450_a45   0.085   796009   0.6706  0.10209  62.77   0.9088
@@ -224,33 +263,25 @@ for _bl, _mmax, _mmin, _cpg in _SOLVER_CORNERS:
 #   D0817_a45   0.085   502794   0.6446  0.09305  64.82   0.7268
 #   D0817_a60   0.060  1751893   0.7466  0.06759  99.61   0.7238
 #
-# Cross-family caution for the real study: D0817_a60 already sits at ortho
-# 0.06759 and AR 99.61 with bl4. Whatever BL level wins on D2450_a45 may not
-# survive there, which is the case for splitting membrane and spacer boundary
-# layers. run_config exposes include_spacer_in_boundary_layers as an on/off
-# knob, but mesh_id has no token for it, so that probe needs a naming decision
-# first.
+# porosity_eps is set by pitch, not angle. Surface skewness and volume ortho
+# are monotone in angle: a30 best, a60 worst.
 #
-# porosity_eps is set by pitch, not angle (D2450 ~0.909, D1225 ~0.817,
-# D0817 ~0.724; spread within a pitch under 0.4 percentage points). Surface
-# skewness and volume ortho are monotone in angle: a30 best, a60 worst.
-#
-# Bridge radius stays 1.10e-4 campaign-wide. brg156 on the a60 family made
+# Bridge radius stays 1.10e-4 for Diamond. brg156 on the a60 family made
 # things worse:
 #   D2450_a60  brg110 skew 0.6767 ortho 0.0849 AR  87.7 cells  946741
 #              brg156 skew 0.6681 ortho 0.0804 AR  82.2 cells  861345
 #   D1225_a60  brg110 skew 0.6977 ortho 0.0762 AR  79.4 cells 1059674
 #              brg156 skew 0.6939 ortho 0.0734 AR 120.9 cells  874144
 #   D0817_a60  brg110 skew 0.86115   brg156 skew 0.86783   (both fail 0.85)
-# The worst surface face is not at the bridge node. D0817_a60 uses a finer
-# surface size (m_max 0.060) instead, dropping skewness to 0.746625.
+# D0817_a60 uses a finer surface size (m_max 0.060) instead, which dropped
+# skewness to 0.746625.
 #
 # D0817_a45 depends on the archived 8/11 CAD (1487160 B); the 8/16 re-save
 # passes surface meshing but fails prism generation.
 #
 # (geo_id, n_active_cells, pitch_mm, periodic_dy_mm, m_max)
 # ---------------------------------------------------------------------------
-_CAMPAIGN_MESH_LAYOUTS = (
+_DIAMOND_MESH_LAYOUTS = (
     ("D2450_a45",  7, 3.465,         3.465,        0.085),
     ("D1225_a45", 14, 1.7325,        1.7325,       0.085),
     ("D0817_a45", 21, 1.155,         1.155,        0.085),
