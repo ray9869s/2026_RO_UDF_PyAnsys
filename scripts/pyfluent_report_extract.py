@@ -6,6 +6,7 @@ import os
 import re
 import json
 import math
+import time
 import importlib.util
 from pathlib import Path
 from pprint import pprint
@@ -1452,6 +1453,11 @@ if __name__ == "__main__":
                 )
                 for boundary_index in range(n_unit_cells + 1)
             }
+            _cp_spread = bool(getattr(cfg, "compute_cp_spread", False))
+            print(
+                f"\nSegmented membrane CP: compute_cp_spread={_cp_spread}"
+            )
+            _t_cp0 = time.monotonic()
             segmented_cp_values = segmented_membrane_cp_metrics(
                 solver=solver,
                 solution=solution,
@@ -1471,7 +1477,24 @@ if __name__ == "__main__":
                 c_b_by_cell_mol_per_m3=c_b_by_cell_mol_per_m3,
                 midplane_area_by_cell_m2=midplane_area_by_cell_m2,
                 wall_surfaces_by_name=wall_surfaces_by_name,
+                compute_cp_spread=_cp_spread,
             )
+            _t_cp1 = time.monotonic()
+            print(
+                f"Segmented membrane CP wall-clock: {_t_cp1 - _t_cp0:.1f} s; "
+                f"fluent_surface_computes="
+                f"{segmented_cp_values.get('cp_membrane_segment_fluent_computes')}"
+            )
+            if (
+                segmented_cp_values.get("cp_canon_rescale_delta_status")
+                == "not_evaluated"
+            ):
+                print(
+                    "CP scalar-rescale delta bound: NOT EVALUATED "
+                    "(compute_cp_spread=False). "
+                    "cp_canon_rescale_delta_max is null; "
+                    "do not treat a missing delta as a passing delta."
+                )
         except Exception as exc:
             error = exception_details(exc)
             segmented_cp_diagnostic_error_type = error["type"]
@@ -2206,7 +2229,10 @@ if __name__ == "__main__":
                 "cp_canon_all_active_max",
                 "c_b_window_mol_m3",
                 "cp_canon_rescale_delta_max",
+                "cp_canon_rescale_delta_status",
                 "cp_scalar_rescale_guard_threshold",
+                "cp_membrane_segment_fluent_computes",
+                "compute_cp_spread",
             ):
                 print(f"  {key}: {segmented_cp_values.get(key)}")
 

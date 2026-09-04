@@ -724,17 +724,46 @@ CANONICAL_CP_SUMMARY_COLUMNS = (
     "cp_L1_window_avg",
     "cp_L2_window_avg",
     "cp_canon_rescale_delta_max",
+    "cp_canon_rescale_delta_status",
     "cp_scalar_rescale_guard_threshold",
 )
 
+CP_RESCALE_DELTA_STATUS_EVALUATED = "evaluated"
+CP_RESCALE_DELTA_STATUS_NOT_EVALUATED = "not_evaluated"
+
 
 def require_canonical_cp_summary_columns(wide_record: Mapping[str, Any]) -> None:
-    """Raise if a successful extract is missing campaign canonical CP columns."""
-    missing = [
-        column
-        for column in CANONICAL_CP_SUMMARY_COLUMNS
-        if column not in wide_record or wide_record[column] in (None, "")
-    ]
+    """Raise if a successful extract is missing campaign canonical CP columns.
+
+    ``cp_canon_rescale_delta_max`` may be null when
+    ``cp_canon_rescale_delta_status`` is ``not_evaluated`` (spread skipped).
+    A missing or empty status is never treated as a passing delta.
+    """
+    missing = []
+    for column in CANONICAL_CP_SUMMARY_COLUMNS:
+        if column not in wide_record:
+            missing.append(column)
+            continue
+        if column == "cp_canon_rescale_delta_max":
+            continue
+        if wide_record[column] in (None, ""):
+            missing.append(column)
+    status = wide_record.get("cp_canon_rescale_delta_status")
+    delta_max = wide_record.get("cp_canon_rescale_delta_max")
+    if status == CP_RESCALE_DELTA_STATUS_EVALUATED and delta_max in (None, ""):
+        missing.append("cp_canon_rescale_delta_max")
+    if status not in (
+        CP_RESCALE_DELTA_STATUS_EVALUATED,
+        CP_RESCALE_DELTA_STATUS_NOT_EVALUATED,
+        None,
+        "",
+    ):
+        raise RuntimeError(
+            "Canonical CP summary has unknown cp_canon_rescale_delta_status "
+            f"{status!r}; expected "
+            f"{CP_RESCALE_DELTA_STATUS_EVALUATED!r} or "
+            f"{CP_RESCALE_DELTA_STATUS_NOT_EVALUATED!r}."
+        )
     if missing:
         raise RuntimeError(
             "Canonical CP cannot be computed: summary_metrics_wide is missing "
@@ -1041,6 +1070,7 @@ def _compute_membrane_segment_via_iso_clip(
     }
     created_reports: list[str] = []
     created_clips: list[str] = [clip_name]
+    n_computes = 0
     create_x_range_iso_clip(
         solver,
         clip_name,
@@ -1058,10 +1088,12 @@ def _compute_membrane_segment_via_iso_clip(
         )
         created_reports.append(reports["area"])
         area_m2 = float(compute_surface_report_value(solution, reports["area"]))
+        n_computes += 1
         if area_m2 <= 0.0:
             return None
 
         def _avg(report_key, field):
+            nonlocal n_computes
             create_or_update_surface_field_report(
                 solution,
                 reports[report_key],
@@ -1070,9 +1102,11 @@ def _compute_membrane_segment_via_iso_clip(
                 [clip_name],
             )
             created_reports.append(reports[report_key])
+            n_computes += 1
             return float(compute_surface_report_value(solution, reports[report_key]))
 
         def _facet(report_key, report_type, field):
+            nonlocal n_computes
             create_or_update_surface_field_report(
                 solution,
                 reports[report_key],
@@ -1081,6 +1115,7 @@ def _compute_membrane_segment_via_iso_clip(
                 [clip_name],
             )
             created_reports.append(reports[report_key])
+            n_computes += 1
             return float(compute_surface_report_value(solution, reports[report_key]))
 
         def _area_frac_field_below(field: str, threshold: float, sub_tag: str) -> float:
@@ -1089,6 +1124,7 @@ def _compute_membrane_segment_via_iso_clip(
             One reusable clip + area report per ``sub_tag``; deleted after the
             probe so Fluent never accumulates bisection surfaces.
             """
+            nonlocal n_computes
             thr = float(threshold)
             if thr < 0.0:
                 return 0.0
@@ -1111,8 +1147,10 @@ def _compute_membrane_segment_via_iso_clip(
             )
             try:
                 sub_area = float(compute_surface_report_value(solution, area_name))
+                n_computes += 1
             except Exception:
                 sub_area = 0.0
+                n_computes += 1
             finally:
                 try:
                     delete_surface_field_report(solution, area_name)
@@ -1215,6 +1253,7 @@ def _compute_membrane_segment_via_iso_clip(
                 "cm_min_rejected": False,
                 "jw_min_rejected": False,
                 "has_spread": False,
+                "fluent_surface_computes": n_computes,
             }
 
         warm = warm_start or {}
@@ -1276,6 +1315,7 @@ def _compute_membrane_segment_via_iso_clip(
             "cm_min_rejected": cm_min_rejected,
             "jw_min_rejected": jw_min_rejected,
             "has_spread": True,
+            "fluent_surface_computes": n_computes,
         }
     finally:
         for report_name in reversed(created_reports):
@@ -1303,19 +1343,30 @@ def _segment_metrics_from_reductions(
     cp_udm9_avg = segment["cp_udm9_avg"]
     cp_perm_avg = segment["cp_perm_avg"]
 
-    cp_perm_min = segment["cp_perm_min"]
-    cp_perm_max = segment["cp_perm_max"]
-    if cp_perm_min is None or cp_perm_max is None:
-        cp_perm_min = cp_perm_avg
-        cp_perm_max = cp_perm_avg
+    has_spread = bool(segment.get("has_spread"))
+    if has_spread:
+        cp_perm_min = segment["cp_perm_min"]
+        cp_perm_max = segment["cp_perm_max"]
+        if cp_perm_min is None or cp_perm_max is None:
+            cp_perm_min = cp_perm_avg
+            cp_perm_max = cp_perm_avg
+        k_n, delta = canonical_rescale_factor(
+            c0_mol_per_m3,
+            c_b_cell_mol_per_m3,
+            cp_perm_avg,
+            cp_perm_min_mol_per_m3=cp_perm_min,
+            cp_perm_max_mol_per_m3=cp_perm_max,
+        )
+    else:
+        # Spread not evaluated: still compute k_N from averages; delta is null
+        # (not 0.0) so a skipped bound cannot be read as a passing bound.
+        k_n, _ = canonical_rescale_factor(
+            c0_mol_per_m3,
+            c_b_cell_mol_per_m3,
+            cp_perm_avg,
+        )
+        delta = None
 
-    k_n, delta = canonical_rescale_factor(
-        c0_mol_per_m3,
-        c_b_cell_mol_per_m3,
-        cp_perm_avg,
-        cp_perm_min_mol_per_m3=cp_perm_min,
-        cp_perm_max_mol_per_m3=cp_perm_max,
-    )
     cp_canon = cp_udm9_avg * k_n
     cp_l1 = cp_l1_gu2017(cm_avg, c_b_cell_mol_per_m3)
     cp_l2 = cp_udm9_avg
@@ -1445,6 +1496,7 @@ def segmented_membrane_cp_metrics(
     c_b_by_cell_mol_per_m3=None,
     midplane_area_by_cell_m2=None,
     wall_surfaces_by_name=None,
+    compute_cp_spread=False,
 ):
     """Compute x-segmented membrane CP metrics (all-active and optional window).
 
@@ -1453,6 +1505,11 @@ def segmented_membrane_cp_metrics(
     ``c_b_by_cell_mol_per_m3`` are supplied, also emits canonical/L1/L2 window
     aggregates. UDM-9 values are average-of-ratios; canonical applies a
     per-cell scalar rescale.
+
+    ``compute_cp_spread`` (default False): when True, evaluation cells run
+    facet-min hygiene + quantile bisection so the scalar-rescale delta guard
+    can fire. When False, ``k_N`` is still computed from averages;
+    ``cp_canon_rescale_delta_max`` is null and status is ``not_evaluated``.
     """
     if not wall_surface_names:
         raise ValueError("At least one membrane wall surface name is required.")
@@ -1460,9 +1517,11 @@ def segmented_membrane_cp_metrics(
     c0 = float(c_inlet_ref_mol_per_m3)
     if b_perm <= 0.0 or c0 <= 0.0:
         raise ValueError("Salt permeability and inlet concentration must be positive.")
+    want_spread = bool(compute_cp_spread)
 
     metrics: dict[str, Any] = {}
     segment_cache: dict[int, dict] = {}
+    fluent_computes = 0
     eval_set = (
         set(int(c) for c in evaluation_cell_numbers)
         if evaluation_cell_numbers is not None
@@ -1486,7 +1545,7 @@ def segmented_membrane_cp_metrics(
 
     warm_start = None
     for cell_number in spacer_cells:
-        need_spread = cell_number in eval_set
+        need_spread = want_spread and cell_number in eval_set
         segment = _segment_for(
             cell_number,
             wall_surface_names,
@@ -1498,6 +1557,7 @@ def segmented_membrane_cp_metrics(
             raise ValueError(
                 f"Membrane segment for cell {cell_number} has no positive area."
             )
+        fluent_computes += int(segment.get("fluent_surface_computes", 0))
         segment_cache[cell_number] = segment
         if need_spread and segment.get("has_spread"):
             warm_start = {
@@ -1558,26 +1618,29 @@ def segmented_membrane_cp_metrics(
         l2_avg: dict[int, float] = {}
         l2_max: dict[int, float] = {}
         membrane_area: dict[int, float] = {}
-        delta_values: dict[int, float] = {}
+        delta_values: dict[int, Optional[float]] = {}
 
         for cell_number in evaluation_cell_numbers:
-            if cell_number not in segment_cache or not segment_cache[cell_number].get(
-                "has_spread"
-            ):
+            cached = segment_cache.get(cell_number)
+            need_recompute = cached is None or (
+                want_spread and not cached.get("has_spread")
+            )
+            if need_recompute:
                 segment = _segment_for(
                     cell_number,
                     wall_surface_names,
                     "comb",
-                    compute_spread=True,
-                    warm_start=warm_start,
+                    compute_spread=want_spread,
+                    warm_start=warm_start if want_spread else None,
                 )
                 if segment is None:
                     raise ValueError(
                         f"Membrane segment for evaluation cell {cell_number} "
                         "has no positive area."
                     )
+                fluent_computes += int(segment.get("fluent_surface_computes", 0))
                 segment_cache[cell_number] = segment
-                if segment.get("has_spread"):
+                if want_spread and segment.get("has_spread"):
                     warm_start = {
                         "cm_q_hi": segment.get("cm_q_hi"),
                         "jw_q_lo": segment.get("jw_q_lo"),
@@ -1615,7 +1678,19 @@ def segmented_membrane_cp_metrics(
         metrics["cp_scalar_rescale_guard_threshold"] = (
             CP_SCALAR_RESCALE_GUARD_THRESHOLD
         )
-        metrics["cp_canon_rescale_delta_max"] = max(delta_values.values())
+        metrics["compute_cp_spread"] = want_spread
+        if want_spread:
+            metrics["cp_canon_rescale_delta_max"] = max(
+                float(v) for v in delta_values.values()
+            )
+            metrics["cp_canon_rescale_delta_status"] = (
+                CP_RESCALE_DELTA_STATUS_EVALUATED
+            )
+        else:
+            metrics["cp_canon_rescale_delta_max"] = None
+            metrics["cp_canon_rescale_delta_status"] = (
+                CP_RESCALE_DELTA_STATUS_NOT_EVALUATED
+            )
 
         metrics.update(
             _cp_scope_aggregates(
@@ -1735,6 +1810,7 @@ def segmented_membrane_cp_metrics(
                             f"Membrane segment for {wall_name} cell "
                             f"{cell_number} has no positive area."
                         )
+                    fluent_computes += int(segment.get("fluent_surface_computes", 0))
                     k_n = float(
                         metrics[f"pp_cp_canon_rescale_k_cell_{cell_number}"]
                     )
@@ -1755,6 +1831,7 @@ def segmented_membrane_cp_metrics(
                 )
                 metrics.update(wall_agg)
 
+    metrics["cp_membrane_segment_fluent_computes"] = fluent_computes
     return metrics
 
 

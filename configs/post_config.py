@@ -135,3 +135,11 @@ mesh_case_name = None
 mesh_resolution_source = None
 salt_mass_fraction_upper_threshold = 0.99
 salt_mass_fraction_lower_threshold = 1.0e-6
+
+# CP scalar-rescale delta bound (facet-min hygiene + quantile bisection).
+# Default False: after the mid-plane z fix, observed delta is ~1e-5 against a
+# 1e-3 threshold across the exploration sweep, so the ~150–250 Fluent ops per
+# case buy nothing. k_N is still computed; delta columns are null with status
+# "not_evaluated". Set True for final mesh-study reporting when the bound is
+# needed.
+compute_cp_spread = False

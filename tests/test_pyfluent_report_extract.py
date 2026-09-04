@@ -605,14 +605,17 @@ def test_segmented_membrane_cp_uses_iso_clip_surface_reports():
     from ro.cp_metrics import film_theory_cp_perm_mol_m3
 
     expected_cp_perm = film_theory_cp_perm_mol_m3(600.0, 1.0e-5, 2.50e-8)
-    assert metrics == pytest.approx({
+    expected = {
         "pp_membrane_area_cell_2_m2": 2.0,
         "pp_cm_mol_m3_cell_2": 600.0,
         "pp_jw_m_per_s_cell_2": 1.0e-5,
         "pp_cp_inlet_unit_cell_boundary_2": 1.05,
         "pp_cp_bulk_unit_cell_boundary_2": 600.0 / bulk_mol,
         "pp_cp_perm_mol_m3_cell_2": expected_cp_perm,
-    })
+    }
+    for key, value in expected.items():
+        assert metrics[key] == pytest.approx(value)
+    assert metrics["cp_membrane_segment_fluent_computes"] > 0
     assert any(
         name.startswith("pp_mem_clip_") for name in session.iso_clip.deleted
     )
@@ -646,6 +649,7 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
         evaluation_cell_numbers=[3],
         c_b_by_cell_mol_per_m3={2: 610.0, 3: 615.0},
         midplane_area_by_cell_m2={2: 1.0, 3: 1.0},
+        compute_cp_spread=True,
     )
     assert "cp_canon_window_avg" in metrics
     assert "cp_L1_window_avg" in metrics
@@ -661,6 +665,83 @@ def test_segmented_membrane_cp_window_metrics_with_c_b():
     assert metrics["cm_q_hi_cell_3"] == pytest.approx(650.0, rel=1e-2)
     assert metrics["jw_q_lo_cell_3"] == pytest.approx(0.8e-5, rel=1e-2)
     assert metrics["pp_cp_canon_rescale_delta_cell_3"] < 1.0e-3
+    assert metrics["cp_canon_rescale_delta_status"] == "evaluated"
+    assert metrics["cp_canon_rescale_delta_max"] is not None
+
+
+def test_segmented_membrane_cp_spread_off_nulls_delta_keeps_k():
+    """Default compute_cp_spread=False: k_N on, delta null, status explicit."""
+    from ro.fluent_report_helpers import (
+        require_canonical_cp_summary_columns,
+        summary_rows_to_wide_record,
+    )
+
+    session = FakeIsoClipSession()
+    metrics = segmented_membrane_cp_metrics(
+        solver=session.solver,
+        solution=session.solution,
+        wall_surface_names=["wall_top_mem"],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
+        spacer_cells=[2, 3],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035, 3: 0.036},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        evaluation_cell_numbers=[3],
+        c_b_by_cell_mol_per_m3={2: 610.0, 3: 615.0},
+        midplane_area_by_cell_m2={2: 1.0, 3: 1.0},
+        compute_cp_spread=False,
+    )
+    assert metrics["cp_canon_window_avg"] is not None
+    assert metrics["pp_cp_canon_rescale_k_cell_3"] is not None
+    assert metrics["pp_cp_canon_rescale_delta_cell_3"] is None
+    assert metrics["cp_canon_rescale_delta_max"] is None
+    assert metrics["cp_canon_rescale_delta_status"] == "not_evaluated"
+    assert metrics["cp_scalar_rescale_guard_threshold"] == pytest.approx(1.0e-3)
+    assert metrics["compute_cp_spread"] is False
+    assert metrics["cm_q_hi_cell_3"] is None
+    assert metrics["jw_q_lo_cell_3"] is None
+    # Fewer Fluent computes than the spread-on path (no bisection probes).
+    ops_off = metrics["cp_membrane_segment_fluent_computes"]
+    assert ops_off > 0
+
+    session_on = FakeIsoClipSession()
+    metrics_on = segmented_membrane_cp_metrics(
+        solver=session_on.solver,
+        solution=session_on.solution,
+        wall_surface_names=["wall_top_mem"],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
+        spacer_cells=[2, 3],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035, 3: 0.036},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        evaluation_cell_numbers=[3],
+        c_b_by_cell_mol_per_m3={2: 610.0, 3: 615.0},
+        midplane_area_by_cell_m2={2: 1.0, 3: 1.0},
+        compute_cp_spread=True,
+    )
+    assert metrics_on["cp_membrane_segment_fluent_computes"] > ops_off
+
+    summary_rows = [
+        {"metric": "geo_name", "value": "D2450_a45", "unit": "-"},
+        {"metric": "cp_inlet_avg", "value": 1.05, "unit": "-"},
+        {
+            "metric": "c_b_window_mol_m3",
+            "value": metrics["c_b_window_mol_m3"],
+            "unit": "mol/m3",
+        },
+    ]
+    for key, value in metrics.items():
+        if key == "c_b_window_mol_m3":
+            continue
+        summary_rows.append({"metric": key, "value": value, "unit": "-"})
+    wide = summary_rows_to_wide_record(summary_rows)
+    require_canonical_cp_summary_columns(wide)
+    assert wide["cp_canon_rescale_delta_max"] in (None, "")
+    assert wide["cp_canon_rescale_delta_status"] == "not_evaluated"
 
 
 def test_segmented_membrane_cp_rejects_zero_area_facetmin():
@@ -686,6 +767,7 @@ def test_segmented_membrane_cp_rejects_zero_area_facetmin():
         evaluation_cell_numbers=[2],
         c_b_by_cell_mol_per_m3={2: 626.0},
         midplane_area_by_cell_m2={2: 1.0},
+        compute_cp_spread=True,
     )
     assert metrics["cp_facet_min_rejected_cell_2"] is True
     assert metrics["cm_min_raw_cell_2"] == pytest.approx(0.0)
@@ -781,6 +863,7 @@ def test_successful_wide_summary_must_include_canonical_cp_columns():
         evaluation_cell_numbers=[3],
         c_b_by_cell_mol_per_m3={2: 610.0, 3: 615.0},
         midplane_area_by_cell_m2={2: 1.0, 3: 1.0},
+        compute_cp_spread=True,
     )
     summary_rows = [
         {"metric": "geo_name", "value": "D2450_a45", "unit": "-"},
@@ -795,7 +878,10 @@ def test_successful_wide_summary_must_include_canonical_cp_columns():
     require_canonical_cp_summary_columns(wide)
     for column in CANONICAL_CP_SUMMARY_COLUMNS:
         assert column in wide
-        assert wide[column] is not None
+        if column == "cp_canon_rescale_delta_max":
+            assert wide[column] is not None
+        else:
+            assert wide[column] is not None
 
 
 def test_concentration_diagnostics_reject_zone_name_strings():

@@ -194,7 +194,10 @@ Order-of-magnitude, not instrumented:
 | Per-wall no-spread (2 × 4) | ~8 × ~10 |
 | **Total** | **roughly 400–600 Fluent surface/report operations** |
 
-Dominant cost today is evaluation-cell quantile bisection, not Cell 7.
+Dominant cost today is evaluation-cell quantile bisection when
+`compute_cp_spread=True`. With the post_config default `compute_cp_spread=False`,
+that block is skipped (`cp_canon_rescale_delta_status=not_evaluated`); \(k_N\)
+still runs. Re-enable for final mesh-study reporting.
 
 ---
 

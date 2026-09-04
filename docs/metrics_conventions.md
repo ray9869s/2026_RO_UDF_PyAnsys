@@ -171,9 +171,23 @@ is \({\sim}4\times10^{-4}\); \(10^{-3}\) leaves margin without approaching
 the discriminability floor.
 
 Every successful extract writes `cp_canon_rescale_delta_max`,
-`cp_scalar_rescale_guard_threshold`, and per-cell
-`pp_cp_canon_rescale_delta_cell_{N}` into `summary_metrics_wide.csv` (and
-`raw_report_values.json`), not only when the guard fires.
+`cp_canon_rescale_delta_status`, `cp_scalar_rescale_guard_threshold`, and
+per-cell `pp_cp_canon_rescale_delta_cell_{N}` into `summary_metrics_wide.csv`
+(and `raw_report_values.json`).
+
+**Spread default (post_config `compute_cp_spread`, default False):** after the
+mid-plane was fixed to \(z=0.5(z_{\min}+z_{\max})\), observed \(\delta\) fell
+to \({\sim}10^{-5}\) across the exploration sweep (bl4–bl10, \(m_{\max}\)
+0.085→0.045) against the \(10^{-3}\) threshold — two orders of headroom, and
+the facet-min inputs that feed the bound are contaminated anyway. With the
+flag off, \(k_N\) is still computed and applied; `cp_canon_rescale_delta_max`
+and per-cell delta are **null** with
+`cp_canon_rescale_delta_status=not_evaluated` so a missing delta is never
+read as a passing delta. Set `compute_cp_spread=True` when reporting final
+mesh-study numbers that need the bound.
+
+When the flag is on, `cp_canon_rescale_delta_status=evaluated` and delta
+columns are numeric as before.
 
 **Canonical `CP_max`:** the window facet maximum uses the same per-cell scalar
 \(k_N\) as the average path:
