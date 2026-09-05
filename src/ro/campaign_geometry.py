@@ -76,30 +76,58 @@ _ML_COMMON = {
 # coordinates (mid layer near z = h/2 = 0.000385). The Fluent mesh is
 # channel-centred (mid-plane at z = 0); recentre by subtracting h/2 if
 # these absolute z values are ever used for mesh sampling.
+#
+# Joint-sphere radii (CAD rebuilt to match). The sphere fills the cusp where
+# the middle filament (90 deg) meets an outer filament (+/-45 deg). Size is
+# set by how far that cusp extends, not by a ratio to any single filament
+# radius. Near tangency the gap is a paraboloid with shallow principal radius
+#
+#     1/R_s = [ (1/r_mid + 1/r_out) - sqrt(1/r_mid^2 + 1/r_out^2) ] / 2
+#
+# for a 45 deg crossing, giving R_s = 0.4189 / 0.4552 / 0.5236 mm for
+# c160 / c267 / c400 — only 25% variation while r_mid varies 2.5x. Covering
+# the region where the gap is below threshold g needs R = sqrt(2 R_s g).
+# Upper bound: sphere centre on the cylinder surface, so at the extreme of
+# the sphere-cylinder intersection the normals meet at cos(theta) = R/(2 r);
+# theta below 45 deg makes a sliver, capping R <= 1.414 * r_min
+# (0.1131 / 0.1886 / 0.1414 mm for c160 / c267 / c400).
+#
+# g = 12 um (twice m_min) is the largest threshold that satisfies both bounds
+# on all three: required R = 0.1003 / 0.1045 / 0.1121 mm. At g = 18 um c160
+# would need 0.1228 and exceed its cap. Rounded values 0.100 / 0.105 / 0.112
+# span only 12%, so contact treatment is effectively identical across a 2.5x
+# change in layer thickness. R > r_min on c160 and c400 is intentional:
+# spheres and filaments are all subtracted from a solid box, so a sphere
+# reaching past the middle-layer surface only changes the outer fluid
+# boundary. joint_sphere_R_ratio is R / r_min exactly (rule 3-6).
+#
+# Diamond stays at R = 0.110 mm (90 deg equal 0.200 radii => R_s = 0.200 mm,
+# g = 30 um). Leave it: nine meshes pass; the brg156 trial (g = 61 um) made
+# ortho/AR worse; remeshing would invalidate D2450_a45 verified references.
 _ML_GEOMETRY: dict[str, dict[str, Any]] = {
     "M_c160": {
         "layer_diameters_m": [0.000320, 0.000160, 0.000320],
         "layer_axis_z_m": [0.000625, 0.000385, 0.000145],
         "joint_sphere_z_m": [0.000465, 0.000305],
-        "joint_sphere_R_m": 0.000070,
+        "joint_sphere_R_m": 0.000100,
         "joint_sphere_r_min_m": 0.000080,
-        "joint_sphere_R_ratio": 0.875,
+        "joint_sphere_R_ratio": 0.000100 / 0.000080,
     },
     "M_c267": {
         "layer_diameters_m": [0.000266670, 0.000266670, 0.000266670],
         "layer_axis_z_m": [0.00065167, 0.000385, 0.00011833],
         "joint_sphere_z_m": [0.00051833, 0.00025167],
-        "joint_sphere_R_m": 0.000110,
+        "joint_sphere_R_m": 0.000105,
         "joint_sphere_r_min_m": 0.000133335,
-        "joint_sphere_R_ratio": 0.000110 / 0.000133335,
+        "joint_sphere_R_ratio": 0.000105 / 0.000133335,
     },
     "M_c400": {
         "layer_diameters_m": [0.000200, 0.000400, 0.000200],
         "layer_axis_z_m": [0.000685, 0.000385, 0.000085],
         "joint_sphere_z_m": [0.000585, 0.000185],
-        "joint_sphere_R_m": 0.000110,
+        "joint_sphere_R_m": 0.000112,
         "joint_sphere_r_min_m": 0.000100,
-        "joint_sphere_R_ratio": 1.100,
+        "joint_sphere_R_ratio": 0.000112 / 0.000100,
     },
 }
 

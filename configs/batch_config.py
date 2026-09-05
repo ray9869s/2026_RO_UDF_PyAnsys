@@ -170,12 +170,13 @@ _MESH_ID = "max085_min006_cpg5_bl4_peel2"
 #
 # Joint spheres: three filaments pass through the same (x, y), so the two
 # tangent contacts sit on one vertical line at z = 0.385 +/- r_middle. Two
-# spheres per node, one at each contact, radius per case.
+# spheres per node, one at each contact. Radii from cusp coverage at g = 12 um
+# (see campaign_geometry._ML_GEOMETRY); R may exceed r_min.
 #
 #   geo      diameters t/m/b     contact z         sphere R   contact width
-#   M_c160   0.320/0.160/0.320   0.305, 0.465      0.070      0.135
-#   M_c267   0.266670 x3         0.25167, 0.51833  0.110      0.123
-#   M_c400   0.200/0.400/0.200   0.185, 0.585      0.110      0.105
+#   M_c160   0.320/0.160/0.320   0.305, 0.465      0.100      0.135
+#   M_c267   0.266670 x3         0.25167, 0.51833  0.105      0.123
+#   M_c400   0.200/0.400/0.200   0.185, 0.585      0.112      0.105
 #
 # Solid-volume coefficients (2*d_o^2 + sqrt(2)*d_c^2)/h^2 are 0.241 / 0.243 /
 # 0.306, so c160 and c267 are within 0.7% of each other — the clean pair for
@@ -198,9 +199,9 @@ _ML_SPACER_LABELS = [
 ]
 
 _ML_CASES = (
-    ("M_c160", 1.60e-4, 0.70e-4),
-    ("M_c267", 2.66670e-4, 1.10e-4),
-    ("M_c400", 4.00e-4, 1.10e-4),
+    ("M_c160", 1.60e-4, 1.00e-4),
+    ("M_c267", 2.66670e-4, 1.05e-4),
+    ("M_c400", 4.00e-4, 1.12e-4),
 )
 
 # ---------------------------------------------------------------------------

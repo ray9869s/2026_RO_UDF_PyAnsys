@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from typing import Any, Collection, Mapping
 
 from ro.campaign_geometry import CAMPAIGN_H_M
@@ -431,13 +430,18 @@ def validate_joint_sphere_consistency(
     *,
     kind: str = "Mesh",
 ) -> None:
-    """Rule 3-6: joint-sphere count, ratio consistency, and ML overlap guard."""
+    """Rule 3-6: joint-sphere count and R = R_ratio * r_min identity.
+
+    ML spheres may exceed r_min and may interpenetrate each other: they are
+    subtracted from a solid box with the filaments, so those conditions only
+    reshape the fluid boundary. Do not reinstate R < r_min or separation > 2R
+    guards for this family.
+    """
     count = payload["joint_sphere_count"]
     sphere_r = payload["joint_sphere_R_m"]
     ratio = payload["joint_sphere_R_ratio"]
     r_min = payload["joint_sphere_r_min_m"]
     family = payload["family"]
-    geo_id = str(payload.get("geo_id", ""))
 
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise ManifestValidationError(
@@ -488,30 +492,6 @@ def validate_joint_sphere_consistency(
             f"{kind} manifest joint_sphere_z_m must be a length-2 list for ml, "
             f"got {joint_z!r}."
         )
-
-    separation = abs(float(joint_z[0]) - float(joint_z[1]))
-    two_r = 2.0 * float(sphere_r)
-    if separation <= two_r:
-        raise ManifestValidationError(
-            f"{kind} manifest {geo_id!r}: joint-sphere separation "
-            f"{separation!r} m must exceed 2*joint_sphere_R_m={two_r!r} m "
-            "(spheres would interpenetrate)."
-        )
-
-    layer_diameters = payload["layer_diameters_m"]
-    if (
-        isinstance(layer_diameters, list)
-        and len(layer_diameters) >= 2
-        and math.isfinite(float(layer_diameters[1]))
-    ):
-        mid_half_diameter = float(layer_diameters[1]) / 2.0
-        if float(sphere_r) >= mid_half_diameter:
-            warnings.warn(
-                f"{kind} manifest {geo_id!r}: joint_sphere_R_m={sphere_r!r} m is "
-                f"not less than middle-layer radius {mid_half_diameter!r} m; "
-                "sphere may cut through the middle layer.",
-                stacklevel=2,
-            )
 
 
 def validate_mesh_geometry_fields(payload: Mapping[str, Any]) -> None:

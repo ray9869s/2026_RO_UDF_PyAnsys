@@ -217,27 +217,19 @@ def test_joint_sphere_ml_requires_count_two_and_two_z_positions():
         validate_joint_sphere_consistency(payload)
 
 
-def test_joint_sphere_overlap_guard_raises_when_separation_too_small():
-    payload = _ml_mesh_payload("M_c160")
-    payload["joint_sphere_z_m"] = [0.000400, 0.000500]
-    with pytest.raises(ManifestError, match="must exceed 2\\*joint_sphere_R_m"):
-        validate_joint_sphere_consistency(payload)
-
-
-def test_joint_sphere_overlap_guard_passes_for_registry_values():
+def test_joint_sphere_ml_allows_interpenetration_and_r_above_r_min():
+    """ML spheres are boolean-subtracted; R > r_min / overlap is intentional."""
     for geo_id in ("M_c160", "M_c267", "M_c400"):
         validate_joint_sphere_consistency(_ml_mesh_payload(geo_id))
-
-
-def test_joint_sphere_middle_layer_cut_warns_not_raises():
+    # M_c160: R=0.100 mm > r_min=0.080 mm and separation 0.160 mm < 2R.
     payload = _ml_mesh_payload("M_c160")
-    payload["joint_sphere_z_m"] = [0.000500, 0.000300]
-    payload["joint_sphere_R_m"] = 0.000085
-    payload["joint_sphere_R_ratio"] = (
-        payload["joint_sphere_R_m"] / payload["joint_sphere_r_min_m"]
+    assert payload["joint_sphere_R_m"] == pytest.approx(0.000100)
+    assert payload["joint_sphere_R_m"] > payload["joint_sphere_r_min_m"]
+    separation = abs(
+        payload["joint_sphere_z_m"][0] - payload["joint_sphere_z_m"][1]
     )
-    with pytest.warns(UserWarning, match="middle layer"):
-        validate_joint_sphere_consistency(payload)
+    assert separation < 2.0 * payload["joint_sphere_R_m"]
+    validate_joint_sphere_consistency(payload)
 
 
 def test_sigma_d_pillar_requires_null_sigma_and_zero_trim():
