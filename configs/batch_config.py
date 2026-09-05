@@ -190,6 +190,21 @@ _MESH_ID = "max085_min006_cpg5_bl4_peel2"
 #
 # (geo_id, filament_d_m, bridge_radius_m)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Added 2026-09-05: from claude
+#   geo      diameters t/m/b     contact z         sphere R   R_s
+#   M_c160   0.320/0.160/0.320   +/-0.080          0.100      0.4189
+#   M_c267   0.266670 x3         +/-0.133335       0.105      0.4552
+#   M_c400   0.200/0.400/0.200   +/-0.200          0.112      0.5236
+#
+# Sphere radius from R = sqrt(2 * R_s * g) with g = 12 um (2 * m_min), where
+# R_s is the shallow principal radius of the paraboloidal gap at a 45 degree
+# cylinder crossing. Capped by R <= 1.414 * r_min from the sphere-cylinder
+# intersection angle, which binds on c160 at 0.1131. The old values
+# (0.070 / 0.110 / 0.110) followed no rule; R/r_min was 0.875 / 0.825 / 1.100.
+# ---------------------------------------------------------------------------
+
 _ML_SPACER_LABELS = [
     "wall_spacer_top",
     "wall_spacer_mid",
