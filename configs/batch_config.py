@@ -249,18 +249,23 @@ def _pillar_spacer_labels(h_mm):
 
 mesh_batch_cases = []
 
-for _geo_id, _fil_d_m, _brg_m in _ML_CASES:
-    _case = dict(_COMMON_MESH)
-    _case.update({
-        "family": "ml",
-        "geo_id": _geo_id,
-        "mesh_id": _MESH_ID,
-        "spacing_code": _geo_id,
-        "filament_d_m": _fil_d_m,
-        "bridge_radius_m": _brg_m,
-        "wall_spacer_labels": list(_ML_SPACER_LABELS),
-    })
-    mesh_batch_cases.append(_case)
+# Probe: P_p80_h20 CAD rebuilt from the h00 file with a fresh 0.200 bore.
+# The previous file failed surface meshing at skew 0.89298 (threshold 0.85)
+# and sff 1.143e-04 (threshold 3e-5), while its siblings passed cleanly
+# (P_p80_h00 skew 0.5006, P_p80_h30 skew 0.4777) and the other h20 cases
+# passed too (P_p60_h20 0.4879, P_p100_h20 0.4702). So it was that one file,
+# not the geometry combination. Old file kept alongside with an _old suffix.
+_case = dict(_COMMON_MESH)
+_case.update({
+    "family": "pillar",
+    "geo_id": "P_p80_h20",
+    "mesh_id": _MESH_ID,
+    "spacing_code": "P_p80_h20",
+    "filament_d_m": 4.00e-4,
+    "bridge_radius_m": 0.0,
+    "wall_spacer_labels": _pillar_spacer_labels(0.20),
+})
+mesh_batch_cases.append(_case)
 
 for _d_mm in _PILLAR_D_MM:
     for _h_mm in _PILLAR_H_MM:
