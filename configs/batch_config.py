@@ -276,9 +276,9 @@ _case = dict(_COMMON_MESH)
 _case.update({
     "family": "pillar",
     "geo_id": "P_p80_h20",
-    "mesh_id": "max085_min003_cpg5_bl4_peel2",
+    "mesh_id": "max085_min006_cpg7_bl4_peel2",
     "spacing_code": "P_p80_h20",
-    "m_min": 0.003,
+    "m_cpg": 7,
     "filament_d_m": 4.00e-4,
     "bridge_radius_m": 0.0,
     "wall_spacer_labels": _pillar_spacer_labels(0.20),
