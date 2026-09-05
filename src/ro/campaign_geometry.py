@@ -94,12 +94,21 @@ _ML_COMMON = {
 #
 # g = 12 um (twice m_min) is the largest threshold that satisfies both bounds
 # on all three: required R = 0.1003 / 0.1045 / 0.1121 mm. At g = 18 um c160
-# would need 0.1228 and exceed its cap. Rounded values 0.100 / 0.105 / 0.112
-# span only 12%, so contact treatment is effectively identical across a 2.5x
+# would need 0.1228 and exceed its cap. Rounded values 0.100 / 0.105 / 0.110
+# span only 10%, so contact treatment is effectively identical across a 2.5x
 # change in layer thickness. R > r_min on c160 and c400 is intentional:
 # spheres and filaments are all subtracted from a solid box, so a sphere
 # reaching past the middle-layer surface only changes the outer fluid
 # boundary. joint_sphere_R_ratio is R / r_min exactly (rule 3-6).
+#
+# M_c400 has a second upper bound beyond the 45-degree intersection angle:
+# the sphere must not protrude far enough past the outer filament
+# (R/r_outer = 1.10 here; c160/c267 are 0.625/0.787) to disturb periodic
+# edge pairing. R = 0.112 failed Set Up Periodic Boundaries twice after
+# surface meshing (unpaired curve-network after shadow-zone copy);
+# R = 0.110 builds. Bound is empirical from those two points — no
+# derivation — revisit if mesh settings change. R = 0.110 back-solves to
+# g = 0.110^2 / (2 * 0.5236) = 11.55 um (1 um short of the 12 um target).
 #
 # Diamond stays at R = 0.110 mm (90 deg equal 0.200 radii => R_s = 0.200 mm,
 # g = 30 um). Leave it: nine meshes pass; the brg156 trial (g = 61 um) made
@@ -125,9 +134,9 @@ _ML_GEOMETRY: dict[str, dict[str, Any]] = {
         "layer_diameters_m": [0.000200, 0.000400, 0.000200],
         "layer_axis_z_m": [0.000685, 0.000385, 0.000085],
         "joint_sphere_z_m": [0.000585, 0.000185],
-        "joint_sphere_R_m": 0.000112,
+        "joint_sphere_R_m": 0.000110,
         "joint_sphere_r_min_m": 0.000100,
-        "joint_sphere_R_ratio": 0.000112 / 0.000100,
+        "joint_sphere_R_ratio": 0.000110 / 0.000100,
     },
 }
 

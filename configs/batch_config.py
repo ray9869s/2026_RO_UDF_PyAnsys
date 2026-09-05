@@ -176,7 +176,7 @@ _MESH_ID = "max085_min006_cpg5_bl4_peel2"
 #   geo      diameters t/m/b     contact z         sphere R   contact width
 #   M_c160   0.320/0.160/0.320   0.305, 0.465      0.100      0.135
 #   M_c267   0.266670 x3         0.25167, 0.51833  0.105      0.123
-#   M_c400   0.200/0.400/0.200   0.185, 0.585      0.112      0.105
+#   M_c400   0.200/0.400/0.200   0.185, 0.585      0.110      0.105
 #
 # Solid-volume coefficients (2*d_o^2 + sqrt(2)*d_c^2)/h^2 are 0.241 / 0.243 /
 # 0.306, so c160 and c267 are within 0.7% of each other — the clean pair for
@@ -196,7 +196,7 @@ _MESH_ID = "max085_min006_cpg5_bl4_peel2"
 #   geo      diameters t/m/b     contact z         sphere R   R_s
 #   M_c160   0.320/0.160/0.320   +/-0.080          0.100      0.4189
 #   M_c267   0.266670 x3         +/-0.133335       0.105      0.4552
-#   M_c400   0.200/0.400/0.200   +/-0.200          0.112      0.5236
+#   M_c400   0.200/0.400/0.200   +/-0.200          0.110      0.5236
 #
 # Sphere radius from R = sqrt(2 * R_s * g) with g = 12 um (2 * m_min), where
 # R_s is the shallow principal radius of the paraboloidal gap at a 45 degree
@@ -216,7 +216,7 @@ _ML_SPACER_LABELS = [
 _ML_CASES = (
     ("M_c160", 1.60e-4, 1.00e-4),
     ("M_c267", 2.66670e-4, 1.05e-4),
-    ("M_c400", 4.00e-4, 1.12e-4),
+    ("M_c400", 4.00e-4, 1.10e-4),
 )
 
 # ---------------------------------------------------------------------------
