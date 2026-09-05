@@ -311,19 +311,22 @@ def validate_spacer_wall_zones(
             + "; ".join(parts)
         )
 
-    # Pillar hole-zone boolean guards
+    # Pillar hole-zone boolean guards (h00 has no bore; h15/h30 do).
     has_hole_declared = "wall_spacer_hole" in declared_set
     is_h00 = "_h00" in geo_id and geo_id.startswith("P_")
-    is_h20_or_h30 = ("_h20" in geo_id or "_h30" in geo_id) and geo_id.startswith("P_")
+    is_bored = (
+        geo_id.startswith("P_")
+        and ("_h15" in geo_id or "_h30" in geo_id)
+    )
 
     if is_h00 and has_hole_declared:
         raise ManifestValidationError(
             f"{kind} manifest {geo_id!r} is an h00 case but declares "
             "wall_spacer_hole (boolean misapplied)."
         )
-    if is_h20_or_h30 and not has_hole_declared:
+    if is_bored and not has_hole_declared:
         raise ManifestValidationError(
-            f"{kind} manifest {geo_id!r} is h20/h30 but lacks wall_spacer_hole "
+            f"{kind} manifest {geo_id!r} is h15/h30 but lacks wall_spacer_hole "
             "(bore cut silently failed)."
         )
 

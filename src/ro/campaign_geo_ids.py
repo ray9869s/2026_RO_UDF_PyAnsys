@@ -15,7 +15,7 @@ _CAMPAIGN_GEO_ID_SHAPE_RE = re.compile(
     r"^(?:"
     r"D(?:\d{4})?_a(?:30|45|60)|"
     r"M_c(?:160|267|400)|"
-    r"P_p(?:60|80|100)_h(?:00|20|30)(?:_f320)?|"
+    r"P_p(?:60|80|100)_h(?:00|15|30)(?:_f320)?|"
     r"S(?:\d{4,5})?_A\d{3}(?:_p\d+)?|"
     r"REF_empty"
     r")$"
@@ -34,8 +34,8 @@ _MULTI_LAYER_GEO_IDS = ("M_c160", "M_c267", "M_c400")
 _PILLAR_GEO_IDS = tuple(
     f"P_p{pitch}_h{hole}"
     for pitch in ("60", "80", "100")
-    for hole in ("00", "20", "30")
-) + ("P_p80_h00_f320", "P_p80_h20_f320")
+    for hole in ("00", "15", "30")
+) + ("P_p80_h00_f320", "P_p80_h15_f320")
 
 _SINUSOIDAL_GEO_IDS = tuple(
     f"S{wavelength}_A{amplitude}"

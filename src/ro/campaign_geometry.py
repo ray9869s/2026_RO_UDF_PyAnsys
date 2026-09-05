@@ -103,20 +103,23 @@ _ML_GEOMETRY: dict[str, dict[str, Any]] = {
     },
 }
 
-# pitch fraction (p60=0.60 mm filament spacing scale), hole depth token
+# Bore axis {0, 0.15, 0.30} mm (geo tokens h00 / h15 / h30). h20 was retired:
+# on D_p=0.80 the filament–bore arc gap on the pillar surface is only 3.65 um,
+# below m_min, and four mesh attempts failed surface skew. See batch_config
+# Pillar notes for the gap table and the D_p=0.60 "hole-pillar" caveat.
+# unit_x, unit_y, periodic_y, porosity_unused, blocked_frac, has_hole_zone
 _PILLAR_GEOMETRY: dict[str, tuple[float, float, float, float, float, bool]] = {
-    # unit_x, unit_y, periodic_y, porosity_unused, blocked_frac, has_hole_zone
     "P_p60_h00": (0.002400, 0.002400, 0.002400, 0.94, 0.08, False),
-    "P_p60_h20": (0.002400, 0.002400, 0.002400, 0.93, 0.08, True),
+    "P_p60_h15": (0.002400, 0.002400, 0.002400, 0.93, 0.08, True),
     "P_p60_h30": (0.002400, 0.002400, 0.002400, 0.92, 0.08, True),
     "P_p80_h00": (0.003200, 0.003200, 0.003200, 0.95, 0.06, False),
-    "P_p80_h20": (0.003200, 0.003200, 0.003200, 0.94, 0.06, True),
+    "P_p80_h15": (0.003200, 0.003200, 0.003200, 0.94, 0.06, True),
     "P_p80_h30": (0.003200, 0.003200, 0.003200, 0.93, 0.06, True),
     "P_p100_h00": (0.004000, 0.004000, 0.004000, 0.96, 0.05, False),
-    "P_p100_h20": (0.004000, 0.004000, 0.004000, 0.95, 0.05, True),
+    "P_p100_h15": (0.004000, 0.004000, 0.004000, 0.95, 0.05, True),
     "P_p100_h30": (0.004000, 0.004000, 0.004000, 0.94, 0.05, True),
     "P_p80_h00_f320": (0.003200, 0.003200, 0.003200, 0.95, 0.06, False),
-    "P_p80_h20_f320": (0.003200, 0.003200, 0.003200, 0.94, 0.06, True),
+    "P_p80_h15_f320": (0.003200, 0.003200, 0.003200, 0.94, 0.06, True),
 }
 
 

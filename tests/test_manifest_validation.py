@@ -119,7 +119,7 @@ def test_membrane_contact_width_ml_uses_outer_layer_diameter():
 
 
 def test_pillar_contact_width_is_none():
-    geometry = geometry_parameters_for_geo_id("P_p80_h20")
+    geometry = geometry_parameters_for_geo_id("P_p80_h15")
     assert geometry["Sigma_d_nominal_m"] is None
     assert geometry["membrane_trim_m"] == 0.0
     assert geometry["membrane_contact_width_m"] is None
@@ -137,8 +137,8 @@ def test_ml_and_pillar_spacer_wall_zones_match_cad_named_selections():
     for geo_id in ("M_c160", "M_c267", "M_c400"):
         assert geometry_parameters_for_geo_id(geo_id)["spacer_wall_zones"] == ml_expected
 
-    h20 = geometry_parameters_for_geo_id("P_p80_h20")["spacer_wall_zones"]
-    assert h20 == [
+    h15 = geometry_parameters_for_geo_id("P_p80_h15")["spacer_wall_zones"]
+    assert h15 == [
         "wall_spacer_filament",
         "wall_spacer_pillar",
         "wall_spacer_hole",
@@ -153,7 +153,7 @@ def test_ml_and_pillar_spacer_wall_zones_match_cad_named_selections():
     assert "wall_spacer_hole" not in h00
     # Cross-check against Fluent-shaped zone lists (rule 3-3 both ways).
     validate_spacer_wall_zones(ml_expected, ml_expected, geo_id="M_c160")
-    validate_spacer_wall_zones(h20, h20, geo_id="P_p80_h20")
+    validate_spacer_wall_zones(h15, h15, geo_id="P_p80_h15")
     validate_spacer_wall_zones(h00, h00, geo_id="P_p80_h00")
 
 
@@ -245,8 +245,8 @@ def test_sigma_d_pillar_requires_null_sigma_and_zero_trim():
     payload.update(
         {
             "family": "pillar",
-            "geo_id": "P_p80_h20",
-            **geometry_parameters_for_geo_id("P_p80_h20"),
+            "geo_id": "P_p80_h15",
+            **geometry_parameters_for_geo_id("P_p80_h15"),
         }
     )
     payload["porosity_eps"] = 0.94
@@ -272,14 +272,14 @@ def test_spacer_wall_zone_cross_check_raises_on_undeclared():
     declared = ["wall_spacer_filament", "wall_spacer_pillar", "wall_spacer_hole"]
     fluent = declared + ["wall_spacer_extra"]
     with pytest.raises(ManifestError, match="undeclared"):
-        validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h20")
+        validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h15")
 
 
 def test_spacer_wall_zone_cross_check_raises_on_missing_declared():
     declared = ["wall_spacer_filament", "wall_spacer_pillar", "wall_spacer_hole"]
     fluent = ["wall_spacer_filament", "wall_spacer_pillar"]
     with pytest.raises(ManifestError, match="absent in Fluent"):
-        validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h20")
+        validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h15")
 
 
 def test_h00_with_hole_zone_raises():
@@ -289,11 +289,11 @@ def test_h00_with_hole_zone_raises():
         validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h00")
 
 
-def test_h20_without_hole_zone_raises():
+def test_h15_without_hole_zone_raises():
     declared = ["wall_spacer_filament", "wall_spacer_pillar"]
     fluent = declared
     with pytest.raises(ManifestError, match="lacks wall_spacer_hole"):
-        validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h20")
+        validate_spacer_wall_zones(declared, fluent, geo_id="P_p80_h15")
 
 
 def test_collect_spacer_wall_zones_empty_fluent_raises():

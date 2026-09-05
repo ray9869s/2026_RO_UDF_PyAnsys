@@ -37,7 +37,7 @@ def test_whitelisted_ids_match_shape_regex(geo_id: str):
         ("M_c160", "ml"),
         ("M_c267", "ml"),
         ("M_c400", "ml"),
-        ("P_p80_h20", "pillar"),
+        ("P_p80_h15", "pillar"),
         ("S3465_A400", "sin"),
         ("S_A000", "sin"),
         ("REF_empty", "empty"),

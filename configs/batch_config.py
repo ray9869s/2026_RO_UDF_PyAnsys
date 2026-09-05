@@ -220,19 +220,48 @@ _ML_CASES = (
 # longer touch the membrane. Cell footprint at pitch 2450 / theta 45 is
 # 6.0025 mm^2 per node, giving 4.7 / 8.4 / 13.1% for D_p 0.60 / 0.80 / 1.00.
 #
-# Bore is a streamwise through-hole on the mid-plane at the crossing, in
-# absolute diameter rather than a ratio of D_p, so the same jet orifice is
-# tested at every pillar size and the two axes stay orthogonal. Residual
-# filament shell at the crossing is r_f - r_h: 0.100 mm at d_h 0.200 and
-# 0.050 mm at d_h 0.300, the thinnest feature in the campaign.
+# Bore axis is {0, 0.15, 0.30} mm absolute diameter (geo tokens h00 / h15 /
+# h30), not a ratio of D_p, so the same jet orifice is tested at every pillar
+# size and the two axes stay orthogonal. Residual filament shell at the
+# crossing is r_f - r_h: 0.125 mm at d_h 0.150 and 0.050 mm at d_h 0.300.
 #
-# wall_spacer_hole is only listed for h20 and h30. Rule 3-3 raises if an h00
+# Why not h20 (d_h = 0.20): on the pillar surface at z = 0 each opening has
+# half-angle arcsin(r/R_p). Filaments at +/-45 deg and bore at 0 leave an arc
+# gap R_p * (45deg - arcsin(r_f/R_p) - arcsin(r_h/R_p)) (um; + separate,
+# - merged):
+#
+#                  h10        h15        h20        h30
+#     p60  R 0.300  -33.5      -59.1      -85.3     -140.4     (all merged)
+#     p80  R 0.400  +54.6      +29.3      +3.65      -49.0
+#     p100 R 0.500  +136.9     +111.7     +86.3      +34.6
+#
+# Confirmed in Discovery: p80_h20 = 3.64 um, p100_h30 = 34.6 um. 3.65 um is
+# below m_min = 6 um, so the surface mesher cannot resolve that sliver.
+# Four P_p80_h20 attempts all failed the 0.85 skew gate:
+#     old CAD, cpg5              skew 0.89298  37 skewed faces
+#     rebuilt CAD, cpg5          skew 0.90116  37
+#     rebuilt CAD, m_min 0.003   skew 0.89656  39
+#     rebuilt CAD, m_cpg 7       skew 0.88967  22   (462,440 surface faces)
+# Forcing a merge needs d_h >= 0.207 and a barely-merged pair meets at a cusp;
+# a safe merge is ~0.28-0.30, i.e. h30. So the middle level moved to 0.15 mm
+# (smallest remaining gap 29 um on p80_h15, comparable to p100_h30 which
+# already meshed at skew 0.4702).
+#
+# D_p = 0.60 interpretation: the two filament openings are only 33 um apart
+# on the pillar surface (90deg - 2*arcsin(0.200/0.300) = 6.38deg), so the
+# pillar is already almost fully cut through by the filaments. Any bore
+# merges with them; an isolated hole would need d_h < 0.033. "Hole-pillar"
+# is therefore not geometrically realised at D_p = 0.60 — those cases are
+# enlarged openings, not a separate jet orifice. State that when interpreting
+# p60 h15/h30 results.
+#
+# wall_spacer_hole is only listed for h15 and h30. Rule 3-3 raises if an h00
 # case declares it, which is the guard against a misapplied boolean.
 #
 # (pillar_D_mm, bore_d_mm) -> geo_id P_p{D*100}_h{d*100}
 # ---------------------------------------------------------------------------
 _PILLAR_D_MM = (0.60, 0.80, 1.00)
-_PILLAR_H_MM = (0.00, 0.20, 0.30)
+_PILLAR_H_MM = (0.00, 0.15, 0.30)
 
 
 def _pillar_geo_id(d_mm, h_mm):
@@ -249,41 +278,32 @@ def _pillar_spacer_labels(h_mm):
 
 mesh_batch_cases = []
 
-# P_p80_h20 probe 2: m_min 0.003 on the one case that will not mesh.
-#
-# The rebuilt CAD (drilled fresh from the h00 file) gave skew 0.90116 against
-# the old file's 0.89298, and sff 1.279e-04 against 1.143e-04. Two independent
-# CAD builds landing within 1% of each other means this is the geometry
-# combination, not a corrupt file.
-#
-# It is specific to D_p 0.80 with d_h 0.20:
-#   P_p60_h20   skew 0.4879  ok      P_p80_h00   skew 0.5006  ok
-#   P_p80_h20   skew 0.9012  FAIL    P_p80_h30   skew 0.4777  ok
-#   P_p100_h20  skew 0.4702  ok
-# D_p 0.80 is exactly twice the filament diameter and the 0.100 bore radius is
-# exactly half the filament radius, so the three cylinders may meet at a
-# near-tangent intersection there.
-#
-# The defect is local: 37 skewed faces out of 289,192 (0.013%) with an average
-# skewness of 0.0215, so the surface is clean everywhere else. That is what
-# makes finer curvature refinement worth trying before changing the geometry.
-#
-# m_min 0.003 was near-free on Diamond during the exploration sweep: cells
-# +1.0% (796,009 -> 803,653) while surface skewness fell 0.671 -> 0.625 and
-# the CP rescale delta dropped 21%. mesh_id records it, the way D0817_a60
-# records its m_max 0.060.
-_case = dict(_COMMON_MESH)
-_case.update({
-    "family": "pillar",
-    "geo_id": "P_p80_h20",
-    "mesh_id": "max085_min006_cpg7_bl4_peel2",
-    "spacing_code": "P_p80_h20",
-    "m_cpg": 7,
-    "filament_d_m": 4.00e-4,
-    "bridge_radius_m": 0.0,
-    "wall_spacer_labels": _pillar_spacer_labels(0.20),
-})
-mesh_batch_cases.append(_case)
+for _geo_id, _fil_d_m, _brg_m in _ML_CASES:
+    _case = dict(_COMMON_MESH)
+    _case.update({
+        "family": "ml",
+        "geo_id": _geo_id,
+        "mesh_id": _MESH_ID,
+        "spacing_code": _geo_id,
+        "filament_d_m": _fil_d_m,
+        "bridge_radius_m": _brg_m,
+        "wall_spacer_labels": list(_ML_SPACER_LABELS),
+    })
+    mesh_batch_cases.append(_case)
+
+for _d_mm in _PILLAR_D_MM:
+    for _h_mm in _PILLAR_H_MM:
+        _case = dict(_COMMON_MESH)
+        _case.update({
+            "family": "pillar",
+            "geo_id": _pillar_geo_id(_d_mm, _h_mm),
+            "mesh_id": _MESH_ID,
+            "spacing_code": _pillar_geo_id(_d_mm, _h_mm),
+            "filament_d_m": 4.00e-4,
+            "bridge_radius_m": 0.0,
+            "wall_spacer_labels": _pillar_spacer_labels(_h_mm),
+        })
+        mesh_batch_cases.append(_case)
 
 # ---------------------------------------------------------------------------
 # Solver: nothing this round. Meshing is the gate and CAD probe; solve once
