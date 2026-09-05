@@ -249,37 +249,41 @@ def _pillar_spacer_labels(h_mm):
 
 mesh_batch_cases = []
 
-# Probe: P_p80_h20 CAD rebuilt from the h00 file with a fresh 0.200 bore.
-# The previous file failed surface meshing at skew 0.89298 (threshold 0.85)
-# and sff 1.143e-04 (threshold 3e-5), while its siblings passed cleanly
-# (P_p80_h00 skew 0.5006, P_p80_h30 skew 0.4777) and the other h20 cases
-# passed too (P_p60_h20 0.4879, P_p100_h20 0.4702). So it was that one file,
-# not the geometry combination. Old file kept alongside with an _old suffix.
+# P_p80_h20 probe 2: m_min 0.003 on the one case that will not mesh.
+#
+# The rebuilt CAD (drilled fresh from the h00 file) gave skew 0.90116 against
+# the old file's 0.89298, and sff 1.279e-04 against 1.143e-04. Two independent
+# CAD builds landing within 1% of each other means this is the geometry
+# combination, not a corrupt file.
+#
+# It is specific to D_p 0.80 with d_h 0.20:
+#   P_p60_h20   skew 0.4879  ok      P_p80_h00   skew 0.5006  ok
+#   P_p80_h20   skew 0.9012  FAIL    P_p80_h30   skew 0.4777  ok
+#   P_p100_h20  skew 0.4702  ok
+# D_p 0.80 is exactly twice the filament diameter and the 0.100 bore radius is
+# exactly half the filament radius, so the three cylinders may meet at a
+# near-tangent intersection there.
+#
+# The defect is local: 37 skewed faces out of 289,192 (0.013%) with an average
+# skewness of 0.0215, so the surface is clean everywhere else. That is what
+# makes finer curvature refinement worth trying before changing the geometry.
+#
+# m_min 0.003 was near-free on Diamond during the exploration sweep: cells
+# +1.0% (796,009 -> 803,653) while surface skewness fell 0.671 -> 0.625 and
+# the CP rescale delta dropped 21%. mesh_id records it, the way D0817_a60
+# records its m_max 0.060.
 _case = dict(_COMMON_MESH)
 _case.update({
     "family": "pillar",
     "geo_id": "P_p80_h20",
-    "mesh_id": _MESH_ID,
+    "mesh_id": "max085_min003_cpg5_bl4_peel2",
     "spacing_code": "P_p80_h20",
+    "m_min": 0.003,
     "filament_d_m": 4.00e-4,
     "bridge_radius_m": 0.0,
     "wall_spacer_labels": _pillar_spacer_labels(0.20),
 })
 mesh_batch_cases.append(_case)
-
-for _d_mm in _PILLAR_D_MM:
-    for _h_mm in _PILLAR_H_MM:
-        _case = dict(_COMMON_MESH)
-        _case.update({
-            "family": "pillar",
-            "geo_id": _pillar_geo_id(_d_mm, _h_mm),
-            "mesh_id": _MESH_ID,
-            "spacing_code": _pillar_geo_id(_d_mm, _h_mm),
-            "filament_d_m": 4.00e-4,
-            "bridge_radius_m": 0.0,
-            "wall_spacer_labels": _pillar_spacer_labels(_h_mm),
-        })
-        mesh_batch_cases.append(_case)
 
 # ---------------------------------------------------------------------------
 # Solver: nothing this round. Meshing is the gate and CAD probe; solve once
