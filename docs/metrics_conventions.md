@@ -18,9 +18,11 @@ Confirmed on D2450_a45 by the solver mesh check:
 
 **This caused a real bug.** Post-processing once sampled \(c_b\) at \(z = h/2\) (the upper membrane) via a first-success-wins candidate list \([h/2,\,0]\). After fixing to \(z = \tfrac{1}{2}(z_{\min}+z_{\max})\) (= \(0\) here), \(c_b\) went \(622.63 \rightarrow 598.72\), canonical CP moved \(+2.7\%\), and \(c_b\) became grid-insensitive (\(0.03\%\) across the exploration sweep) where it had looked like a core-resolution effect.
 
-Do **not** assume a bottom-origin frame (CAD/registry `layer_axis_z_m` / `joint_sphere_z_m` use that frame). Fluent mesh sampling is channel-centred.
-
-CAD/registry absolute \(z\) values are bottom-origin; subtract \(h/2\) if they are ever used for mesh sampling.
+Do **not** assume a bottom-origin frame where the mid-plane would be
+\(z = h/2\). Post-processing and the geometry registry use the campaign frame
+(mid-plane at \(z = 0\)). Registry `layer_axis_z_m` / `joint_sphere_z_m` are
+derived in that frame (outer axes at \(\pm(r_{\mathrm{mid}}+r_{\mathrm{out}})\),
+spheres at \(\pm r_{\mathrm{mid}}\)).
 
 ---
 

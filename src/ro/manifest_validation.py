@@ -402,14 +402,29 @@ def validate_ml_layer_fields(payload: Mapping[str, Any], *, kind: str = "Mesh") 
             ("layer_axis_z_m", layer_axis_z, 3),
             ("joint_sphere_z_m", joint_z, 2),
         ):
-            if (
-                not isinstance(value, list)
-                or len(value) != expected_len
-                or any(not math.isfinite(float(v)) or float(v) <= 0.0 for v in value)
-            ):
+            if not isinstance(value, list) or len(value) != expected_len:
                 raise ManifestValidationError(
                     f"{kind} manifest {field_name} must be a length-{expected_len} "
-                    f"list of positive floats for ml, got {value!r}."
+                    f"list for ml, got {value!r}."
+                )
+            # Diameters must be positive. Axis/joint z are campaign-frame
+            # (mid-plane at 0), so bottom-layer and lower-sphere values are negative.
+            if field_name == "layer_diameters_m":
+                bad = any(
+                    not math.isfinite(float(v)) or float(v) <= 0.0 for v in value
+                )
+            else:
+                bad = any(not math.isfinite(float(v)) for v in value)
+            if bad:
+                raise ManifestValidationError(
+                    f"{kind} manifest {field_name} must be a length-{expected_len} "
+                    f"list of finite floats for ml"
+                    + (
+                        " (positive diameters)"
+                        if field_name == "layer_diameters_m"
+                        else " (campaign-frame z; may be negative)"
+                    )
+                    + f", got {value!r}."
                 )
         return
 
@@ -508,6 +523,14 @@ def validate_mesh_geometry_fields(payload: Mapping[str, Any]) -> None:
             "Mesh manifest membrane_blocked_area_frac must be in [0, 1), "
             f"got {payload['membrane_blocked_area_frac']!r}."
         )
+    blocked_geom = payload["membrane_blocked_area_frac_geometric"]
+    if blocked_geom is not None:
+        blocked_geom_f = float(blocked_geom)
+        if not math.isfinite(blocked_geom_f) or not 0.0 <= blocked_geom_f < 1.0:
+            raise ManifestValidationError(
+                "Mesh manifest membrane_blocked_area_frac_geometric must be in "
+                f"[0, 1) when set, got {payload['membrane_blocked_area_frac_geometric']!r}."
+            )
     contact_width = payload["membrane_contact_width_m"]
     if contact_width is not None:
         contact_width_f = float(contact_width)

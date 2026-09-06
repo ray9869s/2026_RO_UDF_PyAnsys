@@ -8,13 +8,16 @@ Common geometry (mesh + run):
   membrane_trim_m:            float
   membrane_contact_width_m:   float | null
   membrane_blocked_area_frac: float in [0, 1)
+                          # LMH consumed; campaign-wide nominal-area basis (0.0)
+  membrane_blocked_area_frac_geometric: float in [0, 1) | null
+                          # Real footprint/contact geometry; unused by LMH
   porosity_eps:               float in [0.3, 0.99] | null  (measured; not a registry constant)
   periodic_shift_y_m:         float
   periodic_shift_y_source:    "derived_from_angle" | "explicit"
   layer_angles_deg:           list[float] | null
   layer_diameters_m:          list[float] | null  (ML only; diameters in metres)
-  layer_axis_z_m:             list[float] | null  (ML only)
-  joint_sphere_z_m:           list[float] | null  (ML only)
+  layer_axis_z_m:             list[float] | null  (ML only; campaign frame, mid-plane z=0)
+  joint_sphere_z_m:           list[float] | null  (ML only; campaign frame)
   joint_sphere_R_m:           float | null
   joint_sphere_R_ratio:       float | null        # R / r_min; recorded, not constrained
   joint_sphere_r_min_m:       float | null        # thinner filament radius at contact
@@ -57,6 +60,7 @@ _GEOMETRY_FIELDS = (
     "membrane_trim_m",
     "membrane_contact_width_m",
     "membrane_blocked_area_frac",
+    "membrane_blocked_area_frac_geometric",
     "porosity_eps",
     "periodic_shift_y_m",
     "periodic_shift_y_source",

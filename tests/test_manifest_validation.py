@@ -11,6 +11,7 @@ from ro.campaign_geometry import (
     compute_curvature_margin,
     geometry_parameters_for_geo_id,
     membrane_contact_width_m,
+    merge_geometry_into_mesh_manifest,
 )
 from ro.manifest_errors import ManifestError
 from ro.manifest_validation import (
@@ -20,6 +21,7 @@ from ro.manifest_validation import (
     validate_joint_sphere_consistency,
     validate_mesh_geometry_fields,
     validate_metre_field_scales,
+    validate_ml_layer_fields,
     validate_periodic_shift_y,
     validate_sigma_d_invariant,
     validate_spacer_wall_zones,
@@ -269,19 +271,62 @@ def test_joint_sphere_ml_requires_count_two_and_two_z_positions():
         validate_joint_sphere_consistency(payload)
 
 
-def test_joint_sphere_ml_allows_interpenetration_and_r_above_r_min():
-    """ML spheres are boolean-subtracted; R > r_min / overlap is intentional."""
+def test_ml_layer_axis_z_is_campaign_frame():
+    """Mid-plane at z=0; outer axes +/- (r_mid+r_out); joints at +/- r_mid."""
     for geo_id in ("M_c160", "M_c267", "M_c400"):
-        validate_joint_sphere_consistency(_ml_mesh_payload(geo_id))
-    # M_c160: R=0.100 mm > r_min=0.080 mm and separation 0.160 mm < 2R.
-    payload = _ml_mesh_payload("M_c160")
-    assert payload["joint_sphere_R_m"] == pytest.approx(0.000100)
-    assert payload["joint_sphere_R_m"] > payload["joint_sphere_r_min_m"]
-    separation = abs(
-        payload["joint_sphere_z_m"][0] - payload["joint_sphere_z_m"][1]
+        geometry = geometry_parameters_for_geo_id(geo_id)
+        diameters = geometry["layer_diameters_m"]
+        r_top, r_mid, r_bot = [d / 2.0 for d in diameters]
+        assert geometry["layer_axis_z_m"] == pytest.approx(
+            [r_mid + r_top, 0.0, -(r_mid + r_bot)]
+        )
+        assert geometry["joint_sphere_z_m"] == pytest.approx([r_mid, -r_mid])
+        validate_ml_layer_fields(_ml_mesh_payload(geo_id))
+
+
+def test_pillar_unit_cell_and_blocked_frac_policy():
+    for geo_id in ("P_p60_h00", "P_p80_h15", "P_p100_h30"):
+        geometry = geometry_parameters_for_geo_id(geo_id)
+        assert geometry["cell_length_x_m"] == pytest.approx(0.003465)
+        assert geometry["periodic_shift_y_m"] == pytest.approx(0.003465)
+        assert geometry["membrane_blocked_area_frac"] == 0.0
+    assert geometry_parameters_for_geo_id("P_p60_h00")[
+        "membrane_blocked_area_frac_geometric"
+    ] == pytest.approx(0.047)
+    assert geometry_parameters_for_geo_id("P_p80_h00")[
+        "membrane_blocked_area_frac_geometric"
+    ] == pytest.approx(0.084)
+    assert geometry_parameters_for_geo_id("P_p100_h00")[
+        "membrane_blocked_area_frac_geometric"
+    ] == pytest.approx(0.131)
+    for geo_id in ("D2450_a45", "M_c160", "S3465_A200"):
+        assert (
+            geometry_parameters_for_geo_id(geo_id)["membrane_blocked_area_frac"]
+            == 0.0
+        )
+        assert (
+            geometry_parameters_for_geo_id(geo_id)[
+                "membrane_blocked_area_frac_geometric"
+            ]
+            is None
+        )
+
+
+def test_mesh_manifest_prefers_config_periodic_shift_y_m():
+    """Registry must not silently overwrite an explicit config metre shift."""
+    base = {
+        "family": "pillar",
+        "geo_id": "P_p60_h00",
+        "cell_length_x_m": 0.003465,
+        "periodic_shift_y_m": 0.003465,
+    }
+    merged = merge_geometry_into_mesh_manifest(base, "P_p60_h00")
+    assert merged["periodic_shift_y_m"] == pytest.approx(0.003465)
+    # Absent from base: registry fills.
+    merged_fallback = merge_geometry_into_mesh_manifest(
+        {"family": "pillar", "geo_id": "P_p60_h00"}, "P_p60_h00"
     )
-    assert separation < 2.0 * payload["joint_sphere_R_m"]
-    validate_joint_sphere_consistency(payload)
+    assert merged_fallback["periodic_shift_y_m"] == pytest.approx(0.003465)
 
 
 def test_sigma_d_pillar_requires_null_sigma_and_zero_trim():

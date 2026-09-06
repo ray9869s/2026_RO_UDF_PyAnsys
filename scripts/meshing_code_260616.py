@@ -57,6 +57,8 @@ def build_mesh_manifest_payload(cfg, mesh_metrics, mesh_sha256, *, created_utc=N
         "n_buffer_in": cfg.n_buffer_in,
         "n_buffer_out": cfg.n_buffer_out,
         "cell_length_x_m": cfg.cell_length_x_m,
+        # Config is millimetres (Fluent ShiftY); manifest stores metres.
+        "periodic_shift_y_m": float(cfg.periodic_shift_y) * 1.0e-3,
         "buffer_length_in_m": cfg.buffer_length_in_m,
         "buffer_length_out_m": cfg.buffer_length_out_m,
         "membrane_wall_base_names": list(cfg.active_membrane_wall_labels),

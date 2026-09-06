@@ -232,9 +232,11 @@ _ML_CASES = (
 # No filament-filament joint sphere: coplanar filaments fully interpenetrate
 # at the node and the pillar covers it, so bridge_radius_m is 0.
 #
-# Membrane blockage is the pillar footprint only, since the filaments no
-# longer touch the membrane. Cell footprint at pitch 2450 / theta 45 is
-# 6.0025 mm^2 per node, giving 4.7 / 8.4 / 13.1% for D_p 0.60 / 0.80 / 1.00.
+# Unit cell is 3.465 x 3.465 mm (same as ML / Sin / CAD), not 4*D_p.
+# Consumed membrane_blocked_area_frac is 0.0 campaign-wide (LMH on nominal
+# area). Geometric pillar footprints 4.7/8.4/13.1% (pi r^2 over the 6.0025
+# mm^2 node at pitch 2450 / 45 deg) live only in
+# membrane_blocked_area_frac_geometric.
 #
 # Bore axis is {0, 0.15, 0.30} mm absolute diameter (geo tokens h00 / h15 /
 # h30), not a ratio of D_p, so the same jet orifice is tested at every pillar
@@ -278,7 +280,6 @@ _ML_CASES = (
 # ---------------------------------------------------------------------------
 _PILLAR_D_MM = (0.60, 0.80, 1.00)
 _PILLAR_H_MM = (0.00, 0.15, 0.30)
-
 
 def _pillar_geo_id(d_mm, h_mm):
     return f"P_p{int(round(d_mm * 100)):d}_h{int(round(h_mm * 100)):02d}"
