@@ -1,3 +1,29 @@
+# Metrics and coordinate conventions
+
+## Mesh coordinate convention
+
+**The inlet face centre is the origin.** On the campaign channel-centred mesh:
+
+| axis | range | meaning |
+|------|-------|---------|
+| \(x\) | \(0\) → \(+L\) | streamwise; inlet at \(x = 0\) |
+| \(y\) | \(-W/2\) → \(+W/2\) | spanwise |
+| \(z\) | \(-h/2\) → \(+h/2\) | membrane-normal; **mid-plane at \(z = 0\)** |
+
+Confirmed on D2450_a45 by the solver mesh check:
+
+- \(x\): \(0\) to \(3.465\times10^{-2}\,\mathrm{m}\)
+- \(y\): \(-1.732961\times10^{-3}\) to \(1.733456\times10^{-3}\,\mathrm{m}\)
+- \(z\): \(-3.850994\times10^{-4}\) to \(3.851833\times10^{-4}\,\mathrm{m}\)
+
+**This caused a real bug.** Post-processing once sampled \(c_b\) at \(z = h/2\) (the upper membrane) via a first-success-wins candidate list \([h/2,\,0]\). After fixing to \(z = \tfrac{1}{2}(z_{\min}+z_{\max})\) (= \(0\) here), \(c_b\) went \(622.63 \rightarrow 598.72\), canonical CP moved \(+2.7\%\), and \(c_b\) became grid-insensitive (\(0.03\%\) across the exploration sweep) where it had looked like a core-resolution effect.
+
+Do **not** assume a bottom-origin frame (CAD/registry `layer_axis_z_m` / `joint_sphere_z_m` use that frame). Fluent mesh sampling is channel-centred.
+
+CAD/registry absolute \(z\) values are bottom-origin; subtract \(h/2\) if they are ever used for mesh sampling.
+
+---
+
 # CP modulus conventions
 
 This document defines how concentration polarization (CP) modulus is computed
@@ -36,20 +62,21 @@ area-weighted.
   probe STEP F / `_tmp_cell_profile.py`).
 - \(c_0\): inlet reference concentration (`c_inlet_ref`, 597.8268309 mol/m³).
 
+## Metric reliability (grid exploration)
 
-## Mesh coordinate convention
+D2450_a45 at `u0p2_p6M`, varying mesh parameters around the campaign baseline
+(`m_max` 0.085 / `m_min` 0.006 / `m_cpg` 5 / `bl` 4 / peel 2):
 
-The inlet face centre is the origin. Confirmed on D2450_a45 by the solver
-mesh check:
+| QoI | Behaviour | Role |
+|-----|-----------|------|
+| `cm_mol_m3_avg` | monotone, artifact-free | **primary grid indicator** |
+| \(c_b\) | stable to \(0.03\%\) once sampled at \(z = 0\) | sanity check |
+| `lmh` | monotone, gentle | secondary |
+| `pressure_drop` | grid-independent (\(0.30\%\) across bl4–bl10) | secondary |
+| `cp_canon` | contaminated by local facet artifacts | **not usable for grid judgement** |
+| `cp_canon_max` | varies by orders of magnitude with iteration and mesh | **useless for spacer comparison** |
 
-- \(x\): \(0\) to \(+L\) (inlet at \(x = 0\); D2450_a45 \(L = 3.465\times 10^{-2}\,\mathrm{m}\))
-- \(y\): \(-W/2\) to \(+W/2\) (spanwise; D2450_a45 ≈ \(-1.733\times 10^{-3}\) to \(+1.733\times 10^{-3}\,\mathrm{m}\))
-- \(z\): \(-h/2\) to \(+h/2\) (membrane-normal; mid-plane at \(z = 0\);
-  D2450_a45 ≈ \(-3.851\times 10^{-4}\) to \(+3.852\times 10^{-4}\,\mathrm{m}\))
-
-Do **not** assume a bottom-origin frame where the mid-plane would be
-\(z = h/2\). Post-processing derives the mid-plane as
-\(z = \tfrac{1}{2}(z_{\min}+z_{\max})\) from measured fluid bounds.
+**Judge grid / mesh convergence on `cm_avg` (and supporting \(c_b\), LMH, ΔP), not on canonical CP.** Canonical CP remains the campaign *comparison* metric once a mesh is fixed; it is a poor *grid-independence* indicator because facet artifacts move it without reflecting global resolution.
 
 ## Averaging order
 
@@ -176,12 +203,13 @@ per-cell `pp_cp_canon_rescale_delta_cell_{N}` into `summary_metrics_wide.csv`
 (and `raw_report_values.json`).
 
 **Spread default (post_config `compute_cp_spread`, default False):** after the
-mid-plane was fixed to \(z=0.5(z_{\min}+z_{\max})\), observed \(\delta\) fell
-to \({\sim}10^{-5}\) across the exploration sweep (bl4–bl10, \(m_{\max}\)
-0.085→0.045) against the \(10^{-3}\) threshold — two orders of headroom, and
-the facet-min inputs that feed the bound are contaminated anyway. With the
-flag off, \(k_N\) is still computed and applied; `cp_canon_rescale_delta_max`
-and per-cell delta are **null** with
+mid-plane fix, observed \(\delta\) sits at \({\sim}10^{-5}\) against the
+\(10^{-3}\) threshold (two orders of headroom). Turning spread off changes
+**no** reported campaign value — e.g. `cp_canon_window_avg` =
+`1.0785295947595346` either way. Measured extract-time saving was only
+**9%**, so the default is about removing a guard fed by contaminated facet
+minima, not about speed. With the flag off, \(k_N\) is still computed and
+applied; `cp_canon_rescale_delta_max` and per-cell delta are **null** with
 `cp_canon_rescale_delta_status=not_evaluated` so a missing delta is never
 read as a passing delta. Set `compute_cp_spread=True` when reporting final
 mesh-study numbers that need the bound.

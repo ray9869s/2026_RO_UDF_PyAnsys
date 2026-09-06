@@ -17,20 +17,41 @@ don't build it unasked.
 
 Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 `260816_RO_UDF.c` is a frozen ASCII compile-fix sibling; new runs use 260822.
-`RO_ANALYTIC_CWALL = 1` is the production setting. The 0.44% LMH and 7.1% CP-excess figures (and the UDF header's
-"~0.4% against 2.7%") are a bl4-vs-bl6 wall-normal comparison at fixed
-`max085`, not a surface-size (`m_max`) study. Surface-size grid
-independence is not closed.
+`RO_ANALYTIC_CWALL = 1` is the production setting.
+
+**Coordinates:** the inlet face centre is the origin. \(x\) runs \(0\) to \(L\),
+\(y\) runs \(-W/2\) to \(+W/2\), \(z\) runs \(-h/2\) to \(+h/2\), and the
+channel mid-plane is \(z = 0\) — **not** \(z = h/2\). Sampling the mid-plane
+at \(h/2\) hits the upper membrane. Derive it from measured mesh bounds where
+possible; see `docs/metrics_conventions.md`.
 
 **CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with mid-plane
 mixing-cup \(c_b\) (`surface-massavg`) on the evaluation window. See
-`docs/metrics_conventions.md`.
+`docs/metrics_conventions.md` (coordinate origin, metric reliability,
+`compute_cp_spread` default).
 
 **CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
 \(c_m\) and \(c_p\) when the denominator is face-dependent.
 
 **CP window:** CP table metrics are always evaluation-window restricted
 (mesh manifest `n_lead_excluded` / `n_trail_excluded`), not all active cells.
+
+**Grid independence:** CP figures from before the mid-plane \(c_b\) fix
+(commit `0377109`) are invalid — the denominator was tracking the upper
+membrane / BL refinement, not the bulk. (The contemporaneous ~0.44% LMH
+bl4-vs-bl6 figure is unaffected.) Grid judgement now uses `cm_mol_m3_avg`,
+not canonical CP. Both the `bl` and `m_max` axes have been mapped on
+D2450_a45 (`m_max` 0.085 / 0.060 / 0.045 / 0.035 → 796k / 4.28M / 5.15M /
+6.15M cells; solver runs at 0.085 and 0.045 for `u0p2_p6M`) but **neither
+axis is converged**. Open question: can poly-hexcore reach the near-wall
+resolution Liang et al. use (≥20 prism layers within 2–4% of \(h\), tet core
+at 3–5% of \(h\)), given that `bl` 12 failed at AR 251.9? See
+`docs/MESH_LANDSCAPE.md`.
+
+**Mesh / geometry session notes:** `docs/MESH_LANDSCAPE.md` (parameter
+landscape, inventory, convergence gate), `docs/GEOMETRY_DESIGN.md`
+(joint-sphere rule, Pillar bore axis), `docs/POSTPROCESSING_MAP.md` (extract
+cost and log naming).
 
 The D2450_a45 peel2 remesh matched the archive ledger (796,009 cells, ortho
 0.102087, AR 62.7715, skew 0.67063399). The restructure is physics-neutral.

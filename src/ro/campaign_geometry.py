@@ -41,9 +41,12 @@ _PILLAR_SPACER_WALL_ZONES_BASE = (
 )
 # Appended after optional wall_spacer_hole so h00 never declares the bore zone.
 _PILLAR_SPACER_WALL_BUFFER = "wall_spacer_buffer"
+# CAD named selections — not design-discussion guesses (wave/rung) that never
+# shipped. wall_spacer_buffer is the buffer-cut face, same as ML and Pillar.
 _SIN_SPACER_WALL_ZONES = (
-    "wall_spacer_wave",
-    "wall_spacer_rung",
+    "wall_spacer_axial",
+    "wall_spacer_bridge",
+    "wall_spacer_buffer",
 )
 
 # (n_active_cells, pitch_mm, periodic_dy_mm, attack_angle_deg)

@@ -199,6 +199,27 @@ Dominant cost today is evaluation-cell quantile bisection when
 that block is skipped (`cp_canon_rescale_delta_status=not_evaluated`); \(k_N\)
 still runs. Re-enable for final mesh-study reporting.
 
+### Measured wall-clock cost
+
+About **33 minutes per case** (report extract alone). Thirteen cases ran
+overnight. Of that time:
+
+| fraction | attribution |
+|----------|-------------|
+| ~9% | `compute_cp_spread` quantile path (default off; turning it off changed no reported CP) |
+| ~91% | **unattributed** — session start, `read_case_data`, Cell-7 create/compute, mid-plane \(c_b\), no-spread segmented CP, CSV write |
+
+Do not treat spread as the cost lever. Profile before optimising.
+
+### Batch log naming pitfall
+
+`batch_postprocess_all_cases.py` log filenames carry `geo_id` and `run_id` but
+**not** `mesh_id`. Several meshes that share a `run_id` (e.g. exploration
+variants of the same operating point) **overwrite each other's logs**. That
+cost two wrong diagnoses in the grid-exploration session. Prefer embedding
+`mesh_id` in the log name, or write under the run leaf path, before trusting
+a post log that is not unique for `(geo, mesh, run)`.
+
 ---
 
 ## 3. Column provenance

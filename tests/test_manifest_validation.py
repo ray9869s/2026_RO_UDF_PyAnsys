@@ -125,36 +125,88 @@ def test_pillar_contact_width_is_none():
     assert geometry["membrane_contact_width_m"] is None
 
 
-def test_ml_and_pillar_spacer_wall_zones_match_cad_named_selections():
-    """Registry must list real CAD zones, not design-discussion aliases."""
-    ml_expected = [
+def test_spacer_wall_zones_match_cad_named_selections_all_families():
+    """Registry spacer_wall_zones must be real CAD labels, not design guesses.
+
+    Complete set: Diamond (1), ML (5), Pillar (3–4), Sinusoidal (3), REF_empty
+    ([]). Invented names that previously shipped: ML layer_*/node; Sin
+    wave/rung.
+    """
+    from ro.campaign_geo_ids import CAMPAIGN_GEO_IDS
+
+    diamond = ["wall_spacer"]
+    ml = [
         "wall_spacer_top",
         "wall_spacer_mid",
         "wall_spacer_bottom",
         "wall_spacer_bridge",
         "wall_spacer_buffer",
     ]
-    for geo_id in ("M_c160", "M_c267", "M_c400"):
-        assert geometry_parameters_for_geo_id(geo_id)["spacer_wall_zones"] == ml_expected
-
-    h15 = geometry_parameters_for_geo_id("P_p80_h15")["spacer_wall_zones"]
-    assert h15 == [
+    pillar_h00 = [
+        "wall_spacer_filament",
+        "wall_spacer_pillar",
+        "wall_spacer_buffer",
+    ]
+    pillar_bored = [
         "wall_spacer_filament",
         "wall_spacer_pillar",
         "wall_spacer_hole",
         "wall_spacer_buffer",
     ]
-    h00 = geometry_parameters_for_geo_id("P_p80_h00")["spacer_wall_zones"]
-    assert h00 == [
-        "wall_spacer_filament",
-        "wall_spacer_pillar",
+    sinusoidal = [
+        "wall_spacer_axial",
+        "wall_spacer_bridge",
         "wall_spacer_buffer",
     ]
-    assert "wall_spacer_hole" not in h00
-    # Cross-check against Fluent-shaped zone lists (rule 3-3 both ways).
-    validate_spacer_wall_zones(ml_expected, ml_expected, geo_id="M_c160")
-    validate_spacer_wall_zones(h15, h15, geo_id="P_p80_h15")
-    validate_spacer_wall_zones(h00, h00, geo_id="P_p80_h00")
+    banned = {
+        "wall_spacer_wave",
+        "wall_spacer_rung",
+        "wall_spacer_layer_top",
+        "wall_spacer_layer_mid",
+        "wall_spacer_layer_bot",
+        "wall_spacer_node",
+    }
+
+    by_family: dict[str, set[tuple[str, ...]]] = {
+        "diamond": set(),
+        "ml": set(),
+        "pillar": set(),
+        "sinusoidal": set(),
+        "empty": set(),
+    }
+    for geo_id in CAMPAIGN_GEO_IDS:
+        zones = tuple(geometry_parameters_for_geo_id(geo_id)["spacer_wall_zones"])
+        assert not banned.intersection(zones), (geo_id, zones)
+        if geo_id.startswith("D"):
+            assert list(zones) == diamond
+            by_family["diamond"].add(zones)
+        elif geo_id.startswith("M_"):
+            assert list(zones) == ml
+            by_family["ml"].add(zones)
+        elif geo_id.startswith("P_"):
+            expected = pillar_bored if "_h15" in geo_id or "_h30" in geo_id else pillar_h00
+            assert list(zones) == expected, geo_id
+            by_family["pillar"].add(zones)
+        elif geo_id.startswith("S"):
+            assert list(zones) == sinusoidal
+            by_family["sinusoidal"].add(zones)
+        elif geo_id == "REF_empty":
+            assert list(zones) == []
+            by_family["empty"].add(zones)
+        else:
+            raise AssertionError(f"unexpected geo_id family: {geo_id!r}")
+
+    assert by_family["diamond"] == {tuple(diamond)}
+    assert by_family["ml"] == {tuple(ml)}
+    assert by_family["sinusoidal"] == {tuple(sinusoidal)}
+    assert by_family["empty"] == {()}
+    assert by_family["pillar"] == {tuple(pillar_h00), tuple(pillar_bored)}
+
+    validate_spacer_wall_zones(ml, ml, geo_id="M_c160")
+    validate_spacer_wall_zones(pillar_bored, pillar_bored, geo_id="P_p80_h15")
+    validate_spacer_wall_zones(pillar_h00, pillar_h00, geo_id="P_p80_h00")
+    validate_spacer_wall_zones(sinusoidal, sinusoidal, geo_id="S3465_A200")
+    validate_spacer_wall_zones(diamond, diamond, geo_id="D2450_a45")
 
 
 def test_sigma_d_invariant_holds_for_diamond():
