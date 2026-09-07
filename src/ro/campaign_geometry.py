@@ -24,6 +24,20 @@ _STACKED_SIGMA_D_NOMINAL_M = 0.00080
 _STACKED_MEMBRANE_TRIM_M = (_STACKED_SIGMA_D_NOMINAL_M - CAMPAIGN_H_M) / 2.0
 
 _SINUSOIDAL_WAVE_RADIUS_M = 4.0e-4
+# Campaign spanwise unit cell W [m]. Sinusoidal amplitudes and wavelengths are
+# defined from W so exact decimals cannot be mistyped; geo_id tokens are rounded
+# labels resolved by explicit lookup, not arithmetic parsing.
+_SINUSOIDAL_W_M = 3.465e-3
+_SINUSOIDAL_AMPLITUDE_BY_TOKEN: dict[str, float] = {
+    "a072": _SINUSOIDAL_W_M / 48.0,
+    "a144": _SINUSOIDAL_W_M / 24.0,
+    "a193": _SINUSOIDAL_W_M / 18.0,
+}
+_SINUSOIDAL_WAVELENGTH_BY_TOKEN: dict[str, float] = {
+    "l1733": _SINUSOIDAL_W_M / 2.0,
+    "l3465": _SINUSOIDAL_W_M,
+    "l6930": _SINUSOIDAL_W_M * 2.0,
+}
 
 _DIAMOND_SPACER_WALL_ZONES = ("wall_spacer",)
 # CAD named selections (same as batch_config wall_spacer_labels), not the
@@ -198,15 +212,25 @@ def membrane_contact_width_m(
 
 
 def _sinusoidal_wavelength_amplitude_m(geo_id: str) -> tuple[float, float]:
-    if geo_id == "S_A000":
-        return 0.003465, 0.0
-    if geo_id == "S3465_A400_p2310":
-        return 0.003465, 0.0004
-    body = geo_id[1:]
-    wavelength_token, amplitude_token = body.split("_A", 1)
-    wavelength_m = int(wavelength_token) * 1.0e-6
-    amplitude_m = int(amplitude_token) * 1.0e-6
-    return wavelength_m, amplitude_m
+    """Return (wavelength_m, half_amplitude_m) from explicit token lookup."""
+    parts = geo_id.split("_")
+    if len(parts) != 3 or parts[0] != "S":
+        raise ValueError(
+            f"Sinusoidal geo_id must match S_<a-token>_l<l-token>, got {geo_id!r}."
+        )
+    amplitude_token, wavelength_token = parts[1], parts[2]
+    if amplitude_token not in _SINUSOIDAL_AMPLITUDE_BY_TOKEN:
+        raise ValueError(
+            f"Unknown sinusoidal amplitude token {amplitude_token!r} in {geo_id!r}."
+        )
+    if wavelength_token not in _SINUSOIDAL_WAVELENGTH_BY_TOKEN:
+        raise ValueError(
+            f"Unknown sinusoidal wavelength token {wavelength_token!r} in {geo_id!r}."
+        )
+    return (
+        _SINUSOIDAL_WAVELENGTH_BY_TOKEN[wavelength_token],
+        _SINUSOIDAL_AMPLITUDE_BY_TOKEN[amplitude_token],
+    )
 
 
 def compute_curvature_margin(
@@ -363,18 +387,18 @@ def _pillar_geometry_entry(geo_id: str) -> dict[str, Any]:
 
 def _sinusoidal_geometry_entry(geo_id: str) -> dict[str, Any]:
     wavelength_m, amplitude_m = _sinusoidal_wavelength_amplitude_m(geo_id)
-    periodic_y = wavelength_m
     margin = compute_curvature_margin(wavelength_m, amplitude_m)
-    n_active = 5 if geo_id != "S_A000" else 3
     filament_d_m = _SINUSOIDAL_WAVE_RADIUS_M * 2.0
     return {
-        "spacing_code": geo_id.split("_", 1)[0],
+        "spacing_code": geo_id,
         "attack_angle_deg": 0.0,
         "filament_d_m": filament_d_m,
+        # No spherical joint sphere; cylindrical spanwise bridges (d = 4.0e-4 m)
+        # are CAD geometry on wall_spacer_bridge, not bridge_radius_m.
         "bridge_radius_m": 0.0,
         "overlap_m": 0.0,
-        "n_active_cells": n_active,
-        "cell_length_x_m": wavelength_m,
+        "n_active_cells": 7,
+        "cell_length_x_m": _SINUSOIDAL_W_M,
         "Sigma_d_nominal_m": _STACKED_SIGMA_D_NOMINAL_M,
         "membrane_trim_m": _STACKED_MEMBRANE_TRIM_M,
         "membrane_contact_width_m": membrane_contact_width_m(
@@ -383,7 +407,8 @@ def _sinusoidal_geometry_entry(geo_id: str) -> dict[str, Any]:
         "membrane_blocked_area_frac": _MEMBRANE_BLOCKED_AREA_FRAC_CONSUMED,
         "membrane_blocked_area_frac_geometric": None,
         "porosity_eps": None,
-        "periodic_shift_y_m": periodic_y,
+        # Spanwise unit cell W; independent of streamwise wavelength_m.
+        "periodic_shift_y_m": _SINUSOIDAL_W_M,
         "periodic_shift_y_source": "explicit",
         "layer_angles_deg": None,
         "layer_diameters_m": None,
@@ -440,7 +465,7 @@ def geometry_parameters_for_geo_id(geo_id: str) -> dict[str, Any]:
         return _ml_geometry_entry(geo_id)
     if geo_id in _PILLAR_HAS_HOLE or geo_id.split("_f320", 1)[0] in _PILLAR_HAS_HOLE:
         return _pillar_geometry_entry(geo_id)
-    if geo_id.startswith("S") or geo_id == "S_A000":
+    if geo_id.startswith("S"):
         return _sinusoidal_geometry_entry(geo_id)
     if geo_id == "REF_empty":
         return _reference_geometry_entry()

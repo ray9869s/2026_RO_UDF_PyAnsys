@@ -64,10 +64,11 @@ different core strategy?
 
 ---
 
-## Mesh inventory (21 built)
+## Mesh inventory (21 built; campaign mesh target 31)
 
-21 = 9 Diamond + 3 ML + 9 Pillar. Quality ordering at the campaign mesh
-settings:
+21 = 9 Diamond + 3 ML + 9 Pillar are built today. The campaign mesh target is
+**31** = 21 + 9 Sinusoidal + `REF_empty` (empty channel is meshed separately).
+Quality ordering at the campaign mesh settings:
 
 | family | ortho | AR | why |
 |--------|-------|-----|-----|

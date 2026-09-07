@@ -323,6 +323,38 @@ for _d_mm in _PILLAR_D_MM:
         mesh_batch_cases.append(_case)
 
 # ---------------------------------------------------------------------------
+# Sinusoidal: 3 half-amplitudes x 3 streamwise wavelengths (9 cases).
+# ---------------------------------------------------------------------------
+_SIN_SPACER_LABELS = [
+    "wall_spacer_axial",
+    "wall_spacer_bridge",
+    "wall_spacer_buffer",
+]
+
+_SINUSOIDAL_GEO_IDS = tuple(
+    f"S_{amplitude}_l{wavelength}"
+    for amplitude in ("a072", "a144", "a193")
+    for wavelength in ("1733", "3465", "6930")
+)
+
+for _geo_id in _SINUSOIDAL_GEO_IDS:
+    _case = dict(_COMMON_MESH)
+    _case.update({
+        "family": "sin",
+        "geo_id": _geo_id,
+        "mesh_id": _MESH_ID,
+        "spacing_code": _geo_id,
+        "attack_angle_deg": 0,
+        "n_active_cells": 7,
+        "cell_length_x_m": 3.465e-3,
+        "periodic_shift_y": 3.465,
+        "filament_d_m": 8.0e-4,
+        "bridge_radius_m": 0.0,
+        "wall_spacer_labels": list(_SIN_SPACER_LABELS),
+    })
+    mesh_batch_cases.append(_case)
+
+# ---------------------------------------------------------------------------
 # Solver: nothing this round. Meshing is the gate and CAD probe; solve once
 # the quality results are in and all twelve CAD files are confirmed good.
 # ---------------------------------------------------------------------------

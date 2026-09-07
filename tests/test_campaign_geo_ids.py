@@ -1,4 +1,4 @@
-"""Tests for the 35-case campaign geo_id whitelist."""
+"""Tests for the 33-case campaign geo_id whitelist."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from ro.campaign_geo_ids import (
 from ro.paths import geometry_dir
 
 
-def test_whitelist_has_35_entries():
-    assert len(CAMPAIGN_GEO_IDS) == 35
+def test_whitelist_has_33_entries():
+    assert len(CAMPAIGN_GEO_IDS) == 33
 
 
 @pytest.mark.parametrize(
@@ -38,8 +38,8 @@ def test_whitelisted_ids_match_shape_regex(geo_id: str):
         ("M_c267", "ml"),
         ("M_c400", "ml"),
         ("P_p80_h15", "pillar"),
-        ("S3465_A400", "sin"),
-        ("S_A000", "sin"),
+        ("S_a144_l3465", "sin"),
+        ("S_a072_l1733", "sin"),
         ("REF_empty", "empty"),
     ],
 )
@@ -48,7 +48,7 @@ def test_family_for_geo_id(geo_id: str, family: str):
 
 
 def test_optional_numeric_token_ids_are_whitelisted():
-    for geo_id in ("M_c160", "S_A000"):
+    for geo_id in ("M_c160", "S_a144_l3465"):
         assert geo_id in CAMPAIGN_GEO_IDS
         validate_campaign_geo_id(geo_id)
 

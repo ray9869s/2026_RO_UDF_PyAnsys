@@ -345,14 +345,6 @@ def validate_curvature_margin(payload: Mapping[str, Any], *, kind: str = "Mesh")
             )
         return
 
-    if geo_id == "S_A000":
-        if margin is not None:
-            raise ManifestValidationError(
-                f"{kind} manifest S_A000 control case must have null curvature_margin, "
-                f"got {margin!r}."
-            )
-        return
-
     if margin is None:
         raise ManifestValidationError(
             f"{kind} manifest sinusoidal geo_id {geo_id!r} requires curvature_margin."

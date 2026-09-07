@@ -10,13 +10,13 @@ import re
 from pathlib import Path
 
 # Shape grammar: numeric token immediately after the family letter is optional
-# (e.g. M_c160, S_A000). Membership is enforced by the whitelist below.
+# (e.g. M_c160, S_a144_l3465). Membership is enforced by the whitelist below.
 _CAMPAIGN_GEO_ID_SHAPE_RE = re.compile(
     r"^(?:"
     r"D(?:\d{4})?_a(?:30|45|60)|"
     r"M_c(?:160|267|400)|"
     r"P_p(?:60|80|100)_h(?:00|15|30)(?:_f320)?|"
-    r"S(?:\d{4,5})?_A\d{3}(?:_p\d+)?|"
+    r"S_a\d{3}_l\d{4}|"
     r"REF_empty"
     r")$"
 )
@@ -38,10 +38,10 @@ _PILLAR_GEO_IDS = tuple(
 ) + ("P_p80_h00_f320", "P_p80_h15_f320")
 
 _SINUSOIDAL_GEO_IDS = tuple(
-    f"S{wavelength}_A{amplitude}"
-    for wavelength in ("3465", "6930", "10395")
-    for amplitude in ("200", "400", "600")
-) + ("S_A000", "S3465_A400_p2310")
+    f"S_{amplitude}_l{wavelength}"
+    for amplitude in ("a072", "a144", "a193")
+    for wavelength in ("1733", "3465", "6930")
+)
 
 _REFERENCE_GEO_IDS = ("REF_empty",)
 
@@ -53,8 +53,8 @@ CAMPAIGN_GEO_IDS: frozenset[str] = frozenset(
     + _REFERENCE_GEO_IDS
 )
 
-assert len(CAMPAIGN_GEO_IDS) == 35, (
-    f"Expected 35 campaign geo_ids, got {len(CAMPAIGN_GEO_IDS)}."
+assert len(CAMPAIGN_GEO_IDS) == 33, (
+    f"Expected 33 campaign geo_ids, got {len(CAMPAIGN_GEO_IDS)}."
 )
 
 
@@ -101,7 +101,7 @@ def assert_no_legacy_ml_geo_paths(data_root: Path) -> None:
 
 
 def validate_campaign_geo_id(geo_id: str) -> None:
-    """Raise ValueError when geo_id is outside the 35-case whitelist."""
+    """Raise ValueError when geo_id is outside the 33-case whitelist."""
     if geo_id not in CAMPAIGN_GEO_IDS:
         raise ValueError(
             f"geo_id {geo_id!r} is not a campaign case. "

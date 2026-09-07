@@ -207,7 +207,7 @@ def test_spacer_wall_zones_match_cad_named_selections_all_families():
     validate_spacer_wall_zones(ml, ml, geo_id="M_c160")
     validate_spacer_wall_zones(pillar_bored, pillar_bored, geo_id="P_p80_h15")
     validate_spacer_wall_zones(pillar_h00, pillar_h00, geo_id="P_p80_h00")
-    validate_spacer_wall_zones(sinusoidal, sinusoidal, geo_id="S3465_A200")
+    validate_spacer_wall_zones(sinusoidal, sinusoidal, geo_id="S_a144_l3465")
     validate_spacer_wall_zones(diamond, diamond, geo_id="D2450_a45")
 
 
@@ -299,7 +299,7 @@ def test_pillar_unit_cell_and_blocked_frac_policy():
     assert geometry_parameters_for_geo_id("P_p100_h00")[
         "membrane_blocked_area_frac_geometric"
     ] == pytest.approx(0.131)
-    for geo_id in ("D2450_a45", "M_c160", "S3465_A200"):
+    for geo_id in ("D2450_a45", "M_c160", "S_a144_l3465"):
         assert (
             geometry_parameters_for_geo_id(geo_id)["membrane_blocked_area_frac"]
             == 0.0
@@ -402,8 +402,8 @@ def test_curvature_margin_below_threshold_raises():
     payload.update(
         {
             "family": "sin",
-            "geo_id": "S3465_A400",
-            **geometry_parameters_for_geo_id("S3465_A400"),
+            "geo_id": "S_a193_l1733",
+            **geometry_parameters_for_geo_id("S_a193_l1733"),
         }
     )
     payload["porosity_eps"] = 0.73
@@ -413,8 +413,8 @@ def test_curvature_margin_below_threshold_raises():
 
 
 def test_curvature_margin_formula_store_value():
-    wavelength_m = 0.003465
-    amplitude_m = 0.0004
+    wavelength_m = 3.465e-3
+    amplitude_m = 3.465e-3 / 24.0
     margin = compute_curvature_margin(wavelength_m, amplitude_m)
     assert margin is not None
     assert margin >= 1.2

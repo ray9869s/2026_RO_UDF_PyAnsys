@@ -504,41 +504,51 @@ def write_mesh_file(meshing_session, output_path, description):
 
 def print_meshing_input_summary():
     """Print all user-specified meshing controls to the run log/output."""
-    print("\n" + "=" * 72)
-    print("MESHING INPUT SUMMARY")
-    print("=" * 72)
-    print(f"Geometry name: {geo_name}")
-    print(f"Case name: {case_name}")
-    print(f"Geometry file: {geo_full_path}")
-    print(f"Maximum size, m_max [mm]: {m_max}")
-    print(f"Minimum size, m_min [mm]: {m_min}")
-    print(f"Cells per gap, m_cpg [-]: {m_cpg}")
-    print(f"Active membrane wall labels: {active_membrane_wall_labels}")
-    print(f"Buffer wall labels: {buffer_wall_labels}")
-    print(f"Wall spacer labels for local sizing: {wall_spacer_labels}")
-    print(f"Periodic labels: {periodic_labels}")
-    print(f"Periodic reference label: {periodic_reference_label}")
-    print(
-        "Periodic translation [mm]: "
-        f"dx={periodic_shift_x}, dy={periodic_shift_y}, dz={periodic_shift_z}"
-    )
-    print(f"BOI curvature normal angle [deg]: {boi_curvature_normal_angle}")
-    print(f"BOI growth rate [-]: {boi_growth_rate}")
-    print(f"Boundary layer labels: {boundary_layer_labels}")
-    print(f"Boundary layer offset method: {bl_offset_method}")
-    print(f"Boundary layer first height factor [-]: {bl_height_factor}")
-    print(f"Boundary layer first height [mm]: {bl_height}")
-    print(f"Boundary layer number of layers [-]: {bl_layers}")
-    print(f"Boundary layer growth rate [-]: {bl_growth_rate}")
-    print(f"Volume mesh fill type: poly-hexcore")
-    print(f"Volume hex max factor [-]: {vol_hex_max_factor}")
-    print(f"Volume hex max cell length [mm]: {vol_hex_max}")
-    print(f"Peel layers [-]: {peel_layers}")
-    print(f"Minimum orthogonal quality threshold [-]: {min_orthogonal_quality_threshold}")
-    print(f"Maximum aspect ratio threshold [-]: {max_aspect_ratio_threshold}")
-    print(f"Maximum skewness threshold [-]: {max_skewness_threshold}")
-    print(f"Skewed face fraction threshold [-]: {skewed_face_fraction_threshold}")
-    print("=" * 72 + "\n")
+    lines = [
+        "",
+        "=" * 72,
+        "MESHING INPUT SUMMARY",
+        "=" * 72,
+        f"Geometry name: {geo_name}",
+        f"Case name: {case_name}",
+        f"Geometry file: {geo_full_path}",
+        f"Maximum size, m_max [mm]: {m_max}",
+        f"Minimum size, m_min [mm]: {m_min}",
+        f"Cells per gap, m_cpg [-]: {m_cpg}",
+        f"Active membrane wall labels: {active_membrane_wall_labels}",
+        f"Buffer wall labels: {buffer_wall_labels}",
+        f"Wall spacer labels for local sizing: {wall_spacer_labels}",
+        f"Periodic labels: {periodic_labels}",
+        f"Periodic reference label: {periodic_reference_label}",
+        (
+            "Periodic translation [mm]: "
+            f"dx={periodic_shift_x}, dy={periodic_shift_y}, dz={periodic_shift_z}"
+        ),
+        f"BOI curvature normal angle [deg]: {boi_curvature_normal_angle}",
+        f"BOI growth rate [-]: {boi_growth_rate}",
+        f"Boundary layer labels: {boundary_layer_labels}",
+        f"Boundary layer offset method: {bl_offset_method}",
+        f"Boundary layer first height factor [-]: {bl_height_factor}",
+        f"Boundary layer first height [mm]: {bl_height}",
+        f"Boundary layer number of layers [-]: {bl_layers}",
+        f"Boundary layer growth rate [-]: {bl_growth_rate}",
+        f"Volume mesh fill type: poly-hexcore",
+        f"Volume hex max factor [-]: {vol_hex_max_factor}",
+        f"Volume hex max cell length [mm]: {vol_hex_max}",
+        f"Peel layers [-]: {peel_layers}",
+        f"Minimum orthogonal quality threshold [-]: {min_orthogonal_quality_threshold}",
+        f"Maximum aspect ratio threshold [-]: {max_aspect_ratio_threshold}",
+        f"Maximum skewness threshold [-]: {max_skewness_threshold}",
+        f"Skewed face fraction threshold [-]: {skewed_face_fraction_threshold}",
+        "=" * 72,
+        "",
+    ]
+    text = "\n".join(lines)
+    print(text)
+    with open(mesh_log_path, "a", encoding="utf-8") as log_handle:
+        log_handle.write(text)
+        if not text.endswith("\n"):
+            log_handle.write("\n")
 
 
 def get_available_labels(task, complete_label_key):
