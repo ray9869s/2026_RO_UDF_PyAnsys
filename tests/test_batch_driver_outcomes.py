@@ -79,3 +79,18 @@ def test_mesh_dry_run_when_file_is_missing():
     )
     assert outcome == "dry_run"
     assert reason is None
+
+
+def test_select_mesh_batch_cases_filters_sin_geo_id():
+    meshing = _load_batch_meshing()
+    batchcfg = meshing._load_module(
+        "batch_config_select_under_test",
+        meshing.BATCH_CONFIG_PATH,
+    )
+    cases = meshing.select_mesh_batch_cases(
+        batchcfg.mesh_batch_cases,
+        geo_id="S_a144_l1733",
+    )
+    assert len(cases) == 1
+    assert cases[0]["geo_id"] == "S_a144_l1733"
+    assert cases[0]["family"] == "sin"

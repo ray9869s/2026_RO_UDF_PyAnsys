@@ -5,6 +5,7 @@
 # Usage: python My_CFD_Project/01_Scripts/batch_meshing.py
 # ==========================================================
 
+import argparse
 import importlib.util
 import json
 import os
@@ -85,6 +86,34 @@ def _continue_on_failure(batchcfg):
 
 def mesh_case_label(geo_id, mesh_id):
     return f"{geo_id}/{mesh_id}"
+
+
+def parse_batch_meshing_cli(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Sequential meshing batch from configs/batch_config.py. "
+            "Use --geo-id to run one campaign case with its batch overrides."
+        ),
+    )
+    parser.add_argument(
+        "--geo-id",
+        help="Run only mesh_batch_cases entries with this geo_id.",
+    )
+    parser.add_argument(
+        "--mesh-id",
+        help="Run only mesh_batch_cases entries with this mesh_id.",
+    )
+    return parser.parse_args(argv)
+
+
+def select_mesh_batch_cases(cases, *, geo_id=None, mesh_id=None):
+    """Return mesh_batch_cases entries matching optional geo_id / mesh_id filters."""
+    selected = list(cases)
+    if geo_id is not None:
+        selected = [case for case in selected if case["geo_id"] == geo_id]
+    if mesh_id is not None:
+        selected = [case for case in selected if case["mesh_id"] == mesh_id]
+    return selected
 
 
 def classify_mesh_pre_execution(*, skip_existing_mesh, mesh_exists, dry_run):
@@ -468,7 +497,8 @@ def _write_case_ledger(
     return record
 
 
-def main():
+def main(argv=None):
+    cli_args = parse_batch_meshing_cli(argv)
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
     dry_run = getattr(batchcfg, "dry_run", False)
@@ -491,7 +521,21 @@ def main():
         getattr(batchcfg, "clean_fm_scratch_on_success", True)
     )
     common_mesh_settings = getattr(batchcfg, "common_mesh_settings", {})
-    mesh_batch_cases = getattr(batchcfg, "mesh_batch_cases", [])
+    mesh_batch_cases = select_mesh_batch_cases(
+        getattr(batchcfg, "mesh_batch_cases", []),
+        geo_id=cli_args.geo_id,
+        mesh_id=cli_args.mesh_id,
+    )
+    if cli_args.geo_id is not None or cli_args.mesh_id is not None:
+        if not mesh_batch_cases:
+            filters = []
+            if cli_args.geo_id is not None:
+                filters.append(f"geo_id={cli_args.geo_id!r}")
+            if cli_args.mesh_id is not None:
+                filters.append(f"mesh_id={cli_args.mesh_id!r}")
+            raise SystemExit(
+                f"No mesh_batch_cases match {' and '.join(filters)}."
+            )
 
     base_cfg = _load_module("_base_cfg", BASE_RUN_CONFIG_PATH)
     ledger_path = data_root() / "inventory" / "mesh_ledger.csv"
