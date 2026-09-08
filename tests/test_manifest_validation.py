@@ -357,6 +357,27 @@ def test_porosity_eps_allows_null_and_rejects_out_of_range():
         validate_mesh_geometry_fields(payload)
 
 
+def _ref_empty_mesh_payload(**updates):
+    from test_manifest import ref_empty_mesh_payload
+
+    payload = ref_empty_mesh_payload()
+    payload.update(updates)
+    return payload
+
+
+def test_ref_empty_porosity_eps_must_be_one():
+    payload = _ref_empty_mesh_payload(porosity_eps=1.0)
+    validate_mesh_geometry_fields(payload)
+    payload["porosity_eps"] = 1.0 - 5.0e-7
+    validate_mesh_geometry_fields(payload)
+    payload["porosity_eps"] = 0.94
+    with pytest.raises(ManifestError, match="porosity_eps must be 1.0"):
+        validate_mesh_geometry_fields(payload)
+    payload["porosity_eps"] = 1.00001
+    with pytest.raises(ManifestError, match="porosity_eps must be 1.0"):
+        validate_mesh_geometry_fields(payload)
+
+
 def test_spacer_wall_zone_cross_check_raises_on_undeclared():
     declared = ["wall_spacer_filament", "wall_spacer_pillar", "wall_spacer_hole"]
     fluent = declared + ["wall_spacer_extra"]

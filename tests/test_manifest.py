@@ -82,6 +82,53 @@ def mesh_payload():
     return migrated
 
 
+def ref_empty_mesh_payload():
+    base = {
+        "schema_version": 1,
+        "family": "empty",
+        "geo_id": "REF_empty",
+        "mesh_id": MESH_ID,
+        "spacing_code": "REF",
+        "attack_angle_deg": 0.0,
+        "filament_d_m": 0.0,
+        "bridge_radius_m": 0.0,
+        "overlap_m": 0.0,
+        "n_active_cells": 7,
+        "n_buffer_in": 1,
+        "n_buffer_out": 2,
+        "cell_length_x_m": 0.003465,
+        "buffer_length_in_m": 0.003465,
+        "buffer_length_out_m": 0.00693,
+        "membrane_wall_base_names": ["wall_top_mem", "wall_bottom_mem"],
+        "buffer_wall_base_names": [
+            "wall_top_buffer_in",
+            "wall_top_buffer_out",
+            "wall_bottom_buffer_in",
+            "wall_bottom_buffer_out",
+        ],
+        "n_lead_excluded": 3,
+        "n_trail_excluded": 0,
+        "max_size_mm": 0.085,
+        "min_size_mm": 0.006,
+        "cpg": 5,
+        "bl": 4,
+        "peel": 2,
+        "ortho_min": 0.2818,
+        "AR_max": 9.47,
+        "skewness_max": 0.78,
+        "skewed_face_fraction": 1.0e-6,
+        "cell_count": 628164,
+        "inlet_profile_G": None,
+        "mesh_sha256": "b" * 64,
+        "created_utc": "2026-09-08T00:00:00Z",
+        "generator_version": "meshing_code_260616.py",
+    }
+    migrated = merge_geometry_into_mesh_manifest(base, "REF_empty")
+    migrated["schema_version"] = MANIFEST_SCHEMA_VERSION
+    migrated["porosity_eps"] = 1.0
+    return migrated
+
+
 def run_payload():
     base = {
         "schema_version": 1,
@@ -136,6 +183,29 @@ def test_mesh_manifest_round_trip(monkeypatch, tmp_path):
     assert path == directory / "manifest.json"
     assert read_mesh_manifest(directory) == payload
     assert list(iter_mesh_manifests()) == [(path, payload)]
+
+
+def test_ref_empty_mesh_manifest_accepts_zero_feature_dims(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir("empty", "REF_empty", MESH_ID)
+    directory.mkdir(parents=True)
+    payload = ref_empty_mesh_payload()
+
+    path = write_mesh_manifest(directory, payload)
+
+    assert path == directory / "manifest.json"
+    assert read_mesh_manifest(directory) == payload
+
+
+def test_ref_empty_mesh_manifest_rejects_positive_filament(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir("empty", "REF_empty", MESH_ID)
+    directory.mkdir(parents=True)
+    payload = ref_empty_mesh_payload()
+    payload["filament_d_m"] = 4.0e-4
+
+    with pytest.raises(ManifestError, match="must be exactly 0.0 for empty family"):
+        write_mesh_manifest(directory, payload)
 
 
 def test_run_manifest_round_trip(monkeypatch, tmp_path):

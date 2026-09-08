@@ -15,6 +15,9 @@ _MEMBRANE_TRIM_TOLERANCE_M = 1.0e-9
 _JOINT_SPHERE_RATIO_TOLERANCE_M = 1.0e-9
 _POROSITY_EPS_MIN = 0.3
 _POROSITY_EPS_MAX = 0.99
+# Matches mesh_common._POROSITY_CLAMP_TOLERANCE: parse_mesh_metrics clamps
+# porosity to exactly 1.0 when abs(raw - 1.0) <= this value.
+_POROSITY_EPS_EMPTY_TOLERANCE = 1.0e-6
 
 # Plausible absolute ranges for ``*_m`` fields (metres). Exact 0.0 is allowed
 # (e.g. overlap_m, bridge_radius_m on empty/pillar); nonzero values must sit
@@ -48,6 +51,12 @@ _FEATURE_SCALE_FIELDS = frozenset({
 
 class ManifestValidationError(ManifestError):
     """Raised when manifest geometry validation fails."""
+
+
+def _is_empty_family_payload(payload: Mapping[str, Any]) -> bool:
+    return (
+        payload.get("family") == "empty" or payload.get("geo_id") == "REF_empty"
+    )
 
 
 def _iter_metre_named_scalars(
@@ -534,7 +543,19 @@ def validate_mesh_geometry_fields(payload: Mapping[str, Any]) -> None:
     porosity = payload["porosity_eps"]
     if porosity is not None:
         porosity_f = float(porosity)
-        if (
+        if _is_empty_family_payload(payload):
+            if not math.isfinite(porosity_f) or not math.isclose(
+                porosity_f,
+                1.0,
+                rel_tol=0.0,
+                abs_tol=_POROSITY_EPS_EMPTY_TOLERANCE,
+            ):
+                raise ManifestValidationError(
+                    "Mesh manifest porosity_eps must be 1.0 (within "
+                    f"{_POROSITY_EPS_EMPTY_TOLERANCE:g} absolute tolerance) "
+                    f"for empty family, got {payload['porosity_eps']!r}."
+                )
+        elif (
             not math.isfinite(porosity_f)
             or not _POROSITY_EPS_MIN <= porosity_f <= _POROSITY_EPS_MAX
         ):

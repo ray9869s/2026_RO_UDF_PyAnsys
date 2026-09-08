@@ -271,6 +271,21 @@ def _require_sha256(payload: Mapping[str, Any], field: str, kind: str) -> None:
         )
 
 
+def _is_empty_family_payload(payload: Mapping[str, Any]) -> bool:
+    return (
+        payload.get("family") == "empty" or payload.get("geo_id") == "REF_empty"
+    )
+
+
+def _require_exact_zero_mesh_field(payload: Mapping[str, Any], field: str) -> None:
+    value = payload[field]
+    if value is None or float(value) != 0.0:
+        raise ManifestError(
+            f"Mesh manifest field {field!r} must be exactly 0.0 for empty "
+            f"family, got {value!r}."
+        )
+
+
 def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
     _require_fields(payload, MESH_MANIFEST_REQUIRED_FIELDS, "Mesh")
     for field in ("spacing_code", "created_utc", "generator_version"):
@@ -316,18 +331,41 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         "max_size_mm",
         "min_size_mm",
     )
-    for field in positive_fields:
-        if float(payload[field]) <= 0.0:
-            raise ManifestError(
-                f"Mesh manifest field {field!r} must be positive, "
-                f"got {payload[field]!r}."
-            )
-    for field in ("bridge_radius_m", "overlap_m"):
-        if float(payload[field]) < 0.0:
-            raise ManifestError(
-                f"Mesh manifest field {field!r} must be nonnegative, "
-                f"got {payload[field]!r}."
-            )
+    empty_exact_zero_fields = (
+        "filament_d_m",
+        "bridge_radius_m",
+        "overlap_m",
+        "membrane_trim_m",
+        "membrane_contact_width_m",
+    )
+    if _is_empty_family_payload(payload):
+        for field in empty_exact_zero_fields:
+            _require_exact_zero_mesh_field(payload, field)
+        for field in (
+            "cell_length_x_m",
+            "buffer_length_in_m",
+            "buffer_length_out_m",
+            "max_size_mm",
+            "min_size_mm",
+        ):
+            if float(payload[field]) <= 0.0:
+                raise ManifestError(
+                    f"Mesh manifest field {field!r} must be positive, "
+                    f"got {payload[field]!r}."
+                )
+    else:
+        for field in positive_fields:
+            if float(payload[field]) <= 0.0:
+                raise ManifestError(
+                    f"Mesh manifest field {field!r} must be positive, "
+                    f"got {payload[field]!r}."
+                )
+        for field in ("bridge_radius_m", "overlap_m"):
+            if float(payload[field]) < 0.0:
+                raise ManifestError(
+                    f"Mesh manifest field {field!r} must be nonnegative, "
+                    f"got {payload[field]!r}."
+                )
     if float(payload["min_size_mm"]) > float(payload["max_size_mm"]):
         raise ManifestError("Mesh manifest min_size_mm must be <= max_size_mm.")
     if (
