@@ -448,6 +448,27 @@ def _require_nonnegative_number(name, value):
         )
 
 
+def _require_exact_zero_number(name, value):
+    """Raise ValueError when a config value is not exactly zero."""
+    _require_set(name, value)
+
+    if isinstance(value, bool):
+        raise TypeError(
+            f"run_config.py value must be numeric, not bool: {name}={value!r}"
+        )
+
+    if not isinstance(value, (int, float)):
+        raise TypeError(
+            f"run_config.py value must be numeric: {name}={value!r}"
+        )
+
+    if value != 0:
+        raise ValueError(
+            f"run_config.py empty-family value must be exactly 0.0: "
+            f"{name}={value!r}"
+        )
+
+
 def _require_positive_float(name, value):
     """Raise when a config value is not a positive float (numeric or numeric string)."""
     _require_set(name, value)
@@ -580,9 +601,24 @@ def validate_for_meshing():
             f"{spacing_code!r}"
         )
     _require_number("attack_angle_deg", attack_angle_deg)
-    _require_positive_number("filament_d_m", filament_d_m)
-    _require_nonnegative_number("bridge_radius_m", bridge_radius_m)
-    _require_nonnegative_number("overlap_m", overlap_m)
+    if family == "empty":
+        _require_exact_zero_number("filament_d_m", filament_d_m)
+        _require_exact_zero_number("bridge_radius_m", bridge_radius_m)
+        _require_exact_zero_number("overlap_m", overlap_m)
+        from ro.campaign_geometry import geometry_parameters_for_geo_id
+
+        geometry = geometry_parameters_for_geo_id(geo_id)
+        _require_exact_zero_number(
+            "membrane_trim_m", geometry["membrane_trim_m"]
+        )
+        _require_exact_zero_number(
+            "membrane_contact_width_m",
+            geometry["membrane_contact_width_m"],
+        )
+    else:
+        _require_positive_number("filament_d_m", filament_d_m)
+        _require_nonnegative_number("bridge_radius_m", bridge_radius_m)
+        _require_nonnegative_number("overlap_m", overlap_m)
     _require_integer("n_active_cells", n_active_cells, minimum=1)
     _require_integer("n_buffer_in", n_buffer_in, minimum=1)
     _require_integer("n_buffer_out", n_buffer_out, minimum=1)

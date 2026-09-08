@@ -433,7 +433,8 @@ def _reference_geometry_entry() -> dict[str, Any]:
         "filament_d_m": 0.0,
         "bridge_radius_m": 0.0,
         "overlap_m": 0.0,
-        "n_active_cells": 3,
+        # 1 + 7 + 2 campaign layout (legacy 3-cell empty channel is archive-only).
+        "n_active_cells": 7,
         "cell_length_x_m": 0.003465,
         "Sigma_d_nominal_m": CAMPAIGN_H_M,
         "membrane_trim_m": 0.0,

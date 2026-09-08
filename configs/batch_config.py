@@ -355,6 +355,23 @@ for _geo_id in _SINUSOIDAL_GEO_IDS:
     mesh_batch_cases.append(_case)
 
 # ---------------------------------------------------------------------------
+# Empty reference channel: no spacer; dP/LMH baseline with the standard 1+7+2
+# layout and inlet-face-centre origin like every other family.
+# ---------------------------------------------------------------------------
+_case = dict(_COMMON_MESH)
+_case.update({
+    "family": "empty",
+    "geo_id": "REF_empty",
+    "mesh_id": _MESH_ID,
+    "spacing_code": "REF",
+    "attack_angle_deg": 0,
+    "filament_d_m": 0.0,
+    "bridge_radius_m": 0.0,
+    "wall_spacer_labels": [],
+})
+mesh_batch_cases.append(_case)
+
+# ---------------------------------------------------------------------------
 # Solver: nothing this round. Meshing is the gate and CAD probe; solve once
 # the quality results are in and all twelve CAD files are confirmed good.
 # ---------------------------------------------------------------------------

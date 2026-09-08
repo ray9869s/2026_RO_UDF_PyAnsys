@@ -330,7 +330,7 @@ if __name__ == "__main__":
     # ##### [2] Basic Parameter Checks #####
     # ==========================================================
 
-    is_empty_channel = geo_name.strip().lower() == "empty"
+    is_empty_channel = cfg.family == "empty"
 
     if not wall_spacer_labels:
         if is_empty_channel:
