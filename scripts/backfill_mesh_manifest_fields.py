@@ -173,8 +173,9 @@ def main(argv: list[str] | None = None) -> int:
 
         changed += 1
         mode = "APPLY" if args.apply else "DRY-RUN"
+        verb = "added" if args.apply else "would add"
         keys = ", ".join(sorted(additions))
-        print(f"{label} [{mode}] would add: {keys}")
+        print(f"{label} [{mode}] {verb}: {keys}")
         for key in sorted(additions):
             print(f"  {key}: {additions[key]!r}")
 

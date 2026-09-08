@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Collection, Iterator
@@ -93,6 +94,8 @@ MESH_LOG_CFG_OVERRIDE_KEYS: frozenset[str] = frozenset({
 })
 
 _BACKFILL_SCRIPT = "scripts/backfill_mesh_manifest_fields.py"
+
+_NUMERIC_REL_TOL = 1e-12
 
 # Geometry fields that must come from the registry on rebuild, not the stale
 # manifest. Mesh-time layout knobs (MANIFEST_FIELD_TO_CFG_OVERRIDE) stay on the
@@ -194,6 +197,36 @@ def _mesh_paths(mesh_directory: Path, manifest: dict[str, Any]) -> tuple[Path, P
     return mesh_file, mesh_log
 
 
+def _manifest_values_equal(old: Any, new: Any) -> bool:
+    """Compare manifest field values; floats and float lists use rel tolerance."""
+    if old is new:
+        return True
+    if old is None or new is None:
+        return old is None and new is None
+    if type(old) is bool or type(new) is bool:
+        return old == new
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        return math.isclose(
+            float(old),
+            float(new),
+            rel_tol=_NUMERIC_REL_TOL,
+            abs_tol=0.0,
+        )
+    if isinstance(old, list) and isinstance(new, list):
+        if len(old) != len(new):
+            return False
+        return all(
+            _manifest_values_equal(left, right) for left, right in zip(old, new)
+        )
+    if isinstance(old, tuple) and isinstance(new, tuple):
+        if len(old) != len(new):
+            return False
+        return all(
+            _manifest_values_equal(left, right) for left, right in zip(old, new)
+        )
+    return old == new
+
+
 def _payload_diff(
     existing: dict[str, Any],
     rebuilt: dict[str, Any],
@@ -203,7 +236,7 @@ def _payload_diff(
     for key in keys:
         old = existing.get(key, "<missing>")
         new = rebuilt.get(key, "<missing>")
-        if old != new:
+        if not _manifest_values_equal(old, new):
             diff[key] = (old, new)
     return diff
 

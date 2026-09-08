@@ -63,3 +63,29 @@ def test_enforce_diff_allowlist_requires_names_when_diff_nonempty():
             {"wavelength_m": (None, 0.001)},
             [],
         )
+
+
+def test_payload_diff_ignores_one_ulp_float_drift():
+    rebuild = _load_rebuild_script()
+    existing = {"periodic_shift_y_m": 3.465 * 1.0e-3}
+    rebuilt = {"periodic_shift_y_m": 3.465e-3}
+    assert rebuild._payload_diff(existing, rebuilt) == {}
+
+
+def test_payload_diff_compares_numeric_lists_with_tolerance():
+    rebuild = _load_rebuild_script()
+    existing = {"layer_axis_z_m": [3.465e-3 / 9, 0.0, -(3.465e-3 / 9)]}
+    rebuilt = {
+        "layer_axis_z_m": [
+            (3.465 * 1.0e-3) / 9.0,
+            0.0,
+            -((3.465 * 1.0e-3) / 9.0),
+        ],
+    }
+    assert rebuild._payload_diff(existing, rebuilt) == {}
+
+
+def test_payload_diff_none_vs_number_is_a_diff():
+    rebuild = _load_rebuild_script()
+    diff = rebuild._payload_diff({}, {"wavelength_m": 0.001})
+    assert diff == {"wavelength_m": ("<missing>", 0.001)}
