@@ -387,7 +387,24 @@ common_solver_settings = {
     "use_inlet_velocity_profile": True,
 }
 
-solver_sweep_cases = []
+# ---------------------------------------------------------------------------
+# Solver: REF_empty baseline run (first spacer-free solve).
+# Operating point u0p2_p6M matches the Diamond campaign anchor used in the
+# grid-independence study (D2450_a45, batch_config header) so QoI-stop timing
+# and post extract buckets are comparable to existing Diamond runs.
+# ---------------------------------------------------------------------------
+solver_sweep_cases = [
+    {
+        "family": "empty",
+        "geo_id": "REF_empty",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p2_p6M",
+        "geo_name": "REF_empty",
+        "case_name": "u0p2_p6M",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+    },
+]
 
 # ---------------------------------------------------------------------------
 # Diamond campaign meshes, built. Reference data, not used by this config.
