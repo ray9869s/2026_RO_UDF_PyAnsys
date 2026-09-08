@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -238,6 +239,7 @@ def test_multi_case_loop_retries_then_starts_next_case(
 
     monkeypatch.setattr(batch.subprocess, "run", fake_runner)
     monkeypatch.setattr(batch, "list_leftover_meshing_processes", lambda: [])
+    monkeypatch.setattr(sys, "argv", ["batch_meshing.py"])
 
     batch.main()
 
@@ -376,6 +378,7 @@ def test_multi_case_non_cad_failure_does_not_retry_but_next_case_runs(
 
     monkeypatch.setattr(batch.subprocess, "run", fake_runner)
     monkeypatch.setattr(batch, "list_leftover_meshing_processes", lambda: [])
+    monkeypatch.setattr(sys, "argv", ["batch_meshing.py"])
 
     with pytest.raises(SystemExit) as exc_info:
         batch.main()

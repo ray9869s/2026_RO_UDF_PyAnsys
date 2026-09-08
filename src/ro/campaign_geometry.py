@@ -419,6 +419,8 @@ def _sinusoidal_geometry_entry(geo_id: str) -> dict[str, Any]:
         "joint_sphere_r_min_m": None,
         "joint_sphere_count": 0,
         "curvature_margin": margin,
+        "wavelength_m": wavelength_m,
+        "amplitude_m": amplitude_m,
         "spacer_wall_zones": list(_SIN_SPACER_WALL_ZONES),
         "needs_lead_recheck": False,
     }
@@ -545,4 +547,7 @@ def merge_geometry_into_run_manifest(
         "spacer_wall_zones",
     ):
         merged[field] = geometry[field]
+    for field in ("wavelength_m", "amplitude_m"):
+        if field in geometry:
+            merged[field] = geometry[field]
     return merged
