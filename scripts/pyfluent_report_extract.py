@@ -89,6 +89,81 @@ from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_TOTAL_S,
 )
 
+REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
+    "fluent_launch": (
+        "Cell 4: pyfluent.launch_fluent through switch_to_solver "
+        "(excludes read_case_data)."
+    ),
+    "read_case_data": (
+        "Cell 4: solver.settings.file.read_case_data only."
+    ),
+    "cell_7_report_creation": (
+        "Cell 7: create report definitions and Fluent surfaces "
+        "(includes volume-integral report creation, not compute)."
+    ),
+    "cell_8_compute": (
+        "Cell 8: compute_one_report loop for all Cell-7 definitions "
+        "(includes volume-integral computes)."
+    ),
+    "cell_8_25_salt_reduction": (
+        "Cell 8.25: salt mass-fraction range diagnostics "
+        "(solver.fields.reduction on fluid zones)."
+    ),
+    "cell_8_4_midplane_cb": (
+        "Cell 8.4 and 8.4b: mid-plane c_b clips, boundary cross-check, "
+        "and legacy whole-domain center-plane average."
+    ),
+    "segmented_membrane_cp": (
+        "Segmented membrane CP metrics (segmented_membrane_cp_metrics)."
+    ),
+    "csv_write": (
+        "Cell 8.5 through Cell 10: center-plane unit conversion, Python "
+        "summary assembly, and CSV/JSON writes."
+    ),
+}
+
+_extract_phase_seconds: dict[str, float] = {}
+_active_extract_phase: str | None = None
+_active_extract_phase_start: float | None = None
+_extract_timing_started_at: float | None = None
+
+
+def _begin_extract_phase(name: str) -> None:
+    global _active_extract_phase, _active_extract_phase_start
+    if _active_extract_phase is not None:
+        _end_extract_phase()
+    _active_extract_phase = name
+    _active_extract_phase_start = time.monotonic()
+
+
+def _end_extract_phase() -> None:
+    global _active_extract_phase, _active_extract_phase_start
+    if _active_extract_phase is None or _active_extract_phase_start is None:
+        return
+    _extract_phase_seconds[_active_extract_phase] = (
+        time.monotonic() - _active_extract_phase_start
+    )
+    _active_extract_phase = None
+    _active_extract_phase_start = None
+
+
+def _write_report_extract_timing(report_path: Path) -> None:
+    _end_extract_phase()
+    timing_path = report_path / "report_extract_timing.json"
+    total_seconds = None
+    if _extract_timing_started_at is not None:
+        total_seconds = time.monotonic() - _extract_timing_started_at
+    payload = {
+        "bucket_boundaries": REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES,
+        "phases_seconds": dict(_extract_phase_seconds),
+        "total_seconds": total_seconds,
+    }
+    with timing_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    print(f"Report extract timing JSON: {timing_path}")
+
+
 def load_python_config(config_path):
     """Load a Python config file whose filename may start with a number."""
     config_path = Path(config_path)
@@ -648,8 +723,11 @@ if __name__ == "__main__":
     solution = None
     transcript_is_running = False
     original_working_directory = os.getcwd()
+    _extract_phase_seconds.clear()
+    _extract_timing_started_at = time.monotonic()
 
     try:
+        _begin_extract_phase("fluent_launch")
         print("Launching Fluent in meshing mode, then switching to solver...")
         print(f"product_version = {product_version}")
         print(f"processor_count = {processor_count}")
@@ -680,12 +758,15 @@ if __name__ == "__main__":
 
         print("Switched to solver successfully.")
 
+        _end_extract_phase()
+        _begin_extract_phase("read_case_data")
         print("Reading final case/data...")
         solver.settings.file.read_case_data(
             file_name=as_fluent_path(final_case_file)
         )
 
         print("Final case/data loaded.")
+        _end_extract_phase()
 
         # ==========================================================
         # Cell 5. Detect zones
@@ -847,6 +928,7 @@ if __name__ == "__main__":
         print(f"  unit-cell boundaries = {unit_cell_boundary_x_m}")
         print(f"  spacer cell numbers  = {spacer_cells}")
 
+        _begin_extract_phase("cell_7_report_creation")
         # ==========================================================
         # Cell 7. Create report definitions
         # ==========================================================
@@ -1136,6 +1218,8 @@ if __name__ == "__main__":
         print("\nFailed report specs:")
         pprint(failed_report_specs)
 
+        _end_extract_phase()
+        _begin_extract_phase("cell_8_compute")
         # ==========================================================
         # Cell 8. Compute reports
         # ==========================================================
@@ -1161,6 +1245,8 @@ if __name__ == "__main__":
         print("\nComputed values:")
         pprint(computed_values)
 
+        _end_extract_phase()
+        _begin_extract_phase("cell_8_25_salt_reduction")
         # ==========================================================
         # Cell 8.25. Salt mass-fraction range diagnostics
         # ==========================================================
@@ -1213,6 +1299,8 @@ if __name__ == "__main__":
 
         evaluation_cells = evaluation_window.evaluation_cell_numbers(layout)
 
+        _end_extract_phase()
+        _begin_extract_phase("cell_8_4_midplane_cb")
         # ==========================================================
         # Cell 8.4. Mid-plane bulk c_b per evaluation cell (window only)
         # ==========================================================
@@ -1438,6 +1526,8 @@ if __name__ == "__main__":
                 f"(canonical c_b already computed): {_e_legacy}"
             )
 
+        _end_extract_phase()
+        _begin_extract_phase("segmented_membrane_cp")
         segmented_cp_values = {}
         segmented_cp_diagnostic_error = ""
         segmented_cp_diagnostic_error_type = ""
@@ -1457,7 +1547,6 @@ if __name__ == "__main__":
             print(
                 f"\nSegmented membrane CP: compute_cp_spread={_cp_spread}"
             )
-            _t_cp0 = time.monotonic()
             segmented_cp_values = segmented_membrane_cp_metrics(
                 solver=solver,
                 solution=solution,
@@ -1479,10 +1568,8 @@ if __name__ == "__main__":
                 wall_surfaces_by_name=wall_surfaces_by_name,
                 compute_cp_spread=_cp_spread,
             )
-            _t_cp1 = time.monotonic()
             print(
-                f"Segmented membrane CP wall-clock: {_t_cp1 - _t_cp0:.1f} s; "
-                f"fluent_surface_computes="
+                "Segmented membrane CP fluent_surface_computes="
                 f"{segmented_cp_values.get('cp_membrane_segment_fluent_computes')}"
             )
             if (
@@ -1523,6 +1610,7 @@ if __name__ == "__main__":
         print("\nSegmented membrane CP diagnostics:")
         pprint(segmented_cp_values)
 
+        _end_extract_phase()
         # ==========================================================
         # Cell 8.5. Whole-domain center-plane bulk (inventory only)
         # ==========================================================
@@ -1553,6 +1641,7 @@ if __name__ == "__main__":
         print(f"  Plane : {c_bulk_center_plane_name}  Field: {c_bulk_center_area_avg_source}")
         print(f"  Diag  : {_c_bulk_center_diag}")
 
+        _begin_extract_phase("csv_write")
         # ==========================================================
         # Cell 9. Build summary tables
         # ==========================================================
@@ -2248,6 +2337,14 @@ if __name__ == "__main__":
         raise
 
     finally:
+        try:
+            _write_report_extract_timing(report_path)
+        except Exception as timing_error:
+            print(
+                "Warning: could not write report_extract_timing.json: "
+                f"{timing_error}"
+            )
+
         if solver is not None and transcript_is_running:
             try:
                 solver.transcript.stop()
