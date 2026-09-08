@@ -226,7 +226,28 @@ def test_iter_run_manifests_refuses_leaf_without_manifest(monkeypatch, tmp_path)
     directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
     directory.mkdir(parents=True)
 
-    with pytest.raises(ManifestError, match="Could not read manifest"):
+    with pytest.raises(ManifestError, match="manifest.json"):
+        list(iter_run_manifests())
+
+
+def test_iter_run_manifests_includes_manifest_path_in_validation_error(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    del payload["membrane_blocked_area_frac_geometric"]
+    (directory / "manifest.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ManifestError,
+        match=r"runs/diamond/D2450_a45/.+/manifest.json: Run manifest missing",
+    ):
         list(iter_run_manifests())
 
 

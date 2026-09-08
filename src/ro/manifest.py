@@ -36,6 +36,7 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -852,13 +853,30 @@ def iter_run_manifests(
     results_root: str | Path | None = None,
     *,
     include_hidden: bool = False,
+    skip_invalid: bool = False,
+    skipped_manifests: list[tuple[Path, str]] | None = None,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
     """Yield ``(manifest_path, payload)`` for every four-level run directory.
 
     Each leaf ``family/geo_id/mesh_id/run_id`` must have a valid manifest.
-    Missing, invalid, or stale manifests raise ManifestError; they are not
-    skipped. Identification is the manifest payload, not directory-name parsing.
+    Missing, invalid, or stale manifests raise ManifestError unless
+    ``skip_invalid`` is True. Identification is the manifest payload, not
+    directory-name parsing.
     """
     root = Path(results_root) if results_root is not None else runs_root()
     for directory in _four_level_run_dirs(root, include_hidden=include_hidden):
-        yield directory / "manifest.json", read_run_manifest(directory)
+        manifest_path = directory / "manifest.json"
+        try:
+            payload = read_run_manifest(directory)
+        except ManifestError as exc:
+            message = f"{manifest_path}: {exc}"
+            if skip_invalid:
+                if skipped_manifests is not None:
+                    skipped_manifests.append((manifest_path, str(exc)))
+                print(
+                    f"WARNING: skipped unreadable manifest: {message}",
+                    file=sys.stderr,
+                )
+                continue
+            raise ManifestError(message) from exc
+        yield manifest_path, payload

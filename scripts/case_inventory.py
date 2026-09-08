@@ -30,7 +30,7 @@ from ro.convergence_quality import (
     evaluate_convergence_quality,
     metrics_from_summary_row,
 )
-from ro.manifest import iter_run_manifests, read_run_manifest
+from ro.manifest import ManifestError, iter_run_manifests, read_run_manifest
 from ro.paths import (
     any_id_filter,
     complete_run_identity,
@@ -462,6 +462,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Scan and print planned writes, but do not write inventory files.",
     )
+    parser.add_argument(
+        "--skip-unreadable-manifests",
+        action="store_true",
+        help=(
+            "Skip run leaves whose manifest.json cannot be read or validated, "
+            "with a warning per leaf and a count at the end (default: abort)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -536,6 +544,8 @@ def discover_cases(
     run_id_filter: Optional[str],
     include_hidden: bool,
     verbose: bool,
+    skip_unreadable_manifests: bool = False,
+    skipped_manifests: Optional[list[tuple[Path, str]]] = None,
 ) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     identity = complete_run_identity(
@@ -543,10 +553,25 @@ def discover_cases(
     )
     if identity is not None:
         directory = require_existing_run(*identity)
-        manifests = [(directory / "manifest.json", read_run_manifest(directory))]
+        manifest_path = directory / "manifest.json"
+        try:
+            manifests = [(manifest_path, read_run_manifest(directory))]
+        except ManifestError as exc:
+            message = f"{manifest_path}: {exc}"
+            if skip_unreadable_manifests:
+                if skipped_manifests is not None:
+                    skipped_manifests.append((manifest_path, str(exc)))
+                print(f"WARNING: skipped unreadable manifest: {message}", file=sys.stderr)
+                return []
+            raise ManifestError(message) from exc
     else:
         manifests = list(
-            iter_run_manifests(results_root, include_hidden=include_hidden)
+            iter_run_manifests(
+                results_root,
+                include_hidden=include_hidden,
+                skip_invalid=skip_unreadable_manifests,
+                skipped_manifests=skipped_manifests,
+            )
         )
         if any_id_filter(
             family=family_filter,
@@ -2184,6 +2209,7 @@ def run_inventory(args: argparse.Namespace) -> int:
         print(f"Max iter     : {args.max_iter}")
         print(f"Dry run      : {args.dry_run}")
 
+    skipped_manifests: list[tuple[Path, str]] = []
     discovered = discover_cases(
         results_root=results_root,
         family_filter=args.family,
@@ -2192,6 +2218,8 @@ def run_inventory(args: argparse.Namespace) -> int:
         run_id_filter=args.run_id,
         include_hidden=args.include_hidden,
         verbose=args.verbose,
+        skip_unreadable_manifests=args.skip_unreadable_manifests,
+        skipped_manifests=skipped_manifests,
     )
 
     records: list[dict[str, Any]] = []
@@ -2231,6 +2259,13 @@ def run_inventory(args: argparse.Namespace) -> int:
         write_outputs(output_dir, records, rerun_candidates, postprocess_candidates)
 
     print_console_summary(records, rerun_candidates, output_dir, args.dry_run)
+    if skipped_manifests:
+        print("")
+        print(
+            f"Skipped {len(skipped_manifests)} unreadable run manifest(s):"
+        )
+        for manifest_path, reason in skipped_manifests:
+            print(f"  {manifest_path}: {reason}")
     return 0
 
 
