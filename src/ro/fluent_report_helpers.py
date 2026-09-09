@@ -1695,7 +1695,6 @@ def segmented_membrane_cp_metrics(
         delta_values: dict[int, Optional[float]] = {}
 
         for cell_number in evaluation_cell_numbers:
-            t_py = time.monotonic()
             cached = segment_cache.get(cell_number)
             need_recompute = cached is None or (
                 want_spread and not cached.get("has_spread")
@@ -1720,6 +1719,7 @@ def segmented_membrane_cp_metrics(
                         "cm_q_hi": segment.get("cm_q_hi"),
                         "jw_q_lo": segment.get("jw_q_lo"),
                     }
+            t_py = time.monotonic()
             segment = segment_cache[cell_number]
             c_b_cell = c_b_by_cell_mol_per_m3[cell_number]
             cell_metrics = _segment_metrics_from_reductions(
@@ -1880,7 +1880,6 @@ def segmented_membrane_cp_metrics(
             # top/bottom quantile bisection is not needed for the guard and
             # previously tripled the Fluent surface traffic (w_lower / w_upper).
             for wall_name, wall_names in wall_surfaces_by_name.items():
-                t_py = time.monotonic()
                 suffix = _wall_metric_suffix(wall_name)
                 per_wall_canon_avg: dict[int, float] = {}
                 per_wall_canon_max: dict[int, float] = {}
@@ -1908,6 +1907,7 @@ def segmented_membrane_cp_metrics(
                     per_wall_canon_max[cell_number] = (
                         float(segment["cp_udm9_max"]) * k_n
                     )
+                t_py = time.monotonic()
                 wall_agg = _cp_scope_aggregates(
                     evaluation_cell_numbers,
                     per_wall_area,
