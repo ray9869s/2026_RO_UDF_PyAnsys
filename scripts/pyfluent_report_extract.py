@@ -32,7 +32,7 @@ except Exception:
 # Override with the PYFLUENT_POST_CONFIG environment variable for batch runs.
 # ----------------------------------------------------------
 from ro.paths import project_root  # noqa: E402
-from ro.lmh_metrics import lmh_mass_balance_expression
+from ro.lmh_metrics import MS_TO_LMH, lmh_mass_balance_expression
 from ro.convergence_quality import (
     continuity_final_from_case_dir,
     evaluate_convergence_quality,
@@ -1704,6 +1704,24 @@ if __name__ == "__main__":
         # Boundary permeate mass flow from mass imbalance.
         boundary_permeate_mass_flow = safe_abs_sum(m_in, m_out)
 
+        # Python-side signed LMH from boundary fluxes (no Fluent expression).
+        lmh_mass_balance_signed_python = None
+        if (
+            m_in is not None
+            and m_out is not None
+            and area_mem is not None
+            and area_mem != 0
+        ):
+            lmh_mass_balance_signed_python = (
+                (m_in + m_out) / (rho * area_mem) * MS_TO_LMH
+            )
+            if lmh_mass_balance_signed_python < 0.0:
+                print(
+                    "WARNING: lmh_mass_balance_signed_python is negative "
+                    f"({lmh_mass_balance_signed_python:.6e} LMH); with a mass "
+                    "sink the boundary net (m_in + m_out) should be positive."
+                )
+
         # ----------------------------------------------------------
         # Membrane transport values
         # ----------------------------------------------------------
@@ -1970,6 +1988,11 @@ if __name__ == "__main__":
 
             {"metric": "lmh_mass_balance", "value": lmh_mass_balance, "unit": "LMH"},
             {"metric": "lmh_mass_balance_signed", "value": lmh_mass_balance_signed, "unit": "LMH"},
+            {
+                "metric": "lmh_mass_balance_signed_python",
+                "value": lmh_mass_balance_signed_python,
+                "unit": "LMH",
+            },
             {"metric": "lmh_udm_avg", "value": lmh_udm_avg, "unit": "LMH"},
             {"metric": "lmh_difference_mass_balance_minus_udm", "value": lmh_difference, "unit": "LMH"},
             {"metric": "lmh_relative_difference", "value": lmh_relative_difference, "unit": "-"},
@@ -2246,6 +2269,7 @@ if __name__ == "__main__":
                 "mass_balance_relative_error": mass_balance_relative_error,
                 "lmh_difference_mass_balance_minus_udm": lmh_difference,
                 "lmh_relative_difference": lmh_relative_difference,
+                "lmh_mass_balance_signed_python": lmh_mass_balance_signed_python,
                 "convergence_quality": quality_result["convergence_quality"],
                 "needs_longer_solve": quality_result["needs_longer_solve"],
                 "convergence_quality_failures": quality_result["failures"],
