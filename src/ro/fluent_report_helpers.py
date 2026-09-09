@@ -848,17 +848,29 @@ def flux_massflow_decomposition_keys(report_name: str) -> tuple[str, str, str]:
     )
 
 
+def _coerce_report_compute_scalar(value: Any) -> float | None:
+    """Return the first numeric scalar from a Fluent report compute value."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            coerced = _coerce_report_compute_scalar(item)
+            if coerced is not None:
+                return coerced
+    return None
+
+
 def _numeric_maps_in_payload(payload: Any) -> list[dict[str, float]]:
-    """Collect every dict level whose values are numeric (sibling key maps)."""
+    """Collect every dict level whose values coerce to numeric scalars."""
     maps: list[dict[str, float]] = []
 
     def _visit(obj: Any) -> None:
         if isinstance(obj, dict):
-            numeric = {
-                str(key): float(value)
-                for key, value in obj.items()
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-            }
+            numeric = {}
+            for key, value in obj.items():
+                scalar = _coerce_report_compute_scalar(value)
+                if scalar is not None:
+                    numeric[str(key)] = scalar
             if numeric:
                 maps.append(numeric)
             for value in obj.values():

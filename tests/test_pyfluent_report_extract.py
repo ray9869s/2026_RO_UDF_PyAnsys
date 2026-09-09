@@ -770,6 +770,21 @@ def test_segmented_membrane_cp_subphase_seconds_accumulate():
     assert sum(subphases.values()) >= 0.0
 
 
+def test_parse_flux_massflow_decomposition_list_wrapped_verbatim_payload():
+    """PyFluent 25.1 wraps report values in single-element (or longer) lists."""
+    payload = [
+        {
+            "pp_m_in": [5.315285545536234e-4, 0],
+            "pp_m_in(User Mass Source)": [-1.120921058109091e-06],
+            "pp_m_in(without-sources)": [5.326494756117325e-4],
+        }
+    ]
+    decomp = parse_flux_massflow_decomposition(payload, "pp_m_in")
+    assert decomp["without_sources"] == 5.326494756117325e-4
+    assert decomp["with_sources"] == 5.315285545536234e-4
+    assert decomp["mass_source"] == -1.120921058109091e-06
+
+
 def test_parse_flux_massflow_decomposition_ref_empty_values():
     payload = {
         "pp_m_in": {
