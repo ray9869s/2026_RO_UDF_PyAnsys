@@ -13,23 +13,17 @@ from ro.domain_layout import (
     layout_post_config_values,
 )
 from ro.manifest import ManifestError, iter_run_manifests
+from ro.fluent_report_helpers import LOAD_BEARING_SUMMARY_METRICS
 from ro.paths import data_root, project_root, run_dir, runs_root
 
 
 # ============================================================
 # Critical columns required to be present and non-NaN/empty
 # in summary_metrics_wide.csv for a case to be considered valid.
-# These must match the "metric" strings in the worker's summary_rows.
+# Kept in sync with LOAD_BEARING_SUMMARY_METRICS in report extract.
 # ============================================================
 
-CRITICAL_SUMMARY_COLUMNS = [
-    "lmh_mass_balance",
-    "pressure_drop_spacer",
-    "pressure_drop_spacer_per_m",
-    "cp_inlet_avg",
-    "wall_shear_rate_avg",
-    "mass_balance_relative_error",
-]
+CRITICAL_SUMMARY_COLUMNS = list(LOAD_BEARING_SUMMARY_METRICS)
 
 
 def try_resolve_post_layout_overrides(mesh_directory):

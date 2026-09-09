@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Iterable, Mapping, MutableMapping, Optional
 
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
@@ -780,6 +780,190 @@ def require_canonical_cp_summary_columns(wide_record: Mapping[str, Any]) -> None
             "Canonical CP cannot be computed: summary_metrics_wide is missing "
             f"required columns {missing!r}. "
             "cp_inlet_avg (L2) is not a substitute for canonical CP."
+        )
+
+
+# Fluent report definitions whose compute failure must abort extract.
+# Names must match Cell 7 ``report_names`` entries exactly (see
+# ``expected_cell_7_report_names``). CSV columns may use different labels
+# (e.g. pp_volint_salt_mass_source -> salt_sink_volume_integral_UDM0).
+LOAD_BEARING_REPORT_NAMES = frozenset(
+    {
+        "pp_m_in",
+        "pp_m_out",
+        "pp_area_mem",
+        "pp_udm_area_sum",
+        "pp_lmh_mass_balance",
+        "pp_lmh_udm_avg",
+        "pp_volint_salt_mass_source",
+        "pp_volint_total_mass_source",
+    }
+)
+
+# Wide CSV columns that feed campaign validation (mass closure, LMH cross-check,
+# convergence-quality gate, canonical CP). Checked after writing artifacts so
+# failed extracts still leave inspectable CSV/JSON.
+LOAD_BEARING_SUMMARY_METRICS = (
+    "m_in",
+    "m_out",
+    "boundary_permeate_mass_flow",
+    "area_mem",
+    "pp_udm_area_sum",
+    "lmh_mass_balance",
+    "lmh_udm_avg",
+    "lmh_mass_balance_signed_python",
+    "lmh_relative_difference",
+    "mass_balance_relative_error",
+    "mass_balance_error_boundary_minus_total_sink",
+    "total_sink_volume_integral_UDM2",
+    "salt_sink_volume_integral_UDM0",
+    "water_sink_volume_integral_UDM1",
+    "c_b_window_mol_m3",
+    "cp_canon_window_avg",
+)
+
+# Flux decomposition provenance columns (post-decomposition extract only).
+# Diagnostic — not required for campaign gates or old CSV validation.
+DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS = (
+    "m_in_with_sources",
+    "m_out_with_sources",
+    "m_in_mass_source",
+    "m_out_mass_source",
+)
+
+_CELL_7_MEMBRANE_SURFACE_REPORT_NAMES = (
+    "pp_jw_avg",
+    "pp_jw_max",
+    "pp_jw_min",
+    "pp_cm_avg",
+    "pp_cm_max",
+    "pp_cm_min",
+    "pp_lmh_udm_avg",
+    "pp_lmh_udm_max",
+    "pp_lmh_udm_min",
+    "pp_cp_inlet_avg",
+    "pp_cp_inlet_max",
+    "pp_cp_inlet_min",
+    "pp_salt_flux_avg",
+    "pp_salt_flux_max",
+    "pp_salt_flux_min",
+    "pp_wall_shear_avg",
+    "pp_wall_shear_max",
+    "pp_wall_shear_min",
+)
+
+
+def expected_cell_7_report_names(n_unit_cells: int) -> list[str]:
+    """Return Fluent report names Cell 7 appends, in creation order.
+
+    ``n_unit_cells`` is ``layout.n_total`` (1+7+2 layout -> 10).
+    """
+    if n_unit_cells < 1:
+        raise ValueError(f"n_unit_cells must be >= 1, got {n_unit_cells!r}.")
+    names = [
+        "pp_m_in",
+        "pp_m_out",
+        "pp_area_mem",
+        "pp_lmh_mass_balance",
+        "pp_lmh_mass_balance_signed",
+        "pp_p_in_avg",
+        "pp_p_out_avg",
+        "pp_pressure_drop",
+        "pp_p_spacer_in_avg",
+        "pp_p_spacer_out_avg",
+        "pp_pressure_drop_spacer",
+    ]
+    for boundary_index in range(n_unit_cells + 1):
+        names.append(unit_cell_pressure_report_name(boundary_index))
+        names.append(unit_cell_mixing_cup_report_name(boundary_index))
+        names.append(unit_cell_plane_area_report_name(boundary_index))
+        names.append(unit_cell_concentration_report_name(boundary_index))
+    names.extend(_CELL_7_MEMBRANE_SURFACE_REPORT_NAMES)
+    names.extend(
+        [
+            "pp_volint_salt_mass_source",
+            "pp_volint_total_mass_source",
+            udm_area_sum_report_spec()[0],
+        ]
+    )
+    return names
+
+
+class LoadBearingReportComputeError(RuntimeError):
+    """Raised when a campaign-critical Fluent report fails to compute or parse."""
+
+
+def require_load_bearing_report_definitions(
+    report_names: Iterable[str],
+    failed_report_specs: Iterable[Any],
+) -> None:
+    """Raise if any load-bearing report definition was not created."""
+    created = set(report_names)
+    failed = {
+        str(spec[0])
+        for spec in failed_report_specs
+        if spec and spec[0] is not None
+    }
+    missing = sorted(
+        name
+        for name in LOAD_BEARING_REPORT_NAMES
+        if name not in created or name in failed
+    )
+    if missing:
+        raise LoadBearingReportComputeError(
+            "Load-bearing report definitions missing or failed to create: "
+            f"{missing!r}."
+        )
+
+
+def require_load_bearing_report_computes(
+    computed_values: Mapping[str, Any],
+    raw_results: Mapping[str, Any],
+    *,
+    report_names: Iterable[str],
+) -> None:
+    """Raise if any load-bearing report in ``report_names`` failed to compute."""
+    errors: list[str] = []
+    for name in report_names:
+        if name not in LOAD_BEARING_REPORT_NAMES:
+            continue
+        raw = raw_results.get(name)
+        if isinstance(raw, dict) and "error" in raw:
+            errors.append(f"{name}: {raw['error']}")
+            continue
+        if computed_values.get(name) is None:
+            errors.append(f"{name}: missing or None")
+    if errors:
+        raise LoadBearingReportComputeError(
+            "Load-bearing report compute failed: " + "; ".join(errors)
+        )
+
+
+def load_bearing_summary_missing_columns(
+    wide_record: Mapping[str, Any],
+) -> list[str]:
+    """Return load-bearing wide CSV columns that are absent or blank."""
+    missing: list[str] = []
+    for column in LOAD_BEARING_SUMMARY_METRICS:
+        if column not in wide_record:
+            missing.append(column)
+            continue
+        value = wide_record[column]
+        if value is None:
+            missing.append(column)
+            continue
+        if isinstance(value, str) and not value.strip():
+            missing.append(column)
+    return missing
+
+
+def require_load_bearing_summary_columns(wide_record: Mapping[str, Any]) -> None:
+    """Raise if a successful extract would blank a campaign validation metric."""
+    missing = load_bearing_summary_missing_columns(wide_record)
+    if missing:
+        raise RuntimeError(
+            "Campaign validation metrics cannot be blank: missing or empty "
+            f"columns {missing!r}."
         )
 
 

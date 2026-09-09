@@ -21,7 +21,12 @@ from ro.fluent_report_helpers import (
     molar_concentration_to_mass_fraction,
     list_compute_payload_numeric_keys,
     FluxMassflowDecompositionError,
+    LoadBearingReportComputeError,
+    LOAD_BEARING_SUMMARY_METRICS,
     parse_flux_massflow_decomposition,
+    require_load_bearing_report_computes,
+    require_load_bearing_report_definitions,
+    require_load_bearing_summary_columns,
     segmented_membrane_cp_metrics,
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
@@ -1078,3 +1083,45 @@ def test_default_concentration_thresholds():
     assert cfg.salt_permeability_m_per_s == 2.50e-8
     assert cfg.salt_mass_fraction_upper_threshold == 0.99
     assert cfg.salt_mass_fraction_lower_threshold == 1.0e-6
+
+
+def test_require_load_bearing_report_definitions_rejects_missing():
+    with pytest.raises(LoadBearingReportComputeError, match="pp_m_in"):
+        require_load_bearing_report_definitions(
+            ["pp_m_out"],
+            [("pp_m_in", "flux-massflow", None, "zone missing")],
+        )
+
+
+def test_require_load_bearing_report_computes_rejects_compute_error():
+    with pytest.raises(LoadBearingReportComputeError, match="pp_m_in"):
+        require_load_bearing_report_computes(
+            {
+                "pp_m_out": -1.0e-4,
+                "pp_area_mem": 1.0e-3,
+                "pp_udm_area_sum": 1.0e-3,
+                "pp_lmh_mass_balance": 24.0,
+                "pp_lmh_udm_avg": 24.0,
+                "pp_volint_salt_mass_source": -1.0e-6,
+                "pp_volint_total_mass_source": -1.0e-4,
+            },
+            {"pp_m_in": {"error": "decomposition failed"}},
+            report_names=["pp_m_in", "pp_m_out"],
+        )
+
+
+def test_load_bearing_report_names_are_subset_of_cell_7_template():
+    from ro.fluent_report_helpers import (
+        LOAD_BEARING_REPORT_NAMES,
+        expected_cell_7_report_names,
+    )
+
+    cell_7 = set(expected_cell_7_report_names(10))
+    assert LOAD_BEARING_REPORT_NAMES <= cell_7
+
+
+def test_require_load_bearing_summary_columns_rejects_blank_mass_closure():
+    wide = {column: 1.0 for column in LOAD_BEARING_SUMMARY_METRICS}
+    wide["mass_balance_relative_error"] = None
+    with pytest.raises(RuntimeError, match="mass_balance_relative_error"):
+        require_load_bearing_summary_columns(wide)

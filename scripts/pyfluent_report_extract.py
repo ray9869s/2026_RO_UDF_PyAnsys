@@ -60,10 +60,15 @@ from ro.fluent_report_helpers import (  # noqa: E402
     exception_details,
     compute_flux_massflow_boundary_report,
     FLUX_BOUNDARY_MASSFLOW_REPORTS,
+    LOAD_BEARING_REPORT_NAMES,
+    LoadBearingReportComputeError,
     fluid_zone_reduction_locations,
     mass_fraction_to_molar_concentration,
     midplane_window_bulk_aggregate,
     require_canonical_cp_summary_columns,
+    require_load_bearing_report_computes,
+    require_load_bearing_report_definitions,
+    require_load_bearing_summary_columns,
     segmented_membrane_cp_metrics,
     molar_concentration_to_mass_fraction,
     resolve_evaluation_window_from_config,
@@ -1225,6 +1230,11 @@ if __name__ == "__main__":
         print("\nFailed report specs:")
         pprint(failed_report_specs)
 
+        require_load_bearing_report_definitions(
+            report_names,
+            failed_report_specs,
+        )
+
         _end_extract_phase()
         _begin_extract_phase("cell_8_compute")
         # ==========================================================
@@ -1263,6 +1273,19 @@ if __name__ == "__main__":
                 computed_values[report_name] = None
                 raw_results[report_name] = {"error": str(e)}
                 print(f"FAILED: {report_name}. Error: {e}")
+                if (
+                    report_name in FLUX_BOUNDARY_MASSFLOW_REPORTS
+                    or report_name in LOAD_BEARING_REPORT_NAMES
+                ):
+                    raise LoadBearingReportComputeError(
+                        f"Load-bearing report {report_name!r} failed: {e}"
+                    ) from e
+
+        require_load_bearing_report_computes(
+            computed_values,
+            raw_results,
+            report_names=report_names,
+        )
 
         print("\nComputed values:")
         pprint(computed_values)
@@ -2277,36 +2300,16 @@ if __name__ == "__main__":
         )
         summary_wide_df = summary_wide_df[existing_front_columns + other_columns]
 
-        require_canonical_cp_summary_columns(summary_wide_df.iloc[0].to_dict())
+        wide_record = summary_wide_df.iloc[0].to_dict()
 
         summary_wide_df.to_csv(summary_wide_csv_path, index=False, encoding="utf-8-sig")
 
         # Post-hoc convergence quality (independent of stop_reason).
-        wide_record = summary_wide_df.iloc[0].to_dict()
         continuity_final = continuity_final_from_case_dir(case_path)
         quality_result = evaluate_convergence_quality(
             wide_record,
             continuity_final=continuity_final,
         )
-        try:
-            update_run_manifest_fields(
-                case_path,
-                manifest_quality_payload(quality_result),
-            )
-            print(
-                "Convergence quality    :",
-                quality_result["convergence_quality"],
-                (
-                    f"(failures={quality_result['failures']})"
-                    if quality_result["failures"]
-                    else ""
-                ),
-            )
-        except Exception as exc:
-            print(
-                "WARNING: could not write convergence_quality to run manifest:",
-                f"{type(exc).__name__}: {exc}",
-            )
 
         # ----------------------------------------------------------
         # Save raw report values for debugging/reproducibility
@@ -2387,6 +2390,32 @@ if __name__ == "__main__":
                 indent=2,
                 ensure_ascii=False,
                 default=str,
+            )
+
+        # Campaign validation gates run after artifacts are written so failed
+        # extracts still leave inspectable CSV/JSON (report_compute_errors_json,
+        # blank cells, etc.). Non-zero exit marks batch_postprocess FAILED.
+        require_load_bearing_summary_columns(wide_record)
+        require_canonical_cp_summary_columns(wide_record)
+
+        try:
+            update_run_manifest_fields(
+                case_path,
+                manifest_quality_payload(quality_result),
+            )
+            print(
+                "Convergence quality    :",
+                quality_result["convergence_quality"],
+                (
+                    f"(failures={quality_result['failures']})"
+                    if quality_result["failures"]
+                    else ""
+                ),
+            )
+        except Exception as exc:
+            print(
+                "WARNING: could not write convergence_quality to run manifest:",
+                f"{type(exc).__name__}: {exc}",
             )
 
         # ----------------------------------------------------------
