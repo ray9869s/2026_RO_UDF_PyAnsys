@@ -1118,6 +1118,37 @@ def test_load_bearing_report_names_are_subset_of_cell_7_template():
 
     cell_7 = set(expected_cell_7_report_names(10))
     assert LOAD_BEARING_REPORT_NAMES <= cell_7
+    assert len(LOAD_BEARING_REPORT_NAMES) == 14
+
+
+def test_audit_load_bearing_summary_columns_marks_legacy_python_lmh():
+    from ro.fluent_report_helpers import (
+        LOAD_BEARING_SUMMARY_METRICS,
+        audit_load_bearing_summary_columns,
+    )
+
+    row = {column: 1.0 for column in LOAD_BEARING_SUMMARY_METRICS}
+    row["lmh_mass_balance_signed_python"] = ""
+    audit = audit_load_bearing_summary_columns(row)
+    assert audit["legacy_schema"] is True
+    assert audit["missing"] == []
+    assert audit["legacy_exempt_missing"] == ["lmh_mass_balance_signed_python"]
+
+
+def test_audit_load_bearing_summary_columns_fails_real_blank_on_current_schema():
+    from ro.fluent_report_helpers import (
+        DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS,
+        LOAD_BEARING_SUMMARY_METRICS,
+        audit_load_bearing_summary_columns,
+    )
+
+    row = {column: 1.0 for column in LOAD_BEARING_SUMMARY_METRICS}
+    for column in DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS:
+        row[column] = 1.0e-6
+    row["pressure_drop_spacer"] = ""
+    audit = audit_load_bearing_summary_columns(row)
+    assert audit["legacy_schema"] is False
+    assert audit["missing"] == ["pressure_drop_spacer"]
 
 
 def test_require_load_bearing_summary_columns_rejects_blank_mass_closure():

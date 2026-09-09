@@ -797,12 +797,18 @@ LOAD_BEARING_REPORT_NAMES = frozenset(
         "pp_lmh_udm_avg",
         "pp_volint_salt_mass_source",
         "pp_volint_total_mass_source",
+        "pp_p_in_avg",
+        "pp_p_out_avg",
+        "pp_pressure_drop",
+        "pp_p_spacer_in_avg",
+        "pp_p_spacer_out_avg",
+        "pp_pressure_drop_spacer",
     }
 )
 
 # Wide CSV columns that feed campaign validation (mass closure, LMH cross-check,
-# convergence-quality gate, canonical CP). Checked after writing artifacts so
-# failed extracts still leave inspectable CSV/JSON.
+# convergence-quality gate, canonical CP, pressure). Checked after writing
+# artifacts so failed extracts still leave inspectable CSV/JSON.
 LOAD_BEARING_SUMMARY_METRICS = (
     "m_in",
     "m_out",
@@ -818,6 +824,13 @@ LOAD_BEARING_SUMMARY_METRICS = (
     "total_sink_volume_integral_UDM2",
     "salt_sink_volume_integral_UDM0",
     "water_sink_volume_integral_UDM1",
+    "pressure_drop",
+    "pressure_drop_per_m",
+    "pressure_drop_spacer",
+    "pressure_drop_spacer_per_m",
+    "pp_pressure_drop_periodic_per_m",
+    "domain_length_m",
+    "spacer_length_m",
     "c_b_window_mol_m3",
     "cp_canon_window_avg",
 )
@@ -829,6 +842,11 @@ DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS = (
     "m_out_with_sources",
     "m_in_mass_source",
     "m_out_mass_source",
+)
+
+# Present on every current-code extract; absent on pre-session legacy CSVs.
+LEGACY_EXEMPT_LOAD_BEARING_SUMMARY_METRICS = (
+    "lmh_mass_balance_signed_python",
 )
 
 _CELL_7_MEMBRANE_SURFACE_REPORT_NAMES = (
@@ -939,6 +957,14 @@ def require_load_bearing_report_computes(
         )
 
 
+def _summary_column_is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
 def load_bearing_summary_missing_columns(
     wide_record: Mapping[str, Any],
 ) -> list[str]:
@@ -948,13 +974,51 @@ def load_bearing_summary_missing_columns(
         if column not in wide_record:
             missing.append(column)
             continue
-        value = wide_record[column]
-        if value is None:
-            missing.append(column)
-            continue
-        if isinstance(value, str) and not value.strip():
+        if _summary_column_is_blank(wide_record[column]):
             missing.append(column)
     return missing
+
+
+def is_legacy_summary_wide_schema(wide_record: Mapping[str, Any]) -> bool:
+    """True when the flux-decomposition column group is entirely absent.
+
+    Pre-decomposition Diamond CSVs lack all four decomposition columns; current
+    extracts populate them when the flux parser succeeds.
+    """
+    for column in DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS:
+        if column in wide_record and not _summary_column_is_blank(
+            wide_record[column]
+        ):
+            return False
+    return True
+
+
+def audit_load_bearing_summary_columns(
+    wide_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Classify a wide CSV row for retrospective validation.
+
+    Returns ``missing`` (real failures), ``legacy_exempt_missing`` (columns
+    only required on post-decomposition extracts), and ``legacy_schema``.
+    """
+    missing = load_bearing_summary_missing_columns(wide_record)
+    legacy_schema = is_legacy_summary_wide_schema(wide_record)
+    legacy_exempt_missing = [
+        column
+        for column in missing
+        if column in LEGACY_EXEMPT_LOAD_BEARING_SUMMARY_METRICS
+    ]
+    if legacy_schema:
+        missing = [
+            column
+            for column in missing
+            if column not in LEGACY_EXEMPT_LOAD_BEARING_SUMMARY_METRICS
+        ]
+    return {
+        "legacy_schema": legacy_schema,
+        "missing": missing,
+        "legacy_exempt_missing": legacy_exempt_missing,
+    }
 
 
 def require_load_bearing_summary_columns(wide_record: Mapping[str, Any]) -> None:

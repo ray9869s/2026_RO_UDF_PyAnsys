@@ -56,8 +56,15 @@ def main(argv: list[str] | None = None) -> int:
     print("  pp_udm_area_sum                  -> pp_udm_area_sum")
     print("  pp_lmh_mass_balance              -> lmh_mass_balance")
     print("  pp_lmh_udm_avg                   -> lmh_udm_avg")
+    print("  pp_p_in_avg                      -> p_in_avg")
+    print("  pp_p_out_avg                     -> p_out_avg")
+    print("  pp_pressure_drop                 -> pressure_drop")
+    print("  pp_p_spacer_in_avg               -> p_spacer_in_avg")
+    print("  pp_p_spacer_out_avg              -> p_spacer_out_avg")
+    print("  pp_pressure_drop_spacer          -> pressure_drop_spacer")
     print("  pp_volint_salt_mass_source       -> salt_sink_volume_integral_UDM0")
     print("  pp_volint_total_mass_source      -> total_sink_volume_integral_UDM2")
+    print("  (derived, not a Cell 7 report)   -> pp_pressure_drop_periodic_per_m")
     return 0
 
 

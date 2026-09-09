@@ -5,9 +5,13 @@ No Fluent required. Intended for pre-sweep checks on the Windows server::
 
     python scripts/validate_load_bearing_summary_csvs.py --data-root C:/ro_data
 
-Exit 0 when every file passes; exit 1 when any file is missing load-bearing
-columns. Flux decomposition columns (m_in_with_sources, etc.) are reported as
-diagnostic-only and do not affect pass/fail.
+Exit codes:
+  0 — every file PASS or LEGACY (legacy = pre-decomposition schema only)
+  1 — any FAIL or unreadable file
+
+Prior to the accounting fix in this script, FAIL lines were printed but the
+failure counter and exit code stayed 0 (read errors were the only failures
+counted). That was exit code 0 with printed FAIL lines.
 """
 from __future__ import annotations
 
@@ -19,9 +23,13 @@ from pathlib import Path
 from ro.fluent_report_helpers import (
     DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS,
     LOAD_BEARING_SUMMARY_METRICS,
-    load_bearing_summary_missing_columns,
+    audit_load_bearing_summary_columns,
 )
 from ro.paths import data_root as default_data_root
+
+STATUS_PASS = "PASS"
+STATUS_LEGACY = "LEGACY"
+STATUS_FAIL = "FAIL"
 
 
 def _read_wide_row(path: Path) -> dict[str, str]:
@@ -52,7 +60,6 @@ def discover_default_csvs(data_root_path: Path) -> list[Path]:
     found: list[Path] = []
     for pattern in patterns:
         found.extend(sorted(data_root_path.glob(pattern)))
-    # De-duplicate while preserving order.
     seen: set[Path] = set()
     unique: list[Path] = []
     for path in found:
@@ -64,14 +71,22 @@ def discover_default_csvs(data_root_path: Path) -> list[Path]:
     return unique
 
 
-def validate_file(path: Path) -> tuple[bool, list[str], list[str]]:
+def classify_file(path: Path) -> tuple[str, dict[str, object], list[str]]:
     row = _read_wide_row(path)
-    missing = load_bearing_summary_missing_columns(row)
+    audit = audit_load_bearing_summary_columns(row)
     diagnostic_missing = _blank_columns(
         row,
         DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS,
     )
-    return not missing, missing, diagnostic_missing
+    missing = list(audit["missing"])
+    legacy_exempt_missing = list(audit["legacy_exempt_missing"])
+    if missing:
+        status = STATUS_FAIL
+    elif audit["legacy_schema"] and legacy_exempt_missing:
+        status = STATUS_LEGACY
+    else:
+        status = STATUS_PASS
+    return status, audit, diagnostic_missing
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,26 +132,43 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {column}")
     print()
 
-    failures = 0
+    pass_count = 0
+    legacy_count = 0
+    fail_count = 0
+
     for path in csv_paths:
         try:
-            passed, missing, diagnostic_missing = validate_file(path)
+            status, audit, diagnostic_missing = classify_file(path)
         except (OSError, ValueError) as exc:
-            failures += 1
-            print(f"FAIL {path}")
+            fail_count += 1
+            print(f"{STATUS_FAIL} {path}")
             print(f"  read error: {exc}")
             continue
 
-        status = "PASS" if passed else "FAIL"
         print(f"{status} {path}")
-        if missing:
-            print(f"  missing load-bearing: {missing}")
+        if status == STATUS_FAIL:
+            fail_count += 1
+            print(f"  missing load-bearing: {audit['missing']}")
+        elif status == STATUS_LEGACY:
+            legacy_count += 1
+            print(
+                "  legacy schema (no flux decomposition group); exempt missing: "
+                f"{audit['legacy_exempt_missing']}"
+            )
+        else:
+            pass_count += 1
+
         if diagnostic_missing:
             print(f"  missing diagnostic flux decomposition: {diagnostic_missing}")
 
     print()
-    print(f"Checked {len(csv_paths)} file(s); failed {failures}.")
-    return 1 if failures else 0
+    print(
+        f"Checked {len(csv_paths)} file(s): "
+        f"pass={pass_count}, legacy={legacy_count}, fail={fail_count}."
+    )
+    exit_code = 1 if fail_count else 0
+    print(f"Exit code: {exit_code}")
+    return exit_code
 
 
 if __name__ == "__main__":
