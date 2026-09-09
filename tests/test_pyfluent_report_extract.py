@@ -20,6 +20,7 @@ from ro.fluent_report_helpers import (
     mass_fraction_to_molar_concentration,
     molar_concentration_to_mass_fraction,
     list_compute_payload_numeric_keys,
+    FluxMassflowDecompositionError,
     parse_flux_massflow_decomposition,
     segmented_membrane_cp_metrics,
     summary_rows_to_wide_record,
@@ -775,12 +776,56 @@ def test_parse_flux_massflow_decomposition_ref_empty_values():
             "pp_m_in": 5.315285545536234e-4,
             "pp_m_in(without-sources)": 5.326494756117325e-4,
             "pp_m_in(User Mass Source)": -1.120921058109091e-6,
-        }
+        },
+        "pp_m_out": {
+            "pp_m_out": -5.326494741441423624e-4,
+            "pp_m_out(without-sources)": -5.315285530858533e-4,
+            "pp_m_out(User Mass Source)": -1.120921058109091e-6,
+        },
+    }
+    decomp_in = parse_flux_massflow_decomposition(payload, "pp_m_in")
+    assert decomp_in["without_sources"] == 5.326494756117325e-4
+    assert decomp_in["with_sources"] == 5.315285545536234e-4
+    assert decomp_in["mass_source"] == -1.120921058109091e-6
+
+    decomp_out = parse_flux_massflow_decomposition(payload, "pp_m_out")
+    assert decomp_out["without_sources"] == -5.315285530858533e-4
+    assert decomp_out["with_sources"] == -5.326494741441423624e-4
+    assert decomp_out["mass_source"] == -1.120921058109091e-6
+
+
+def test_parse_flux_massflow_decomposition_rejects_bare_only_early_map():
+    """Bare key in a shallow dict must not mask sibling decomposition keys."""
+    payload = {
+        "pp_m_in": 5.315285545536234e-4,
+        "nested": {
+            "pp_m_in": 5.315285545536234e-4,
+            "pp_m_in(without-sources)": 5.326494756117325e-4,
+            "pp_m_in(User Mass Source)": -1.120921058109091e-6,
+        },
     }
     decomp = parse_flux_massflow_decomposition(payload, "pp_m_in")
     assert decomp["without_sources"] == 5.326494756117325e-4
     assert decomp["with_sources"] == 5.315285545536234e-4
     assert decomp["mass_source"] == -1.120921058109091e-6
+
+
+def test_parse_flux_massflow_decomposition_raises_without_parenthesized_keys():
+    payload = {"pp_m_in": {"pp_m_in": 5.315285545536234e-4}}
+    with pytest.raises(FluxMassflowDecompositionError, match="missing one or more"):
+        parse_flux_massflow_decomposition(payload, "pp_m_in")
+
+
+def test_parse_flux_massflow_decomposition_raises_degenerate_without_equals_bare():
+    payload = {
+        "pp_m_in": {
+            "pp_m_in": 5.315285545536234e-4,
+            "pp_m_in(without-sources)": 5.315285545536234e-4,
+            "pp_m_in(User Mass Source)": -1.120921058109091e-6,
+        }
+    }
+    with pytest.raises(FluxMassflowDecompositionError, match="degenerate"):
+        parse_flux_massflow_decomposition(payload, "pp_m_in")
 
 
 def test_list_compute_payload_numeric_keys_flux_decomposition():

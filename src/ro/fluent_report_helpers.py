@@ -830,41 +830,64 @@ def _find_first_number(obj):
 
 
 FLUX_WITHOUT_SOURCES_SUFFIX = "(without-sources)"
-FLUX_MASS_SOURCE_KEY_MARKER = "Mass Source"
-FLUX_DECOMPOSITION_ABS_TOL_KG_S = 1.0e-12
+FLUX_USER_MASS_SOURCE_SUFFIX = "(User Mass Source)"
+FLUX_DECOMPOSITION_ABS_TOL_KG_S = 1.0e-8
 FLUX_BOUNDARY_MASSFLOW_REPORTS = frozenset({"pp_m_in", "pp_m_out", "m_in", "m_out"})
 
 
+class FluxMassflowDecompositionError(ValueError):
+    """Raised when a flux-massflow compute payload lacks a valid decomposition."""
+
+
+def flux_massflow_decomposition_keys(report_name: str) -> tuple[str, str, str]:
+    """Return exact Fluent keys for bare, without-sources, and mass-source rows."""
+    return (
+        report_name,
+        f"{report_name}{FLUX_WITHOUT_SOURCES_SUFFIX}",
+        f"{report_name}{FLUX_USER_MASS_SOURCE_SUFFIX}",
+    )
+
+
+def _numeric_maps_in_payload(payload: Any) -> list[dict[str, float]]:
+    """Collect every dict level whose values are numeric (sibling key maps)."""
+    maps: list[dict[str, float]] = []
+
+    def _visit(obj: Any) -> None:
+        if isinstance(obj, dict):
+            numeric = {
+                str(key): float(value)
+                for key, value in obj.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+            if numeric:
+                maps.append(numeric)
+            for value in obj.values():
+                if not isinstance(value, (int, float)):
+                    _visit(value)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                _visit(item)
+
+    _visit(payload)
+    return maps
+
+
 def _find_flux_decomposition_map(payload: Any, report_name: str) -> dict[str, float] | None:
-    """Return the string-keyed numeric map for one flux-massflow decomposition."""
-    without_key = f"{report_name}{FLUX_WITHOUT_SOURCES_SUFFIX}"
-
-    def _coerce_map(obj: Any) -> dict[str, float] | None:
-        if not isinstance(obj, dict):
-            return None
-        numeric = {
-            str(key): float(value)
-            for key, value in obj.items()
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-        }
-        if without_key in numeric or report_name in numeric:
-            return numeric
-        return None
-
-    direct = _coerce_map(payload)
-    if direct is not None:
-        return direct
-
-    if isinstance(payload, dict):
-        for value in payload.values():
-            found = _find_flux_decomposition_map(value, report_name)
-            if found is not None:
-                return found
-    elif isinstance(payload, (list, tuple)):
-        for item in payload:
-            found = _find_flux_decomposition_map(item, report_name)
-            if found is not None:
-                return found
+    """Return the sibling map containing all three exact flux decomposition keys."""
+    bare_key, without_key, mass_source_key = flux_massflow_decomposition_keys(
+        report_name
+    )
+    for numeric in _numeric_maps_in_payload(payload):
+        if (
+            bare_key in numeric
+            and without_key in numeric
+            and mass_source_key in numeric
+        ):
+            return {
+                bare_key: numeric[bare_key],
+                without_key: numeric[without_key],
+                mass_source_key: numeric[mass_source_key],
+            }
     return None
 
 
@@ -873,60 +896,54 @@ def parse_flux_massflow_decomposition(
     report_name: str,
     *,
     abs_tol_kg_s: float = FLUX_DECOMPOSITION_ABS_TOL_KG_S,
-) -> dict[str, float | None]:
+) -> dict[str, float]:
     """Parse Fluent flux-massflow compute output into boundary/source components.
 
     Fluent 25.1 decomposes mass-flux reports on zones with volumetric mass
-    sources into:
+    sources into sibling keys (exact names, same dict level):
       - ``{name}`` — net flux including adjacent-cell source contribution
       - ``{name}(without-sources)`` — pure boundary (face) mass flow
-      - ``{name}(... Mass Source)`` — integrated user mass source at the zone
+      - ``{name}(User Mass Source)`` — integrated user mass source at the zone
     """
+    bare_key, without_key, mass_source_key = flux_massflow_decomposition_keys(
+        report_name
+    )
     component_map = _find_flux_decomposition_map(payload, report_name)
     if component_map is None:
-        scalar = _find_first_number(payload)
-        return {
-            "with_sources": scalar,
-            "without_sources": scalar,
-            "mass_source": 0.0 if scalar is not None else None,
-        }
+        found_keys = list_compute_payload_numeric_keys(payload)
+        raise FluxMassflowDecompositionError(
+            f"Flux report {report_name!r} is missing one or more decomposed keys. "
+            f"Required exact keys: {[bare_key, without_key, mass_source_key]!r}. "
+            f"Numeric keys found in payload: {found_keys!r}."
+        )
 
-    with_sources = component_map.get(report_name)
-    without_sources = component_map.get(f"{report_name}{FLUX_WITHOUT_SOURCES_SUFFIX}")
-    mass_source = None
-    for key, value in component_map.items():
-        if key in {report_name, f"{report_name}{FLUX_WITHOUT_SOURCES_SUFFIX}"}:
-            continue
-        if FLUX_MASS_SOURCE_KEY_MARKER in key:
-            mass_source = value
-            break
+    with_sources = component_map[bare_key]
+    without_sources = component_map[without_key]
+    mass_source = component_map[mass_source_key]
 
     if (
-        with_sources is not None
-        and without_sources is not None
-        and mass_source is not None
-        and not math.isclose(
-            with_sources,
-            without_sources + mass_source,
-            rel_tol=0.0,
-            abs_tol=abs_tol_kg_s,
-        )
+        math.isclose(with_sources, without_sources, rel_tol=0.0, abs_tol=abs_tol_kg_s)
+        and not math.isclose(mass_source, 0.0, rel_tol=0.0, abs_tol=abs_tol_kg_s)
     ):
-        residual = with_sources - (without_sources + mass_source)
-        print(
-            "WARNING: flux-massflow decomposition mismatch for "
-            f"{report_name!r}: with_sources={with_sources:.12e}, "
-            f"without_sources={without_sources:.12e}, "
-            f"mass_source={mass_source:.12e}, residual={residual:.12e} kg/s"
+        raise FluxMassflowDecompositionError(
+            f"Flux report {report_name!r} decomposition is degenerate: "
+            f"without_sources equals bare ({without_sources:.12e} kg/s) while "
+            f"mass_source is non-zero ({mass_source:.12e} kg/s). "
+            "The parenthesized keys were not parsed from the payload."
         )
 
-    if without_sources is None and with_sources is not None:
-        print(
-            "WARNING: flux-massflow report "
-            f"{report_name!r} missing '(without-sources)' component; "
-            f"falling back to net value {with_sources:.12e} kg/s"
+    if not math.isclose(
+        with_sources,
+        without_sources + mass_source,
+        rel_tol=0.0,
+        abs_tol=abs_tol_kg_s,
+    ):
+        residual = with_sources - (without_sources + mass_source)
+        raise FluxMassflowDecompositionError(
+            f"Flux report {report_name!r} decomposition identity failed: "
+            f"bare={with_sources:.12e}, without_sources={without_sources:.12e}, "
+            f"mass_source={mass_source:.12e}, residual={residual:.12e} kg/s."
         )
-        without_sources = with_sources
 
     return {
         "with_sources": with_sources,
@@ -940,11 +957,6 @@ def compute_flux_massflow_boundary_report(solution, report_name: str):
     result = solution.report_definitions.compute(report_defs=[report_name])
     decomposition = parse_flux_massflow_decomposition(result, report_name)
     without_sources = decomposition["without_sources"]
-    if without_sources is None:
-        raise RuntimeError(
-            f"Could not extract without-sources flux for report {report_name!r}. "
-            f"Raw result: {result!r}"
-        )
     return without_sources, result, decomposition
 
 
