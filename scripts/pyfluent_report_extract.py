@@ -58,6 +58,8 @@ from ro.fluent_report_helpers import (  # noqa: E402
     derive_spacer_cell_metrics_for_layout,
     evaluation_window_midplane_bulk_concentrations,
     exception_details,
+    compute_flux_massflow_boundary_report,
+    FLUX_BOUNDARY_MASSFLOW_REPORTS,
     fluid_zone_reduction_locations,
     mass_fraction_to_molar_concentration,
     midplane_window_bulk_aggregate,
@@ -1234,12 +1236,27 @@ if __name__ == "__main__":
 
         for report_name in report_names:
             try:
-                value, raw = compute_one_report(
-                    solution=solution,
-                    report_name=report_name,
-                    verbose=False,
-                )
-                computed_values[report_name] = value
+                if report_name in FLUX_BOUNDARY_MASSFLOW_REPORTS:
+                    value, raw, decomposition = (
+                        compute_flux_massflow_boundary_report(
+                            solution=solution,
+                            report_name=report_name,
+                        )
+                    )
+                    computed_values[report_name] = value
+                    computed_values[f"{report_name}_with_sources"] = (
+                        decomposition["with_sources"]
+                    )
+                    computed_values[f"{report_name}_mass_source"] = (
+                        decomposition["mass_source"]
+                    )
+                else:
+                    value, raw = compute_one_report(
+                        solution=solution,
+                        report_name=report_name,
+                        verbose=False,
+                    )
+                    computed_values[report_name] = value
                 raw_results[report_name] = raw
                 print(f"{report_name}: {value}")
             except Exception as e:
@@ -1690,6 +1707,10 @@ if __name__ == "__main__":
 
         m_in = get_value("pp_m_in")
         m_out = get_value("pp_m_out")
+        m_in_with_sources = get_value("pp_m_in_with_sources")
+        m_out_with_sources = get_value("pp_m_out_with_sources")
+        m_in_mass_source = get_value("pp_m_in_mass_source")
+        m_out_mass_source = get_value("pp_m_out_mass_source")
         area_mem = get_value("pp_area_mem")
         udm_area_sum = get_value("pp_udm_area_sum")
         lmh_mass_balance = get_value("pp_lmh_mass_balance")
@@ -1718,8 +1739,9 @@ if __name__ == "__main__":
             if lmh_mass_balance_signed_python < 0.0:
                 print(
                     "WARNING: lmh_mass_balance_signed_python is negative "
-                    f"({lmh_mass_balance_signed_python:.6e} LMH); with a mass "
-                    "sink the boundary net (m_in + m_out) should be positive."
+                    f"({lmh_mass_balance_signed_python:.6e} LMH); using "
+                    "without-sources boundary fluxes, the net (m_in + m_out) "
+                    "should be positive with a mass sink."
                 )
 
         # ----------------------------------------------------------
@@ -1981,6 +2003,26 @@ if __name__ == "__main__":
 
             {"metric": "m_in", "value": m_in, "unit": "kg/s"},
             {"metric": "m_out", "value": m_out, "unit": "kg/s"},
+            {
+                "metric": "m_in_with_sources",
+                "value": m_in_with_sources,
+                "unit": "kg/s",
+            },
+            {
+                "metric": "m_out_with_sources",
+                "value": m_out_with_sources,
+                "unit": "kg/s",
+            },
+            {
+                "metric": "m_in_mass_source",
+                "value": m_in_mass_source,
+                "unit": "kg/s",
+            },
+            {
+                "metric": "m_out_mass_source",
+                "value": m_out_mass_source,
+                "unit": "kg/s",
+            },
             {"metric": "boundary_permeate_mass_flow", "value": boundary_permeate_mass_flow, "unit": "kg/s"},
 
             {"metric": "area_mem", "value": area_mem, "unit": "m2"},
@@ -2104,6 +2146,26 @@ if __name__ == "__main__":
         mass_balance_rows = [
             {"metric": "m_in", "value": m_in, "unit": "kg/s"},
             {"metric": "m_out", "value": m_out, "unit": "kg/s"},
+            {
+                "metric": "m_in_with_sources",
+                "value": m_in_with_sources,
+                "unit": "kg/s",
+            },
+            {
+                "metric": "m_out_with_sources",
+                "value": m_out_with_sources,
+                "unit": "kg/s",
+            },
+            {
+                "metric": "m_in_mass_source",
+                "value": m_in_mass_source,
+                "unit": "kg/s",
+            },
+            {
+                "metric": "m_out_mass_source",
+                "value": m_out_mass_source,
+                "unit": "kg/s",
+            },
             {"metric": "boundary_permeate_mass_flow_abs_m_in_plus_m_out", "value": boundary_permeate_mass_flow, "unit": "kg/s"},
             {"metric": "water_sink_volume_integral_UDM1", "value": water_sink_volint, "unit": "kg/s"},
             {"metric": "salt_sink_volume_integral_UDM0", "value": salt_sink_volint, "unit": "kg/s"},
@@ -2270,6 +2332,10 @@ if __name__ == "__main__":
                 "lmh_difference_mass_balance_minus_udm": lmh_difference,
                 "lmh_relative_difference": lmh_relative_difference,
                 "lmh_mass_balance_signed_python": lmh_mass_balance_signed_python,
+                "m_in_with_sources": m_in_with_sources,
+                "m_out_with_sources": m_out_with_sources,
+                "m_in_mass_source": m_in_mass_source,
+                "m_out_mass_source": m_out_mass_source,
                 "convergence_quality": quality_result["convergence_quality"],
                 "needs_longer_solve": quality_result["needs_longer_solve"],
                 "convergence_quality_failures": quality_result["failures"],

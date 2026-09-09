@@ -19,6 +19,8 @@ from ro.fluent_report_helpers import (
     iso_surface_reduction_locations,
     mass_fraction_to_molar_concentration,
     molar_concentration_to_mass_fraction,
+    list_compute_payload_numeric_keys,
+    parse_flux_massflow_decomposition,
     segmented_membrane_cp_metrics,
     summary_rows_to_wide_record,
     unit_cell_boundary_positions,
@@ -765,6 +767,32 @@ def test_segmented_membrane_cp_subphase_seconds_accumulate():
     assert subphases.get("surface_report_compute", 0.0) >= 0.0
     assert subphases.get("python_aggregate", 0.0) >= 0.0
     assert sum(subphases.values()) >= 0.0
+
+
+def test_parse_flux_massflow_decomposition_ref_empty_values():
+    payload = {
+        "pp_m_in": {
+            "pp_m_in": 5.315285545536234e-4,
+            "pp_m_in(without-sources)": 5.326494756117325e-4,
+            "pp_m_in(User Mass Source)": -1.120921058109091e-6,
+        }
+    }
+    decomp = parse_flux_massflow_decomposition(payload, "pp_m_in")
+    assert decomp["without_sources"] == 5.326494756117325e-4
+    assert decomp["with_sources"] == 5.315285545536234e-4
+    assert decomp["mass_source"] == -1.120921058109091e-6
+
+
+def test_list_compute_payload_numeric_keys_flux_decomposition():
+    payload = {
+        "pp_m_in": {
+            "pp_m_in": 1.0,
+            "pp_m_in(without-sources)": 2.0,
+            "pp_m_in(User Mass Source)": -1.0,
+        }
+    }
+    keys = list_compute_payload_numeric_keys(payload)
+    assert len(keys) == 3
 
 
 def test_segmented_membrane_cp_rejects_zero_area_facetmin():
