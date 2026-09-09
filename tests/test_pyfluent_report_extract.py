@@ -744,6 +744,29 @@ def test_segmented_membrane_cp_spread_off_nulls_delta_keeps_k():
     assert wide["cp_canon_rescale_delta_status"] == "not_evaluated"
 
 
+def test_segmented_membrane_cp_subphase_seconds_accumulate():
+    session = FakeIsoClipSession()
+    subphases: dict[str, float] = {}
+    segmented_membrane_cp_metrics(
+        solver=session.solver,
+        solution=session.solution,
+        wall_surface_names=["wall_top_mem"],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
+        spacer_cells=[2],
+        mixing_cup_mass_fraction_by_boundary={2: 0.035},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        subphase_seconds=subphases,
+    )
+    assert subphases.get("iso_clip_create", 0.0) >= 0.0
+    assert subphases.get("surface_report_def_create", 0.0) >= 0.0
+    assert subphases.get("surface_report_compute", 0.0) >= 0.0
+    assert subphases.get("python_aggregate", 0.0) >= 0.0
+    assert sum(subphases.values()) >= 0.0
+
+
 def test_segmented_membrane_cp_rejects_zero_area_facetmin():
     """Facetmin=0 with no iso_clip area is replaced; cp_max uses quantiles."""
     session = FakeIsoClipSession(

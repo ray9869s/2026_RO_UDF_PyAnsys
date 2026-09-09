@@ -123,6 +123,7 @@ REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
 }
 
 _extract_phase_seconds: dict[str, float] = {}
+_segmented_membrane_cp_subphase_seconds: dict[str, float] = {}
 _active_extract_phase: str | None = None
 _active_extract_phase_start: float | None = None
 _extract_timing_started_at: float | None = None
@@ -156,6 +157,9 @@ def _write_report_extract_timing(report_path: Path) -> None:
     payload = {
         "bucket_boundaries": REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES,
         "phases_seconds": dict(_extract_phase_seconds),
+        "segmented_membrane_cp_subphases_seconds": dict(
+            _segmented_membrane_cp_subphase_seconds
+        ),
         "total_seconds": total_seconds,
     }
     with timing_path.open("w", encoding="utf-8") as handle:
@@ -724,6 +728,7 @@ if __name__ == "__main__":
     transcript_is_running = False
     original_working_directory = os.getcwd()
     _extract_phase_seconds.clear()
+    _segmented_membrane_cp_subphase_seconds.clear()
     _extract_timing_started_at = time.monotonic()
 
     try:
@@ -1567,6 +1572,7 @@ if __name__ == "__main__":
                 midplane_area_by_cell_m2=midplane_area_by_cell_m2,
                 wall_surfaces_by_name=wall_surfaces_by_name,
                 compute_cp_spread=_cp_spread,
+                subphase_seconds=_segmented_membrane_cp_subphase_seconds,
             )
             print(
                 "Segmented membrane CP fluent_surface_computes="

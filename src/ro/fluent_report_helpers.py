@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, MutableMapping, Optional
 
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
@@ -716,6 +717,16 @@ _SURFACE_MASS_WEIGHTED_AVG = "surface-massavg"
 _SURFACE_FACET_MAX = "surface-facetmax"
 _SURFACE_FACET_MIN = "surface-facetmin"
 
+
+def _accum_subphase_seconds(
+    bucket: MutableMapping[str, float] | None,
+    key: str,
+    elapsed_s: float,
+) -> None:
+    if bucket is not None:
+        bucket[key] = bucket.get(key, 0.0) + elapsed_s
+
+
 # Required in summary_metrics_wide.csv when report extraction succeeds.
 CANONICAL_CP_SUMMARY_COLUMNS = (
     "c_b_window_mol_m3",
@@ -1039,6 +1050,7 @@ def _compute_membrane_segment_via_iso_clip(
     cp_field="udm-9",
     compute_spread=True,
     warm_start=None,
+    subphase_seconds: MutableMapping[str, float] | None = None,
 ):
     """Area-weighted membrane metrics on one x-clipped wall surface set.
 
@@ -1071,6 +1083,7 @@ def _compute_membrane_segment_via_iso_clip(
     created_reports: list[str] = []
     created_clips: list[str] = [clip_name]
     n_computes = 0
+    t_clip = time.monotonic()
     create_x_range_iso_clip(
         solver,
         clip_name,
@@ -1078,7 +1091,9 @@ def _compute_membrane_segment_via_iso_clip(
         x_min_m,
         x_max_m,
     )
+    _accum_subphase_seconds(subphase_seconds, "iso_clip_create", time.monotonic() - t_clip)
     try:
+        t_def = time.monotonic()
         create_or_update_surface_field_report(
             solution,
             reports["area"],
@@ -1086,14 +1101,26 @@ def _compute_membrane_segment_via_iso_clip(
             None,
             [clip_name],
         )
+        _accum_subphase_seconds(
+            subphase_seconds,
+            "surface_report_def_create",
+            time.monotonic() - t_def,
+        )
         created_reports.append(reports["area"])
+        t_compute = time.monotonic()
         area_m2 = float(compute_surface_report_value(solution, reports["area"]))
+        _accum_subphase_seconds(
+            subphase_seconds,
+            "surface_report_compute",
+            time.monotonic() - t_compute,
+        )
         n_computes += 1
         if area_m2 <= 0.0:
             return None
 
         def _avg(report_key, field):
             nonlocal n_computes
+            t_def = time.monotonic()
             create_or_update_surface_field_report(
                 solution,
                 reports[report_key],
@@ -1101,12 +1128,25 @@ def _compute_membrane_segment_via_iso_clip(
                 field,
                 [clip_name],
             )
+            _accum_subphase_seconds(
+                subphase_seconds,
+                "surface_report_def_create",
+                time.monotonic() - t_def,
+            )
             created_reports.append(reports[report_key])
+            t_compute = time.monotonic()
+            value = float(compute_surface_report_value(solution, reports[report_key]))
+            _accum_subphase_seconds(
+                subphase_seconds,
+                "surface_report_compute",
+                time.monotonic() - t_compute,
+            )
             n_computes += 1
-            return float(compute_surface_report_value(solution, reports[report_key]))
+            return value
 
         def _facet(report_key, report_type, field):
             nonlocal n_computes
+            t_def = time.monotonic()
             create_or_update_surface_field_report(
                 solution,
                 reports[report_key],
@@ -1114,9 +1154,21 @@ def _compute_membrane_segment_via_iso_clip(
                 field,
                 [clip_name],
             )
+            _accum_subphase_seconds(
+                subphase_seconds,
+                "surface_report_def_create",
+                time.monotonic() - t_def,
+            )
             created_reports.append(reports[report_key])
+            t_compute = time.monotonic()
+            value = float(compute_surface_report_value(solution, reports[report_key]))
+            _accum_subphase_seconds(
+                subphase_seconds,
+                "surface_report_compute",
+                time.monotonic() - t_compute,
+            )
             n_computes += 1
-            return float(compute_surface_report_value(solution, reports[report_key]))
+            return value
 
         def _area_frac_field_below(field: str, threshold: float, sub_tag: str) -> float:
             """Area fraction on the x-clip with field in [0, threshold].
@@ -1130,6 +1182,7 @@ def _compute_membrane_segment_via_iso_clip(
                 return 0.0
             child = f"pp_mem_ab_{sub_tag}_{tag}"
             area_name = f"pp_mem_ab_area_{sub_tag}_{tag}"
+            t_clip = time.monotonic()
             create_field_iso_clip(
                 solver,
                 child,
@@ -1138,6 +1191,10 @@ def _compute_membrane_segment_via_iso_clip(
                 0.0,
                 thr,
             )
+            _accum_subphase_seconds(
+                subphase_seconds, "iso_clip_create", time.monotonic() - t_clip
+            )
+            t_def = time.monotonic()
             create_or_update_surface_field_report(
                 solution,
                 area_name,
@@ -1145,6 +1202,12 @@ def _compute_membrane_segment_via_iso_clip(
                 None,
                 [child],
             )
+            _accum_subphase_seconds(
+                subphase_seconds,
+                "surface_report_def_create",
+                time.monotonic() - t_def,
+            )
+            t_compute = time.monotonic()
             try:
                 sub_area = float(compute_surface_report_value(solution, area_name))
                 n_computes += 1
@@ -1152,14 +1215,19 @@ def _compute_membrane_segment_via_iso_clip(
                 sub_area = 0.0
                 n_computes += 1
             finally:
-                try:
-                    delete_surface_field_report(solution, area_name)
-                except Exception:
-                    pass
-                try:
-                    delete_iso_clip(solver, child)
-                except Exception:
-                    pass
+                _accum_subphase_seconds(
+                    subphase_seconds,
+                    "surface_report_compute",
+                    time.monotonic() - t_compute,
+                )
+            try:
+                delete_surface_field_report(solution, area_name)
+            except Exception:
+                pass
+            try:
+                delete_iso_clip(solver, child)
+            except Exception:
+                pass
             return max(0.0, sub_area) / area_m2
 
         def _area_quantile(
@@ -1497,6 +1565,7 @@ def segmented_membrane_cp_metrics(
     midplane_area_by_cell_m2=None,
     wall_surfaces_by_name=None,
     compute_cp_spread=False,
+    subphase_seconds: MutableMapping[str, float] | None = None,
 ):
     """Compute x-segmented membrane CP metrics (all-active and optional window).
 
@@ -1541,6 +1610,7 @@ def segmented_membrane_cp_metrics(
             tag=f"{tag_prefix}_{cell_number}",
             compute_spread=compute_spread,
             warm_start=warm_start,
+            subphase_seconds=subphase_seconds,
         )
 
     warm_start = None
@@ -1564,6 +1634,7 @@ def segmented_membrane_cp_metrics(
                 "cm_q_hi": segment.get("cm_q_hi"),
                 "jw_q_lo": segment.get("jw_q_lo"),
             }
+        t_py = time.monotonic()
         area_m2 = segment["area_m2"]
         cm_avg = segment["cm_avg"]
         jw_avg = segment["jw_avg"]
@@ -1589,6 +1660,9 @@ def segmented_membrane_cp_metrics(
             f"pp_cp_bulk_unit_cell_boundary_{cell_number}": cp_bulk,
             f"pp_cp_perm_mol_m3_cell_{cell_number}": cp_perm_avg,
         })
+        _accum_subphase_seconds(
+            subphase_seconds, "python_aggregate", time.monotonic() - t_py
+        )
 
     if evaluation_cell_numbers is not None:
         if c_b_by_cell_mol_per_m3 is None:
@@ -1621,6 +1695,7 @@ def segmented_membrane_cp_metrics(
         delta_values: dict[int, Optional[float]] = {}
 
         for cell_number in evaluation_cell_numbers:
+            t_py = time.monotonic()
             cached = segment_cache.get(cell_number)
             need_recompute = cached is None or (
                 want_spread and not cached.get("has_spread")
@@ -1668,7 +1743,11 @@ def segmented_membrane_cp_metrics(
             delta_values[cell_number] = cell_metrics[
                 f"pp_cp_canon_rescale_delta_cell_{cell_number}"
             ]
+            _accum_subphase_seconds(
+                subphase_seconds, "python_aggregate", time.monotonic() - t_py
+            )
 
+        t_py = time.monotonic()
         metrics["c_b_window_mol_m3"] = midplane_window_bulk_aggregate(
             c_b_by_cell_mol_per_m3,
             midplane_area_by_cell_m2 or {},
@@ -1722,6 +1801,9 @@ def segmented_membrane_cp_metrics(
                 "window",
             )
         )
+        _accum_subphase_seconds(
+            subphase_seconds, "python_aggregate", time.monotonic() - t_py
+        )
 
         spacer_with_c_b = [
             cell_number
@@ -1729,6 +1811,7 @@ def segmented_membrane_cp_metrics(
             if cell_number in c_b_by_cell_mol_per_m3
         ]
         if spacer_with_c_b:
+            t_py = time.monotonic()
             all_canon_avg: dict[int, float] = {}
             all_canon_max: dict[int, float] = {}
             all_l1_avg: dict[int, float] = {}
@@ -1788,12 +1871,16 @@ def segmented_membrane_cp_metrics(
                     "all_active",
                 )
             )
+            _accum_subphase_seconds(
+                subphase_seconds, "python_aggregate", time.monotonic() - t_py
+            )
 
         if wall_surfaces_by_name:
             # Per-wall breakdown reuses the combined-membrane k_N. Independent
             # top/bottom quantile bisection is not needed for the guard and
             # previously tripled the Fluent surface traffic (w_lower / w_upper).
             for wall_name, wall_names in wall_surfaces_by_name.items():
+                t_py = time.monotonic()
                 suffix = _wall_metric_suffix(wall_name)
                 per_wall_canon_avg: dict[int, float] = {}
                 per_wall_canon_max: dict[int, float] = {}
@@ -1830,6 +1917,9 @@ def segmented_membrane_cp_metrics(
                     "window",
                 )
                 metrics.update(wall_agg)
+                _accum_subphase_seconds(
+                    subphase_seconds, "python_aggregate", time.monotonic() - t_py
+                )
 
     metrics["cp_membrane_segment_fluent_computes"] = fluent_computes
     return metrics
