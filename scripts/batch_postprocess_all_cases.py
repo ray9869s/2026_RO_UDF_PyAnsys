@@ -66,6 +66,25 @@ SHEAR_EXPORT_MODE_AUTO = "auto"
 SHEAR_EXPORT_MODE_NATIVE = "native"
 SHEAR_EXPORT_MODE_FALLBACK = "fallback"
 
+# Same defaults as batch_meshing: 2 retries after the first attempt, 15 s settle.
+REPORT_TRANSIENT_FAILURE_MAX_RETRIES = 2
+REPORT_POST_FAILURE_SETTLE_S = 15.0
+RETRY_KIND_SOCKET_RESET = "session_socket_reset"
+RETRY_KIND_SCHEME_HEAP = "scheme_heap_corruption"
+
+SESSION_SOCKET_RESET_PATTERNS = (
+    re.compile(r"IOCP/Socket", re.IGNORECASE),
+    re.compile(r"Connection reset", re.IGNORECASE),
+    re.compile(r"\b10054\b"),
+    re.compile(r"forcibly closed", re.IGNORECASE),
+)
+SCHEME_HEAP_CORRUPTION_PATTERNS = (
+    re.compile(r"wta\(1st\) to string->symbol", re.IGNORECASE),
+    re.compile(r"#\[free", re.IGNORECASE),
+    re.compile(r"Attempt to mark a free block", re.IGNORECASE),
+    re.compile(r"Error encountered in critical code section", re.IGNORECASE),
+)
+
 DEFAULT_CASE_STATUS = "READY_FOR_POSTPROCESSING"
 POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
 POSTPROCESSED_UNCONVERGED = "POSTPROCESSED_UNCONVERGED"
@@ -111,6 +130,9 @@ RESULT_FIELDNAMES = [
     "shear_retry_status",
     "shear_retry_returncode",
     "shear_retry_log_file",
+    "report_transient_attempts",
+    "report_retry_attempted",
+    "report_retry_kinds",
     "output_files_detected",
     "error_summary",
     "runtime_seconds_total",
@@ -896,8 +918,112 @@ def resolve_cff_file(args: argparse.Namespace, paths: dict[str, Path]) -> tuple[
     return case_specific_file, CFF_SOURCE_MISSING
 
 
-def stage_log_path(log_dir: Path, geo_name: str, case_name: str, stage: str) -> Path:
-    return log_dir / f"{safe_name(geo_name)}__{safe_name(case_name)}__{stage}.log"
+def stage_log_path(
+    log_dir: Path,
+    geo_name: str,
+    case_name: str,
+    stage: str,
+    mesh_id: str,
+) -> Path:
+    return log_dir / (
+        f"{safe_name(geo_name)}__{safe_name(mesh_id)}__"
+        f"{safe_name(case_name)}__{stage}.log"
+    )
+
+
+def collect_report_failure_evidence(result: StageResult) -> str:
+    """Concatenate worker tails and the stage log for retry matching."""
+    chunks = [
+        result.error_summary or "",
+        result.stdout_tail or "",
+        result.stderr_tail or "",
+    ]
+    log_path = Path(result.log_file) if result.log_file else None
+    if log_path is not None and log_path.is_file():
+        try:
+            chunks.append(log_path.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            pass
+    return "\n".join(chunks)
+
+
+def classify_retryable_report_failure(text: str) -> Optional[str]:
+    """Return a retry kind for session-level Fluent crashes, else None.
+
+    Session signatures win even when wrapped in a Canonical CP or
+    load-bearing guard message. Those wrappers are how extract re-raises a
+    Scheme crash. A Canonical CP / load-bearing / missing-cas failure with
+    no session signature is not retried.
+    """
+    if not text:
+        return None
+    if any(pattern.search(text) for pattern in SESSION_SOCKET_RESET_PATTERNS):
+        return RETRY_KIND_SOCKET_RESET
+    if any(pattern.search(text) for pattern in SCHEME_HEAP_CORRUPTION_PATTERNS):
+        return RETRY_KIND_SCHEME_HEAP
+    return None
+
+
+def run_report_stage_with_retries(
+    command: list[str],
+    log_dir: Path,
+    geo_name: str,
+    mesh_id: str,
+    case_name: str,
+    dry_run: bool,
+    env: Optional[dict[str, str]] = None,
+    *,
+    max_retries: int = REPORT_TRANSIENT_FAILURE_MAX_RETRIES,
+    settle_s: float = REPORT_POST_FAILURE_SETTLE_S,
+    sleeper=time.sleep,
+    stage_runner=None,
+) -> tuple[StageResult, int, list[str]]:
+    """Run the report extract subprocess, retrying session-level crashes.
+
+    max_retries is retries after the first attempt (default 2 → 3 total).
+    Each attempt is a new process and a new Fluent session. Returns
+    (last StageResult, attempts used, retry kinds).
+    """
+    if stage_runner is None:
+        stage_runner = run_stage_command
+    max_retries = max(0, int(max_retries))
+    max_attempts = max_retries + 1
+    retry_kinds: list[str] = []
+    result: Optional[StageResult] = None
+    for attempt in range(1, max_attempts + 1):
+        stage_label = "report" if attempt == 1 else f"report_retry{attempt - 1}"
+        log_path = stage_log_path(
+            log_dir, geo_name, case_name, stage_label, mesh_id
+        )
+        print(
+            f"  report attempt {attempt}/{max_attempts}: "
+            f"{command_to_string(command)}"
+        )
+        result = stage_runner("report", command, log_path, dry_run, env=env)
+        if result.status != STATUS_FAILED:
+            return result, attempt, retry_kinds
+        retry_kind = classify_retryable_report_failure(
+            collect_report_failure_evidence(result)
+        )
+        can_retry = attempt < max_attempts and retry_kind is not None
+        if can_retry:
+            retry_kinds.append(retry_kind)
+            remaining = max_attempts - attempt
+            print(
+                f"  report: transient {retry_kind} on attempt {attempt}; "
+                f"retrying after {settle_s:g}s ({remaining} retry left)."
+            )
+            if settle_s > 0.0:
+                sleeper(settle_s)
+            continue
+        if attempt < max_attempts:
+            print(
+                f"  report: non-retryable failure on attempt {attempt} "
+                f"(rc={result.returncode}); not retrying."
+            )
+        return result, attempt, retry_kinds
+    assert result is not None
+    return result, max_attempts, retry_kinds
 
 
 def execute_case(
@@ -951,6 +1077,9 @@ def execute_case(
             "shear_retry_status": "",
             "shear_retry_returncode": None,
             "shear_retry_log_file": "",
+            "report_transient_attempts": 0,
+            "report_retry_attempted": False,
+            "report_retry_kinds": "",
             "output_files_detected": "",
             "error_summary": str(exc),
             "runtime_seconds_total": 0.0,
@@ -987,9 +1116,11 @@ def execute_case(
     paths = case_paths(case_dir)
     cas_path, dat_path = resolve_final_cas_dat(case_dir, geo_id, run_id)
 
-    report_log = stage_log_path(log_dir, geo_name, case_name, "report")
-    contour_log = stage_log_path(log_dir, geo_name, case_name, "pyensight_contours")
-    shear_log = stage_log_path(log_dir, geo_name, case_name, "shear")
+    report_log = stage_log_path(log_dir, geo_name, case_name, "report", mesh_id)
+    contour_log = stage_log_path(
+        log_dir, geo_name, case_name, "pyensight_contours", mesh_id
+    )
+    shear_log = stage_log_path(log_dir, geo_name, case_name, "shear", mesh_id)
 
     report_command = build_report_command(args)
     contour_command = build_pyensight_command(args, **worker_ids)
@@ -1060,6 +1191,8 @@ def execute_case(
 
     start_total = time.monotonic()
 
+    report_attempts = 0
+    report_retry_kinds: list[str] = []
     if report_status_planned == STATUS_PLANNED:
         overrides = build_report_overrides(
             run_payload, layout_settings, case_dir, cas_path, dat_path
@@ -1070,12 +1203,27 @@ def execute_case(
                 "PYFLUENT_POST_OVERRIDES": json.dumps(overrides),
             }
         )
-        report_result = run_stage_command("report", report_command, report_log, args.dry_run, env=env)
+        report_result, report_attempts, report_retry_kinds = (
+            run_report_stage_with_retries(
+                report_command,
+                log_dir,
+                geo_name,
+                mesh_id,
+                case_name,
+                args.dry_run,
+                env=env,
+            )
+        )
         print(
             f"  report: {report_result.status}"
             + (
                 f" rc={report_result.returncode}"
                 if report_result.returncode is not None
+                else ""
+            )
+            + (
+                f" attempts={report_attempts}"
+                if report_attempts > 1
                 else ""
             )
         )
@@ -1118,7 +1266,9 @@ def execute_case(
             shear_export_mode=SHEAR_EXPORT_MODE_FALLBACK,
             **worker_ids,
         )
-        retry_log = stage_log_path(log_dir, geo_name, case_name, "shear_retry_fallback")
+        retry_log = stage_log_path(
+            log_dir, geo_name, case_name, "shear_retry_fallback", mesh_id
+        )
         print(f"  shear: FAILED, retrying with --shear-export-mode fallback :: {command_to_string(retry_command)}")
         shear_retry_result = run_stage_command(
             "shear_retry_fallback", retry_command, retry_log, args.dry_run, env=build_subprocess_env()
@@ -1201,6 +1351,9 @@ def execute_case(
         "shear_retry_status": shear_retry_result.status if shear_retry_result is not None else "",
         "shear_retry_returncode": shear_retry_result.returncode if shear_retry_result is not None else None,
         "shear_retry_log_file": shear_retry_result.log_file if shear_retry_result is not None else "",
+        "report_transient_attempts": report_attempts,
+        "report_retry_attempted": bool(report_retry_kinds),
+        "report_retry_kinds": report_retry_kinds,
         "output_files_detected": detected_output_files(paths, fields),
         "error_summary": " | ".join(error_parts),
         "runtime_seconds_total": round(total_runtime, 3),
@@ -1314,6 +1467,8 @@ def build_summary_text(
         f"  warn: {report_counts.get(STATUS_WARN, 0)}",
         f"  dry_run: {report_counts.get(STATUS_DRY_RUN, 0)}",
         f"  skipped: {skipped_count(report_counts)}",
+        f"  transient_retried: {sum(1 for r in results if r.get('report_retry_attempted'))}",
+        f"  transient_retry_success: {sum(1 for r in results if r.get('report_retry_attempted') and r.get('report_stage_status') == STATUS_SUCCESS)}",
         "",
         "PyEnSight contour stage:",
         f"  success: {contour_counts.get(STATUS_SUCCESS, 0)}",
@@ -1389,7 +1544,9 @@ def print_console_summary(results: list[dict[str, Any]], summary_path: Path) -> 
         f"failed={report_counts.get(STATUS_FAILED, 0)} "
         f"warn={report_counts.get(STATUS_WARN, 0)} "
         f"skipped={skipped_count(report_counts)} "
-        f"dry_run={report_counts.get(STATUS_DRY_RUN, 0)}"
+        f"dry_run={report_counts.get(STATUS_DRY_RUN, 0)} "
+        f"transient_retried={sum(1 for r in results if r.get('report_retry_attempted'))} "
+        f"transient_retry_success={sum(1 for r in results if r.get('report_retry_attempted') and r.get('report_stage_status') == STATUS_SUCCESS)}"
     )
     print(
         f"Contours: success={contour_counts.get(STATUS_SUCCESS, 0)} "

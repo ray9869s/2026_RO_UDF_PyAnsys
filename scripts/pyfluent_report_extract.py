@@ -98,7 +98,7 @@ from ro.udm_layout import (  # noqa: E402
 
 REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
     "fluent_launch": (
-        "Cell 4: pyfluent.launch_fluent through switch_to_solver "
+        "Cell 4: pyfluent.launch_fluent(mode='solver') "
         "(excludes read_case_data)."
     ),
     "read_case_data": (
@@ -131,9 +131,23 @@ REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
 
 _extract_phase_seconds: dict[str, float] = {}
 _segmented_membrane_cp_subphase_seconds: dict[str, float] = {}
+_completed_extract_phases: list[str] = []
 _active_extract_phase: str | None = None
 _active_extract_phase_start: float | None = None
+_failed_extract_phase: str | None = None
 _extract_timing_started_at: float | None = None
+
+
+def _reset_extract_timing() -> None:
+    global _active_extract_phase, _active_extract_phase_start
+    global _failed_extract_phase, _extract_timing_started_at
+    _extract_phase_seconds.clear()
+    _segmented_membrane_cp_subphase_seconds.clear()
+    _completed_extract_phases.clear()
+    _active_extract_phase = None
+    _active_extract_phase_start = None
+    _failed_extract_phase = None
+    _extract_timing_started_at = time.monotonic()
 
 
 def _begin_extract_phase(name: str) -> None:
@@ -144,19 +158,28 @@ def _begin_extract_phase(name: str) -> None:
     _active_extract_phase_start = time.monotonic()
 
 
-def _end_extract_phase() -> None:
+def _end_extract_phase(*, completed: bool = True) -> None:
     global _active_extract_phase, _active_extract_phase_start
+    global _failed_extract_phase
     if _active_extract_phase is None or _active_extract_phase_start is None:
         return
-    _extract_phase_seconds[_active_extract_phase] = (
-        time.monotonic() - _active_extract_phase_start
-    )
+    name = _active_extract_phase
+    _extract_phase_seconds[name] = time.monotonic() - _active_extract_phase_start
+    if completed:
+        _completed_extract_phases.append(name)
+    else:
+        _failed_extract_phase = name
     _active_extract_phase = None
     _active_extract_phase_start = None
 
 
+def _abandon_active_extract_phase() -> None:
+    _end_extract_phase(completed=False)
+
+
 def _write_report_extract_timing(report_path: Path) -> None:
-    _end_extract_phase()
+    if _active_extract_phase is not None and _failed_extract_phase is None:
+        _end_extract_phase()
     timing_path = report_path / "report_extract_timing.json"
     total_seconds = None
     if _extract_timing_started_at is not None:
@@ -164,6 +187,8 @@ def _write_report_extract_timing(report_path: Path) -> None:
     payload = {
         "bucket_boundaries": REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES,
         "phases_seconds": dict(_extract_phase_seconds),
+        "completed_phases": list(_completed_extract_phases),
+        "failed_phase": _failed_extract_phase,
         "segmented_membrane_cp_subphases_seconds": dict(
             _segmented_membrane_cp_subphase_seconds
         ),
@@ -711,7 +736,7 @@ def create_z_normal_plane(solver_obj, surface_name, z_value_m):
 
 
 # ==========================================================
-# Cell 4. Launch Fluent through meshing mode and switch to solver
+# Cell 4. Launch Fluent in solver mode and load case/data
 # ==========================================================
 
 if __name__ == "__main__":
@@ -734,22 +759,20 @@ if __name__ == "__main__":
     solution = None
     transcript_is_running = False
     original_working_directory = os.getcwd()
-    _extract_phase_seconds.clear()
-    _segmented_membrane_cp_subphase_seconds.clear()
-    _extract_timing_started_at = time.monotonic()
+    _reset_extract_timing()
 
     try:
         _begin_extract_phase("fluent_launch")
-        print("Launching Fluent in meshing mode, then switching to solver...")
+        print("Launching Fluent in solver mode...")
         print(f"product_version = {product_version}")
         print(f"processor_count = {processor_count}")
         print(f"start_timeout = {fluent_start_timeout}")
         print(f"health_timeout = {fluent_health_timeout}")
         print(f"working directory = {case_path}")
 
-        meshing = pyfluent.launch_fluent(
+        solver = pyfluent.launch_fluent(
             product_version=product_version,
-            mode="meshing",
+            mode="solver",
             dimension=3,
             precision="double",
             processor_count=processor_count,
@@ -759,16 +782,10 @@ if __name__ == "__main__":
             cwd=as_fluent_path(case_path),
         )
 
-        print("Meshing session launched successfully.")
-        print("Switching to solver...")
-
-        solver = meshing.switch_to_solver()
-        meshing = None
-
         setup = solver.settings.setup
         solution = solver.settings.solution
 
-        print("Switched to solver successfully.")
+        print("Solver session launched successfully.")
 
         _end_extract_phase()
         _begin_extract_phase("read_case_data")
@@ -2467,6 +2484,7 @@ if __name__ == "__main__":
         display(summary_wide_df)
 
     except Exception as e:
+        _abandon_active_extract_phase()
         print("\n" + "=" * 72)
         print("ERROR: PyFluent post-processing report extraction failed.")
         print("=" * 72)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -275,3 +276,30 @@ def test_rebuild_ledger_output_defaults_to_inventory(monkeypatch, tmp_path):
     args = retro.resolve_path_defaults(retro.parse_args([]))
     assert args.results_root == meshes.resolve()
     assert args.output == (tmp_path / "inventory" / "mesh_ledger.csv").resolve()
+
+
+def test_extract_timing_json_records_failed_phase(tmp_path):
+    extract = load_report_extract()
+    extract._reset_extract_timing()
+    extract._begin_extract_phase("fluent_launch")
+    extract._end_extract_phase()
+    extract._begin_extract_phase("segmented_membrane_cp")
+    extract._abandon_active_extract_phase()
+    extract._write_report_extract_timing(tmp_path)
+    payload = json.loads((tmp_path / "report_extract_timing.json").read_text(encoding="utf-8"))
+    assert payload["failed_phase"] == "segmented_membrane_cp"
+    assert payload["completed_phases"] == ["fluent_launch"]
+    assert "segmented_membrane_cp" in payload["phases_seconds"]
+    assert "segmented_membrane_cp" not in payload["completed_phases"]
+
+
+def test_extract_timing_json_success_completes_last_phase(tmp_path):
+    extract = load_report_extract()
+    extract._reset_extract_timing()
+    extract._begin_extract_phase("fluent_launch")
+    extract._end_extract_phase()
+    extract._begin_extract_phase("csv_write")
+    extract._write_report_extract_timing(tmp_path)
+    payload = json.loads((tmp_path / "report_extract_timing.json").read_text(encoding="utf-8"))
+    assert payload["failed_phase"] is None
+    assert payload["completed_phases"] == ["fluent_launch", "csv_write"]

@@ -341,6 +341,187 @@ class TestWorkerExitCodeHelpers:
         assert "report=PLANNED" not in summary
 
 
+SOCKET_RESET_ERROR = (
+    "RuntimeError: IOCP/Socket: Connection reset "
+    "(An existing connection was forcibly closed by the remote host, 10054)"
+)
+SCHEME_HEAP_ERROR = (
+    "RuntimeError: wta(1st) to string->symbol\n"
+    "Error Object: #[free (3 cells)]\n"
+    "Error: Attempt to mark a free block\n"
+    "Error encountered in critical code section"
+)
+CANONICAL_CP_WRAPPED_SCHEME = (
+    "Canonical CP cannot be computed: segmented membrane CP failed "
+    "(RuntimeError: wta(1st) to string->symbol / #[free (3 cells)])."
+)
+CANONICAL_CP_LOGIC = (
+    "Canonical CP cannot be computed: summary_metrics_wide is missing "
+    "required columns ['cp_canon_window_avg']."
+)
+LOAD_BEARING_ERROR = (
+    "Load-bearing report compute failed: pp_m_in: missing or None"
+)
+MISSING_CAS_ERROR = (
+    "Final case file not found: C:/ro_data/runs/diamond/D0817_a45/"
+    "mesh/u0p3_p6M/D0817_a45_u0p3_p6M_final.cas.h5"
+)
+
+
+class TestReportTransientRetry:
+    def test_socket_reset_is_retryable(self, batch_post):
+        assert (
+            batch_post.classify_retryable_report_failure(SOCKET_RESET_ERROR)
+            == batch_post.RETRY_KIND_SOCKET_RESET
+        )
+
+    def test_scheme_heap_is_retryable(self, batch_post):
+        assert (
+            batch_post.classify_retryable_report_failure(SCHEME_HEAP_ERROR)
+            == batch_post.RETRY_KIND_SCHEME_HEAP
+        )
+
+    def test_canonical_cp_wrapper_around_scheme_is_retryable(self, batch_post):
+        assert (
+            batch_post.classify_retryable_report_failure(CANONICAL_CP_WRAPPED_SCHEME)
+            == batch_post.RETRY_KIND_SCHEME_HEAP
+        )
+
+    def test_canonical_cp_without_session_signature_is_not_retryable(self, batch_post):
+        assert batch_post.classify_retryable_report_failure(CANONICAL_CP_LOGIC) is None
+
+    def test_load_bearing_without_session_signature_is_not_retryable(self, batch_post):
+        assert batch_post.classify_retryable_report_failure(LOAD_BEARING_ERROR) is None
+
+    def test_missing_cas_is_not_retryable(self, batch_post):
+        assert batch_post.classify_retryable_report_failure(MISSING_CAS_ERROR) is None
+
+    def test_retries_socket_reset_then_succeeds(self, batch_post, tmp_path):
+        calls = []
+        sleeps = []
+
+        def runner(stage, command, log_path, dry_run, env=None):
+            calls.append(log_path.name)
+            log_path.write_text(SOCKET_RESET_ERROR if len(calls) == 1 else "ok", encoding="utf-8")
+            if len(calls) == 1:
+                return batch_post.StageResult(
+                    status=batch_post.STATUS_FAILED,
+                    returncode=1,
+                    log_file=log_path.as_posix(),
+                    error_summary=SOCKET_RESET_ERROR,
+                    stdout_tail=SOCKET_RESET_ERROR,
+                )
+            return batch_post.StageResult(
+                status=batch_post.STATUS_SUCCESS,
+                returncode=0,
+                log_file=log_path.as_posix(),
+            )
+
+        result, attempts, kinds = batch_post.run_report_stage_with_retries(
+            ["python", "scripts/pyfluent_report_extract.py"],
+            tmp_path,
+            "D2450_a45",
+            "max085_min006_cpg5_bl6_peel2",
+            "u0p2_p8M",
+            False,
+            max_retries=2,
+            settle_s=15.0,
+            sleeper=sleeps.append,
+            stage_runner=runner,
+        )
+        assert result.status == batch_post.STATUS_SUCCESS
+        assert attempts == 2
+        assert kinds == [batch_post.RETRY_KIND_SOCKET_RESET]
+        assert sleeps == [15.0]
+        assert calls[0].endswith("__report.log")
+        assert "bl6" in calls[0]
+        assert calls[1].endswith("__report_retry1.log")
+
+    def test_does_not_retry_load_bearing(self, batch_post, tmp_path):
+        calls = []
+
+        def runner(stage, command, log_path, dry_run, env=None):
+            calls.append(1)
+            log_path.write_text(LOAD_BEARING_ERROR, encoding="utf-8")
+            return batch_post.StageResult(
+                status=batch_post.STATUS_FAILED,
+                returncode=1,
+                log_file=log_path.as_posix(),
+                error_summary=LOAD_BEARING_ERROR,
+            )
+
+        result, attempts, kinds = batch_post.run_report_stage_with_retries(
+            ["python", "scripts/pyfluent_report_extract.py"],
+            tmp_path,
+            "D0817_a45",
+            "max085_min006_cpg5_bl4_peel2",
+            "u0p3_p6M",
+            False,
+            max_retries=2,
+            settle_s=15.0,
+            sleeper=lambda _s: None,
+            stage_runner=runner,
+        )
+        assert result.status == batch_post.STATUS_FAILED
+        assert attempts == 1
+        assert kinds == []
+        assert calls == [1]
+
+    def test_retries_wrapped_scheme_heap(self, batch_post, tmp_path):
+        calls = []
+
+        def runner(stage, command, log_path, dry_run, env=None):
+            calls.append(1)
+            log_path.write_text(CANONICAL_CP_WRAPPED_SCHEME, encoding="utf-8")
+            return batch_post.StageResult(
+                status=batch_post.STATUS_FAILED,
+                returncode=1,
+                log_file=log_path.as_posix(),
+                error_summary=CANONICAL_CP_WRAPPED_SCHEME,
+            )
+
+        result, attempts, kinds = batch_post.run_report_stage_with_retries(
+            ["python", "scripts/pyfluent_report_extract.py"],
+            tmp_path,
+            "D0817_a45",
+            "max085_min006_cpg5_bl4_peel2",
+            "u0p3_p6M",
+            False,
+            max_retries=2,
+            settle_s=0.0,
+            sleeper=lambda _s: None,
+            stage_runner=runner,
+        )
+        assert attempts == 3
+        assert kinds == [
+            batch_post.RETRY_KIND_SCHEME_HEAP,
+            batch_post.RETRY_KIND_SCHEME_HEAP,
+        ]
+        assert result.status == batch_post.STATUS_FAILED
+        assert calls == [1, 1, 1]
+
+
+def test_stage_log_path_includes_mesh_id(batch_post, tmp_path):
+    path = batch_post.stage_log_path(
+        tmp_path,
+        "D2450_a45",
+        "u0p2_p8M",
+        "report",
+        "max085_min006_cpg5_bl6_peel2",
+    )
+    assert path.name == (
+        "D2450_a45__max085_min006_cpg5_bl6_peel2__u0p2_p8M__report.log"
+    )
+    bl4 = batch_post.stage_log_path(
+        tmp_path,
+        "D2450_a45",
+        "u0p2_p8M",
+        "report",
+        "max085_min006_cpg5_bl4_peel2",
+    )
+    assert path != bl4
+
+
 def test_run_returns_2_when_inventory_missing(batch_post, tmp_path: Path, capsys):
     args = batch_post.parse_args([
         "--inventory-csv",
