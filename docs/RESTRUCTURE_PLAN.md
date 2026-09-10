@@ -4,6 +4,14 @@
 id grammar, path rules, manifest schemas, settled decisions, and the silent-risk
 list. Do not infer new work from the historical step detail in section 10.
 
+Live campaign facts (31 geo_ids / 31 meshes / 279 solver runs, sinusoidal
+rebuild, curvature gate, `REF_empty`, flux decomposition, `u_mean_ms`
+mislabeled) are in `docs/GEOMETRY_DESIGN.md`, `docs/MESH_LANDSCAPE.md`,
+`docs/metrics_conventions.md`, `docs/POSTPROCESSING_MAP.md`, and
+`docs/PIPELINE_MAP.md`. Section 7 rows superseded since this plan closed:
+`Empty` is now `REF_empty`; CAD exists for all four families plus empty;
+the whitelist is 31 (no `_f320`).
+
 **Branch:** `feat/diagnostics-and-mesh-ledger`
 
 Server checkpoint after the artifact rename (`1ec3263`): full remesh of

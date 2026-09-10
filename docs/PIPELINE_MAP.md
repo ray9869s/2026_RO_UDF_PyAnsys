@@ -28,6 +28,9 @@ spawned by a batch driver; then leftovers.
 | `rebuild_mesh_ledger_from_logs.py` | Rebuild `mesh_ledger.csv` from `mesh_log_*.txt` | `python scripts/rebuild_mesh_ledger_from_logs.py [--results-root PATH] [--output PATH] [--dry-run]` | `RO_DATA_ROOT` |
 | `residual_measurement_report.py` | Offline residual/QoI stationarity report (no Fluent) | `python scripts/residual_measurement_report.py [--results-root PATH] [--output-dir PATH] [--family] [--geo-id] [--mesh-id] [--run-id] [--window N] [--residual-target F] [--max-iter N] [--include-hidden] [--dry-run] [--verbose]` | `RO_DATA_ROOT` |
 | `make_summary_figures.py` | Plot aggregate post summary CSVs | `python scripts/make_summary_figures.py [--summary-csv PATH] [--status-csv PATH] [--out-dir PATH]` | `RO_DATA_ROOT` (defaults) |
+| `rebuild_mesh_manifest.py` | Rebuild an **existing** `manifest.json` from mesh log + `.msh.h5` (dry-run default; `--allow-field` required to write) | `python scripts/rebuild_mesh_manifest.py --geo-id ID \| --family F \| --all [--allow-field NAME] [--apply]` | `RO_DATA_ROOT` |
+| `backfill_mesh_manifest_fields.py` | Add missing required keys to an **existing** mesh `manifest.json` from the geometry registry | `python scripts/backfill_mesh_manifest_fields.py --geo-id ID \| --family F [--apply]` | `RO_DATA_ROOT` |
+| `backfill_run_manifest_fields.py` | Same for run manifests | `python scripts/backfill_run_manifest_fields.py --geo-id ID \| --family F [--apply]` | `RO_DATA_ROOT` |
 | `check_d2450_fresh_start_reference.py` | Non-gating diagnostic vs archive constants for hardcoded `D2450_a45` / peel2 / `u0p2_p6M` | `python scripts/check_d2450_fresh_start_reference.py` (argparse; **no flags**) | `RO_DATA_ROOT` |
 | `print_cp_definition_table.py` | Print CP definition comparison table from JSONs | `python scripts/print_cp_definition_table.py [--left-json PATH] [--right-json PATH] [--plug-json PATH] [--parabolic-json PATH] [--left-label S] [--right-label S] [--left-cells N] [--right-cells N]` | none |
 | `pyfluent_field_check.py` | Diagnostic field / UDM sanity check | `python scripts/pyfluent_field_check.py [--config PATH] [--family] [--geo-id] [--mesh-id] [--run-id] [--geo-name] [--case-name] [--with-fluent] [--fail-on-warn]` | `PYFLUENT_POST_CONFIG` optional; `RO_DATA_ROOT` for four-id selection |
@@ -222,10 +225,35 @@ All `_probe_*`, `_tmp_*`, and `scripts/analysis/*` (section 1.3). Nothing in `ba
 ### 4.6 Confusing for a fresh reader
 
 - Header comments in `batch_meshing.py` / `batch_solver_sweep.py` still say `My_CFD_Project/01_Scripts/...`.
-- `configs/batch_config.py` is currently a **temporary** `D2450_a45` `m_max` study with `dry_run = True` and empty production commentary at the bottom — not the nine-geometry campaign matrix.
+- `configs/batch_config.py` holds the **31-mesh campaign matrix** (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) plus a one-case `solver_sweep_cases` starter (`REF_empty` / `u0p2_p6M`). Campaign size is 31 × 9 = 279 solver runs; the solver list is not yet the full 279.
 - Dual metadata filenames (`manifest.json` + `mesh_run_record.json`) without a single glossary in code.
 - Orchestrators take `--family --geo-id --mesh-id --run-id`; workers still accept `--geo-name` / `--case-name` as **filename labels** equal to those ids (post) or via overrides JSON (solve/mesh).
 - `needs_lead_recheck` is written and validated but **never read** by any post/solve script to change behaviour (see §6).
+- `validate_spacer_wall_zones` exists in `manifest_validation.py` but is called only from tests, not on the solver path. Import-zone count (`N boundary face zones`) is the cheap pre-mesh check; see `docs/GEOMETRY_DESIGN.md`.
+
+### 4.7 Manifest schema and migration
+
+Adding a field to `_GEOMETRY_FIELDS` in `src/ro/manifest.py` appends it to
+**both** `MESH_MANIFEST_REQUIRED_FIELDS` and `RUN_MANIFEST_REQUIRED_FIELDS`.
+`read_mesh_manifest` / `read_run_manifest` then raise on every existing leaf
+that lacks the key. Commit `e493975` added
+`membrane_blocked_area_frac_geometric` this way and broke 34 mesh leaves and
+14 run manifests. Recovery is `scripts/backfill_mesh_manifest_fields.py` and
+`scripts/backfill_run_manifest_fields.py` (json.load the raw file, fill
+missing required keys from the registry, then validate).
+
+New **optional** fields (`wavelength_m`, `amplitude_m`) are deliberately kept
+**out** of `_GEOMETRY_FIELDS` so existing manifests stay readable.
+
+`rebuild_mesh_manifest.py` rewrites an existing `manifest.json` from the mesh
+log + `.msh.h5` + registry overlay. `--allow-field` is a write guard: a
+non-empty diff that touches any other key aborts. Numeric diffs use a
+relative tolerance because `3.465 * 1e-3` and `3.465e-3` differ by one ULP.
+
+Neither backfill nor rebuild can create a **missing** `manifest.json`. That
+case requires re-meshing (`skip_existing_mesh` keys on the `.msh.h5`, so a
+leaf with a mesh file and no manifest is skipped forever until the file is
+removed).
 
 ---
 
@@ -287,17 +315,17 @@ Project tree (not under `RO_DATA_ROOT`): `configs/`, `scripts/`, `templates/`, `
 
 Things the code does not yet handle that the campaign needs. No fixes proposed.
 
-1. **Per-family UDF channel geometry / `inlet_profile_G` / `u_mean` validity**  
-   `260822_RO_UDF.c` hardcodes `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, `INLET_AREA_EXPECTED_M2` for the current diamond channel. Lazy-fill of mesh `inlet_profile_G` and run `u_mean_ms = u_target_ms / G` is implemented **per mesh**, but those UDF constants are not recomputed per family. `docs/RESTRUCTURE_PLAN.md` states regenerating pillar / sinusoidal families with a different channel height would silently invalidate them (same failure class as reusing G across meshes). No code path parameterizes those `#define`s by family.
+1. **Per-family UDF channel geometry / `inlet_profile_G` / `u_mean_ms` label**  
+   `260822_RO_UDF.c` hardcodes `INLET_Z_BOTTOM`, `CHANNEL_HEIGHT`, `INLET_AREA_EXPECTED_M2` for the current diamond channel. All 31 campaign geometries share that channel (\(h = 0.770\,\mathrm{mm}\), \(W = 3.465\,\mathrm{mm}\)). `inlet_profile_G` is a campaign constant (Jensen excess of \(6\eta(1-\eta)\)); measured `REF_empty` vs D2450_a45 agree to \(3.2\times10^{-6}\). The solver still lazy-fills and compares per mesh as an integrity check. Run-manifest `u_mean_ms = u_target / G` is a **mislabeled profile coefficient**, not physical bulk velocity — see `docs/metrics_conventions.md`. No code path parameterizes those `#define`s by family.
 
 2. **`needs_lead_recheck` is metadata-only**  
-   Set `True` only for pillar in `campaign_geometry`, required on run manifests, validated for pillar/diamond. **No script reads the flag to alter CP window, inventory, or post.** Pillar lead recheck is therefore undeclared work relative to the flag’s presence.
+   Set `True` only for pillar in `campaign_geometry`, required on run manifests, validated for pillar/diamond. **No script reads the flag to alter CP window, inventory, or post.** Pillar lead recheck is therefore undeclared work relative to the flag’s presence. All 9 pillar geo_ids carry the flag (`_f320` variants were dropped).
 
 3. **No in-repo geometry generation**  
    Pipeline assumes `.dsco` already exists. Campaign matrix expansion that needs new CAD is outside automation.
 
 4. **Surface-size grid independence not closed**  
-   `AGENTS.md` / restructure notes: bl4-vs-bl6 LMH/CP figures are wall-normal, not an `m_max` study. Live `batch_config.py` is a temporary max120/max060 study with `dry_run=True` — study completion status is UNKNOWN from code alone.
+   `AGENTS.md` / restructure notes: bl4-vs-bl6 LMH/CP figures are wall-normal, not an `m_max` study. The `m_max` exploration on D2450_a45 is recorded in `docs/MESH_LANDSCAPE.md`; neither the `bl` nor the `m_max` axis is converged.
 
 5. **MFBO layer**  
    Mentioned in `AGENTS.md` as planned, not implemented.
@@ -306,7 +334,7 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
    Rerun optionally wants `pyfluent_report_extract.py --geo-name/--case-name`; report worker is env/`PYFLUENT_POST_*` driven. Auto report-after-rerun is deferred in code.
 
 7. **ml / sin / empty `needs_lead_recheck` policy**  
-   Validation only forces pillar=`True` and diamond=`False`. Behaviour for `ml` / `sin` / `empty` beyond “must be bool” is UNKNOWN relative to campaign intent.
+   Validation only forces pillar=`True` and diamond=`False`. Behaviour for `ml` / `sin` / `empty` beyond “must be bool” is UNKNOWN relative to campaign intent. All 9 pillar geo_ids are `True`.
 
 8. **Manual `active_solver_rerun_candidates.csv`**  
    Inventory writes `rerun_candidates.csv`; nothing promotes to `active_solver_rerun_candidates.csv`. Human step is undocumented in code (only runbook prose).
@@ -314,5 +342,5 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
 9. **Archive vs live identity mapping**  
    Fresh-start diagnostic hardcodes archive-derived scalars; no automated archive→four-id importer. Recovering other archive cases is manual.
 
-10. **Production batch matrix not active in-tree**  
-    `configs/batch_config.py` comments say restore production lists after the study; current checked-in case lists are the temporary study. Running “the campaign” requires that restore — not done in code as of this map.
+10. **Solver sweep list is not yet 279**  
+    `mesh_batch_cases` is the 31-mesh campaign. `solver_sweep_cases` currently holds a starter (`REF_empty` / `u0p2_p6M`). Filling 31 × 9 operating points is still a config edit, not a code gap.

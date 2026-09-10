@@ -87,7 +87,9 @@ until session exit). Order:
 | Volume integrals | `pp_volint_salt_mass_source`, `pp_volint_total_mass_source`, UDM area sum | mass balance |
 
 `membrane_blocked_area_frac` is read from the **run manifest** into the LMH
-expression (not a Fluent query).
+expression (not a Fluent query). It is **0.0 campaign-wide**: Fluent
+`area_mem` already excludes contact patches. See
+`docs/metrics_conventions.md`.
 
 ### Cell 8 — Compute Cell-7 reports
 
@@ -201,15 +203,28 @@ still runs. Re-enable for final mesh-study reporting.
 
 ### Measured wall-clock cost
 
-About **33 minutes per case** (report extract alone). Thirteen cases ran
-overnight. Of that time:
+**38.7 min** for `REF_empty` at 628k cells (the smallest mesh). Breakdown:
 
-| fraction | attribution |
-|----------|-------------|
-| ~9% | `compute_cp_spread` quantile path (default off; turning it off changed no reported CP) |
-| ~91% | **unattributed** — session start, `read_case_data`, Cell-7 create/compute, mid-plane \(c_b\), no-spread segmented CP, CSV write |
+| fraction | phase |
+|----------|--------|
+| 62% | `segmented_membrane_cp` |
+| 16% | Cell 7 report creation |
+| 7% | Cell 8.4 mid-plane \(c_b\) |
+| 7% | Cell 8 compute |
+| 3.5% | `read_case_data` |
+| 3.3% | Fluent launch |
 
-Do not treat spread as the cost lever. Profile before optimising.
+Sub-timers: `surface_report_def_create` ~680 s across 135 definitions versus
+~180 s of compute, so roughly **80% of the cost is PyFluent settings-API
+round trips**, not Fluent computation. Cell-count-dependent phases are under
+10% of the total. Do not treat `compute_cp_spread` as the cost lever
+(default off; turning it off changed no reported CP).
+
+Run-to-run variance on the same case: segmented CP phase 1438.7 / 1091.0 /
+842.9 s. Any optimisation must be measured with repeats.
+
+Profile before optimising. The older "~33 min/case with 91% unattributed"
+figure is superseded.
 
 ### Batch log naming pitfall
 
@@ -330,6 +345,39 @@ Renamed or copied into summary:
 | threshold / diagnostic strings | config + exception text |
 | `c_b_window_salt_field`, `c_b_window_is_mass_fraction_field` | which field succeeded |
 | `cp_scalar_rescale_guard_threshold` | `CP_SCALAR_RESCALE_GUARD_THRESHOLD` |
+
+### Flux-massflow decomposition
+
+A flux-massflow report on a zone adjacent to a UDF mass source returns three
+keys, with values wrapped in lists:
+
+| key | meaning |
+|-----|---------|
+| `'pp_m_in'` | bare; includes the source term |
+| `'pp_m_in(without-sources)'` | physical boundary flux |
+| `'pp_m_in(User Mass Source)'` | integrated source |
+
+Identity, verified to full precision: bare = without-sources + mass_source.
+The physical value is `(without-sources)`: the inlet value equals
+\(\rho U_{\mathrm{TARGET}} A_{\mathrm{inlet}}\) to eight digits, and a
+velocity-inlet flux is not free. Fluent's transcript echo and its expression
+engine both use without-sources. `m_in` / `m_out` now carry without-sources.
+
+The bare values look like a swap between inlet and outlet because the same
+source term is added to both boundaries — an algebraic identity, not a
+binding error. Only `pp_m_in` and `pp_m_out` have multi-key payloads out of
+76 reports; surface reports are single-key.
+
+### Load-bearing column guards
+
+`LOAD_BEARING_REPORT_NAMES` (14 names, verified against the 76 actual Cell 7
+reports) and `LOAD_BEARING_SUMMARY_METRICS` (23, including the pressure
+group) live in `src/ro/fluent_report_helpers.py`. Extract exits non-zero if
+any of them would be written empty. The guards run **after** the CSV and raw
+JSON are written so the artifacts survive for diagnosis.
+
+A Cell 8 `except Exception` was silently blanking the mass-closure chain
+while the run reported success. That is why the guards exist.
 
 ---
 

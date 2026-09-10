@@ -81,7 +81,7 @@ _ML_LAYER_ANGLES_DEG = (45.0, 90.0, -45.0)
 # (effective_area = nominal * (1 - frac)). Non-zero values would put one
 # family on a different denominator and inflate LMH relative to the rest;
 # changing the consumed field would also invalidate D2450_a45 verified
-# references (u_mean 0.1992807169514518, inlet_profile_G 1.00360939613).
+# references (physical bulk 0.2 m/s, inlet_profile_G 1.00360939613).
 # Real geometry lives in membrane_blocked_area_frac_geometric (unused).
 _MEMBRANE_BLOCKED_AREA_FRAC_CONSUMED = 0.0
 _ML_COMMON = {
@@ -180,9 +180,10 @@ _PILLAR_HAS_HOLE: dict[str, bool] = {
     "P_p100_h00": False,
     "P_p100_h15": True,
     "P_p100_h30": True,
-    "P_p80_h00_f320": False,
-    "P_p80_h15_f320": True,
 }
+# P_p80_h00_f320 / P_p80_h15_f320 (d_f = 0.320 mm) have no CAD and were
+# never meshed. Excluded until an Ali 2019 / Qamar 2021 filament-diameter
+# review calls for them.
 
 
 def membrane_contact_width_m(
@@ -268,7 +269,7 @@ def _ml_layer_axis_and_joint_z_m(
 
 
 def _pillar_dp_token(geo_id: str) -> str:
-    """P_p80_h15_f320 -> P_p80."""
+    """P_p80_h15 -> P_p80."""
     parts = geo_id.split("_")
     return f"{parts[0]}_{parts[1]}"
 
@@ -352,15 +353,14 @@ def _ml_geometry_entry(geo_id: str) -> dict[str, Any]:
 
 
 def _pillar_geometry_entry(geo_id: str) -> dict[str, Any]:
-    key = geo_id.split("_f320", 1)[0]
-    has_hole = _PILLAR_HAS_HOLE[key if key in _PILLAR_HAS_HOLE else geo_id]
-    blocked_geometric = _PILLAR_BLOCKED_GEOMETRIC[_pillar_dp_token(key)]
+    has_hole = _PILLAR_HAS_HOLE[geo_id]
+    blocked_geometric = _PILLAR_BLOCKED_GEOMETRIC[_pillar_dp_token(geo_id)]
     zones = list(_PILLAR_SPACER_WALL_ZONES_BASE)
     if has_hole:
         zones.append("wall_spacer_hole")
     zones.append(_PILLAR_SPACER_WALL_BUFFER)
     return {
-        "spacing_code": key,
+        "spacing_code": geo_id,
         "attack_angle_deg": 0.0,
         "filament_d_m": _FILAMENT_D_M,
         "bridge_radius_m": 0.0,
@@ -471,7 +471,7 @@ def geometry_parameters_for_geo_id(geo_id: str) -> dict[str, Any]:
         return _diamond_geometry_entry(geo_id)
     if geo_id in _ML_GEOMETRY:
         return _ml_geometry_entry(geo_id)
-    if geo_id in _PILLAR_HAS_HOLE or geo_id.split("_f320", 1)[0] in _PILLAR_HAS_HOLE:
+    if geo_id in _PILLAR_HAS_HOLE:
         return _pillar_geometry_entry(geo_id)
     if geo_id.startswith("S"):
         return _sinusoidal_geometry_entry(geo_id)

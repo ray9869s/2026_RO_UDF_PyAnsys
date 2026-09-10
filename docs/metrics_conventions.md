@@ -302,3 +302,44 @@ solution. Absent at \(u = 0.2\) and \(u = 0.3\), where no wall area exceeds
 even \(Y_i = 0.05\).
 `probe_cp_reconstruction` gives CP raw \(1.06505\) vs reconstructed
 \(1.08708\), the documented \(\sim 2\%\) lift with no sign of divergence.
+
+---
+
+## `u_mean_ms` is mislabeled
+
+The UDF applies \(u = U_{\mathrm{TARGET}}\times\mathrm{shape}(\eta)/G\), so
+the discrete area-weighted mean inlet velocity is exactly \(U_{\mathrm{TARGET}}\).
+A probe on D2450_a45 confirms \(0.2\,\mathrm{m/s}\) and inlet area
+\(2.66805\times10^{-6}\,\mathrm{m}^2\) with zero clamped faces.
+
+The run manifest records `u_mean_ms = u_target / G`. That is the
+pre-normalisation profile coefficient carried over from the 260810 UDF's
+`#define U_MEAN`, not the physical bulk velocity. The documented D2450_a45
+reference "u_mean 0.1992807169514518" is therefore mislabeled: the physical
+bulk velocity for that run is \(0.2\,\mathrm{m/s}\). Nothing in the solver
+or post pipeline uses `u_mean_ms` for physics, so no results are wrong, but
+do not call it \(u_{\mathrm{mean}}\). Suggested rename:
+`u_profile_coefficient_ms` (not done; record the meaning until a schema
+change).
+
+## `inlet_profile_G` is a campaign constant
+
+`REF_empty` \(G = 1.003612623\) versus Diamond D2450_a45 \(G = 1.00360939613\):
+agreement of \(3.2\times10^{-6}\) between a 628k-cell empty channel and a
+796k-cell spacer channel. \(G\) is the Jensen excess from discretely
+integrating the concave shape function \(6\eta(1-\eta)\), not a mesh
+property. The inlet face is spacer-free in every family because the buffer
+regions are empty, so per-mesh \(G\) re-measurement is not physically
+required. The solver still lazy-fills and compares at \(10^{-6}\) relative
+as an integrity check.
+
+## `membrane_blocked_area_frac` stays 0.0
+
+Measured: `area_mem` is \(1.680871\times10^{-4}\) on `REF_empty` and
+\(1.576603\times10^{-4}\) on Diamond, so Fluent's surface-area report already
+excludes the spacer-membrane contact patches (6.2% on Diamond). Applying
+\((1-f)\) on top would double-count. The old Pillar values 0.08 / 0.06 / 0.05
+would have inflated LMH by 8.7 / 6.4 / 5.3% and were removed before any
+Pillar solver run (`e493975`). `membrane_blocked_area_frac_geometric`
+(Pillar 0.047 / 0.084 / 0.131) is CAD footprint metadata over the unit-cell
+node, a different quantity, and is not consumed by LMH.

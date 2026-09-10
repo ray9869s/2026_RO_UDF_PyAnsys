@@ -69,6 +69,8 @@ different core strategy?
 
 **31** = 9 Diamond + 3 ML + 9 Pillar + 9 Sinusoidal + `REF_empty`.
 Solver campaign is 31 meshes × 9 operating points = **279** runs.
+All 31 meshes are built and their manifests validate. `P_p80_*_f320` is
+not in the whitelist (no CAD).
 Quality ordering at the campaign mesh settings:
 
 | family | ortho | AR | why |
@@ -89,8 +91,8 @@ Quality ordering at the campaign mesh settings:
 
 Cross-family comparison is at the **total** spacer-wall level. Decomposition
 is for within-family interpretation. Re-meshing Diamond to split labels would
-invalidate its verified references (D2450_a45: 796,009 cells, \(u_{\mathrm{mean}}\)
-0.1992807169514518, `inlet_profile_G` 1.00360939613) — leave it.
+invalidate its verified references (D2450_a45: 796,009 cells, physical bulk
+velocity \(0.2\,\mathrm{m/s}\), `inlet_profile_G` 1.00360939613) — leave it.
 `wall_spacer_buffer` is the buffer-cut face on every split family (ML, Pillar,
 Sinusoidal).
 
@@ -159,6 +161,26 @@ per-geo quality is in each mesh manifest; the case that closed the matrix:
 
 Quality is inside campaign range. `S_a193_l6930` is worse (ortho 0.1118,
 skew 0.640). Porosity vs `S_a144_l1733`: 0.80629 vs 0.79949.
+
+### Import zone counts
+
+First geometry import prints `N boundary face zones` (= recognised CAD
+named selections). Verified on all 44 leaves: diamond 11, ml 15, pillar
+h00 13, pillar h15/h30 14, sin 13, REF_empty 10. See
+`docs/GEOMETRY_DESIGN.md`.
+
+### Meshing is deterministic
+
+Three re-meshes with identical CAD and parameters reproduced cell count,
+`ortho_min`, `AR_max`, and skewness to all printed digits: ML c160/c267,
+`REF_empty`, and `S_a193_l1733`.
+
+`print_meshing_input_summary` used Python `print()` while the PyFluent
+transcript captures only Fluent session output, so no pre-existing mesh_log
+contains the `Periodic translation [mm]` line that
+`parse_meshing_input_summary` expects. The worker now also appends that
+block to `mesh_log_*.txt`. Sin, ML re-meshes, and `REF_empty` logs carry
+it; older Diamond/Pillar logs do not.
 
 ### Observations
 

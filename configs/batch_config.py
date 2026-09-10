@@ -88,8 +88,9 @@
 #   cp_canon        contaminated by local facet artifacts, NOT usable
 #   cp_canon_max    varies by orders of magnitude, useless
 #
-# Post-processing costs ~33 min per case; compute_cp_spread=False saved only
-# 9%, so the cost is accepted rather than optimised.
+# Post-processing costs ~39 min per case on the smallest mesh (REF_empty,
+# 628k cells); ~80% is PyFluent settings-API round trips. See
+# docs/POSTPROCESSING_MAP.md.
 #
 # continue_on_failure stays True: a CAD or gate failure on a new family is a
 # result, and the four bad CAD files may still be mid-repair.

@@ -28,6 +28,9 @@ Common geometry (mesh + run):
 Run-only:
   u_mean_source_mesh_id:      must equal mesh_id
   needs_lead_recheck:         bool (True for pillar)
+  u_mean_ms:                  stored as u_target/G; mislabeled profile
+                              coefficient, not physical bulk velocity
+                              (see docs/metrics_conventions.md)
 """
 
 from __future__ import annotations

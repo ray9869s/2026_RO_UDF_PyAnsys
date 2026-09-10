@@ -1,22 +1,20 @@
 # Reverse-osmosis spacer CFD campaign
 
 Systematic CFD comparison of reverse-osmosis membrane feed spacer designs.
-Ansys Fluent 25.1 is driven by PyFluent. The campaign has not started: the
-infrastructure is in place, and one geometry has been taken through the full
-pipeline on the solver server.
+Ansys Fluent 25.1 is driven by PyFluent. The campaign mesh set is built
+(31 geometries); the 279-run solver sweep is the next stage.
 
 ## Campaign
 
-Four spacer families: diamond, multi-layer, pillar, and sinusoidal. Each
-geometry is run at nine operating points — inlet velocity 0.1 / 0.2 / 0.3 m/s
-crossed with outlet gauge pressure 4 / 6 / 8 MPa.
+Four spacer families — diamond, multi-layer, pillar, and sinusoidal — plus an
+empty reference channel. 31 geometries, each at nine operating points (inlet
+velocity 0.1 / 0.2 / 0.3 m/s crossed with outlet gauge pressure 4 / 6 / 8 MPa)
+→ 279 solver runs.
 
-Phase one is diamond: spacings D2450, D1225, D0817 at attack angles 30°, 45°,
-60° — nine geometries, 81 runs. Only diamond CAD exists today; the other
-families will be regenerated under the same parametric scheme.
-
-The verified geometry is `D2450_a45` on mesh `max085_min006_cpg5_bl4_peel2`
-(796,009 cells). Historical runs under `RO_DATA_ROOT/archive/` are not read.
+All 31 meshes are built at campaign settings `max085_min006_cpg5_bl4_peel2`
+(D0817_a60 uses `m_max` 0.060). The diamond reference remains `D2450_a45` on
+that mesh (796,009 cells). Historical runs under `RO_DATA_ROOT/archive/` are
+not read.
 
 ## Pipeline
 
@@ -125,7 +123,7 @@ layout from the mesh manifest, UDM index parity with the C enum, UDF
 patching, inlet-`G` parse-and-assert, stop-reason classification, inventory
 and post-processing wiring, and import safety (every `scripts/` entry point
 must import with `RO_DATA_ROOT` unset). The meshing–solve–post loop is
-exercised on the Windows server, so far only for `D2450_a45`.
+exercised on the Windows server.
 
 ## Layout and a single case
 

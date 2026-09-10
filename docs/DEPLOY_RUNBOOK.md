@@ -3,7 +3,7 @@
 Paste these commands into **Git Bash on the Windows server**. Fluent / PyEnSight
 run only there, never in WSL.
 
-Current branch: `feat/diagnostics-and-mesh-ledger`.
+Current branch: `main`.
 Repo root: `/c/pyfluent` (`C:\pyfluent`).
 Data root: `C:\ro_data` (`RO_DATA_ROOT`).
 
@@ -33,8 +33,8 @@ pytest's `pythonpath = ["src"]` does not cover CLI scripts.
 
 ```bash
 cd /c/pyfluent
-git switch feat/diagnostics-and-mesh-ledger
-git pull --ff-only origin feat/diagnostics-and-mesh-ledger
+git switch main
+git pull --ff-only origin main
 python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 ```

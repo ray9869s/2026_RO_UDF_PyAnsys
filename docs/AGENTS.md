@@ -49,9 +49,12 @@ at 3–5% of \(h\)), given that `bl` 12 failed at AR 251.9? See
 `docs/MESH_LANDSCAPE.md`.
 
 **Mesh / geometry session notes:** `docs/MESH_LANDSCAPE.md` (parameter
-landscape, inventory, convergence gate), `docs/GEOMETRY_DESIGN.md`
-(joint-sphere rule, Pillar bore axis), `docs/POSTPROCESSING_MAP.md` (extract
-cost and log naming).
+landscape, 31-mesh inventory, convergence gate, meshing determinism),
+`docs/GEOMETRY_DESIGN.md` (joint-sphere rule, Pillar bore, sinusoidal CAD
+and curvature gate, REF_empty, import-zone counts),
+`docs/POSTPROCESSING_MAP.md` (extract cost, flux decomposition, load-bearing
+guards), `docs/metrics_conventions.md` (`u_mean_ms` label, `G`, blocked-area),
+`docs/PIPELINE_MAP.md` (manifest schema / backfill / rebuild).
 
 The D2450_a45 peel2 remesh matched the archive ledger (796,009 cells, ortho
 0.102087, AR 62.7715, skew 0.67063399). The restructure is physics-neutral.

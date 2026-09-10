@@ -142,13 +142,49 @@ No filament–filament joint sphere on Pillar (`bridge_radius_m = 0`): coplanar
 filaments fully interpenetrate at the node and the pillar covers it.
 `wall_spacer_hole` is listed only for h15/h30 (rule 3-3).
 
+`P_p80_h00_f320` / `P_p80_h15_f320` (\(d_f = 0.320\,\mathrm{mm}\)) have no
+CAD, no `batch_config` case, and were never meshed. Dropped from the
+31-id whitelist; re-add only if an Ali 2019 / Qamar 2021 filament-diameter
+review calls for them.
+
+---
+
+## Sinusoidal family
+
+Nine geo_ids `S_a{072,144,193}_l{1733,3465,6930}` replace the old 11-id
+`S{wavelength}_A{amplitude}` scheme. `S_A000` and `S3465_A400_p2310` never
+existed as CAD. Tokens are rounded labels resolved by explicit lookup in
+`_SINUSOIDAL_AMPLITUDE_BY_TOKEN` / `_SINUSOIDAL_WAVELENGTH_BY_TOKEN`, never
+parsed arithmetically.
+
+Campaign spanwise pitch \(W = 3.465\times10^{-3}\,\mathrm{m}\).
+Half-amplitudes: \(a_{072}=W/48\), \(a_{144}=W/24\), \(a_{193}=W/18\).
+Wavelengths: \(\lambda_{1733}=W/2\), \(\lambda_{3465}=W\), \(\lambda_{6930}=2W\).
+
+Layout is the campaign \(1+7+2\): `n_active_cells = 7`,
+`cell_length_x_m = W`, `periodic_shift_y_m = W` for all nine. The old
+registry wrongly set both length fields to the streamwise wavelength.
+
+Centerline \(y = a\cos(2\pi x/\lambda)\), swept with a radius
+\(4.0\times10^{-4}\,\mathrm{m}\) circle, centerline at \(z = 0\). Axial
+filament diameter \(8.0\times10^{-4}\,\mathrm{m}\). Cylindrical spanwise
+bridges, diameter \(4.0\times10^{-4}\,\mathrm{m}\), centerline at \(z = 0\),
+one at every sine extremum, spanning \(\Delta y = W + 2a\) so they cross the
+periodic boundaries. Bridge count \(= 2(24.255/\lambda)+1\), verified against
+CAD as 29 / 15 / 8 for l1733 / l3465 / l6930.
+
+`bridge_radius_m = 0` is correct: sin has no spherical joint sphere. The
+cylindrical bridge is CAD geometry on `wall_spacer_bridge`. The name overlap
+with ML's joint-sphere `bridge_radius_m` is coincidental.
+
 ---
 
 ## Sweep curvature margin (sinusoidal)
 
 A tube of radius \(r\) swept along a plane curve self-intersects when the
-centerline curvature radius \(R\) drops below \(r\). For a sine centerline
-\(y = a\sin(2\pi x/\lambda)\), at a crest \(y' = 0\) and
+centerline curvature radius \(R\) drops below \(r\). CAD uses
+\(y = a\cos(2\pi x/\lambda)\); at a crest \(y' = 0\) and the curvature is
+the same as for a sine of the same amplitude,
 
 \[
 \kappa = a\left(\frac{2\pi}{\lambda}\right)^2,
@@ -209,3 +245,42 @@ plus the bridge term is \(+0.589\,\mathrm{mm}^3\). Measured exceeds nominal
 by 6.6%, so the CAD healing of the self-intersection is a surface crease at
 29 extrema, **not** a volume removal. No material is missing. Porosity
 0.80629 vs 0.79949.
+
+---
+
+## REF_empty
+
+Family `"empty"`, geo_id `REF_empty`, path
+`geometries/empty/REF_empty/REF_empty.dsco`. `n_active_cells = 7` (the
+registry once carried a stale 3 from the archived 3-cell empty channel).
+`porosity_eps` must be exactly 1.0. `filament_d_m`, `bridge_radius_m`,
+`overlap_m`, `membrane_trim_m`, and `membrane_contact_width_m` must be
+exactly 0.0 — enforced as exact-zero rather than exempted
+(`_require_exact_zero_mesh_field` in `src/ro/manifest.py`).
+
+Three legacy-naming leftovers were fixed in the same pass as the sin
+rebuild: the meshing worker's `is_empty_channel` check compared `geo_name`
+against the bare string `"empty"`, which never matched `"REF_empty"`. Same
+class as the earlier `Sin_ST` and `S_A000` leftovers (archive names; do not
+widen any live regex to re-admit them).
+
+---
+
+## Import zone count (pre-mesh label check)
+
+The first geometry import prints `N boundary face zones`, equal to the
+number of recognised CAD named selections. Verified across all 44 mesh
+leaves:
+
+| family | N |
+|--------|--:|
+| Diamond | 11 |
+| ML | 15 |
+| Pillar h00 | 13 |
+| Pillar h15 / h30 | 14 |
+| Sinusoidal | 13 |
+| REF_empty | 10 |
+
+Cheap pre-mesh sanity check: a wrong N means a named selection did not
+import. `validate_spacer_wall_zones` exists but is called only from tests,
+not on the solver path.

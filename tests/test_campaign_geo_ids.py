@@ -1,4 +1,4 @@
-"""Tests for the 33-case campaign geo_id whitelist."""
+"""Tests for the 31-case campaign geo_id whitelist."""
 
 from __future__ import annotations
 
@@ -18,8 +18,16 @@ from ro.campaign_geo_ids import (
 from ro.paths import geometry_dir
 
 
-def test_whitelist_has_33_entries():
-    assert len(CAMPAIGN_GEO_IDS) == 33
+def test_whitelist_has_31_entries():
+    assert len(CAMPAIGN_GEO_IDS) == 31
+
+
+def test_f320_pillar_ids_are_excluded():
+    for geo_id in ("P_p80_h00_f320", "P_p80_h15_f320"):
+        assert geo_id not in CAMPAIGN_GEO_IDS
+        assert campaign_geo_id_shape_re().fullmatch(geo_id) is None
+        with pytest.raises(ValueError, match="not a campaign case"):
+            validate_campaign_geo_id(geo_id)
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,7 @@ _CAMPAIGN_GEO_ID_SHAPE_RE = re.compile(
     r"^(?:"
     r"D(?:\d{4})?_a(?:30|45|60)|"
     r"M_c(?:160|267|400)|"
-    r"P_p(?:60|80|100)_h(?:00|15|30)(?:_f320)?|"
+    r"P_p(?:60|80|100)_h(?:00|15|30)|"
     r"S_a\d{3}_l\d{4}|"
     r"REF_empty"
     r")$"
@@ -35,7 +35,7 @@ _PILLAR_GEO_IDS = tuple(
     f"P_p{pitch}_h{hole}"
     for pitch in ("60", "80", "100")
     for hole in ("00", "15", "30")
-) + ("P_p80_h00_f320", "P_p80_h15_f320")
+)
 
 _SINUSOIDAL_GEO_IDS = tuple(
     f"S_{amplitude}_l{wavelength}"
@@ -53,8 +53,8 @@ CAMPAIGN_GEO_IDS: frozenset[str] = frozenset(
     + _REFERENCE_GEO_IDS
 )
 
-assert len(CAMPAIGN_GEO_IDS) == 33, (
-    f"Expected 33 campaign geo_ids, got {len(CAMPAIGN_GEO_IDS)}."
+assert len(CAMPAIGN_GEO_IDS) == 31, (
+    f"Expected 31 campaign geo_ids, got {len(CAMPAIGN_GEO_IDS)}."
 )
 
 
@@ -101,7 +101,7 @@ def assert_no_legacy_ml_geo_paths(data_root: Path) -> None:
 
 
 def validate_campaign_geo_id(geo_id: str) -> None:
-    """Raise ValueError when geo_id is outside the 33-case whitelist."""
+    """Raise ValueError when geo_id is outside the 31-case whitelist."""
     if geo_id not in CAMPAIGN_GEO_IDS:
         raise ValueError(
             f"geo_id {geo_id!r} is not a campaign case. "
