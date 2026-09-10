@@ -1319,10 +1319,12 @@ def detect_convergence_quality(case_record: dict[str, Any]) -> None:
                 "convergence_quality": "",
                 "needs_longer_solve": False,
                 "convergence_quality_failures": [],
+                "convergence_quality_warnings": [],
                 "continuity_final": "",
                 "lmh_relative_difference": "",
                 "mass_balance_relative_error": "",
                 "pp_pressure_drop_rel_spread_cells_4_7": "",
+                "pp_pressure_drop_rel_spread_note": "",
             }
         )
         return
@@ -1338,6 +1340,7 @@ def detect_convergence_quality(case_record: dict[str, Any]) -> None:
             "convergence_quality": result["convergence_quality"],
             "needs_longer_solve": bool(result["needs_longer_solve"]),
             "convergence_quality_failures": list(result["failures"]),
+            "convergence_quality_warnings": list(result["warnings"]),
             "convergence_quality_unavailable": list(result["unavailable"]),
             "continuity_final": (
                 "" if result["continuity_final"] is None else result["continuity_final"]
@@ -1356,6 +1359,9 @@ def detect_convergence_quality(case_record: dict[str, Any]) -> None:
                 ""
                 if result["pp_pressure_drop_rel_spread_cells_4_7"] is None
                 else result["pp_pressure_drop_rel_spread_cells_4_7"]
+            ),
+            "pp_pressure_drop_rel_spread_note": (
+                result["pp_pressure_drop_rel_spread_note"] or ""
             ),
         }
     )
@@ -1867,10 +1873,12 @@ CASE_INVENTORY_FIELDNAMES = [
     "convergence_quality",
     "needs_longer_solve",
     "convergence_quality_failures",
+    "convergence_quality_warnings",
     "continuity_final",
     "lmh_relative_difference",
     "mass_balance_relative_error",
     "pp_pressure_drop_rel_spread_cells_4_7",
+    "pp_pressure_drop_rel_spread_note",
     "max_iteration_detected",
     "max_iter_target",
     "hit_max_iter_target",
@@ -1982,6 +1990,8 @@ COMPACT_FIELDNAMES = [
     "convergence_quality",
     "needs_longer_solve",
     "pp_pressure_drop_rel_spread_cells_4_7",
+    "convergence_quality_warnings",
+    "pp_pressure_drop_rel_spread_note",
     "case_status",
     "max_iteration_detected",
     "has_final_cas",

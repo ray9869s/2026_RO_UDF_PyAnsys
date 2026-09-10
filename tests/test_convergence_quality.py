@@ -6,10 +6,13 @@ import pytest
 
 from helpers import load_case_inventory
 from ro.convergence_quality import (
+    PRESSURE_DROP_REL_SPREAD_NOTE,
+    PRESSURE_DROP_REL_SPREAD_WARNING,
     QUALITY_FAIL,
     QUALITY_PASS,
     QUALITY_UNKNOWN,
     evaluate_convergence_quality,
+    manifest_quality_payload,
     metrics_from_summary_row,
     relative_spread,
 )
@@ -52,6 +55,8 @@ class TestEvaluateConvergenceQuality:
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["needs_longer_solve"] is False
         assert result["failures"] == []
+        assert result["warnings"] == [PRESSURE_DROP_REL_SPREAD_WARNING]
+        assert result["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.0258, rel=1e-2
         )
@@ -67,6 +72,7 @@ class TestEvaluateConvergenceQuality:
         assert "mass_balance_relative_error" in result["failures"]
         assert "continuity_final" in result["failures"]
         assert "pp_pressure_drop_rel_spread_cells_4_7" not in result["failures"]
+        assert result["warnings"] == [PRESSURE_DROP_REL_SPREAD_WARNING]
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.1476, rel=1e-2
         )
@@ -78,6 +84,8 @@ class TestEvaluateConvergenceQuality:
         )
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["needs_longer_solve"] is False
+        assert result["warnings"] == [PRESSURE_DROP_REL_SPREAD_WARNING]
+        assert result["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.1474, rel=1e-2
         )
@@ -92,6 +100,8 @@ class TestEvaluateConvergenceQuality:
             "continuity_final",
         }
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] is None
+        assert result["warnings"] == []
+        assert result["pp_pressure_drop_rel_spread_note"] is None
 
     def test_fail_even_if_some_checks_unavailable(self):
         result = evaluate_convergence_quality(
@@ -116,6 +126,23 @@ class TestEvaluateConvergenceQuality:
         result = evaluate_convergence_quality(metrics, continuity_final=1e-6)
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(0.0)
+
+    def test_manifest_payload_carries_spread_warning_not_failure(self):
+        result = evaluate_convergence_quality(
+            U0P3_PASS_CONV2000,
+            continuity_final=1e-6,
+        )
+        payload = manifest_quality_payload(result)
+        assert payload["convergence_quality"] == QUALITY_PASS
+        assert payload["needs_longer_solve"] is False
+        assert payload["convergence_quality_failures"] == []
+        assert payload["convergence_quality_warnings"] == [
+            PRESSURE_DROP_REL_SPREAD_WARNING
+        ]
+        assert payload["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            0.1474, rel=1e-2
+        )
+        assert payload["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
 
     def test_relative_spread_definition(self):
         assert relative_spread([100.0, 101.0, 102.0, 101.3]) == pytest.approx(
@@ -145,8 +172,16 @@ class TestInventoryQualityClassification:
         assert record["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.0258, rel=1e-2
         )
+        assert record["convergence_quality_warnings"] == [
+            PRESSURE_DROP_REL_SPREAD_WARNING
+        ]
+        assert record["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
         assert "pp_pressure_drop_rel_spread_cells_4_7" in inventory.COMPACT_FIELDNAMES
+        assert "convergence_quality_warnings" in inventory.COMPACT_FIELDNAMES
+        assert "pp_pressure_drop_rel_spread_note" in inventory.COMPACT_FIELDNAMES
         assert "pp_pressure_drop_rel_spread_cells_4_7" in inventory.CASE_INVENTORY_FIELDNAMES
+        assert "convergence_quality_warnings" in inventory.CASE_INVENTORY_FIELDNAMES
+        assert "pp_pressure_drop_rel_spread_note" in inventory.CASE_INVENTORY_FIELDNAMES
 
     def test_quality_fail_flags_longer_solve_despite_qoi_converged(self, inventory):
         record = {

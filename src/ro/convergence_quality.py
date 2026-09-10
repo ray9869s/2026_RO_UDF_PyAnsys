@@ -6,9 +6,11 @@ u0p3 at the 301-iteration QoI stop on D2450_a45 (p=6 MPa), where CP and
 spacer dP were already within 0.1% of the longer residual-converged solution.
 
 Unit-cell pressure-drop spread across evaluation cells 4–7 is recorded as a
-diagnostic only. On D2450_a45 it is essentially unchanged between the short
-and long solves (u0p2 ~2.58%, u0p3 ~14.7%) — a steady-state property of the
-flow field / evaluation window, not a convergence signal.
+WARNING, never a failure. On D2450_a45 it is essentially unchanged between
+the short and long solves (u0p2 ~2.58%, u0p3 ~14.7%) — a steady-state
+property of the flow field / evaluation window, not a convergence signal.
+No numeric threshold yet: the evaluation-window mean is only meaningful
+when the spread is small.
 
 Keep this separate from stop_reason: a max_iter_reached run (e.g. u0p1 with
 continuity floored at ~4e-7) can still PASS.
@@ -27,6 +29,10 @@ LMH_REL_ABS_MAX = 1e-3
 MASS_BALANCE_REL_ABS_MAX = 1e-3
 CONTINUITY_FINAL_MAX = 1e-4
 PRESSURE_DROP_CELLS = (4, 5, 6, 7)
+PRESSURE_DROP_REL_SPREAD_WARNING = "pp_pressure_drop_rel_spread_cells_4_7"
+PRESSURE_DROP_REL_SPREAD_NOTE = (
+    "Evaluation-window mean is only meaningful when this spread is small."
+)
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -96,8 +102,9 @@ def evaluate_convergence_quality(
     dict
         ``convergence_quality`` in {PASS, FAIL, UNKNOWN},
         ``needs_longer_solve`` (True only on FAIL),
-        per-check values / pass flags, ``failures``, and diagnostic
-        ``pp_pressure_drop_rel_spread_cells_4_7`` (not gated).
+        per-check values / pass flags, ``failures``, ``warnings``
+        (never fail the gate), and
+        ``pp_pressure_drop_rel_spread_cells_4_7``.
     """
     lmh_rel = _as_float(metrics.get("lmh_relative_difference"))
     mb_rel = _as_float(metrics.get("mass_balance_relative_error"))
@@ -145,18 +152,26 @@ def evaluate_convergence_quality(
     else:
         quality = QUALITY_PASS
 
+    warnings: list[str] = []
+    spread_note: Optional[str] = None
+    if dP_spread is not None:
+        warnings.append(PRESSURE_DROP_REL_SPREAD_WARNING)
+        spread_note = PRESSURE_DROP_REL_SPREAD_NOTE
+
     return {
         "convergence_quality": quality,
         "needs_longer_solve": quality == QUALITY_FAIL,
         "failures": failures,
+        "warnings": warnings,
         "unavailable": unavailable,
         "checks": checks,
         "lmh_relative_difference": lmh_rel,
         "mass_balance_relative_error": mb_rel,
         "continuity_final": continuity,
-        # Diagnostic only — not part of the gate (converged physics / window).
+        # WARNING only — not part of the gate (converged physics / window).
         "pp_pressure_drop_rel_spread_cells_4_7": dP_spread,
         "pp_pressure_drop_rel_spread_cells_4_7_missing": dP_missing,
+        "pp_pressure_drop_rel_spread_note": spread_note,
     }
 
 
@@ -204,11 +219,15 @@ def manifest_quality_payload(result: Mapping[str, Any]) -> dict[str, Any]:
         "convergence_quality": result["convergence_quality"],
         "needs_longer_solve": bool(result["needs_longer_solve"]),
         "convergence_quality_failures": list(result.get("failures") or []),
+        "convergence_quality_warnings": list(result.get("warnings") or []),
         "convergence_quality_unavailable": list(result.get("unavailable") or []),
         "lmh_relative_difference": result.get("lmh_relative_difference"),
         "mass_balance_relative_error": result.get("mass_balance_relative_error"),
         "continuity_final": result.get("continuity_final"),
         "pp_pressure_drop_rel_spread_cells_4_7": result.get(
             "pp_pressure_drop_rel_spread_cells_4_7"
+        ),
+        "pp_pressure_drop_rel_spread_note": result.get(
+            "pp_pressure_drop_rel_spread_note"
         ),
     }

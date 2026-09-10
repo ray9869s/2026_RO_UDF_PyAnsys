@@ -2342,9 +2342,13 @@ if __name__ == "__main__":
                 "convergence_quality": quality_result["convergence_quality"],
                 "needs_longer_solve": quality_result["needs_longer_solve"],
                 "convergence_quality_failures": quality_result["failures"],
+                "convergence_quality_warnings": quality_result["warnings"],
                 "continuity_final": quality_result["continuity_final"],
                 "pp_pressure_drop_rel_spread_cells_4_7": quality_result[
                     "pp_pressure_drop_rel_spread_cells_4_7"
+                ],
+                "pp_pressure_drop_rel_spread_note": quality_result[
+                    "pp_pressure_drop_rel_spread_note"
                 ],
                 "domain_length_m": domain_length_m,
                 "pressure_drop_per_m": pressure_drop_per_m,
@@ -2409,6 +2413,11 @@ if __name__ == "__main__":
                 (
                     f"(failures={quality_result['failures']})"
                     if quality_result["failures"]
+                    else ""
+                ),
+                (
+                    f"(warnings={quality_result['warnings']})"
+                    if quality_result["warnings"]
                     else ""
                 ),
             )
