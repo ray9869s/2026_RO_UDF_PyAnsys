@@ -279,8 +279,10 @@ CP extraction requires `RO_ANALYTIC_CWALL = 1`. Report extraction also writes
 post-hoc `convergence_quality` / `needs_longer_solve` from
 `|lmh_relative_difference| < 1e-3`, `|mass_balance_relative_error| < 1e-3`,
 and `continuity_final < 1e-4`. That gate is independent of `stop_reason`.
-`pp_pressure_drop_rel_spread_cells_4_7` is a WARNING, never a failure; see
+`pp_pressure_drop_rel_spread_window` is a WARNING, never a failure; see
 **Evaluation-window dP spread** below for how to read the value.
+`pp_pressure_drop_rel_spread_cells_4_7` is kept as a continuity column for
+already-extracted runs.
 
 ## Known field artifacts
 
@@ -333,14 +335,25 @@ as an integrity check.
 
 ## Evaluation-window dP spread
 
-`pp_pressure_drop_rel_spread_cells_4_7` is a WARNING, never a failure. The
-evaluation-window mean is only meaningful when the spread is small. No
-numeric fail threshold yet.
+`pp_pressure_drop_rel_spread_window` is a WARNING, never a failure. It is
+\((\max-\min)/|\mathrm{mean}|\) over
+`evaluation_window.evaluation_cell_numbers(layout)`: global cells 5–8 on a
+1+7+2 layout, 5–22 on 1+21+2. The evaluation-window mean is only
+meaningful when this spread is small. No numeric fail threshold yet.
+
+`pp_pressure_drop_rel_spread_cells_4_7` is a continuity column for runs
+already on disk. On 1+7+2 it includes excluded cell 4 and omits window
+cell 8. The two disagree in the sign of the error between operating
+points on D2450_a45 (measured: \(u=0.2\) cells 4–7 2.56% vs window 1.79%;
+\(u=0.3\) 14.75% vs 15.7%), so 4–7 cannot be scaled onto the window.
+Existing runs can be re-extracted; this diagnostic does not change solver
+output.
 
 The **absolute** spread is not trustworthy to better than about \(\pm 40\%\).
-At identical physics (D2450_a45, `u0p2_p6M`, quality PASS) it spans
-**1.90%–3.59% (1.89×)** across the grid-study meshes. The under-converged
-`max045` leaf (10.34%, FAIL, stopped at 301) is excluded from that range.
+At identical physics (D2450_a45, `u0p2_p6M`, quality PASS) the continuity
+column `cells_4_7` spans **1.90%–3.59% (1.89×)** across the grid-study
+meshes. The under-converged `max045` leaf (10.34%, FAIL, stopped at 301)
+is excluded from that range.
 
 | mesh_id | bl | m_max | m_min | cells | spread |
 |---------|---:|------:|------:|------:|-------:|
@@ -365,9 +378,8 @@ not the same near-wall limitation as the CP grid gap (bl4 vs bl6 at fixed
 the driver (`min003` ≈ same cells as campaign, lower spread; bl8 +32%
 cells, highest PASS spread).
 
-The WARNING column is always global cells 4–7 (a D2450-shaped diagnostic),
-not the evaluation-window spread. On D0817_a45 (21 active) that is active
-cells 3–6, not cells 5–22.
+The table and Re-trend numbers below are the continuity `cells_4_7`
+column, not `pp_pressure_drop_rel_spread_window`.
 
 Campaign-mesh three-point trend (`max085_min006_cpg5_bl4_peel2`), with
 filament \(\mathrm{Re}_d=\rho U d/\mu\) at \(d=0.4\,\mathrm{mm}\) (all
@@ -393,6 +405,35 @@ cannot distinguish an attached bubble from suppressed shedding.
 `REF_empty` on the same campaign mesh is **0.53% at both \(u=0.2\) and
 \(u=0.3\)**: a plane-placement discretisation floor with no velocity
 dependence. The Diamond growth is spacer-induced.
+
+## Fixed `n_lead_excluded=3` residual bias (Diamond)
+
+`n_lead_excluded` stays 3 on all nine Diamond geometries. Cell count
+predicts entrance length better than millimetres, but is not invariant.
+Archive D0817_a45_21c at \(u=0.2\): plateau from the 5th active cell
+(5.8 mm); 4th active still +2.1%. D2450_a45: plateau from the 4th active
+(10.4 mm); 4th active +0.6%. Millimetres to plateau 1.8×; cell counts
+4 vs 3 is 1.33×.
+
+With lead=3 the 4th active cell is the first scored cell (global 5).
+One leftover cell at excess \(\varepsilon\) biases the window mean by
+about \(\varepsilon/N_{\mathrm{window}}\).
+
+| geo_id | \(n_{\mathrm{active}}\) | pitch (mm) | window | leftover at lead=3 | window-mean bias |
+|--------|------------------------:|-----------:|-------:|-------------------:|-----------------:|
+| D2450_a45 | 7 | 3.465 | 4 (5–8) | 0 (4th active +0.6%, already plateau) | ~0 |
+| D0817_a45 | 21 | 1.155 | 18 (5–22) | 1 cell at +2.1% | **0.12%** |
+| D0817_a30 | 27 | 0.943 | 24 (5–28) | 1 cell if same +2.1%; 2 cells if 3rd active (+5.7%) also leftover | 0.09% / **~0.3%** bound |
+| D0817_a60 | 15 | 1.633 | 12 (5–16) | ~1 (pitch between the two anchors) | ~0.1–0.2% |
+| D1225_a30 | 18 | 1.415 | 15 (5–19) | ~1 | ~0.1–0.15% |
+| D1225_a45 | 14 | 1.733 | 11 (5–15) | ~1 | ~0.15% |
+| D1225_a60 | 10 | 2.450 | 7 (5–11) | ~0–1 | \(\lesssim 0.3\%\) |
+| D2450_a30 | 9 | 2.829 | 6 (5–10) | ~0 | ~0 |
+| D2450_a60 | 5 | 4.900 | **2 (5–6)** | 0 expected | **sample size, not contamination** |
+
+The real problem is D2450_a60: \(n_{\mathrm{active}}=5\) leaves a
+two-cell window. Even a clean 4th active cell is a two-sample mean of a
+periodic quantity.
 
 ## `REF_empty` discretisation excess over plane Poiseuille
 

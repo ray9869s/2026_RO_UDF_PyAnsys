@@ -211,10 +211,13 @@ Pass when all of:
 
 Independent of solver `stop_reason`.
 
-**Removed from the gate:** pressure-drop spread across cells 4–7. That spread
-is converged-state physics (2.58% at \(u=0.2\), 14.7% at \(u=0.3\)), unchanged
-between the 301-iteration and 765-iteration solutions. It is recorded as
-`pp_pressure_drop_rel_spread_cells_4_7` **diagnostic only**.
+**Removed from the gate:** unit-cell pressure-drop spread. That spread
+is converged-state physics (2.58% at \(u=0.2\), 14.7% at \(u=0.3\) on the
+continuity 4–7 column), unchanged between the 301-iteration and
+765-iteration solutions. It is recorded as
+`pp_pressure_drop_rel_spread_window` (WARNING;
+`evaluation_window.evaluation_cell_numbers(layout)`) plus the continuity
+column `pp_pressure_drop_rel_spread_cells_4_7`.
 
 ### Independence study (D2450_a45, p = 6 MPa)
 

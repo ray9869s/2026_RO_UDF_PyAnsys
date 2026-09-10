@@ -5,10 +5,11 @@ disagree or continuity sits above 1e-4. Those checks caught under-converged
 u0p3 at the 301-iteration QoI stop on D2450_a45 (p=6 MPa), where CP and
 spacer dP were already within 0.1% of the longer residual-converged solution.
 
-Unit-cell pressure-drop spread across evaluation cells 4–7 is recorded as a
-WARNING, never a failure. On D2450_a45 it is essentially unchanged between
-the short and long solves (u0p2 ~2.58%, u0p3 ~14.7%) — a steady-state
-property of the flow field / evaluation window, not a convergence signal.
+Unit-cell pressure-drop spread over the layout evaluation window is recorded
+as a WARNING, never a failure. The window is
+``evaluation_window.evaluation_cell_numbers(layout)`` (global 5–8 on 1+7+2,
+5–22 on 1+21+2). Hardcoded cells 4–7 are kept as a continuity column; that
+range includes excluded cell 4 and omits window cell 8 on a 1+7+2 layout.
 No numeric threshold yet: the evaluation-window mean is only meaningful
 when the spread is small.
 
@@ -18,8 +19,9 @@ continuity floored at ~4e-7) can still PASS.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 QUALITY_PASS = "PASS"
 QUALITY_FAIL = "FAIL"
@@ -29,10 +31,11 @@ LMH_REL_ABS_MAX = 1e-3
 MASS_BALANCE_REL_ABS_MAX = 1e-3
 CONTINUITY_FINAL_MAX = 1e-4
 PRESSURE_DROP_CELLS = (4, 5, 6, 7)
-PRESSURE_DROP_REL_SPREAD_WARNING = "pp_pressure_drop_rel_spread_cells_4_7"
+PRESSURE_DROP_REL_SPREAD_WARNING = "pp_pressure_drop_rel_spread_window"
 PRESSURE_DROP_REL_SPREAD_NOTE = (
     "Evaluation-window mean is only meaningful when this spread is small."
 )
+_CELL_DP_KEY_RE = re.compile(r"^pp_pressure_drop_cell_(\d+)$")
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -63,13 +66,14 @@ def relative_spread(values: list[float]) -> Optional[float]:
     return (max(values) - min(values)) / abs(mean)
 
 
-def pressure_drop_rel_spread_cells_4_7(
+def pressure_drop_rel_spread_for_cells(
     metrics: Mapping[str, Any],
+    cells: Sequence[int],
 ) -> tuple[Optional[float], list[str]]:
-    """Return (spread, missing_column_names) for pp_pressure_drop_cell_4..7."""
+    """Return (spread, missing_column_names) for the given global cell numbers."""
     values: list[float] = []
     missing: list[str] = []
-    for cell in PRESSURE_DROP_CELLS:
+    for cell in cells:
         key = f"pp_pressure_drop_cell_{cell}"
         parsed = _as_float(metrics.get(key))
         if parsed is None:
@@ -81,10 +85,18 @@ def pressure_drop_rel_spread_cells_4_7(
     return relative_spread(values), []
 
 
+def pressure_drop_rel_spread_cells_4_7(
+    metrics: Mapping[str, Any],
+) -> tuple[Optional[float], list[str]]:
+    """Continuity column: hardcoded global cells 4–7, not the evaluation window."""
+    return pressure_drop_rel_spread_for_cells(metrics, PRESSURE_DROP_CELLS)
+
+
 def evaluate_convergence_quality(
     metrics: Mapping[str, Any],
     *,
     continuity_final: Any = None,
+    evaluation_cell_numbers: Optional[Sequence[int]] = None,
 ) -> dict[str, Any]:
     """Classify post-hoc convergence quality from summary + residual metrics.
 
@@ -96,6 +108,10 @@ def evaluate_convergence_quality(
     continuity_final:
         Final continuity residual. If omitted, ``metrics["continuity_final"]``
         is used when present.
+    evaluation_cell_numbers:
+        Global unit-cell indices from
+        ``evaluation_window.evaluation_cell_numbers(layout)``. Window spread
+        is None when this is omitted or a window cell is missing.
 
     Returns
     -------
@@ -103,7 +119,8 @@ def evaluate_convergence_quality(
         ``convergence_quality`` in {PASS, FAIL, UNKNOWN},
         ``needs_longer_solve`` (True only on FAIL),
         per-check values / pass flags, ``failures``, ``warnings``
-        (never fail the gate), and
+        (never fail the gate),
+        ``pp_pressure_drop_rel_spread_window``, and the continuity column
         ``pp_pressure_drop_rel_spread_cells_4_7``.
     """
     lmh_rel = _as_float(metrics.get("lmh_relative_difference"))
@@ -111,7 +128,14 @@ def evaluate_convergence_quality(
     continuity = _as_float(continuity_final)
     if continuity is None:
         continuity = _as_float(metrics.get("continuity_final"))
-    dP_spread, dP_missing = pressure_drop_rel_spread_cells_4_7(metrics)
+    dP_spread_4_7, dP_missing_4_7 = pressure_drop_rel_spread_cells_4_7(metrics)
+    window_cells = list(evaluation_cell_numbers) if evaluation_cell_numbers else []
+    if window_cells:
+        dP_spread_window, dP_missing_window = pressure_drop_rel_spread_for_cells(
+            metrics, window_cells
+        )
+    else:
+        dP_spread_window, dP_missing_window = None, []
 
     checks: dict[str, dict[str, Any]] = {
         "lmh_relative_difference": {
@@ -154,7 +178,7 @@ def evaluate_convergence_quality(
 
     warnings: list[str] = []
     spread_note: Optional[str] = None
-    if dP_spread is not None:
+    if dP_spread_window is not None:
         warnings.append(PRESSURE_DROP_REL_SPREAD_WARNING)
         spread_note = PRESSURE_DROP_REL_SPREAD_NOTE
 
@@ -169,8 +193,10 @@ def evaluate_convergence_quality(
         "mass_balance_relative_error": mb_rel,
         "continuity_final": continuity,
         # WARNING only — not part of the gate (converged physics / window).
-        "pp_pressure_drop_rel_spread_cells_4_7": dP_spread,
-        "pp_pressure_drop_rel_spread_cells_4_7_missing": dP_missing,
+        "pp_pressure_drop_rel_spread_window": dP_spread_window,
+        "pp_pressure_drop_rel_spread_window_missing": dP_missing_window,
+        "pp_pressure_drop_rel_spread_cells_4_7": dP_spread_4_7,
+        "pp_pressure_drop_rel_spread_cells_4_7_missing": dP_missing_4_7,
         "pp_pressure_drop_rel_spread_note": spread_note,
     }
 
@@ -197,19 +223,22 @@ def continuity_final_from_case_dir(case_dir: str | Path) -> Optional[float]:
 
 
 def metrics_from_summary_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Pull gate inputs and dP diagnostic from a summary_metrics_wide row."""
-    keys = (
-        "lmh_relative_difference",
-        "mass_balance_relative_error",
-        *(f"pp_pressure_drop_cell_{cell}" for cell in PRESSURE_DROP_CELLS),
-        "continuity_final",
-    )
+    """Pull gate inputs and per-cell dP from a summary_metrics_wide row."""
     # Prefer exact header names; also accept case-insensitive matches.
     lowered = {str(k).strip().lower(): k for k in row.keys()}
     out: dict[str, Any] = {}
-    for key in keys:
-        raw_key = lowered.get(key.lower())
+    for key in (
+        "lmh_relative_difference",
+        "mass_balance_relative_error",
+        "continuity_final",
+    ):
+        raw_key = lowered.get(key)
         out[key] = row.get(raw_key) if raw_key is not None else None
+    for lowered_key, raw_key in lowered.items():
+        match = _CELL_DP_KEY_RE.match(lowered_key)
+        if match is None:
+            continue
+        out[f"pp_pressure_drop_cell_{int(match.group(1))}"] = row.get(raw_key)
     return out
 
 
@@ -224,6 +253,9 @@ def manifest_quality_payload(result: Mapping[str, Any]) -> dict[str, Any]:
         "lmh_relative_difference": result.get("lmh_relative_difference"),
         "mass_balance_relative_error": result.get("mass_balance_relative_error"),
         "continuity_final": result.get("continuity_final"),
+        "pp_pressure_drop_rel_spread_window": result.get(
+            "pp_pressure_drop_rel_spread_window"
+        ),
         "pp_pressure_drop_rel_spread_cells_4_7": result.get(
             "pp_pressure_drop_rel_spread_cells_4_7"
         ),

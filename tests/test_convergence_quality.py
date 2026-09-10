@@ -16,10 +16,20 @@ from ro.convergence_quality import (
     metrics_from_summary_row,
     relative_spread,
 )
+from ro.domain_layout import (
+    BUFFER_LENGTH_IN_M,
+    BUFFER_LENGTH_OUT_M,
+    CURRENT_EVALUATION_WINDOW,
+    CURRENT_LAYOUT,
+    DomainLayout,
+    EvaluationWindow,
+)
 
 
-# Study values (D2450_a45, p=6 MPa). Cell dP spreads are diagnostics only;
-# real (max-min)/mean is ~2.58% at u=0.2 and ~14.7% at u=0.3 (converged).
+D2450_WINDOW_CELLS = CURRENT_EVALUATION_WINDOW.evaluation_cell_numbers(CURRENT_LAYOUT)
+
+# Study values (D2450_a45, p=6 MPa). Cell dP spreads are diagnostics only.
+# Continuity column 4–7 is ~2.58% at u=0.2 and ~14.7% at u=0.3 (converged).
 U0P2_PASS = {
     "lmh_relative_difference": 1.33e-4,
     "mass_balance_relative_error": 1.0e-4,
@@ -27,6 +37,7 @@ U0P2_PASS = {
     "pp_pressure_drop_cell_5": 114.47,
     "pp_pressure_drop_cell_6": 114.47,
     "pp_pressure_drop_cell_7": 115.92,
+    "pp_pressure_drop_cell_8": 116.54,
 }
 U0P3_FAIL_301 = {
     "lmh_relative_difference": -2.92e-1,
@@ -35,6 +46,7 @@ U0P3_FAIL_301 = {
     "pp_pressure_drop_cell_5": 201.94,
     "pp_pressure_drop_cell_6": 234.75,
     "pp_pressure_drop_cell_7": 233.22,
+    "pp_pressure_drop_cell_8": 237.56,
 }
 U0P3_PASS_CONV2000 = {
     "lmh_relative_difference": 1.30e-4,
@@ -43,34 +55,46 @@ U0P3_PASS_CONV2000 = {
     "pp_pressure_drop_cell_5": 201.93,
     "pp_pressure_drop_cell_6": 234.70,
     "pp_pressure_drop_cell_7": 233.67,
+    "pp_pressure_drop_cell_8": 237.56,
 }
 
 
+def _evaluate(metrics, continuity_final, cells=D2450_WINDOW_CELLS):
+    return evaluate_convergence_quality(
+        metrics,
+        continuity_final=continuity_final,
+        evaluation_cell_numbers=cells,
+    )
+
+
 class TestEvaluateConvergenceQuality:
-    def test_u0p2_passes_despite_2p58_percent_dP_spread(self):
-        result = evaluate_convergence_quality(
-            U0P2_PASS,
-            continuity_final=4e-6,
-        )
+    def test_u0p2_passes_despite_dP_spread(self):
+        result = _evaluate(U0P2_PASS, continuity_final=4e-6)
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["needs_longer_solve"] is False
         assert result["failures"] == []
         assert result["warnings"] == [PRESSURE_DROP_REL_SPREAD_WARNING]
+        assert PRESSURE_DROP_REL_SPREAD_WARNING == "pp_pressure_drop_rel_spread_window"
         assert result["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.0258, rel=1e-2
         )
+        assert result["pp_pressure_drop_rel_spread_window"] == pytest.approx(
+            relative_spread([114.47, 114.47, 115.92, 116.54])
+        )
+        assert (
+            result["pp_pressure_drop_rel_spread_window"]
+            != result["pp_pressure_drop_rel_spread_cells_4_7"]
+        )
 
     def test_u0p3_301_fails_on_lmh_and_mass_balance_not_spread(self):
-        result = evaluate_convergence_quality(
-            U0P3_FAIL_301,
-            continuity_final=6.4e-3,
-        )
+        result = _evaluate(U0P3_FAIL_301, continuity_final=6.4e-3)
         assert result["convergence_quality"] == QUALITY_FAIL
         assert result["needs_longer_solve"] is True
         assert "lmh_relative_difference" in result["failures"]
         assert "mass_balance_relative_error" in result["failures"]
         assert "continuity_final" in result["failures"]
+        assert "pp_pressure_drop_rel_spread_window" not in result["failures"]
         assert "pp_pressure_drop_rel_spread_cells_4_7" not in result["failures"]
         assert result["warnings"] == [PRESSURE_DROP_REL_SPREAD_WARNING]
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
@@ -78,16 +102,62 @@ class TestEvaluateConvergenceQuality:
         )
 
     def test_u0p3_conv2000_passes_with_same_large_dP_spread(self):
-        result = evaluate_convergence_quality(
-            U0P3_PASS_CONV2000,
-            continuity_final=1e-6,
-        )
+        result = _evaluate(U0P3_PASS_CONV2000, continuity_final=1e-6)
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["needs_longer_solve"] is False
         assert result["warnings"] == [PRESSURE_DROP_REL_SPREAD_WARNING]
         assert result["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.1474, rel=1e-2
+        )
+
+    def test_window_spread_is_evaluation_cells_not_hardcoded_4_7(self):
+        assert D2450_WINDOW_CELLS == [5, 6, 7, 8]
+        result = _evaluate(U0P2_PASS, continuity_final=4e-6)
+        window_values = [U0P2_PASS[f"pp_pressure_drop_cell_{c}"] for c in (5, 6, 7, 8)]
+        legacy_values = [U0P2_PASS[f"pp_pressure_drop_cell_{c}"] for c in (4, 5, 6, 7)]
+        assert result["pp_pressure_drop_rel_spread_window"] == pytest.approx(
+            relative_spread(window_values)
+        )
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            relative_spread(legacy_values)
+        )
+
+    def test_d0817_window_is_cells_5_through_22(self):
+        layout = DomainLayout(
+            n_buffer_in=1,
+            n_active=21,
+            n_buffer_out=2,
+            cell_length_x_m=0.001155,
+            buffer_length_in_m=BUFFER_LENGTH_IN_M,
+            buffer_length_out_m=BUFFER_LENGTH_OUT_M,
+        )
+        cells = EvaluationWindow(3, 0).evaluation_cell_numbers(layout)
+        assert cells == list(range(5, 23))
+        metrics = {
+            "lmh_relative_difference": 1e-4,
+            "mass_balance_relative_error": 1e-4,
+            "pp_pressure_drop_cell_4": 200.0,
+        }
+        for cell in cells:
+            metrics[f"pp_pressure_drop_cell_{cell}"] = 100.0
+        metrics["pp_pressure_drop_cell_5"] = 102.1
+        result = _evaluate(metrics, continuity_final=1e-6, cells=cells)
+        window_values = [metrics[f"pp_pressure_drop_cell_{c}"] for c in cells]
+        assert result["pp_pressure_drop_rel_spread_window"] == pytest.approx(
+            relative_spread(window_values)
+        )
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            relative_spread([200.0, 102.1, 100.0, 100.0])
+        )
+
+    def test_missing_window_cell_leaves_legacy_column(self):
+        metrics = {k: v for k, v in U0P2_PASS.items() if k != "pp_pressure_drop_cell_8"}
+        result = _evaluate(metrics, continuity_final=4e-6)
+        assert result["pp_pressure_drop_rel_spread_window"] is None
+        assert result["warnings"] == []
+        assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
+            0.0258, rel=1e-2
         )
 
     def test_unknown_when_inputs_missing(self):
@@ -99,6 +169,7 @@ class TestEvaluateConvergenceQuality:
             "mass_balance_relative_error",
             "continuity_final",
         }
+        assert result["pp_pressure_drop_rel_spread_window"] is None
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] is None
         assert result["warnings"] == []
         assert result["pp_pressure_drop_rel_spread_note"] is None
@@ -120,24 +191,29 @@ class TestEvaluateConvergenceQuality:
                 "pp_pressure_drop_cell_5": "1",
                 "pp_pressure_drop_cell_6": "1",
                 "pp_pressure_drop_cell_7": "1",
+                "pp_pressure_drop_cell_8": "1",
+                "pp_pressure_drop_cell_22": "1",
             }
         )
         assert metrics["lmh_relative_difference"] == "1.7e-4"
-        result = evaluate_convergence_quality(metrics, continuity_final=1e-6)
+        assert metrics["pp_pressure_drop_cell_8"] == "1"
+        assert metrics["pp_pressure_drop_cell_22"] == "1"
+        result = _evaluate(metrics, continuity_final=1e-6)
         assert result["convergence_quality"] == QUALITY_PASS
         assert result["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(0.0)
+        assert result["pp_pressure_drop_rel_spread_window"] == pytest.approx(0.0)
 
     def test_manifest_payload_carries_spread_warning_not_failure(self):
-        result = evaluate_convergence_quality(
-            U0P3_PASS_CONV2000,
-            continuity_final=1e-6,
-        )
+        result = _evaluate(U0P3_PASS_CONV2000, continuity_final=1e-6)
         payload = manifest_quality_payload(result)
         assert payload["convergence_quality"] == QUALITY_PASS
         assert payload["needs_longer_solve"] is False
         assert payload["convergence_quality_failures"] == []
         assert payload["convergence_quality_warnings"] == [
             PRESSURE_DROP_REL_SPREAD_WARNING
+        ]
+        assert payload["pp_pressure_drop_rel_spread_window"] == result[
+            "pp_pressure_drop_rel_spread_window"
         ]
         assert payload["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.1474, rel=1e-2
@@ -165,20 +241,27 @@ class TestInventoryQualityClassification:
                 "pp_pressure_drop_cell_5": "114.47",
                 "pp_pressure_drop_cell_6": "114.47",
                 "pp_pressure_drop_cell_7": "115.92",
+                "pp_pressure_drop_cell_8": "116.54",
             },
             "_case_dir_path": None,
+            "_evaluation_cell_numbers": D2450_WINDOW_CELLS,
         }
         inventory.detect_convergence_quality(record)
         assert record["pp_pressure_drop_rel_spread_cells_4_7"] == pytest.approx(
             0.0258, rel=1e-2
         )
+        assert record["pp_pressure_drop_rel_spread_window"] == pytest.approx(
+            relative_spread([114.47, 114.47, 115.92, 116.54])
+        )
         assert record["convergence_quality_warnings"] == [
             PRESSURE_DROP_REL_SPREAD_WARNING
         ]
         assert record["pp_pressure_drop_rel_spread_note"] == PRESSURE_DROP_REL_SPREAD_NOTE
+        assert "pp_pressure_drop_rel_spread_window" in inventory.COMPACT_FIELDNAMES
         assert "pp_pressure_drop_rel_spread_cells_4_7" in inventory.COMPACT_FIELDNAMES
         assert "convergence_quality_warnings" in inventory.COMPACT_FIELDNAMES
         assert "pp_pressure_drop_rel_spread_note" in inventory.COMPACT_FIELDNAMES
+        assert "pp_pressure_drop_rel_spread_window" in inventory.CASE_INVENTORY_FIELDNAMES
         assert "pp_pressure_drop_rel_spread_cells_4_7" in inventory.CASE_INVENTORY_FIELDNAMES
         assert "convergence_quality_warnings" in inventory.CASE_INVENTORY_FIELDNAMES
         assert "pp_pressure_drop_rel_spread_note" in inventory.CASE_INVENTORY_FIELDNAMES

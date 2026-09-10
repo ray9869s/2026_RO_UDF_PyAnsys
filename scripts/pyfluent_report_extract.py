@@ -2309,6 +2309,7 @@ if __name__ == "__main__":
         quality_result = evaluate_convergence_quality(
             wide_record,
             continuity_final=continuity_final,
+            evaluation_cell_numbers=evaluation_cells,
         )
 
         # ----------------------------------------------------------
@@ -2344,6 +2345,9 @@ if __name__ == "__main__":
                 "convergence_quality_failures": quality_result["failures"],
                 "convergence_quality_warnings": quality_result["warnings"],
                 "continuity_final": quality_result["continuity_final"],
+                "pp_pressure_drop_rel_spread_window": quality_result[
+                    "pp_pressure_drop_rel_spread_window"
+                ],
                 "pp_pressure_drop_rel_spread_cells_4_7": quality_result[
                     "pp_pressure_drop_rel_spread_cells_4_7"
                 ],

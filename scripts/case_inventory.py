@@ -30,6 +30,7 @@ from ro.convergence_quality import (
     evaluate_convergence_quality,
     metrics_from_summary_row,
 )
+from ro.domain_layout import layout_from_run_directory
 from ro.manifest import ManifestError, iter_run_manifests, read_run_manifest
 from ro.paths import (
     any_id_filter,
@@ -1323,6 +1324,7 @@ def detect_convergence_quality(case_record: dict[str, Any]) -> None:
                 "continuity_final": "",
                 "lmh_relative_difference": "",
                 "mass_balance_relative_error": "",
+                "pp_pressure_drop_rel_spread_window": "",
                 "pp_pressure_drop_rel_spread_cells_4_7": "",
                 "pp_pressure_drop_rel_spread_note": "",
             }
@@ -1332,9 +1334,25 @@ def detect_convergence_quality(case_record: dict[str, Any]) -> None:
     metrics = metrics_from_summary_row(row)
     case_dir = case_record.get("_case_dir_path")
     continuity = None
+    evaluation_cell_numbers = case_record.get("_evaluation_cell_numbers")
     if isinstance(case_dir, Path):
         continuity = continuity_final_from_case_dir(case_dir)
-    result = evaluate_convergence_quality(metrics, continuity_final=continuity)
+        if evaluation_cell_numbers is None:
+            try:
+                layout_record, _payload = layout_from_run_directory(case_dir)
+            except ManifestError:
+                layout_record = None
+            if layout_record is not None:
+                evaluation_cell_numbers = (
+                    layout_record.evaluation_window.evaluation_cell_numbers(
+                        layout_record.layout
+                    )
+                )
+    result = evaluate_convergence_quality(
+        metrics,
+        continuity_final=continuity,
+        evaluation_cell_numbers=evaluation_cell_numbers,
+    )
     case_record.update(
         {
             "convergence_quality": result["convergence_quality"],
@@ -1354,6 +1372,11 @@ def detect_convergence_quality(case_record: dict[str, Any]) -> None:
                 ""
                 if result["mass_balance_relative_error"] is None
                 else result["mass_balance_relative_error"]
+            ),
+            "pp_pressure_drop_rel_spread_window": (
+                ""
+                if result["pp_pressure_drop_rel_spread_window"] is None
+                else result["pp_pressure_drop_rel_spread_window"]
             ),
             "pp_pressure_drop_rel_spread_cells_4_7": (
                 ""
@@ -1877,6 +1900,7 @@ CASE_INVENTORY_FIELDNAMES = [
     "continuity_final",
     "lmh_relative_difference",
     "mass_balance_relative_error",
+    "pp_pressure_drop_rel_spread_window",
     "pp_pressure_drop_rel_spread_cells_4_7",
     "pp_pressure_drop_rel_spread_note",
     "max_iteration_detected",
@@ -1989,6 +2013,7 @@ COMPACT_FIELDNAMES = [
     "stop_reason",
     "convergence_quality",
     "needs_longer_solve",
+    "pp_pressure_drop_rel_spread_window",
     "pp_pressure_drop_rel_spread_cells_4_7",
     "convergence_quality_warnings",
     "pp_pressure_drop_rel_spread_note",
