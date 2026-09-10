@@ -389,16 +389,13 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: REF_empty baselines.
-# u0p2_p6M matches the Diamond campaign anchor (D2450_a45 grid study) so
-# QoI-stop timing and post extract buckets stay comparable.
-# u0p3_p6M is the empty-channel control for the D2450_a45 per-cell dP dip
-# (14.75% spread at u=0.3 vs 2.58% at u=0.2). Plane Poiseuille: every
-# active cell must have identical dP; a dip here would be numerical.
+# Solver: REF_empty baselines, D2450_a45 p8M CP-grid pair, D0817_a45 u=0.3 dip.
+# skip_existing_final_data skips the two REF_empty finals.
 # Field names match the historical D2450_a45 solver_sweep_cases dict
 # (5931dcc): family, geo_id, mesh_id, run_id, geo_name, case_name,
 # inlet_velocity_value, outlet_gauge_pressure.
 # ---------------------------------------------------------------------------
+_MESH_ID_BL6 = "max085_min006_cpg5_bl6_peel2"
 solver_sweep_cases = [
     {
         "family": "empty",
@@ -416,6 +413,36 @@ solver_sweep_cases = [
         "mesh_id": _MESH_ID,
         "run_id": "u0p3_p6M",
         "geo_name": "REF_empty",
+        "case_name": "u0p3_p6M",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+    },
+    {
+        "family": "diamond",
+        "geo_id": "D2450_a45",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p2_p8M",
+        "geo_name": "D2450_a45",
+        "case_name": "u0p2_p8M",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 8.0e6,
+    },
+    {
+        "family": "diamond",
+        "geo_id": "D2450_a45",
+        "mesh_id": _MESH_ID_BL6,
+        "run_id": "u0p2_p8M",
+        "geo_name": "D2450_a45",
+        "case_name": "u0p2_p8M",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 8.0e6,
+    },
+    {
+        "family": "diamond",
+        "geo_id": "D0817_a45",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M",
+        "geo_name": "D0817_a45",
         "case_name": "u0p3_p6M",
         "inlet_velocity_value": 0.3,
         "outlet_gauge_pressure": 6.0e6,

@@ -279,10 +279,8 @@ CP extraction requires `RO_ANALYTIC_CWALL = 1`. Report extraction also writes
 post-hoc `convergence_quality` / `needs_longer_solve` from
 `|lmh_relative_difference| < 1e-3`, `|mass_balance_relative_error| < 1e-3`,
 and `continuity_final < 1e-4`. That gate is independent of `stop_reason`.
-`pp_pressure_drop_rel_spread_cells_4_7` is recorded alongside as a diagnostic
-only: on D2450_a45 the converged (max−min)/mean is ~2.58% at \(u=0.2\) and
-~14.7% at \(u=0.3\), unchanged between short and long solves, so it measures
-evaluation-window uniformity rather than convergence.
+`pp_pressure_drop_rel_spread_cells_4_7` is a WARNING, never a failure; see
+**Evaluation-window dP spread** below for how to read the value.
 
 ## Known field artifacts
 
@@ -332,6 +330,86 @@ property. The inlet face is spacer-free in every family because the buffer
 regions are empty, so per-mesh \(G\) re-measurement is not physically
 required. The solver still lazy-fills and compares at \(10^{-6}\) relative
 as an integrity check.
+
+## Evaluation-window dP spread
+
+`pp_pressure_drop_rel_spread_cells_4_7` is a WARNING, never a failure. The
+evaluation-window mean is only meaningful when the spread is small. No
+numeric fail threshold yet.
+
+The **absolute** spread is not trustworthy to better than about \(\pm 40\%\).
+At identical physics (D2450_a45, `u0p2_p6M`, quality PASS) it spans
+**1.90%–3.59% (1.89×)** across the grid-study meshes. The under-converged
+`max045` leaf (10.34%, FAIL, stopped at 301) is excluded from that range.
+
+| mesh_id | bl | m_max | m_min | cells | spread |
+|---------|---:|------:|------:|------:|-------:|
+| `max085_min003_cpg5_bl4_peel2` | 4 | 0.085 | 0.003 | 803,653 | 1.90% |
+| `max085_min006_cpg5_bl4_peel2` | 4 | 0.085 | 0.006 | 796,009 | 2.58% |
+| `max085_min006_cpg5_bl4_f040_peel2` | 4 | 0.085 | 0.006 | (inert \(f\)) | 2.58% |
+| `max085_min006_cpg5_bl10_peel2` | 10 | 0.085 | 0.006 | 1,162,761 | 2.97% |
+| `max085_min006_cpg5_bl6_f040_peel2` | 6 | 0.085 | 0.006 | 913,162 | 3.05% |
+| `max085_min006_cpg5_bl8_peel2` (+ `_f020`, `_f040`) | 8 | 0.085 | 0.006 | 1,050,560 | 3.59% |
+| `max045_min006_cpg5_bl4_peel2` | 4 | 0.045 | 0.006 | 5,146,805 | 10.34% FAIL |
+
+`_fNNN` is inert (byte-identical physics). All of the above are `cpg5`.
+The `m_min` 0.003 point is a **single** observation. Meshes for `min004`,
+`max060`, `max035`, and `cpg7` exist but were never solved.
+
+It does **not** track bl monotonically (2.58 / 3.05 / 3.59 / 2.97% at
+bl 4/6/8/10). Campaign bl4 is the *lowest* of the bl series, so this is
+not the same near-wall limitation as the CP grid gap (bl4 vs bl6 at fixed
+`max085`, opposite direction). The spread is **not grid-converged**;
+14.75% at \(u=0.3\) cannot be quoted as a physical number. Finer `m_min`
+(0.003 vs 0.006) *lowers* spread 26% (1.90 vs 2.58%). Cell count is not
+the driver (`min003` ≈ same cells as campaign, lower spread; bl8 +32%
+cells, highest PASS spread).
+
+The WARNING column is always global cells 4–7 (a D2450-shaped diagnostic),
+not the evaluation-window spread. On D0817_a45 (21 active) that is active
+cells 3–6, not cells 5–22.
+
+Campaign-mesh three-point trend (`max085_min006_cpg5_bl4_peel2`), with
+filament \(\mathrm{Re}_d=\rho U d/\mu\) at \(d=0.4\,\mathrm{mm}\) (all
+Diamond pitches):
+
+| \(u\) (m/s) | Re\(_{D_h}\) | Re\(_d\) | spread |
+|------------:|-------------:|---------:|-------:|
+| 0.1 | 172 | 44.7 | 0.24% |
+| 0.2 | 344 | 89.4 | 2.58% |
+| 0.3 | 516 | 134.2 | 14.75% |
+
+Exponents in \(u\): \(0.24\to 2.58\) is \(n=3.4\); \(2.58\to 14.75\) is
+\(n=4.3\). The Re trend is still real: 14.75% is 5.7× the campaign 2.58%,
+well outside the 1.89× mesh band. `u0p3_p6M` (FAIL, 301) and
+`u0p3_p6M_conv2000` (PASS) agree (14.76 vs 14.74%).
+
+**Suggestive, not established:** free-cylinder shedding onset is
+\(\mathrm{Re}_d \approx 47\). At \(u=0.1\) the campaign sits just below
+that (\(\mathrm{Re}_d=44.7\)) with spread 0.24%, below the `REF_empty`
+floor. Confinement delays shedding, and steady residual-converged data
+cannot distinguish an attached bubble from suppressed shedding.
+
+`REF_empty` on the same campaign mesh is **0.53% at both \(u=0.2\) and
+\(u=0.3\)**: a plane-placement discretisation floor with no velocity
+dependence. The Diamond growth is spacer-induced.
+
+## `REF_empty` discretisation excess over plane Poiseuille
+
+Fully developed plane Poiseuille between infinite plates is
+\(\mathrm{d}p/\mathrm{d}x = 12\mu U/h^2\) with campaign
+\(\mu = 8.93\times10^{-4}\,\mathrm{Pa\,s}\) and \(h = 0.770\,\mathrm{mm}\):
+\(3614.8\,\mathrm{Pa/m}\) at \(u=0.2\) and \(5422.1\,\mathrm{Pa/m}\) at
+\(u=0.3\) (ratio exactly 1.5). Measured `pressure_drop_spacer_per_m` on
+`REF_empty` is \(3707.5\) and \(5634.2\,\mathrm{Pa/m}\). The discretisation
+excess over that analytic is **\(+2.6\%\) at \(u=0.2\)** and **\(+3.9\%\) at
+\(u=0.3\)** (measured ratio \(1.5197\)). Both runs are `residual_converged`.
+Permeation and inertia are both ruled out as causes at \(\sim 0.1\%\)
+(wrong sign for permeation; Re-independent relative contribution for
+inertia). Cause unexplained. Cross-velocity dP comparisons therefore
+carry roughly \(1\%\) systematic; same-velocity cross-family comparisons
+do not. Spanwise boundaries are periodic, so the rectangular-duct
+side-wall correction does not apply.
 
 ## `membrane_blocked_area_frac` stays 0.0
 
