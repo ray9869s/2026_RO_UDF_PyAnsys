@@ -226,8 +226,23 @@ between the 301-iteration and 765-iteration solutions. It is recorded as
 | u0p2 | `residual_converged` at 379; every quantity identical to 6 sig figs vs 301 stop |
 | u0p3 | `residual_converged` at 765; CP −0.010%, ΔP +0.074%; `lmh_relative_difference` went \(-0.2925 \rightarrow 1.30\times10^{-4}\) |
 
-So **`qoi_initial_values_to_ignore` does not need raising**: what the 301 stop
-missed is exactly what the `lmh_relative_difference` gate catches.
+So **`qoi_initial_values_to_ignore` does not need raising**: the 301 stop
+never detected a plateau. `ignore=200` plus \(N_p=100\) makes 301 the first
+legal window, and LMH's period-2 oscillation (\(\sim10^{-6}\)) is three
+orders inside the \(10^{-3}\) relative criterion, so the window is already
+closed the moment it may fire. **301 is not adequate for production
+runs.** At \(u=0.3\) that first-legal stop had
+`lmh_relative_difference` \(-0.2925\) and `mass_balance_relative_error`
+\(0.226\); the quality gate correctly returned FAIL. What 301 missed is
+exactly what that gate catches. The live solver stop is now
+`all-conditions-are-met` on `lmh_udm_avg` **and** `pressure_drop_spacer`
+(same relative `stop_criterion` \(10^{-3}\)), with residual
+`check_convergence` still on. UG 37.18 All includes enabled residuals, so
+the solver stops on LMH ∧ spacer ΔP ∧ residuals.
+
+The previous `any-condition-is-met` LMH-only stop is why u0p3 declared
+`qoi_converged` at iteration 301 while continuity was still
+\(6.4\times10^{-3}\).
 
 ### \(u = 0.1\) saturation patch
 

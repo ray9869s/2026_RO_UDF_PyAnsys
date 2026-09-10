@@ -389,10 +389,15 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: REF_empty baseline run (first spacer-free solve).
-# Operating point u0p2_p6M matches the Diamond campaign anchor used in the
-# grid-independence study (D2450_a45, batch_config header) so QoI-stop timing
-# and post extract buckets are comparable to existing Diamond runs.
+# Solver: REF_empty baselines.
+# u0p2_p6M matches the Diamond campaign anchor (D2450_a45 grid study) so
+# QoI-stop timing and post extract buckets stay comparable.
+# u0p3_p6M is the empty-channel control for the D2450_a45 per-cell dP dip
+# (14.75% spread at u=0.3 vs 2.58% at u=0.2). Plane Poiseuille: every
+# active cell must have identical dP; a dip here would be numerical.
+# Field names match the historical D2450_a45 solver_sweep_cases dict
+# (5931dcc): family, geo_id, mesh_id, run_id, geo_name, case_name,
+# inlet_velocity_value, outlet_gauge_pressure.
 # ---------------------------------------------------------------------------
 solver_sweep_cases = [
     {
@@ -403,6 +408,16 @@ solver_sweep_cases = [
         "geo_name": "REF_empty",
         "case_name": "u0p2_p6M",
         "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+    },
+    {
+        "family": "empty",
+        "geo_id": "REF_empty",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M",
+        "geo_name": "REF_empty",
+        "case_name": "u0p3_p6M",
+        "inlet_velocity_value": 0.3,
         "outlet_gauge_pressure": 6.0e6,
     },
 ]

@@ -1904,7 +1904,8 @@ def ensure_lmh_udm_avg_report_file(solution, report_name, file_name):
     return object_name
 
 
-QOI_CONVERGENCE_CONDITION = "any-condition-is-met"
+QOI_CONVERGENCE_CONDITION = "all-conditions-are-met"
+QOI_STOP_PRESSURE_REPORT_NAME = "pressure_drop_spacer"
 
 
 def configure_qoi_convergence_condition(
@@ -1918,9 +1919,11 @@ def configure_qoi_convergence_condition(
 ):
     """Configure one Fluent report-definition convergence condition.
 
-    Sets the global selector to any-condition-is-met so residual checks
-    (kept enabled) OR the LMH window can stop the run. Call once per
-    report; the selector is overwritten to the same value each time.
+    Sets the global selector to all-conditions-are-met. UG 37.18 All/Any
+    is across active report conditions AND enabled residual checks, so
+    with residual check_convergence left on the live stop is every active
+    QoI report AND residuals. Call once per report; the selector is
+    overwritten to the same value each time.
     """
     convergence = solution.monitor.convergence_conditions
     convergence.condition = QOI_CONVERGENCE_CONDITION
@@ -3498,28 +3501,34 @@ if __name__ == "__main__":
         if enable_solve_time_qoi_reports and enable_pressure_drop_spacer_report_file:
             ensure_lmh_udm_avg_report_file(
                 solution=solution,
-                report_name="pressure_drop_spacer",
+                report_name=QOI_STOP_PRESSURE_REPORT_NAME,
                 file_name=pressure_drop_spacer_report_file_name,
             )
+            qoi_stop_report_file_paths.append(dp_report_file_path)
             print(f"QoI report file path (case dir): {dp_report_file_path}")
 
         if enable_qoi_convergence_stop:
+            qoi_stop_report_names = [
+                qoi_convergence_report_name,
+                QOI_STOP_PRESSURE_REPORT_NAME,
+            ]
             print(
                 "QoI convergence stop: "
-                f"{QOI_CONVERGENCE_CONDITION} on [{qoi_convergence_report_name}] "
-                "with residual check_convergence left on. "
-                "pressure_drop_spacer.out is diagnostic-only (not a stop condition)."
+                f"{QOI_CONVERGENCE_CONDITION} on {qoi_stop_report_names} "
+                f"(relative stop_criterion={qoi_stop_criterion}) "
+                "with residual check_convergence left on."
             )
-            qoi_convergence_object_names.append(
-                configure_qoi_convergence_condition(
-                    solution=solution,
-                    report_name=qoi_convergence_report_name,
-                    stop_criterion=qoi_stop_criterion,
-                    previous_values_to_consider=qoi_previous_values_to_consider,
-                    initial_values_to_ignore=qoi_initial_values_to_ignore,
-                    active=not use_ramp_convergence_safety,
+            for report_name in qoi_stop_report_names:
+                qoi_convergence_object_names.append(
+                    configure_qoi_convergence_condition(
+                        solution=solution,
+                        report_name=report_name,
+                        stop_criterion=qoi_stop_criterion,
+                        previous_values_to_consider=qoi_previous_values_to_consider,
+                        initial_values_to_ignore=qoi_initial_values_to_ignore,
+                        active=not use_ramp_convergence_safety,
+                    )
                 )
-            )
 
         relaxation_result = apply_real_under_relaxation(
             solver=solver,
@@ -3561,9 +3570,9 @@ if __name__ == "__main__":
         # If use_ramp_convergence_safety is True:
         #   Phase 1 runs a fixed number of iterations with residual convergence stopping disabled
         #   and QoI convergence conditions inactive.
-        #   Phase 2 activates the LMH QoI condition (any-condition-is-met) and
-        #   re-enables residual check_convergence so Fluent stops on residual
-        #   OR LMH. pressure_drop_spacer.out is diagnostic-only.
+        #   Phase 2 activates LMH and spacer-dP QoI conditions
+        #   (all-conditions-are-met) and re-enables residual
+        #   check_convergence so Fluent stops on LMH AND dP AND residual.
 
         solver_stop_reason = None
         calculation_diverged = False

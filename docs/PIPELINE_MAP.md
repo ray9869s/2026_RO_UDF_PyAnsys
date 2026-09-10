@@ -225,7 +225,7 @@ All `_probe_*`, `_tmp_*`, and `scripts/analysis/*` (section 1.3). Nothing in `ba
 ### 4.6 Confusing for a fresh reader
 
 - Header comments in `batch_meshing.py` / `batch_solver_sweep.py` still say `My_CFD_Project/01_Scripts/...`.
-- `configs/batch_config.py` holds the **31-mesh campaign matrix** (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) plus a one-case `solver_sweep_cases` starter (`REF_empty` / `u0p2_p6M`). Campaign size is 31 × 9 = 279 solver runs; the solver list is not yet the full 279.
+- `configs/batch_config.py` holds the **31-mesh campaign matrix** (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) plus a two-case `solver_sweep_cases` starter (`REF_empty` / `u0p2_p6M` and `u0p3_p6M`). Campaign size is 31 × 9 = 279 solver runs; the solver list is not yet the full 279.
 - Dual metadata filenames (`manifest.json` + `mesh_run_record.json`) without a single glossary in code.
 - Orchestrators take `--family --geo-id --mesh-id --run-id`; workers still accept `--geo-name` / `--case-name` as **filename labels** equal to those ids (post) or via overrides JSON (solve/mesh).
 - `needs_lead_recheck` is written and validated but **never read** by any post/solve script to change behaviour (see §6).
@@ -343,4 +343,4 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
    Fresh-start diagnostic hardcodes archive-derived scalars; no automated archive→four-id importer. Recovering other archive cases is manual.
 
 10. **Solver sweep list is not yet 279**  
-    `mesh_batch_cases` is the 31-mesh campaign. `solver_sweep_cases` currently holds a starter (`REF_empty` / `u0p2_p6M`). Filling 31 × 9 operating points is still a config edit, not a code gap.
+    `mesh_batch_cases` is the 31-mesh campaign. `solver_sweep_cases` currently holds `REF_empty` at `u0p2_p6M` and `u0p3_p6M`. Filling 31 × 9 operating points is still a config edit, not a code gap.

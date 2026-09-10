@@ -218,7 +218,7 @@ def test_pressure_drop_spacer_report_file_uses_monitor_report_files():
     assert report_file.active is True
 
 
-def test_qoi_convergence_condition_uses_any_condition_is_met():
+def test_qoi_convergence_condition_uses_all_conditions_are_met():
     solver_code = load_solver_code("solver_qoi_convergence")
 
     class ConvergenceReports(NamedGroup):
@@ -240,7 +240,7 @@ def test_qoi_convergence_condition_uses_any_condition_is_met():
         active=False,
     )
     assert object_name == "lmh_udm_avg_conv"
-    assert convergence_conditions.condition == "any-condition-is-met"
+    assert convergence_conditions.condition == "all-conditions-are-met"
     report = convergence_reports["lmh_udm_avg_conv"]
     assert report.report_defs == "lmh_udm_avg"
     assert report.stop_criterion == pytest.approx(1e-3)
@@ -249,15 +249,14 @@ def test_qoi_convergence_condition_uses_any_condition_is_met():
     assert report.active is False
 
 
-def test_qoi_convergence_stop_is_lmh_only_dp_file_kept():
-    solver_code = load_solver_code("solver_qoi_lmh_only")
+def test_qoi_convergence_stop_requires_lmh_and_spacer_dp():
+    solver_code = load_solver_code("solver_qoi_lmh_and_dp")
     text = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
-    assert solver_code.QOI_CONVERGENCE_CONDITION == "any-condition-is-met"
-    assert "QOI_STOP_PRESSURE_REPORT_NAME" not in text
-    assert "report_name=qoi_convergence_report_name" in text
-    assert 'report_name="pressure_drop_spacer"' in text
+    assert solver_code.QOI_CONVERGENCE_CONDITION == "all-conditions-are-met"
+    assert solver_code.QOI_STOP_PRESSURE_REPORT_NAME == "pressure_drop_spacer"
+    assert "qoi_stop_report_names = [" in text
     assert "qoi_stop_report_file_paths.append(lmh_report_file_path)" in text
-    assert "qoi_stop_report_file_paths.append(dp_report_file_path)" not in text
+    assert "qoi_stop_report_file_paths.append(dp_report_file_path)" in text
     assert "enable=not enable_qoi_convergence_stop" not in text
 
 

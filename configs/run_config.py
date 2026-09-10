@@ -293,13 +293,16 @@ ramp_full_iteration = 150
 post_ramp_buffer_iterations = 50
 
 # QoI-based convergence stop (Fluent monitor.convergence_conditions).
-# condition = any-condition-is-met; residual check_convergence stays True
-# (1e-7). The only QoI report condition is lmh_udm_avg (stop_criterion 1e-3,
-# Np=100, ignore=200). QoI is inactive during the 200-iteration ramp.
-# pressure_drop_spacer.out is written for diagnostics only — not a stop
-# condition. Live bl6 evidence: dP already matched to ~7 sig figs at the
-# LMH stop while continuity was still falling; AND-ing dP bought nothing
-# and a never-closing dP window would send runs to max_iterations.
+# condition = all-conditions-are-met; residual check_convergence stays True
+# (1e-7). UG 37.18 All includes enabled residuals, so the live stop is
+# LMH AND spacer dP AND residuals — not (LMH AND dP) OR residual, which
+# Fluent cannot express. Both report conditions use the same relative
+# window (UG 37.18: max_k |m(n)-m(n-k)|/|m(n)| < stop_criterion). 1e-3
+# is 0.1% of the current value for LMH and for dP in Pa; an absolute Pa
+# threshold is not available on this condition. QoI is inactive during
+# the 200-iteration ramp. Earlier bl6 / u=0.2 evidence that AND-ing dP
+# bought nothing is superseded: u=0.3 D2450_a45 stopped at the first
+# legal LMH window (iter 301) while continuity was still 6.4e-3.
 enable_qoi_convergence_stop = True
 qoi_convergence_report_name = "lmh_udm_avg"
 qoi_stop_criterion = 1e-3

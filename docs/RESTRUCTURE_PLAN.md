@@ -385,8 +385,11 @@ Do not reopen these.
 ### Plug vs parabolic — `D2450_a45` / `u0p2_p6M`
 
 Same mesh, same operating point, `use_inlet_velocity_profile` True vs False.
-Both converged at iteration 301. Parabolic is the campaign leaf; plug is
-`u0p2_p6M_plug`. Every headline metric agrees within 0.02%:
+Both stopped at iteration 301, the first legal QoI window (not a detected
+plateau). At \(u=0.2\) that window already matched the 379-iteration
+residual-converged field to 6 sig figs, so the comparison holds. Parabolic
+is the campaign leaf; plug is `u0p2_p6M_plug`. Every headline metric agrees
+within 0.02%:
 
 | metric | parabolic | plug | relative |
 |---|---:|---:|---:|
@@ -470,7 +473,8 @@ auditable.
 `AGENTS.md` and the `260822_RO_UDF.c` header overstated this. The quoted
 0.44% LMH and 7.1% CP-excess (header: "~0.4% against geometry-to-geometry
 2.7%") compare **bl4 vs bl6 at fixed `max085`**, same operating point
-(`D2450_a45` / `u0p2_p6M`), both stopping at iteration 301. That is a
+(`D2450_a45` / `u0p2_p6M`), both stopping at iteration 301 (first legal
+QoI window; at \(u=0.2\) that matched residual-converged 379). That is a
 wall-normal (prism count / y1) check. It is not an `m_max` / surface-size
 study, and it does not close grid independence for the campaign mesh.
 
