@@ -98,7 +98,7 @@ from ro.udm_layout import (  # noqa: E402
 
 REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
     "fluent_launch": (
-        "Cell 4: pyfluent.launch_fluent(mode='solver') "
+        "Cell 4: pyfluent.launch_fluent through switch_to_solver "
         "(excludes read_case_data)."
     ),
     "read_case_data": (
@@ -736,7 +736,7 @@ def create_z_normal_plane(solver_obj, surface_name, z_value_m):
 
 
 # ==========================================================
-# Cell 4. Launch Fluent in solver mode and load case/data
+# Cell 4. Launch Fluent through meshing mode and switch to solver
 # ==========================================================
 
 if __name__ == "__main__":
@@ -763,16 +763,21 @@ if __name__ == "__main__":
 
     try:
         _begin_extract_phase("fluent_launch")
-        print("Launching Fluent in solver mode...")
+        print("Launching Fluent in meshing mode, then switching to solver...")
         print(f"product_version = {product_version}")
         print(f"processor_count = {processor_count}")
         print(f"start_timeout = {fluent_start_timeout}")
         print(f"health_timeout = {fluent_health_timeout}")
         print(f"working directory = {case_path}")
 
-        solver = pyfluent.launch_fluent(
+        # Direct solver-mode launch fails on this host with
+        # "Failed to construct hwtree for collect command" during node
+        # spawn (LaunchFluentError / health_check Deadline Exceeded).
+        # The meshing-then-switch path is required; do not change this
+        # to mode="solver".
+        meshing = pyfluent.launch_fluent(
             product_version=product_version,
-            mode="solver",
+            mode="meshing",
             dimension=3,
             precision="double",
             processor_count=processor_count,
@@ -782,10 +787,16 @@ if __name__ == "__main__":
             cwd=as_fluent_path(case_path),
         )
 
+        print("Meshing session launched successfully.")
+        print("Switching to solver...")
+
+        solver = meshing.switch_to_solver()
+        meshing = None
+
         setup = solver.settings.setup
         solution = solver.settings.solution
 
-        print("Solver session launched successfully.")
+        print("Switched to solver successfully.")
 
         _end_extract_phase()
         _begin_extract_phase("read_case_data")
