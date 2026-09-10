@@ -4,8 +4,9 @@ Parameter exploration, inventory, and convergence notes for the RO spacer
 campaign. All exploration numbers below are on **D2450_a45** unless stated.
 Campaign baseline mesh_id: `max085_min006_cpg5_bl4_peel2` (796,009 cells).
 
-See also `docs/GEOMETRY_DESIGN.md` (joint spheres, Pillar bore) and
-`docs/metrics_conventions.md` (coordinates, QoI reliability).
+See also `docs/GEOMETRY_DESIGN.md` (joint spheres, Pillar bore, sinusoidal
+curvature margin) and `docs/metrics_conventions.md` (coordinates, QoI
+reliability).
 
 ---
 
@@ -64,10 +65,10 @@ different core strategy?
 
 ---
 
-## Mesh inventory (21 built; campaign mesh target 31)
+## Mesh inventory (31 meshes; 279 solver runs)
 
-21 = 9 Diamond + 3 ML + 9 Pillar are built today. The campaign mesh target is
-**31** = 21 + 9 Sinusoidal + `REF_empty` (empty channel is meshed separately).
+**31** = 9 Diamond + 3 ML + 9 Pillar + 9 Sinusoidal + `REF_empty`.
+Solver campaign is 31 meshes × 9 operating points = **279** runs.
 Quality ordering at the campaign mesh settings:
 
 | family | ortho | AR | why |
@@ -144,6 +145,20 @@ Same mesh_id. Bore axis `{0, 0.15, 0.30}` (`h00` / `h15` / `h30`).
 | P_p100_h00 | 897,940 | 0.4582 | 0.22506 | 24.64 | 0 | 0.8543 | 0 | 3 |
 | P_p100_h15 | 1,201,883 | 0.4944 | 0.31426 | 28.36 | 0 | 0.8568 | 0 | 4 |
 | P_p100_h30 | 1,055,859 | 0.5358 | 0.25932 | 29.80 | 0 | 0.8645 | 0 | 4 |
+
+### Sinusoidal (9)
+
+3×3 complete (a072 / a144 / a193 × l1733 / l3465 / l6930). Same campaign
+mesh_id. Zones = 3 (`axial`, `bridge`, `buffer`). Sub-unity curvature case
+`S_a193_l1733` is acknowledged in `docs/GEOMETRY_DESIGN.md`. Authoritative
+per-geo quality is in each mesh manifest; the case that closed the matrix:
+
+| geo | cells | skew | ortho | AR | eps |
+|-----|------:|-----:|------:|---:|----:|
+| S_a193_l1733 | 4,977,088 | 0.602 | 0.12175 | 48.41 | 0.80629 |
+
+Quality is inside campaign range. `S_a193_l6930` is worse (ortho 0.1118,
+skew 0.640). Porosity vs `S_a144_l1733`: 0.80629 vs 0.79949.
 
 ### Observations
 

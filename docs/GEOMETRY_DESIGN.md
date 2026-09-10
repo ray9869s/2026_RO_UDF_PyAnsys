@@ -141,3 +141,71 @@ separate jet orifice. State that when interpreting p60 h15/h30 results.
 No filament–filament joint sphere on Pillar (`bridge_radius_m = 0`): coplanar
 filaments fully interpenetrate at the node and the pillar covers it.
 `wall_spacer_hole` is listed only for h15/h30 (rule 3-3).
+
+---
+
+## Sweep curvature margin (sinusoidal)
+
+A tube of radius \(r\) swept along a plane curve self-intersects when the
+centerline curvature radius \(R\) drops below \(r\). For a sine centerline
+\(y = a\sin(2\pi x/\lambda)\), at a crest \(y' = 0\) and
+
+\[
+\kappa = a\left(\frac{2\pi}{\lambda}\right)^2,
+\qquad
+R = \frac{1}{\kappa} = \frac{\lambda^2}{4\pi^2 a}.
+\]
+
+The curvature margin is that radius over the tube radius:
+
+\[
+m = \frac{R}{r} = \frac{\lambda^2}{4\pi^2 a r}.
+\]
+
+\(m = 1\) is the geometric self-intersection limit. The previous hard gate
+was \(m \ge 1.2\); that factor has no derivation in the repo (commit
+`01956e8` records only the error string). It is now a warning band, not a
+floor. Do not replace the three-band rule with a quieter numeric cutoff
+(e.g. 0.95): a future sub-unity geometry must be named in the acknowledged
+set or the gate raises.
+
+Three-band rule (`validate_curvature_margin` in
+`src/ro/manifest_validation.py`):
+
+| band | action |
+|------|--------|
+| \(m \ge 1.2\) | pass silently |
+| \(1.0 \le m < 1.2\) | pass with a WARNING naming the `geo_id` and the value (reduced margin against sweep self-intersection) |
+| \(m < 1.0\) | pass only for `geo_id`s in `_CURVATURE_MARGIN_ACKNOWLEDGED_GEO_IDS`, with a louder WARNING that the swept surface self-intersects and the CAD heals it; **raise** for any other `geo_id` |
+
+### Amplitude limit at \(\lambda = W/2\)
+
+Campaign \(W = 3.465\,\mathrm{mm}\), tube radius \(r = 0.400\,\mathrm{mm}\).
+At the shortest wavelength \(\lambda = W/2\), \(m \ge 1.2\) requires
+
+\[
+a \le 0.15840\,\mathrm{mm} = W/21.9.
+\]
+
+So \(a = W/20\) (\(0.17325\,\mathrm{mm}\), \(m = 1.097\)) and
+\(a = W/18\) (\(0.1925\,\mathrm{mm}\), \(m = 0.9874\)) both fall below the
+nominal band. This is a physical constraint on the design matrix, not an
+arbitrary choice.
+
+### Acknowledged sub-unity case `S_a193_l1733`
+
+\(R = 0.39496\,\mathrm{mm}\) versus \(r = 0.400\,\mathrm{mm}\),
+\(m = 0.9874\) (code `curvature_margin=0.9874065974644699`). Mesh succeeded
+fully: 4,977,088 cells, ortho_min 0.121754, AR_max 48.41, skew_max 0.602,
+13 import zones, coordinates exact (\(x\) 0..34.65, \(y\) \(\pm\)1.7325,
+\(z\) \(\pm\)0.3853 mm). Quality is inside campaign range —
+`S_a193_l6930` is worse (ortho 0.1118 / skew 0.640).
+
+Solid volume from `/mesh/check`: a144_l1733 \(17.90907\,\mathrm{mm}^3\),
+a193_l1733 \(18.53702\,\mathrm{mm}^3\), difference \(+0.628\,\mathrm{mm}^3\).
+Nominal prediction from the arc-length factor (elliptic integral 1.06538
+\(\to\) 1.11268 over 24.255 mm active, trimmed section \(0.49854\,\mathrm{mm}^2\))
+plus the bridge term is \(+0.589\,\mathrm{mm}^3\). Measured exceeds nominal
+by 6.6%, so the CAD healing of the self-intersection is a surface crease at
+29 extrema, **not** a volume removal. No material is missing. Porosity
+0.80629 vs 0.79949.

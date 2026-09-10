@@ -22,7 +22,7 @@ Common geometry (mesh + run):
   joint_sphere_R_ratio:       float | null        # R / r_min; recorded, not constrained
   joint_sphere_r_min_m:       float | null        # thinner filament radius at contact
   joint_sphere_count:         int >= 0
-  curvature_margin:           float | null (sinusoidal only, >= 1.2 when set)
+  curvature_margin:           float | null (sinusoidal only; three-band gate)
   spacer_wall_zones:          list[str]
 
 Run-only:

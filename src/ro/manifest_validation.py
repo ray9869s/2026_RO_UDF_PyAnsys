@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any, Collection, Mapping
 
 from ro.campaign_geometry import CAMPAIGN_H_M
@@ -10,7 +11,20 @@ from ro.manifest_errors import ManifestError
 
 _PERIODIC_SHIFT_SOURCES = frozenset({"derived_from_angle", "explicit"})
 _SPACER_WALL_PREFIX = "wall_spacer_"
-_CURVATURE_MARGIN_MIN = 1.2
+# Three-band curvature gate. 1.0 is the geometric self-intersection limit
+# (centerline curvature radius / tube radius). 1.2 is an undocumented former
+# hard floor, now a warning band — see docs/GEOMETRY_DESIGN.md.
+_CURVATURE_MARGIN_NOMINAL = 1.2
+_CURVATURE_MARGIN_SELF_INTERSECTION = 1.0
+# S_a193_l1733 is the one campaign case with R < r.
+# R = lambda^2/(4 pi^2 a) = 0.39496 mm versus tube radius 0.4 mm, ratio
+# 0.9874 (code curvature_margin=0.9874065974644699). Mesh 4,977,088 cells,
+# ortho_min 0.121754, AR_max 48.41, skew_max 0.602 (inside campaign range;
+# S_a193_l6930 is worse at ortho 0.1118 / skew 0.640). Solid volume
+# 18.53702 mm3 vs a144_l1733 17.90907 mm3 (measured +0.628 mm3 vs nominal
+# +0.589 mm3, 6.6% over); CAD healing of the self-intersection is a surface
+# crease at 29 extrema, not volume removal. porosity 0.80629 vs 0.79949.
+_CURVATURE_MARGIN_ACKNOWLEDGED_GEO_IDS = frozenset({"S_a193_l1733"})
 _MEMBRANE_TRIM_TOLERANCE_M = 1.0e-9
 _JOINT_SPHERE_RATIO_TOLERANCE_M = 1.0e-9
 _POROSITY_EPS_MIN = 0.3
@@ -340,7 +354,13 @@ def validate_spacer_wall_zones(
 
 
 def validate_curvature_margin(payload: Mapping[str, Any], *, kind: str = "Mesh") -> None:
-    """Sinusoidal cases must carry curvature_margin >= 1.2; others must be null."""
+    """Sinusoidal curvature_margin three-band gate; others must be null.
+
+    margin >= 1.2: pass silently.
+    1.0 <= margin < 1.2: pass with a warning (reduced margin).
+    margin < 1.0: pass with a louder warning only for geo_ids in
+    ``_CURVATURE_MARGIN_ACKNOWLEDGED_GEO_IDS``; raise otherwise.
+    """
     family = payload.get("family")
     geo_id = str(payload.get("geo_id", ""))
     margin = payload["curvature_margin"]
@@ -363,11 +383,32 @@ def validate_curvature_margin(payload: Mapping[str, Any], *, kind: str = "Mesh")
         raise ManifestValidationError(
             f"{kind} manifest curvature_margin must be finite, got {margin!r}."
         )
-    if margin_f < _CURVATURE_MARGIN_MIN:
-        raise ManifestValidationError(
-            f"{kind} manifest curvature_margin={margin_f!r} < {_CURVATURE_MARGIN_MIN} "
-            f"(self-intersection risk for {geo_id!r})."
+    if margin_f >= _CURVATURE_MARGIN_NOMINAL:
+        return
+    if margin_f >= _CURVATURE_MARGIN_SELF_INTERSECTION:
+        warnings.warn(
+            f"{kind} manifest {geo_id} curvature_margin={margin_f} is below "
+            f"{_CURVATURE_MARGIN_NOMINAL} (reduced margin against sweep "
+            "self-intersection).",
+            UserWarning,
+            stacklevel=2,
         )
+        return
+    if geo_id in _CURVATURE_MARGIN_ACKNOWLEDGED_GEO_IDS:
+        warnings.warn(
+            f"WARNING: {kind} manifest {geo_id} curvature_margin={margin_f} "
+            f"< {_CURVATURE_MARGIN_SELF_INTERSECTION}: the swept surface "
+            "self-intersects and the CAD heals it.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return
+    raise ManifestValidationError(
+        f"{kind} manifest curvature_margin={margin_f!r} < "
+        f"{_CURVATURE_MARGIN_SELF_INTERSECTION} (swept-surface "
+        f"self-intersection for {geo_id!r}; geo_id is not in the "
+        "acknowledged set)."
+    )
 
 
 def validate_u_mean_source_mesh_id(

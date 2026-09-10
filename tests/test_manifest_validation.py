@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 import pytest
 
@@ -418,18 +419,44 @@ def test_collect_spacer_wall_zones_requires_prefix_match():
     assert zones == ["wall_spacer", "wall_spacer_filament"]
 
 
-def test_curvature_margin_below_threshold_raises():
+def _sin_curvature_payload(geo_id: str, **updates):
     payload = mesh_payload()
     payload.update(
         {
             "family": "sin",
-            "geo_id": "S_a193_l1733",
-            **geometry_parameters_for_geo_id("S_a193_l1733"),
+            "geo_id": geo_id,
+            **geometry_parameters_for_geo_id(geo_id),
         }
     )
     payload["porosity_eps"] = 0.73
-    payload["curvature_margin"] = 1.0
-    with pytest.raises(ManifestError, match="self-intersection risk"):
+    payload.update(updates)
+    return payload
+
+
+def test_curvature_margin_nominal_passes_silently():
+    payload = _sin_curvature_payload("S_a144_l1733")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        validate_curvature_margin(payload)
+    assert caught == []
+
+
+def test_curvature_margin_reduced_band_warns():
+    payload = _sin_curvature_payload("S_a144_l1733", curvature_margin=1.097)
+    with pytest.warns(UserWarning, match="reduced margin against sweep"):
+        validate_curvature_margin(payload)
+
+
+def test_curvature_margin_subunity_acknowledged_warns():
+    payload = _sin_curvature_payload("S_a193_l1733")
+    assert payload["curvature_margin"] == pytest.approx(0.9874065974644699)
+    with pytest.warns(UserWarning, match="self-intersects and the CAD heals"):
+        validate_curvature_margin(payload)
+
+
+def test_curvature_margin_subunity_unknown_geo_raises():
+    payload = _sin_curvature_payload("S_a144_l1733", curvature_margin=0.95)
+    with pytest.raises(ManifestError, match="not in the acknowledged set"):
         validate_curvature_margin(payload)
 
 

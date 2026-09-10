@@ -239,7 +239,12 @@ def compute_curvature_margin(
     *,
     wave_radius_m: float = _SINUSOIDAL_WAVE_RADIUS_M,
 ) -> float | None:
-    """Return lambda**2 / (4 pi**2 A r) or None when amplitude is zero."""
+    """Return R/r = lambda**2 / (4 pi**2 A r), or None when amplitude is zero.
+
+    R is the centerline curvature radius at a sine crest. 1.0 is the
+    geometric self-intersection limit; the three-band acceptance gate is
+    in ``validate_curvature_margin``.
+    """
     if amplitude_m <= 0.0:
         return None
     if wavelength_m <= 0.0 or wave_radius_m <= 0.0:
