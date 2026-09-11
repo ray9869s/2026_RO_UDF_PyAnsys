@@ -71,7 +71,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `src/ro/solver_common.py`; `scripts/solver_code_260616.py`; `configs/run_config.py`; `scripts/case_inventory.py`; `scripts/report_campaign_identities.py` (신규); `tests/test_campaign_identities.py` | R-01; `run_id` 검사는 R-07 `make_base_case_name` | WSL 2026-09-11 `1205 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). 스키마 `[0,1)` 유지 — 0.08은 `read_mesh_manifest` 통과, campaign gate만 exact 0.0. mesh≠run blocked reject. `u_mean_ms * G == u_target_ms` (rel 1e-6; `u_mean_ms` 정의 유지; D2450 `0.1992807169514518 * 1.00360939613 == 0.2`); unfilled G/`u_mean_ms`와 plug는 N/A. `run_id` token == `make_base_case_name(u,p)` (`u0p2_p6M_plug` 허용). SHA mismatch reject; msh 없으면 SHA N/A (preflight skip). malformed `max_iterations`/`residual_target`는 default 없이 raise. **workstation 2026-09-11:** mesh 44 unread=0 / run 19 unread=0, 모든 identity 0 reject. | COMPLETE |
 | R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `src/ro/fluent_report_helpers.py`; `scripts/pyfluent_report_extract.py`; `scripts/report_extract_identities.py` (신규); `tests/test_extract_identities.py` | R-01 | WSL 2026-09-11 `1223 passed, 1 skipped, 0 failed`. CSV 키는 `area_mem`/`m_in`/`m_in_with_sources`/`m_in_mass_source`/`pressure_drop_spacer` (V-01; `pp_` report 이름 아님). missing key는 N/A이지 0이 아님. area rel `1e-9` (REF_empty 측정 1.8e-15). flux 3-key exact + compute `abs_tol` 1e-8. spacer dP vs active-cell 합은 내부 plane 상쇄로 대수적 항등식 (rel 1e-6 numerical floor). `LOAD_BEARING_SUMMARY_METRICS` 미변경. **workstation 2026-09-11:** run 19 unread=0 no_csv=3; area/flux_in/flux_out/spacer_dp reject 0. CSV 16: area+spacer PASS; flux 3 PASS / 13 N/A. | COMPLETE |
 | R-13 | `Sin_ST` / `GEO_ORDER` leftover | **can wait** — `post_cases=[]`이면 geometries 리스트는 안 쓰이고, figures는 279 solver를 막지 않음 | Cursor T5-04 T5-05 (요청문이 명시한 Cursor-only 항목) | `configs/batch_post_config.py`; `scripts/make_summary_figures.py`; `src/ro/campaign_geo_ids.py` (`CAMPAIGN_GEO_ID_ORDER`); `tests/test_summary_figure_geo_order.py` | none | WSL 2026-09-11 `1228 passed, 1 skipped, 0 failed`. live `geometries`/`GEO_ORDER` == `CAMPAIGN_GEO_ID_ORDER` (31, `REF_empty` first). 두 파일에 archive `Sin_ST`/`Sin_SL`/`Empty`/`Diamond_Spacer`/`Hole_Pillar`/`Multi_Layer_*` 없음. | COMPLETE |
-| R-10 | 세 dead gate blast radius 후 배선 | **before sweep** — 구현은 있고 배선만 없다. 기존 31을 거절하면 더 나쁘다 | Claude C5-02 C5-04 C5-05 C3-10; Astra A-05 (hash); Cursor는 layout validator를 T5-01로 이미 R-09에 넣음 | `src/ro/manifest_validation.py`; `src/ro/domain_layout.py`; `src/ro/campaign_geo_ids.py`; solver/extract preflight; `scripts/rebuild_mesh_manifest.py` SHA 로직 재사용; 이 파일 R-10 절에 blast 숫자 기록 | R-01; spacer Fluent 대조는 workstation. hash/legacy path는 `RO_DATA_ROOT` | 아래 R-10 절차. blast가 0 reject일 때만 wire. 하나라도 reject면 배선 중단하고 이 절에 목록을 남긴다. | NOT STARTED |
+| R-10 | 세 dead gate blast radius 후 배선 | **before sweep** — 구현은 있고 배선만 없다. 기존 31을 거절하면 더 나쁘다 | Claude C5-02 C5-04 C5-05 C3-10; Astra A-05 (hash); Cursor는 layout validator를 T5-01로 이미 R-09에 넣음 | `src/ro/campaign_geo_ids.py`; `src/ro/domain_layout.py`; `src/ro/manifest_validation.py`; `scripts/batch_meshing.py`; `scripts/batch_solver_sweep.py`; `scripts/report_legacy_ml_paths.py`; `scripts/report_replace_log_identities.py`; `scripts/report_spacer_wall_zones.py`; `tests/test_dead_gates.py` | R-01; spacer Fluent 대조는 workstation. hash/legacy path는 `RO_DATA_ROOT` | WSL 2026-09-11 `1252 passed, 1 skipped, 0 failed`. **wired:** selected-case `M_r*` seatbelt only (production/exploratory lists 0 reject by construction). **not wired:** data-root tree walk; replace-log (explicit campaign triple inspect exists, live caller 없음); spacer vs Fluent (log parser exists, live session 없음). SHA는 R-11 solver preflight. 19-leaf 숫자는 WSL에서 스캔 불가 — 명령은 R-10 절. | COMPLETE |
 
 ---
 
@@ -743,55 +743,117 @@ skip 없음. apply 없이 solver preflight는 키 없음으로 31개 전부 거�
 
 ## R-10 — Dead gates: blast radius 후 배선
 
-세 함수는 test-only. 각각 **먼저 31에 대해 실행하고 숫자를 이 절에 적은 다음**
-wire한다. reject > 0이면 배선하지 않는다.
+세 gate를 한 스윕으로 묶지 않는다. 각각 증거가 있는 것만 배선한다.
+측정 못 한 gate는 미배선 + 이 절에 이유. V-05가 본문보다 우선한다.
 
 ### 1. `assert_no_legacy_ml_geo_paths`
 
-- 하는 일: `RO_DATA_ROOT/{geometries,meshes,runs}/ml/M_r*` 존재 시 raise.
-- blast: `RO_DATA_ROOT`가 있는 머신에서
-  `pytest tests/test_campaign_geo_ids.py::test_production_data_root_has_no_legacy_ml_paths -q`
-  (지금은 `RO_DATA_ROOT` 없으면 skip).
-- wire: `batch_meshing.py` / `batch_solver_sweep.py` 시작 시 1회.
-  data root 없으면 지금처럼 skip이 아니라 production `--case-set production`일 때만
-  require env.
+**현재 scope:** `RO_DATA_ROOT/{geometries,meshes,runs}/ml/` 아래 이름 prefix
+`M_r`인 **직계 child**만. root나 tree가 없으면 빈 목록 (env만으로 검사가
+수행되지 않음 — Astra가 지적한 계약). **전역 data root walk가 아니다.**
+
+`C:/ro_data/_archive/ml_pre_wedge_rule` 과
+`C:/ro_data/_archive/sin_a193_l1733_pre_gate` 는 `_archive/` 아래라 **scope
+밖**. 전자의 `M_r*` leaf도 이 함수는 보지 않는다. 후자는 sin이라 `M_r*`
+prefix에도 안 걸린다. 전역 hard gate를 깔면 archive 공존이 유효 campaign을
+거절한다 — Astra V-05가 반대한 이유.
+
+**wired:** `assert_selected_cases_are_not_legacy_ml` — 선택된 case의
+`geo_id` prefix만. `batch_meshing.py` / `batch_solver_sweep.py`가 case list
+확정 직후 1회. data root를 걷지 않으므로 `_archive`와 무관.
+증거: exploratory 22 / production 31 mesh, exploratory 5 / production 279
+solver의 geo_id가 전부 `CAMPAIGN_GEO_IDS` (0 reject).
+
+**not wired:** 세 tree walk 자체. C:/ro_data 위 campaign-tree `M_r*` 개수는
+이 머신에서 UNKNOWN.
+
+```text
+python scripts/report_legacy_ml_paths.py
+```
 
 ### 2. `assert_replace_log_matches_mesh_manifest`
 
-- 하는 일: replace log의 마지막 `.msh.h5` parent == manifest `mesh_id`.
-  **로그가 없으면 return** (현재 계약). Sol T3-17은 completed run에 로그를
-  필수로 하자고 하나, 기존 유효 run을 거절할 수 있어 **이번 배선은
-  “로그가 있으면 일치”만**. 로그 필수화는 deferred.
-- blast: 기존 run leaf 개수, 로그 있는 수, mismatch 수. WSL에 `C:/ro_data`가
-  없으면 workstation 명령으로 세어 이 절에 적는다.
-- wire: solver preflight와 extract preflight. mismatch만 fatal.
+Astra V-05 / A-05: **현 함수 그대로 hard gate 배선 반대.** 잘못된 점:
+
+- glob `solver_mesh_replace_log_*.txt`의 **첫 matching log** (sorted). 문서의
+  later-replacement와 어긋날 수 있고, unreadable은 skip.
+- `mesh_id` parent만 비교 → 다른 geo의 동일 `mesh_id`도 통과.
+- 새 solve **preflight**에는 replace log가 아직 없다 → no-op을 성공처럼 봄.
+- log 부재를 일치로 취급. log만으로 byte identity가 아니다.
+
+**addressed, not wired:** `inspect_replace_log_identity`는 current-attempt
+파일 `solver_mesh_replace_log_{run_id}.txt`만 읽고,
+`meshes/{family}/{geo_id}/{mesh_id}/` triple이 manifest와 같을 때만 PASS.
+없으면 NOT_CHECKED. unreadable / 비-campaign path / geo mismatch는 REJECT.
+solver/extract에 호출하지 않음 — 19 leaf 실제 PASS/REJECT는 UNKNOWN.
+replacement **이후**에만 의미가 있고, SHA는 R-11이 담당.
+
+```text
+python scripts/report_replace_log_identities.py
+```
 
 ### 3. `validate_spacer_wall_zones`
 
-- 하는 일: manifest `spacer_wall_zones` vs Fluent zone 이름의 exact coverage.
-  split suffix (ML/Pillar)가 Diamond `wall_spacer`보다 위험 (Claude C5-02).
-- blast **Fluent 없이** 할 수 있는 것: 31 mesh manifest의 `spacer_wall_zones` vs
-  `geometry_parameters_for_geo_id(...)["spacer_wall_zones"]`. 불일치 목록.
-  Fluent 실측 zone은 각 mesh를 열어야 하므로 이 작업의 wire는 solver
-  preflight의 live zone list에만 연결한다. 31을 지금 Fluent로 열지 않는다.
-- registry와 manifest가 이미 다르면 **배선 금지**, 목록만 남긴다.
+Fluent wall-zone 이름 vs manifest exact coverage. disk의
+manifest↔registry는 둘 다 registry에서 왔다는 것만 증명 (V-05). mesh log의
+boundary face **count** (diamond 11, ml 15, pillar h00 13, h15/h30 14, sin
+13, REF_empty 10; 44 leaf 일치)는 라벨 비교가 아니다.
+
+solver는 setup에서 Python으로 `All boundary zones:` 와
+`Detected spacer wall zones:` 를 print한다. Fluent transcript
+(`solver_log_*.txt`)가 아니라 **stdout / attempt tee**
+(`{geo}__{mesh}__{run}__solver_attemptN.log`)에 남는다. 그 줄이 19 run log에
+있으면 post-hoc blast가 공짜다. 없으면 N/A이지 REJECT가 아니다.
+`All boundary zones: []` 는 REF_empty도 REJECT (discovery 실패를 빈
+declared list로 통과시키지 않음).
+
+**not wired.** live session 또는 19 log의 실제 줄 존재가 UNKNOWN.
+parser (`inspect_solver_log_spacer_zones`)와 리포트만 추가.
+
+```text
+python scripts/report_spacer_wall_zones.py
+```
+
+워크스테이션 공통:
+
+```text
+cd /c/pyfluent
+source .venv/Scripts/activate
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export RO_DATA_ROOT='C:/ro_data'
+export PYFLUENT_PROJECT_ROOT='C:/pyfluent'
+unset PYFLUENT_RUN_CONFIG PYFLUENT_SKIP_VALIDATION
+git pull --ff-only origin main
+python -m pip install -e .
+python scripts/report_legacy_ml_paths.py
+python scripts/report_replace_log_identities.py
+python scripts/report_spacer_wall_zones.py
+```
 
 ### 4. mesh SHA (C3-10 / A-05)
 
-요청문 5의 세 gate에 더해, 리뷰가 같은 값싼 배선으로 본 SHA 실측.
-R-02/R-04 skip에 이미 넣었으면 여기서는 solver/extract **시작 시** 한 번 더
-호출해 skip을 끈 직접 worker 경로를 막는다. 로직 복제 금지.
+R-11이 solver preflight에 이미 배선. 이 행에서 extract에 복제하지 않음.
 
 ### 포함하지 않음
 
 - `validate_layout_against_x_extent` (R-09).
-- replace-log 부재를 completed-run 실패로.
+- replace-log 부재를 completed-run 실패로 (deferred).
+- 전역 `M_r*` data-root hard gate.
+- spacer live Fluent load / solver iterate 전 호출.
 - UDF hardcoded membrane names vs config (Astra A-02 표, 별건).
 
 ### 검증
 
-blast 숫자 3줄이 이 절에 기록됨. 그 다음 pytest: preflight가 mismatch fixture에서
-raise, match fixture에서 pass.
+WSL 2026-09-11 `1252 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+`_archive/M_r*` 는 tree walk 0. selected `M_r050` raise, campaign lists pass.
+replace-log: missing NOT_CHECKED, campaign triple PASS, 다른 geo / mesh_id-only
+/ unreadable REJECT. spacer: print parse PASS, empty inventory REJECT,
+줄 없음 NO_LINE. batch driver는 selected-case만 호출하고 세 dead gate를
+solver에 넣지 않음.
+
+다음 행: 표에 남은 R 행 없음. 아래 Deferred mechanical / Open questions /
+V-04 승격 항목.
 
 ---
 

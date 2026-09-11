@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+from ro.campaign_geo_ids import assert_selected_cases_are_not_legacy_ml
 from ro.campaign_matrix import (
     CASE_SET_CHOICES,
     CASE_SET_EXPLORATORY,
@@ -925,6 +926,7 @@ def main(argv=None):
             raise SystemExit(
                 f"No mesh_batch_cases match {' and '.join(filters)}."
             )
+    assert_selected_cases_are_not_legacy_ml(mesh_batch_cases)
 
     base_cfg = _load_module("_base_cfg", BASE_RUN_CONFIG_PATH)
     ledger_path = data_root() / "inventory" / "mesh_ledger.csv"

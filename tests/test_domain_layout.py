@@ -16,6 +16,9 @@ from ro.domain_layout import (
     EvaluationWindow,
     LEGACY_LAYOUT,
     assert_replace_log_matches_mesh_manifest,
+    campaign_mesh_identity_from_msh_h5_path,
+    current_solver_replace_log_path,
+    inspect_replace_log_identity,
     layout_from_mesh_manifest,
     layout_from_run_directory,
     layout_post_config_values,
@@ -496,6 +499,101 @@ class TestReplaceLogMatchesMeshManifest:
         case_dir = tmp_path / "run"
         case_dir.mkdir()
         assert_replace_log_matches_mesh_manifest(case_dir, mesh_directory)
+
+
+class TestInspectReplaceLogIdentity:
+    def _write_mesh(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        write_mesh_manifest(directory, mesh_payload())
+        return directory
+
+    def test_missing_log_is_not_checked(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        log_path = current_solver_replace_log_path(tmp_path / "run", "u0p2_p6M")
+        status, reason = inspect_replace_log_identity(
+            log_path=log_path, mesh_directory=mesh_directory
+        )
+        assert status == "NOT_CHECKED"
+        assert reason is None
+
+    def test_campaign_path_match_is_pass(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        log_path = current_solver_replace_log_path(tmp_path / "run", "u0p2_p6M")
+        log_path.parent.mkdir()
+        log_path.write_text(
+            f'Reading from HOST:"C:/ro_data/meshes/{FAMILY}/{GEO_ID}/'
+            f'{MESH_ID}/{GEO_ID}_{MESH_ID}.msh.h5"\n',
+            encoding="utf-8",
+        )
+        status, reason = inspect_replace_log_identity(
+            log_path=log_path, mesh_directory=mesh_directory
+        )
+        assert status == "PASS"
+        assert reason is None
+
+    def test_same_mesh_id_different_geo_is_reject(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        log_path = current_solver_replace_log_path(tmp_path / "run", "u0p2_p6M")
+        log_path.parent.mkdir()
+        log_path.write_text(
+            f'Reading from HOST:"C:/ro_data/meshes/{FAMILY}/D0817_a45/'
+            f'{MESH_ID}/D0817_a45_{MESH_ID}.msh.h5"\n',
+            encoding="utf-8",
+        )
+        status, reason = inspect_replace_log_identity(
+            log_path=log_path, mesh_directory=mesh_directory
+        )
+        assert status == "REJECT"
+        assert "D0817_a45" in reason
+
+    def test_mesh_id_only_path_is_reject(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        log_path = current_solver_replace_log_path(tmp_path / "run", "u0p2_p6M")
+        log_path.parent.mkdir()
+        log_path.write_text(FIXTURE_REPLACE_LOG, encoding="utf-8")
+        status, reason = inspect_replace_log_identity(
+            log_path=log_path, mesh_directory=mesh_directory
+        )
+        assert status == "REJECT"
+        assert "meshes/" in reason
+
+    def test_unreadable_log_is_reject(self, monkeypatch, tmp_path: Path):
+        mesh_directory = self._write_mesh(monkeypatch, tmp_path)
+        log_path = current_solver_replace_log_path(tmp_path / "run", "u0p2_p6M")
+        log_path.parent.mkdir()
+        log_path.write_text("placeholder", encoding="utf-8")
+        real_read = Path.read_text
+
+        def boom(self, *args, **kwargs):
+            if Path(self) == log_path:
+                raise OSError("permission")
+            return real_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        status, reason = inspect_replace_log_identity(
+            log_path=log_path, mesh_directory=mesh_directory
+        )
+        assert status == "REJECT"
+        assert "unreadable" in reason
+
+    def test_campaign_identity_parser_requires_meshes_triple(self):
+        identity = campaign_mesh_identity_from_msh_h5_path(
+            f"C:/ro_data/meshes/{FAMILY}/{GEO_ID}/{MESH_ID}/{GEO_ID}_{MESH_ID}.msh.h5"
+        )
+        assert identity == {
+            "family": FAMILY,
+            "geo_id": GEO_ID,
+            "mesh_id": MESH_ID,
+        }
+        assert (
+            campaign_mesh_identity_from_msh_h5_path(
+                "C:/PyFluent/My_CFD_Project/03_Results/Pillar/"
+                "mesh_max085_min005_cpg5_bl4/Pillar.msh.h5"
+            )
+            is None
+        )
 
 
 class TestSolverLogDomainExtents:

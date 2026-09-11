@@ -12,6 +12,7 @@ from ro.campaign_geo_ids import (
     CAMPAIGN_GEO_ID_ORDER,
     CAMPAIGN_GEO_IDS,
     assert_no_legacy_ml_geo_paths,
+    assert_selected_cases_are_not_legacy_ml,
     campaign_geo_id_shape_re,
     family_for_geo_id,
     validate_campaign_geo_id,
@@ -110,6 +111,27 @@ def test_data_root_legacy_ml_check_passes_when_clean(tmp_path):
     root = tmp_path / "data"
     (root / "meshes" / "ml" / "M_c160").mkdir(parents=True)
     assert_no_legacy_ml_geo_paths(root)
+
+
+def test_legacy_ml_archive_outside_campaign_trees_is_not_flagged(tmp_path):
+    root = tmp_path / "data"
+    (root / "_archive" / "ml_pre_wedge_rule" / "M_r050").mkdir(parents=True)
+    (root / "_archive" / "sin_a193_l1733_pre_gate").mkdir(parents=True)
+    (root / "meshes" / "ml" / "M_c160").mkdir(parents=True)
+    assert_no_legacy_ml_geo_paths(root)
+
+
+def test_selected_cases_reject_legacy_ml_geo_id():
+    with pytest.raises(ValueError, match="M_r"):
+        assert_selected_cases_are_not_legacy_ml(
+            [{"family": "ml", "geo_id": "M_r050", "mesh_id": "max085"}]
+        )
+
+
+def test_selected_campaign_geo_ids_are_not_legacy_ml():
+    assert_selected_cases_are_not_legacy_ml(
+        [{"family": "ml", "geo_id": geo_id, "mesh_id": "max085"} for geo_id in CAMPAIGN_GEO_IDS]
+    )
 
 
 def test_production_data_root_has_no_legacy_ml_paths():

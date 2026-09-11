@@ -70,6 +70,12 @@ _MSH_H5_QUOTED_PATH_RE = re.compile(
     r'"(?P<path>[^"]+\.msh\.h5)"',
     re.IGNORECASE,
 )
+# Campaign leaf: .../meshes/{family}/{geo_id}/{mesh_id}/{file}.msh.h5
+_CAMPAIGN_MSH_IDENTITY_RE = re.compile(
+    r"(?:^|/)meshes/(?P<family>[^/]+)/(?P<geo_id>[^/]+)/(?P<mesh_id>[^/]+)/"
+    r"[^/]+\.msh\.h5$",
+    re.IGNORECASE,
+)
 _FLOAT_TOKEN = r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
 # Solver mesh-replace / transcript block: header "Domain Extents:" and each
 # axis line MUST carry an explicit "(m)" unit marker. Values are already metres.
@@ -422,12 +428,80 @@ def _mesh_case_name_from_msh_h5_path(raw_path: str) -> Optional[str]:
     return parent_name or None
 
 
+def campaign_mesh_identity_from_msh_h5_path(raw_path: str):
+    """Return {family, geo_id, mesh_id} from a campaign msh path, or None.
+
+    Parent-directory mesh_id alone is not enough: the same mesh_id string is
+    reused across geos.
+    """
+    normalized = _normalize_msh_path(raw_path).replace("\\", "/")
+    match = _CAMPAIGN_MSH_IDENTITY_RE.search(normalized)
+    if match is None:
+        return None
+    return {
+        "family": match.group("family"),
+        "geo_id": match.group("geo_id"),
+        "mesh_id": match.group("mesh_id"),
+    }
+
+
+def current_solver_replace_log_path(run_directory: Path, run_id: str) -> Path:
+    """Canonical current-attempt replace log (not ``__attemptN`` archives)."""
+    return Path(run_directory) / f"solver_mesh_replace_log_{run_id}.txt"
+
+
+def inspect_replace_log_identity(*, log_path: Path, mesh_directory: Path):
+    """Status of one explicit replace log vs the mesh manifest.
+
+    Returns (status, reason) where status is NOT_CHECKED, PASS, or REJECT.
+    Missing log is NOT_CHECKED. Unreadable log, no campaign triple, or a
+    family/geo_id/mesh_id mismatch is REJECT. This is not byte identity.
+    """
+    log_path = Path(log_path)
+    if not log_path.is_file():
+        return "NOT_CHECKED", None
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return "REJECT", f"unreadable replace log {log_path}: {exc}"
+    matches = list(_MSH_H5_QUOTED_PATH_RE.finditer(text))
+    if not matches:
+        return (
+            "REJECT",
+            f"replace log {log_path} has no quoted .msh.h5 path",
+        )
+    identity = campaign_mesh_identity_from_msh_h5_path(matches[-1].group("path"))
+    if identity is None:
+        return (
+            "REJECT",
+            f"replace log {log_path} msh path is not "
+            "meshes/{{family}}/{{geo_id}}/{{mesh_id}}/",
+        )
+    payload = read_mesh_manifest(mesh_directory)
+    expected = {
+        "family": payload["family"],
+        "geo_id": payload["geo_id"],
+        "mesh_id": payload["mesh_id"],
+    }
+    if identity != expected:
+        return (
+            "REJECT",
+            "replace log mesh identity "
+            f"{identity!r} does not match manifest {expected!r}.",
+        )
+    return "PASS", None
+
+
 def mesh_case_name_from_solver_replace_log(case_dir: Path) -> Optional[str]:
     """Read mesh_case_name from solver_mesh_replace_log_*.txt under case_dir.
 
     Scans every quoted ``*.msh.h5`` path in the log and uses the **last** match
     (a later mesh replacement wins). ``.cas.h5`` / ``.dat.h5`` reads are
     ignored so the initial template-case load cannot suppress the mesh path.
+
+    Glob + first matching log is not a live gate (Astra V-05): it can pick the
+    wrong file, skip unreadable logs, and only sees mesh_id. Use
+    ``inspect_replace_log_identity`` on the current-attempt path instead.
     """
     case_dir = Path(case_dir)
     if not case_dir.is_dir():

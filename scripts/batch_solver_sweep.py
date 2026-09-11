@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+from ro.campaign_geo_ids import assert_selected_cases_are_not_legacy_ml
 from ro.campaign_matrix import (
     CASE_SET_CHOICES,
     CASE_SET_EXPLORATORY,
@@ -416,6 +417,7 @@ def main(argv=None):
         exploratory_attr="solver_sweep_cases",
         production_attr="production_solver_sweep_cases",
     )
+    assert_selected_cases_are_not_legacy_ml(solver_sweep_cases)
     require_explicit_inlet_velocity_profile(
         common_solver_settings,
         solver_sweep_cases,

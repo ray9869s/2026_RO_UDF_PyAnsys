@@ -18,6 +18,9 @@ from ro.manifest_errors import ManifestError
 from ro.manifest_validation import (
     collect_spacer_wall_zones_from_fluent,
     derive_periodic_shift_y_from_angle_m,
+    inspect_solver_log_spacer_zones,
+    parse_all_boundary_zones,
+    parse_detected_spacer_wall_zones,
     validate_curvature_margin,
     validate_joint_sphere_consistency,
     validate_mesh_geometry_fields,
@@ -417,6 +420,56 @@ def test_collect_spacer_wall_zones_requires_prefix_match():
         ["wall_spacer", "inlet", "wall_spacer_filament"]
     )
     assert zones == ["wall_spacer", "wall_spacer_filament"]
+
+
+def test_parse_solver_printed_zone_lists():
+    text = (
+        "All boundary zones: ['inlet', 'wall_spacer']\n"
+        "Detected spacer wall zones: ['wall_spacer']\n"
+    )
+    assert parse_all_boundary_zones(text) == ["inlet", "wall_spacer"]
+    assert parse_detected_spacer_wall_zones(text) == ["wall_spacer"]
+    assert parse_detected_spacer_wall_zones("no such line") is None
+
+
+def test_inspect_solver_log_spacer_zones_pass():
+    text = (
+        "All boundary zones: ['inlet', 'outlet', 'wall_spacer']\n"
+        "Detected spacer wall zones: ['wall_spacer']\n"
+    )
+    status, reason = inspect_solver_log_spacer_zones(
+        text, declared_zones=["wall_spacer"], geo_id="D2450_a45"
+    )
+    assert status == "PASS"
+    assert reason is None
+
+
+def test_inspect_solver_log_empty_boundary_inventory_rejects_ref_empty():
+    text = "All boundary zones: []\nDetected spacer wall zones: []\n"
+    status, reason = inspect_solver_log_spacer_zones(
+        text, declared_zones=[], geo_id="REF_empty"
+    )
+    assert status == "REJECT"
+    assert "discovery empty" in reason
+
+
+def test_inspect_solver_log_missing_boundary_line_is_name_only():
+    text = "Detected spacer wall zones: ['wall_spacer']\n"
+    status, reason = inspect_solver_log_spacer_zones(
+        text, declared_zones=["wall_spacer"], geo_id="D2450_a45"
+    )
+    assert status == "NAME_ONLY"
+    assert reason is None
+
+
+def test_inspect_solver_log_no_detected_line():
+    status, reason = inspect_solver_log_spacer_zones(
+        "All boundary zones: ['inlet']\n",
+        declared_zones=["wall_spacer"],
+        geo_id="D2450_a45",
+    )
+    assert status == "NO_LINE"
+    assert reason is None
 
 
 def _sin_curvature_payload(geo_id: str, **updates):

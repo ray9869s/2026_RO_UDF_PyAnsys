@@ -7,7 +7,7 @@ from collections import Counter
 import pytest
 
 from helpers import CONFIGS_DIR, SCRIPTS_DIR, load_batch_solver_sweep, load_module
-from ro.campaign_geo_ids import CAMPAIGN_GEO_IDS
+from ro.campaign_geo_ids import CAMPAIGN_GEO_IDS, assert_selected_cases_are_not_legacy_ml
 from ro.campaign_geometry import _DIAMOND_LAYOUTS, geometry_parameters_for_geo_id
 from ro.campaign_matrix import (
     CASE_SET_EXPLORATORY,
@@ -190,3 +190,10 @@ def test_production_solver_cases_pass_inlet_profile_gate(batchcfg):
         batchcfg.common_solver_settings,
         batchcfg.production_solver_sweep_cases,
     )
+
+
+def test_batch_lists_have_no_legacy_ml_geo_ids(batchcfg):
+    assert_selected_cases_are_not_legacy_ml(batchcfg.mesh_batch_cases)
+    assert_selected_cases_are_not_legacy_ml(batchcfg.solver_sweep_cases)
+    assert_selected_cases_are_not_legacy_ml(batchcfg.production_mesh_batch_cases)
+    assert_selected_cases_are_not_legacy_ml(batchcfg.production_solver_sweep_cases)

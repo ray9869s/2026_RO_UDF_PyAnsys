@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import math
+import re
 import warnings
 from typing import Any, Collection, Mapping
 
@@ -11,6 +13,14 @@ from ro.manifest_errors import ManifestError
 
 _PERIODIC_SHIFT_SOURCES = frozenset({"derived_from_angle", "explicit"})
 _SPACER_WALL_PREFIX = "wall_spacer_"
+_DETECTED_SPACER_WALL_ZONES_RE = re.compile(
+    r"^Detected spacer wall zones:\s*(.+)\s*$",
+    re.MULTILINE,
+)
+_ALL_BOUNDARY_ZONES_RE = re.compile(
+    r"^All boundary zones:\s*(.+)\s*$",
+    re.MULTILINE,
+)
 # Three-band curvature gate. 1.0 is the geometric self-intersection limit
 # (centerline curvature radius / tube radius). 1.2 is an undocumented former
 # hard floor, now a warning band — see docs/GEOMETRY_DESIGN.md.
@@ -264,6 +274,66 @@ def validate_sigma_d_invariant(payload: Mapping[str, Any], *, kind: str = "Mesh"
             f"(Sigma_d_nominal_m - h) / 2 = {expected_trim!r} "
             f"(Sigma_d={sigma_d_f!r}, h={CAMPAIGN_H_M!r})."
         )
+
+
+def _parse_python_printed_str_list(payload: str):
+    try:
+        value = ast.literal_eval(payload.strip())
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) for item in value
+    ):
+        return None
+    return value
+
+
+def parse_detected_spacer_wall_zones(text: str):
+    """Last ``Detected spacer wall zones:`` Python list in solver stdout, or None."""
+    matches = list(_DETECTED_SPACER_WALL_ZONES_RE.finditer(text))
+    if not matches:
+        return None
+    return _parse_python_printed_str_list(matches[-1].group(1))
+
+
+def parse_all_boundary_zones(text: str):
+    """Last ``All boundary zones:`` Python list in solver stdout, or None."""
+    matches = list(_ALL_BOUNDARY_ZONES_RE.finditer(text))
+    if not matches:
+        return None
+    return _parse_python_printed_str_list(matches[-1].group(1))
+
+
+def inspect_solver_log_spacer_zones(
+    text: str,
+    *,
+    declared_zones: Collection[str],
+    geo_id: str,
+    kind: str = "Mesh",
+):
+    """Compare solver-printed zone lists to declared spacer_wall_zones.
+
+    Returns (status, reason): NO_LINE, PASS, NAME_ONLY, or REJECT.
+    ``All boundary zones: []`` is REJECT (empty discovery must not pass
+    REF_empty). NAME_ONLY means the spacer line matched but the boundary
+    inventory line is missing, so this is not wiring evidence.
+    """
+    detected = parse_detected_spacer_wall_zones(text)
+    boundaries = parse_all_boundary_zones(text)
+    if detected is None:
+        return "NO_LINE", None
+    if boundaries is not None and len(boundaries) == 0:
+        return "REJECT", "All boundary zones: [] (discovery empty)"
+    fluent = boundaries if boundaries is not None else detected
+    try:
+        validate_spacer_wall_zones(
+            declared_zones, fluent, geo_id=geo_id, kind=kind
+        )
+    except ManifestValidationError as exc:
+        return "REJECT", str(exc)
+    if boundaries is None:
+        return "NAME_ONLY", None
+    return "PASS", None
 
 
 def collect_spacer_wall_zones_from_fluent(

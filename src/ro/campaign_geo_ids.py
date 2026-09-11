@@ -22,6 +22,7 @@ _CAMPAIGN_GEO_ID_SHAPE_RE = re.compile(
 )
 
 LEGACY_ML_GEO_ID_PREFIX = "M_r"
+CAMPAIGN_DATA_TREES = ("geometries", "meshes", "runs")
 
 _DIAMOND_GEO_IDS = tuple(
     f"D{spacing}_a{angle}"
@@ -84,23 +85,50 @@ def family_for_geo_id(geo_id: str) -> str:
     raise ValueError(f"Cannot resolve family for geo_id {geo_id!r}.")
 
 
-def assert_no_legacy_ml_geo_paths(data_root: Path) -> None:
-    """Raise if any legacy M_r* geometry/mesh/run paths exist under data_root."""
+def iter_legacy_ml_geo_paths(data_root: Path) -> list[Path]:
+    """Legacy M_r* dirs under geometries/meshes/runs /ml only.
+
+    ``data_root/_archive`` is out of scope. A missing root or tree is empty,
+    not an error.
+    """
     root = Path(data_root)
+    found: list[Path] = []
     if not root.is_dir():
-        return
-    legacy: list[str] = []
-    for tree_name in ("geometries", "meshes", "runs"):
+        return found
+    for tree_name in CAMPAIGN_DATA_TREES:
         tree = root / tree_name / "ml"
         if not tree.is_dir():
             continue
         for child in tree.iterdir():
             if child.name.startswith(LEGACY_ML_GEO_ID_PREFIX):
-                legacy.append(child.as_posix())
+                found.append(child)
+    return found
+
+
+def assert_no_legacy_ml_geo_paths(data_root: Path) -> None:
+    """Raise if any legacy M_r* geometry/mesh/run paths exist under data_root."""
+    legacy = iter_legacy_ml_geo_paths(data_root)
     if legacy:
         raise ValueError(
             "Legacy ML geo_id paths (M_r*) found under RO_DATA_ROOT; "
-            f"rename to M_c* before continuing: {legacy!r}."
+            f"rename to M_c* before continuing: {[p.as_posix() for p in legacy]!r}."
+        )
+
+
+def assert_selected_cases_are_not_legacy_ml(cases) -> None:
+    """Raise if a selected case geo_id uses the legacy M_r* prefix.
+
+    Does not walk the data root. Unrelated ``_archive`` trees are ignored.
+    """
+    bad = []
+    for case in cases:
+        geo_id = case["geo_id"]
+        if str(geo_id).startswith(LEGACY_ML_GEO_ID_PREFIX):
+            bad.append(geo_id)
+    if bad:
+        raise ValueError(
+            "Selected cases include legacy ML geo_id (M_r*): "
+            f"{bad!r}."
         )
 
 
