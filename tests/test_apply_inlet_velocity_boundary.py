@@ -9,17 +9,26 @@ from helpers import load_solver_code
 UDF_NAME = "RO_inlet_profile"
 ZONE = "inlet"
 U_MEAN = 0.2
+# Fluent 25.1.0 velocity_magnitude get_state from the D0817_a60/a30 logs.
+PILOT_VELOCITY_MAGNITUDE = {"option": "value", "value": 0.2}
+
+
+def fluent_leaf(value):
+    """Wrap a scalar the way Fluent 25.1.0 settings get_state does."""
+    if isinstance(value, dict) and "option" in value:
+        return value
+    return {"option": "value", "value": value}
 
 
 class _State:
     def __init__(self, state):
-        self._state = state
+        self._state = fluent_leaf(state)
 
     def get_state(self):
         return self._state
 
     def set_state(self, state):
-        self._state = state
+        self._state = fluent_leaf(state)
 
     def __call__(self):
         return self._state
@@ -29,7 +38,15 @@ class _Component:
     def __init__(self):
         self.option = _State("value")
         self.udf = _State("")
-        self.value = 0.0
+        self._numeric = fluent_leaf(0.0)
+
+    @property
+    def value(self):
+        return self._numeric
+
+    @value.setter
+    def value(self, new):
+        self._numeric = fluent_leaf(new)
 
 
 class _Components(list):
@@ -57,10 +74,10 @@ class _Spec:
         self.fail_set_state = fail_set_state
 
     def __call__(self):
-        return self._state
+        return fluent_leaf(self._state)
 
     def get_state(self):
-        return self._state
+        return fluent_leaf(self._state)
 
     def set_state(self, state):
         if self.fail_set_state:
@@ -84,16 +101,33 @@ class _Spec:
 
 class _Magnitude:
     def __init__(self, value=0.1):
-        self.value = value
+        self._payload = fluent_leaf(value)
+
+    def get_state(self):
+        return dict(self._payload)
+
+    def __call__(self):
+        return self.get_state()
+
+    @property
+    def value(self):
+        return dict(self._payload)
+
+    @value.setter
+    def value(self, new):
+        self._payload = fluent_leaf(new)
 
 
 class _FrozenMagnitude:
     def __init__(self, value):
-        object.__setattr__(self, "_value", float(value))
+        object.__setattr__(self, "_payload", fluent_leaf(float(value)))
+
+    def get_state(self):
+        return dict(self._payload)
 
     @property
     def value(self):
-        return self._value
+        return dict(self._payload)
 
     @value.setter
     def value(self, new):
@@ -220,7 +254,11 @@ def test_plug_matching_magnitude_logs_success(capsys):
     out = capsys.readouterr().out
     assert f"velocity_magnitude={U_MEAN} m/s" in out
     assert "Inlet BC set" in out
-    assert vin.momentum.velocity_magnitude.value == U_MEAN
+    assert vin.momentum.velocity_magnitude.value == PILOT_VELOCITY_MAGNITUDE
+    assert (
+        mod.unwrap_fluent_setting(vin.momentum.velocity_magnitude.value)
+        == U_MEAN
+    )
 
 
 def test_plug_stale_readback_raises_without_success_log(capsys):
@@ -237,3 +275,100 @@ def test_missing_solver_on_tui_fallback_raises(capsys):
     with pytest.raises(RuntimeError, match="solver session was not passed"):
         _apply(mod, vin, solver=None)
     assert not _success_logged(capsys)
+
+
+def test_inlet_fixtures_are_fluent_wrapped_dicts_not_scalars():
+    vin = _Vin(magnitude=0.2)
+    mag = vin.momentum.velocity_magnitude
+    assert mag.value == PILOT_VELOCITY_MAGNITUDE
+    assert mag.get_state() == PILOT_VELOCITY_MAGNITUDE
+    assert isinstance(mag.value, dict)
+    comps = vin.momentum.velocity_components
+    assert comps[1].value == {"option": "value", "value": 0.0}
+    assert comps[0].option.get_state() == {"option": "value", "value": "value"}
+    assert vin.momentum.velocity_specification_method.get_state() == {
+        "option": "value",
+        "value": "Magnitude and Direction",
+    }
+
+
+def test_unwrap_fluent_setting_pilot_log_shape():
+    mod = load_solver_code("unwrap_pilot_log")
+    assert mod.unwrap_fluent_setting(PILOT_VELOCITY_MAGNITUDE) == U_MEAN
+    nested = {"option": "value", "value": PILOT_VELOCITY_MAGNITUDE}
+    assert mod.unwrap_fluent_setting(nested) == U_MEAN
+    assert mod.unwrap_fluent_setting(U_MEAN) == U_MEAN
+
+
+def test_read_inlet_plug_magnitude_from_pilot_wrapped_dict():
+    mod = load_solver_code("plug_wrapped_read")
+    vin = _Vin(magnitude=0.2)
+    assert vin.momentum.velocity_magnitude.value == PILOT_VELOCITY_MAGNITUDE
+    assert mod.read_inlet_plug_magnitude(vin) == pytest.approx(U_MEAN)
+
+
+class _GetStateMagnitude:
+    """Live path: .value is a callable child; get_state returns the wrapped dict."""
+
+    def __init__(self, value):
+        self._payload = fluent_leaf(value)
+
+    def get_state(self):
+        return dict(self._payload)
+
+    def value(self):
+        return dict(self._payload)
+
+
+def test_read_inlet_plug_magnitude_via_get_state_wrapped_dict():
+    mod = load_solver_code("plug_get_state_wrapped")
+    vin = _Vin(magnitude=0.2)
+    vin.momentum.velocity_magnitude = _GetStateMagnitude(0.2)
+    assert callable(vin.momentum.velocity_magnitude.value)
+    assert mod.read_inlet_plug_magnitude(vin) == pytest.approx(U_MEAN)
+
+
+def test_read_inlet_profile_state_from_wrapped_components():
+    mod = load_solver_code("profile_wrapped_read")
+    vin = _Vin()
+    _stamp_profile(vin)
+    observed = mod.read_inlet_profile_state(vin)
+    assert observed["specification"] == "Components"
+    assert observed["x_option"] == "udf"
+    assert observed["x_udf"] == UDF_NAME
+    assert observed["y_value"] == pytest.approx(0.0)
+    assert observed["z_value"] == pytest.approx(0.0)
+    assert mod.inlet_profile_readback_error(observed, UDF_NAME) is None
+    assert vin.momentum.velocity_components[0].option.get_state() == {
+        "option": "value",
+        "value": "udf",
+    }
+    assert vin.momentum.velocity_components[0].udf.get_state() == {
+        "option": "value",
+        "value": UDF_NAME,
+    }
+    assert vin.momentum.velocity_components[1].value == {
+        "option": "value",
+        "value": 0.0,
+    }
+
+
+def test_read_inlet_profile_state_udf_form_component_dict():
+    mod = load_solver_code("profile_udf_form")
+    vin = _Vin()
+    spec = vin.momentum.velocity_specification_method
+    spec._state = "Components"
+    comps = vin.momentum.velocity_components
+    comps._active = True
+    udf_form = {"option": "udf", "udf": UDF_NAME}
+    comps[0].option = _State(udf_form)
+    comps[0].udf = _State(udf_form)
+    comps[1].value = fluent_leaf(0.0)
+    comps[2].value = fluent_leaf(0.0)
+    observed = mod.read_inlet_profile_state(vin)
+    assert observed["x_option"] == "udf"
+    assert observed["x_udf"] == UDF_NAME
+    assert observed["y_value"] == pytest.approx(0.0)
+    assert observed["z_value"] == pytest.approx(0.0)
+    assert mod.inlet_profile_readback_error(observed, UDF_NAME) is None
+

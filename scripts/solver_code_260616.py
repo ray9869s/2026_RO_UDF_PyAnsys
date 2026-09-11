@@ -1098,8 +1098,46 @@ def apply_parsed_inlet_profile_g(
     return agreed
 
 
+def unwrap_fluent_setting(raw):
+    """Flatten a PyFluent settings leaf to the stored value.
+
+    Fluent 25.1.0 ``get_state()`` on ``velocity_magnitude`` returns
+    ``{'option': 'value', 'value': 0.2}`` (D0817_a60/a30 solver logs).
+    Nested dicts that still have a ``value`` key are unwrapped the same
+    way. Scalars and other types pass through unchanged.
+    """
+    current = raw
+    for _ in range(8):
+        if isinstance(current, dict) and "value" in current:
+            current = current["value"]
+            continue
+        return current
+    return current
+
+
+def _inlet_option_leaf(raw):
+    """x-velocity option: wrapped ``value`` leaf, or ``{'option': 'udf', ...}``."""
+    raw = unwrap_fluent_setting(raw)
+    if isinstance(raw, dict) and "option" in raw:
+        return raw["option"]
+    return raw
+
+
+def _inlet_udf_leaf(raw):
+    """x-velocity UDF name: wrapped ``value`` leaf, or ``{'option': 'udf', 'udf': ...}``."""
+    raw = unwrap_fluent_setting(raw)
+    if isinstance(raw, dict) and "udf" in raw:
+        return raw["udf"]
+    return raw
+
+
 def _inlet_setting_state(obj):
-    """Read a Fluent settings child: get_state, call, or .value."""
+    """Read a Fluent settings child: get_state, call, or .value.
+
+    The first successful reader is passed through
+    :func:`unwrap_fluent_setting` so ``{'option': ..., 'value': ...}``
+    does not reach ``float()`` or string compares.
+    """
     errors = []
     readers = []
     get_state = getattr(obj, "get_state", None)
@@ -1114,7 +1152,7 @@ def _inlet_setting_state(obj):
         readers.append(raw_value)
     for reader in readers:
         try:
-            return reader()
+            return unwrap_fluent_setting(reader())
         except Exception as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
     if errors:
@@ -1128,7 +1166,7 @@ def read_inlet_plug_magnitude(vin):
     mag = vin.momentum.velocity_magnitude
     raw = getattr(mag, "value", None)
     if raw is not None and not callable(raw):
-        return float(raw)
+        return float(unwrap_fluent_setting(raw))
     return float(_inlet_setting_state(mag))
 
 
@@ -1148,10 +1186,12 @@ def read_inlet_profile_state(vin):
     mom = vin.momentum
     spec = None
     try:
-        spec = mom.velocity_specification_method()
+        spec = unwrap_fluent_setting(mom.velocity_specification_method())
     except Exception:
         try:
-            spec = mom.velocity_specification_method.get_state()
+            spec = unwrap_fluent_setting(
+                mom.velocity_specification_method.get_state()
+            )
         except Exception as exc:
             spec = f"<unreadable: {type(exc).__name__}: {exc}>"
     try:
@@ -1170,8 +1210,10 @@ def read_inlet_profile_state(vin):
         return state
     comps = mom.velocity_components
     try:
-        state["x_option"] = _inlet_setting_state(comps[0].option)
-        state["x_udf"] = _inlet_setting_state(comps[0].udf)
+        state["x_option"] = _inlet_option_leaf(
+            _inlet_setting_state(comps[0].option)
+        )
+        state["x_udf"] = _inlet_udf_leaf(_inlet_setting_state(comps[0].udf))
         state["y_value"] = _inlet_component_numeric(comps[1])
         state["z_value"] = _inlet_component_numeric(comps[2])
     except Exception:
@@ -1182,9 +1224,9 @@ def read_inlet_profile_state(vin):
 def _inlet_component_numeric(comp):
     raw = getattr(comp, "value", None)
     if raw is not None and not callable(raw):
-        return float(raw)
+        return float(unwrap_fluent_setting(raw))
     if callable(raw):
-        return float(raw())
+        return float(unwrap_fluent_setting(raw()))
     return float(_inlet_setting_state(comp))
 
 

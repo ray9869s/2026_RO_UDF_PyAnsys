@@ -64,7 +64,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-08 | mesh manifest에 측정 `domain_extent_*_m` writer (optional field) | **before sweep** — gate를 나중에 달면 재meshing 없이 검증할 값이 없다. required로 올리면 31 leaf가 깨진다 | Claude C1-14 C3-01; Sol T3-10; Cursor T3-01 T3-12; Astra A-04 | `scripts/meshing_code_260616.py` (`build_mesh_manifest_payload`); `src/ro/mesh_common.py` (이미 파싱함, 미변경); `src/ro/manifest.py` **REQUIRED 목록은 건드리지 않음**; tests | R-01 | WSL 2026-09-11 `1075 passed, 1 skipped, 0 failed`. payload가 `parse_mesh_metrics_text`의 `domain_extent_x/y/z_m`를 그대로 보존 (config `cell_length_x_m * n_total` 아님). 파서 miss는 **키 있음 + `None`** (0.0 아님; 로그 파일 없음도 동일). extent 키 없는 raw JSON fixture는 `read_mesh_manifest` 성공. `MESH_MANIFEST_REQUIRED_FIELDS` / `_GEOMETRY_FIELDS` 미변경. | COMPLETE |
 | R-09 | 31 leaf backfill + `validate_layout_against_x_extent` live gate | **before sweep** — validator는 구현·테스트만 있고 live caller가 없다. 31 log에 `/mesh/check`가 남아 있다 | Claude C1-15 C3-01 C5-03; Sol T3-10; Cursor T3-01 T5-01; Astra A-04 | `scripts/backfill_mesh_manifest_fields.py` (extent는 registry가 아니라 log에서); `scripts/meshing_code_260616.py` write 직전; `scripts/solver_code_260616.py` preflight; `src/ro/domain_layout.py` (`require_*`가 `.ok`를 보고 raise); tests | R-08 | **Part 1 (WSL 2026-09-11):** `1084 passed, 1 skipped, 0 failed`. **Part 2 (workstation 2026-09-11):** dry-run then `--apply` 31 log addition, 0 registry, 0 NO-MEASUREMENT, 0 fail. **Part 3 (WSL 2026-09-11):** x-only live gate, `rel_tol=1e-5`. `1096 passed, 1 skipped, 0 failed`. **gate check after apply+pull:** 31 pass / 0 fail / 0 skip (`rel < 1e-5` vs `layout.total_length_m`). | COMPLETE |
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | WSL 2026-09-11 `1108 passed, 1 skipped, 0 failed`. stop-reason None → `stop_reason_determination_failed` + isolated write only + raise. RUNNING+finals → run. residual_converged+previous files+no cas/dat SHA → run. matching SHA+attempt id+allowed reason+mesh hash → skipped_existing. | COMPLETE |
-| R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. | COMPLETE |
+| R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. **2026-09-12 unwrap:** Fluent `{'option': 'value', 'value': 0.2}` crash; fixtures are that dict. WSL `1263 passed, 1 skipped, 0 failed`. | COMPLETE |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `src/ro/session_retry.py` (신규); `scripts/batch_solver_sweep.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/batch_meshing.py` (socket 패턴 import); tests | R-02 | WSL 2026-09-11 `1131 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). socket / Scheme heap / launch-spawn (`LaunchFluentError`, `Deadline Exceeded`, `hwtree`, `Aborting:`) → 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G/inlet readback/manifest → attempts==1. session 서명이 blob 어디에 있어도 wrapper보다 이김. attempt 로그는 `{geo}__{mesh}__{run}__solver_attemptN.log`. leftover RUNNING+files는 skip 아님 (R-02). | COMPLETE |
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; `src/ro/mesh_manifest_payload.py`; `scripts/meshing_code_260616.py`; `tests/test_mesh_skip.py`; `tests/test_rebuild_mesh_manifest.py` | R-01 | WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). msh만 / empty msh / invalid manifest / SHA mismatch / layout mismatch → skip 아님. msh+valid manifest+`mesh_sha256` 일치+현재 case layout 일치 → `skipped_existing`. `--from-log`는 log+`.msh.h5`+registry+run config로 payload 생성; 기존 manifest·로그 부재·x-extent 실패는 write 없음. `created_utc`/`generator_version`=`unrecoverable-from-log`, `inlet_profile_G`=null. **workstation 2026-09-11:** production 31/31 SKIP (sha+layout match); extra 13 SKIP / 2 RUN (`bl12_peel2`, `bl12_f015_peel2`, ~4.79 MB msh, no manifest, AR 251.9). **CI coupling 2026-09-12:** workflow install (`pip install -e ".[dev]"` + pandas numpy matplotlib, no `ansys-fluent-core`) `1253 passed, 1 skipped, 0 failed`. 기존 `.venv` 동일. `--from-log`는 meshing worker를 `exec_module`하지 않음. | COMPLETE |
 | R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `src/ro/extract_skip.py` (신규); `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/pyfluent_report_extract.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`); `tests/test_extract_skip.py` | R-03 | WSL 2026-09-11 `1169 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). CSV-only / sidecar 없음 / R-02 hash·attempt 없음 / file 또는 sidecar hash mismatch → skip 아님 (mtime은 보지 않음). matching sidecar+manifest hashes+file bytes → skip. extract/post FAILED 또는 aggregate write 실패 → exit ≠ 0; selected 0건은 0. listing `OSError` → 빈 트리로 성공하지 않음. `--skip-unreadable-manifests`는 계속 스캔하되 skipped leaf가 있으면 inventory exit ≠ 0. **workstation 2026-09-11:** 0 SKIP / 19 RUN (3 no CSV, 13 pre-`lmh_mass_balance_signed_python`, 3 column+no sidecar). 19개는 campaign 아님; 재extract 안 함. | COMPLETE |
@@ -570,6 +570,44 @@ skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
 readback, solver None, plug 불일치 → raise / `"Inlet BC set"` 없음. Settings
 또는 TUI 뒤 matching readback, plug matching magnitude → 성공 로그.
 
+### 2026-09-12 follow-up (새 행 아님) — Settings `{option, value}` unwrap
+
+D0817_a60 / D0817_a30 pilots died identically before libudf:
+
+```text
+read_inlet_plug_magnitude → float(_inlet_setting_state(mag))
+TypeError: float() argument must be a string or a real number, not 'dict'
+```
+
+Fluent 25.1.0 `velocity_magnitude` `get_state()` is
+`{'option': 'value', 'value': 0.2}` (same wrapper in the fluid-zone /
+species / viscosity dumps). Plug readback always runs: magnitude plug
+before libudf, Components+UDF after. Independent of
+`use_inlet_velocity_profile`. Not Diamond-specific. No solver run can
+start on that main.
+
+1257 suite passed because tests mocked `velocity_magnitude.value` as a
+bare float. `unwrap_fluent_setting` flattens `{'option': ..., 'value':
+...}`. Plug `.value` / `_inlet_setting_state` / `_inlet_component_numeric`
+/ profile spec·option·udf all go through it. `{'option': 'udf', 'udf':
+name}` is handled by the option/udf leaf helpers. Fixtures are the
+logged wrapped dict, not a scalar.
+
+WSL 2026-09-12 `1263 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+
+Other `float()` / compares on a PyFluent settings read (report only, no
+code change):
+
+- `fluent_mass_diffusivity_value` already does `float(state["value"])`.
+  Pilots printed `{'option': 'constant-dilute-appx', 'value': 2e-09}`
+  and matched. Leave it.
+- URF `set_and_verify_leaf` / `set_and_verify_dict_entry`:
+  `isinstance(after, (int, float))` then `float(after)`. A wrapped dict
+  becomes `WARN_APPLY_URF_FAILED`, not a TypeError. Do not guess-fix.
+- Residual `get_state()` only tests key presence.
+- Extract `find_first_number` walks compute results, not settings
+  readback. `membrane_blocked_area_frac` is from the manifest.
+
 ---
 
 ## R-07 — Production 279 matrix를 registry에서 생성
@@ -916,6 +954,33 @@ extract는 `batch_post_config.py` `post_cases` 두 줄 (four-id). 빈
 family/geo_id/mesh_id/run_id를 넘긴다. 커밋된 `post_cases`는 `[]`.
 
 WSL 2026-09-12 `1257 passed, 1 skipped, 0 failed`.
+
+**2026-09-12 pilots (zone capture + split periodics).** Both logs contain
+`All boundary zones:` and `Detected spacer wall zones: ['wall_spacer']`.
+R-10 zone capture works. Both runs died at the R-06 plug `float(dict)`
+before UDF load, so `INLET_G_MAX` is still unanswered.
+`report_spacer_wall_zones.py` can now parse these logs; the gate stays
+unwired.
+
+Diamond meshes emit many split periodic zones. D0817_a30 has 58
+(`periodic_l:13109`, `periodic_r:13029`, `periodic_l-solid`,
+`periodic_r-solid`, …). a60 is the same pattern (colon-split + `-solid`).
+
+Prefix matching in solver/extract:
+
+- `zone_matches_base_name`: exact or `base.` + suffix (Fluent `inlet.1`).
+  Colon `periodic_l:13109` and hyphen `periodic_l-solid` do **not** match
+  `periodic_l`. Solver does not `find_zones_by_base_name` on a periodic
+  base. Inlet / outlet / membrane / buffer on both pilots were the
+  expected names only.
+- Spacer print: `startswith("wall_spacer")`. Gate collector:
+  `wall_spacer_` prefix or exact `wall_spacer`. Split periodics are not
+  included. Both pilots: `['wall_spacer']`.
+- `inspect_solver_log_spacer_zones` passes the full `All boundary zones`
+  list into `validate_spacer_wall_zones`; the collector keeps only
+  `wall_spacer*`. Extra periodics are not a REJECT today. When the gate
+  is wired it must keep that filter — do not treat split periodics as
+  spacers, and do not prefix-collapse `periodic_*`.
 
 다음 행: 표에 남은 R 행 없음. 아래 Deferred mechanical / Open questions /
 V-04 승격 항목.
