@@ -821,8 +821,8 @@ def _should_skip_run_scan_dir(name: str, include_hidden: bool) -> bool:
 def _iter_child_dirs(parent: Path, *, include_hidden: bool) -> list[Path]:
     try:
         children = [path for path in parent.iterdir() if path.is_dir()]
-    except OSError:
-        return []
+    except OSError as exc:
+        raise OSError(f"Could not list directory {parent}: {exc}") from exc
     out: list[Path] = []
     for child in sorted(children, key=lambda path: path.as_posix().lower()):
         if _should_skip_run_scan_dir(child.name, include_hidden):

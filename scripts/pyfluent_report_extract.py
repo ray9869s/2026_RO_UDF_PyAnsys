@@ -43,6 +43,13 @@ from ro.manifest import (  # noqa: E402
     sync_run_manifest_analytic_cwall,
     update_run_manifest_fields,
 )
+from ro.extract_skip import write_extract_source_record  # noqa: E402
+from ro.solver_common import (  # noqa: E402
+    FINAL_CASE_SHA256_FIELD,
+    FINAL_DATA_SHA256_FIELD,
+    SOLVER_ATTEMPT_ID_FIELD,
+    sha256_file,
+)
 
 DEFAULT_CONFIG_PATH = project_root() / "configs" / "post_config.py"
 CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PATH)))
@@ -2454,10 +2461,19 @@ if __name__ == "__main__":
                 ),
             )
         except Exception as exc:
-            print(
-                "WARNING: could not write convergence_quality to run manifest:",
-                f"{type(exc).__name__}: {exc}",
-            )
+            raise RuntimeError(
+                "could not write convergence_quality to run manifest: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        write_extract_source_record(
+            report_path,
+            {
+                FINAL_CASE_SHA256_FIELD: sha256_file(final_case_file),
+                FINAL_DATA_SHA256_FIELD: sha256_file(final_data_file),
+                SOLVER_ATTEMPT_ID_FIELD: run_manifest.get(SOLVER_ATTEMPT_ID_FIELD),
+            },
+        )
 
         # ----------------------------------------------------------
         # Print saved files

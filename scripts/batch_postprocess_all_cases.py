@@ -30,6 +30,7 @@ from ro.domain_layout import (  # noqa: E402
     layout_from_run_directory,
     layout_post_config_values,
 )
+from ro.extract_skip import extract_skip_block_reason  # noqa: E402
 from ro.manifest import ManifestError  # noqa: E402
 from ro.session_retry import (  # noqa: E402
     RETRY_KIND_LAUNCH_SPAWN,
@@ -1115,19 +1116,39 @@ def execute_case(
     contour_status_planned = STATUS_PLANNED if args.run_pyensight_contours else STATUS_SKIPPED_DISABLED
     shear_status_planned = STATUS_PLANNED if args.run_shear else STATUS_SKIPPED_DISABLED
 
+    extract_block = extract_skip_block_reason(
+        case_dir,
+        paths["summary_wide"],
+        cas_path,
+        dat_path,
+    )
+    extract_current = extract_block is None
     report_exists = paths["summary_wide"].is_file()
-    if report_exists and args.skip_existing and not args.force:
+    if extract_current and args.skip_existing and not args.force:
         report_status_planned = STATUS_SKIPPED_EXISTING
     elif not args.run_reports and not (args.auto_run_missing_reports and not report_exists):
         report_status_planned = STATUS_SKIPPED_DISABLED
+    elif args.skip_existing and not args.force and extract_block:
+        print(f"  Not skipping existing report: {extract_block}")
 
-    if args.run_pyensight_contours and has_all_pyensight_outputs(paths, fields) and args.skip_existing and not args.force:
+    if (
+        args.run_pyensight_contours
+        and has_all_pyensight_outputs(paths, fields)
+        and args.skip_existing
+        and not args.force
+        and extract_current
+    ):
         contour_status_planned = STATUS_SKIPPED_EXISTING
 
     missing_cff_file = ""
     effective_shear_export_mode = args.shear_export_mode
     if args.run_shear:
-        if has_shear_outputs(paths) and args.skip_existing and not args.force:
+        if (
+            has_shear_outputs(paths)
+            and args.skip_existing
+            and not args.force
+            and extract_current
+        ):
             shear_status_planned = STATUS_SKIPPED_EXISTING
         elif cff_source == CFF_SOURCE_MISSING:
             if args.shear_export_mode != SHEAR_EXPORT_MODE_NATIVE:
@@ -1556,6 +1577,20 @@ def print_console_summary(results: list[dict[str, Any]], summary_path: Path) -> 
     print(f"Batch summary: {summary_path}")
 
 
+def postprocess_batch_exit_code(results) -> int:
+    """Nonzero when a selected case had a FAILED stage. Zero selected is not a failure."""
+    failed = any(
+        result.get(field) == STATUS_FAILED
+        for result in results
+        for field in (
+            "report_stage_status",
+            "pyensight_contour_stage_status",
+            "shear_stage_status",
+        )
+    )
+    return 1 if failed else 0
+
+
 def run(args: argparse.Namespace) -> int:
     fields = parse_fields(args.fields)
     statuses = parse_status_filters(args.case_status)
@@ -1627,7 +1662,7 @@ def run(args: argparse.Namespace) -> int:
 
     summary_path = write_batch_outputs(batch_dir, selected, plans, results, args)
     print_console_summary(results, summary_path)
-    return 0
+    return postprocess_batch_exit_code(results)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

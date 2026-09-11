@@ -31,6 +31,7 @@ from ro.convergence_quality import (
     metrics_from_summary_row,
 )
 from ro.domain_layout import layout_from_run_directory
+from ro.extract_skip import extract_skip_block_reason
 from ro.manifest import ManifestError, iter_run_manifests, read_run_manifest
 from ro.paths import (
     any_id_filter,
@@ -1307,6 +1308,17 @@ def detect_report_status(case_record: dict[str, Any]) -> None:
         "summary_metrics_read_error": summary_error,
         "summary_metric_columns": summary_columns,
     }
+    case_dir = case_record.get("_case_dir_path")
+    extract_block = "no run directory for extract skip"
+    if isinstance(case_dir, Path):
+        extract_block = extract_skip_block_reason(
+            case_dir,
+            summary_path,
+            case_record.get("final_cas_file") or "",
+            case_record.get("final_dat_file") or "",
+        )
+    update["extract_skip_block"] = extract_block or ""
+    update["extract_is_current"] = extract_block is None
     for canonical, value in summary_values.items():
         update[canonical] = value
         update[f"{canonical}_column"] = summary_columns.get(canonical, "")
@@ -1730,6 +1742,10 @@ def classify_case(record: dict[str, Any]) -> None:
     convergence_status = str(record.get("convergence_status") or "")
     has_pair = bool(record.get("has_case_data_pair"))
     has_summary = bool(record.get("has_summary_metrics_wide"))
+    if "extract_is_current" in record:
+        extract_is_current = bool(record["extract_is_current"])
+    else:
+        extract_is_current = has_summary
     has_all_basic = bool(record.get("has_all_basic_contours"))
     hard_failure = bool(record.get("hard_solver_failure_detected"))
     contour_failed_count = int_from_any(record.get("contour_failed_count")) or 0
@@ -1749,28 +1765,28 @@ def classify_case(record: dict[str, Any]) -> None:
     solver_status_needs_rerun = convergence_status == FAILED_OR_DIVERGED or (
         convergence_status == MAX_ITER_REACHED and not quality_pass
     )
-    needs_reports = bool(has_pair and not has_summary and not hard_failure)
+    needs_reports = bool(has_pair and not extract_is_current and not hard_failure)
     needs_basic_contours = bool(
         has_pair
-        and has_summary
+        and extract_is_current
         and convergence_status != FAILED_OR_DIVERGED
         and not record.get("has_all_pyensight_contours")
     )
     needs_shear_contour = bool(
         has_pair
-        and has_summary
+        and extract_is_current
         and convergence_status != FAILED_OR_DIVERGED
         and not record.get("has_shear_contour")
     )
     needs_shear_postprocessing = bool(
         has_pair
-        and has_summary
+        and extract_is_current
         and record.get("has_all_pyensight_contours")
         and not record.get("has_shear_contour")
     )
     ready_for_batch_contours = bool(
         has_pair
-        and has_summary
+        and extract_is_current
         and not has_all_basic
         and convergence_status != FAILED_OR_DIVERGED
         and (convergence_status != MAX_ITER_REACHED or quality_pass)
@@ -1796,10 +1812,10 @@ def classify_case(record: dict[str, Any]) -> None:
     elif hard_failure or convergence_status == FAILED_OR_DIVERGED:
         # Solve-untrusted hard failure wins over artifact completeness (F-02c).
         case_status = NEEDS_SOLVER_RERUN
-    elif needs_longer and has_summary:
+    elif needs_longer and extract_is_current:
         # Post-hoc gate is independent of stop_reason (QoI/residual can lie).
         case_status = NEEDS_LONGER_SOLVE
-    elif has_all_basic:
+    elif has_all_basic and extract_is_current:
         # Completeness claim is gated by solve-trust (F-02c).
         if convergence_status == CONVERGED:
             case_status = POSTPROCESSED_BASIC
@@ -1819,7 +1835,7 @@ def classify_case(record: dict[str, Any]) -> None:
         case_status = NEEDS_SOLVER_RERUN
     elif needs_reports:
         case_status = NEEDS_REPORT_EXTRACTION
-    elif has_pair and has_summary and convergence_status != FAILED_OR_DIVERGED:
+    elif has_pair and extract_is_current and convergence_status != FAILED_OR_DIVERGED:
         case_status = READY_FOR_POSTPROCESSING
     else:
         case_status = UNKNOWN_REVIEW_REQUIRED
@@ -1931,6 +1947,8 @@ CASE_INVENTORY_FIELDNAMES = [
     "launch_error_evidence",
     "has_summary_metrics_wide",
     "summary_metrics_wide_file",
+    "extract_is_current",
+    "extract_skip_block",
     "report_csv_count",
     "report_files",
     "summary_metrics_read_error",
@@ -2304,6 +2322,8 @@ def run_inventory(args: argparse.Namespace) -> int:
         )
         for manifest_path, reason in skipped_manifests:
             print(f"  {manifest_path}: {reason}")
+    if skipped_manifests:
+        return 1
     return 0
 
 

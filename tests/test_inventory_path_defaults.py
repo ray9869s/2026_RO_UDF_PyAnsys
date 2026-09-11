@@ -169,6 +169,84 @@ def test_inventory_two_level_leftover_is_not_a_case(
     assert "Total cases: 0" in captured.out
 
 
+def test_inventory_skip_unreadable_manifest_exits_nonzero(
+    inventory, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    write_test_run(run_id="u0p2_p6M", stop_reason="max_iter_reached")
+    bad = run_dir(FAMILY, GEO_ID, MESH_ID, "u0p3_p6M")
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text("{not-json", encoding="utf-8")
+
+    rc = inventory.main(["--dry-run", "--skip-unreadable-manifests"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "Total cases: 1" in captured.out
+    assert "WARNING: skipped unreadable manifest" in captured.err
+    assert "manifest.json" in captured.err
+    assert "u0p3_p6M" in captured.err
+    assert "Skipped 1 unreadable run manifest" in captured.out
+
+
+def test_inventory_unreadable_manifest_names_the_leaf(
+    inventory, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    bad = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text("{not-json", encoding="utf-8")
+
+    rc = inventory.main(["--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "Total cases: 0" not in captured.out
+    assert "ERROR:" in captured.err
+    assert "manifest.json" in captured.err
+    assert str(RUN_ID) in captured.err
+
+
+def test_inventory_listing_oserror_is_not_empty_success(
+    inventory, monkeypatch, tmp_path, capsys
+):
+    import ro.manifest as manifest_mod
+
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    (tmp_path / "runs").mkdir()
+
+    def boom(parent, *, include_hidden):
+        raise OSError(f"Could not list directory {parent}: permission denied")
+
+    monkeypatch.setattr(manifest_mod, "_iter_child_dirs", boom)
+    rc = inventory.main(["--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "Total cases: 0" not in captured.out
+    assert "ERROR:" in captured.err
+    assert "Could not list directory" in captured.err
+
+
+def test_detect_report_status_csv_without_sidecar_is_not_current(
+    inventory, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = write_test_run()
+    reports = directory / "post" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "summary_metrics_wide.csv").write_text(
+        "metric,value\ncp,1.0\n", encoding="utf-8"
+    )
+    record = {
+        "_reports_dir_path": reports,
+        "_case_dir_path": directory,
+        "final_cas_file": "",
+        "final_dat_file": "",
+    }
+    inventory.detect_report_status(record)
+    assert record["has_summary_metrics_wide"] is True
+    assert record["extract_is_current"] is False
+    assert "extract source record was not found" in record["extract_skip_block"]
+
+
 def test_inventory_log_walk_stays_inside_one_run_dir(
     inventory, monkeypatch, tmp_path
 ):

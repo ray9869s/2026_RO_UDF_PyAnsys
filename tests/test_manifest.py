@@ -18,6 +18,7 @@ from ro.manifest import (
     RUN_MANIFEST_REQUIRED_FIELDS,
     _GEOMETRY_FIELDS,
     ManifestError,
+    _iter_child_dirs,
     assert_mesh_file_overwrite_allowed,
     iter_mesh_manifests,
     iter_run_manifests,
@@ -321,6 +322,39 @@ def test_optional_run_id_suffix_round_trip_and_stale_path(monkeypatch, tmp_path)
     )
     with pytest.raises(ManifestError, match="ids do not match"):
         list(iter_run_manifests())
+
+
+def test_iter_child_dirs_listing_oserror_names_the_directory(tmp_path, monkeypatch):
+    parent = tmp_path / "blocked"
+    parent.mkdir()
+    real_iterdir = Path.iterdir
+
+    def fake_iterdir(self):
+        if self.resolve() == parent.resolve():
+            raise OSError("permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+    with pytest.raises(OSError, match="Could not list directory") as excinfo:
+        _iter_child_dirs(parent, include_hidden=False)
+    assert str(parent) in str(excinfo.value)
+
+
+def test_iter_run_manifests_listing_oserror_is_not_empty_tree(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    real_iterdir = Path.iterdir
+
+    def fake_iterdir(self):
+        if self.resolve() == runs.resolve():
+            raise OSError("permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+    with pytest.raises(OSError, match="Could not list directory") as excinfo:
+        list(iter_run_manifests())
+    assert str(runs) in str(excinfo.value)
 
 
 def test_parabolic_run_allows_null_mean_until_profile_g_is_known(

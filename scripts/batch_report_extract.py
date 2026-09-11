@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import argparse
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -12,6 +13,7 @@ from ro.domain_layout import (
     layout_from_run_directory,
     layout_post_config_values,
 )
+from ro.extract_skip import extract_skip_block_reason, inspect_extract_skip_leaf
 from ro.manifest import ManifestError, iter_run_manifests
 from ro.fluent_report_helpers import LOAD_BEARING_SUMMARY_METRICS
 from ro.paths import data_root, project_root, run_dir, runs_root
@@ -148,6 +150,103 @@ def validate_summary_wide_csv(summary_wide_csv):
     return True, "OK"
 
 
+EXTRACT_BATCH_FAILED_STATUSES = frozenset(
+    {
+        "FAILED",
+        "FAILED_METRIC_VALIDATION",
+        "MISSING_CASE_DATA",
+    }
+)
+
+
+def extract_batch_exit_code(
+    status_records,
+    *,
+    status_write_failed=False,
+    merge_write_failed=False,
+) -> int:
+    """Nonzero when a processed case failed or an aggregate write failed.
+
+    Zero selected cases is not a failure.
+    """
+    if status_write_failed or merge_write_failed:
+        return 1
+    if any(
+        record.get("status") in EXTRACT_BATCH_FAILED_STATUSES
+        for record in status_records
+    ):
+        return 1
+    return 0
+
+
+def parse_batch_report_extract_cli(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Batch report extract. Pass --report-skip to print skip evidence "
+            "for every run leaf without launching Fluent."
+        ),
+    )
+    parser.add_argument(
+        "--report-skip",
+        action="store_true",
+        help=(
+            "Print whether each run leaf's wide CSV is current with the run "
+            "manifest hashes. Does not launch Fluent."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def format_extract_skip_report_row(row):
+    csv = f"csv=yes:{row['csv_size']}" if row["csv_exists"] else "csv=no"
+    sidecar = "sidecar=yes" if row["sidecar_exists"] else "sidecar=no"
+    hashes = "hashes=yes" if row["manifest_has_hashes"] else "hashes=no"
+    reason = "" if row["skip_block"] is None else row["skip_block"]
+    return (
+        f"{row['skip_decision']:4}  {csv}  {sidecar}  {hashes}  {row['leaf']}"
+        + (f"  reason={reason}" if reason else "")
+    )
+
+
+def report_extract_skip_status(*, file=None, csv_validator=None):
+    """Inspect every run leaf under runs_root(). Returns row dicts."""
+    if file is None:
+        file = sys.stdout
+    if csv_validator is None:
+        csv_validator = validate_summary_wide_csv
+    rows = []
+    print("EXTRACT SKIP REPORT (no Fluent)", file=file)
+    print(f"runs_root={runs_root()}", file=file)
+    for manifest_path, payload in iter_run_manifests():
+        run_directory = manifest_path.parent
+        geo_id = payload["geo_id"]
+        run_id = payload["run_id"]
+        summary_wide_csv = (
+            run_directory / "post" / "reports" / "summary_metrics_wide.csv"
+        )
+        final_case = run_directory / f"{geo_id}_{run_id}_final.cas.h5"
+        final_data = run_directory / f"{geo_id}_{run_id}_final.dat.h5"
+        row = inspect_extract_skip_leaf(
+            family=payload["family"],
+            geo_id=geo_id,
+            mesh_id=payload["mesh_id"],
+            run_id=run_id,
+            run_directory=run_directory,
+            summary_wide_csv=summary_wide_csv,
+            final_case_path=final_case,
+            final_data_path=final_data,
+            csv_validator=csv_validator if summary_wide_csv.is_file() else None,
+        )
+        rows.append(row)
+        print(format_extract_skip_report_row(row), file=file)
+    skip_n = sum(1 for row in rows if row["skip_decision"] == "SKIP")
+    print(
+        f"Summary: {skip_n} SKIP / {len(rows) - skip_n} RUN (listed {len(rows)}).",
+        file=file,
+    )
+    return rows
+
+
 # ============================================================
 # Case name helper
 # ============================================================
@@ -263,6 +362,7 @@ def aggregate_output_paths() -> tuple[Path, Path]:
 # The batch run below executes only when this file is run directly.
 # Importing this module must not run the batch or write any files.
 if __name__ == "__main__":
+    cli_args = parse_batch_report_extract_cli()
     BATCH_CONFIG_PATH = project_root() / "configs" / "batch_post_config.py"
     bcfg = load_python_config(BATCH_CONFIG_PATH, "batch_post_config")
 
@@ -270,6 +370,10 @@ if __name__ == "__main__":
     if not BASE_CONFIG_PATH.is_file():
         BASE_CONFIG_PATH = project_root() / "configs" / BASE_CONFIG_PATH.name
     base_cfg = load_python_config(BASE_CONFIG_PATH, "base_post_config")
+
+    if cli_args.report_skip:
+        report_extract_skip_status()
+        raise SystemExit(0)
 
 
 
@@ -426,21 +530,26 @@ if __name__ == "__main__":
             continue
 
         # --- Gate 2: SKIP_EXISTING ---
-        # If an existing report passes validation, skip. If it fails, fall through
-        # and re-run the case so the invalid report is replaced.
-        if bcfg.SKIP_EXISTING_REPORTS and summary_wide_csv.is_file():
-            is_valid, validation_msg = validate_summary_wide_csv(summary_wide_csv)
-            if is_valid:
+        # Skip only when the CSV is bound to the current R-02 solve hashes.
+        if bcfg.SKIP_EXISTING_REPORTS:
+            skip_block = extract_skip_block_reason(
+                case_result_dir,
+                summary_wide_csv,
+                final_case_file,
+                final_data_file,
+                csv_validator=validate_summary_wide_csv,
+            )
+            if skip_block is None:
                 print(f"  SKIPPED_EXISTING: {summary_wide_csv}")
                 record["status"] = "SKIPPED_EXISTING"
                 record["return_code"] = 0
-                record["message"] = "summary_metrics_wide.csv already exists and passed validation"
+                record["message"] = (
+                    "summary_metrics_wide.csv is current with the run "
+                    "manifest hashes"
+                )
                 status_records.append(record)
                 continue
-            else:
-                print(f"  SKIP_EXISTING: existing report failed validation — will re-run.")
-                print(f"  Validation failure: {validation_msg}")
-                # Fall through: do not skip; re-run this case.
+            print(f"  Not skipping existing report: {skip_block}")
 
         # --- Gate 3: MISSING_CASE_DATA ---
         missing_files = [
@@ -511,6 +620,9 @@ if __name__ == "__main__":
     # Save status CSV (opt-in aggregate output)
     # ============================================================
 
+    status_write_failed = False
+    merge_write_failed = False
+
     print(f"\n{'='*60}")
 
     status_df = pd.DataFrame(status_records)
@@ -522,7 +634,8 @@ if __name__ == "__main__":
             status_df.to_csv(status_csv_path, index=False, encoding="utf-8-sig")
             print(f"Status CSV saved : {status_csv_path}")
         except Exception as exc:
-            print(f"Warning: could not save status CSV: {exc}")
+            status_write_failed = True
+            print(f"FAILED: could not save status CSV: {exc}")
     else:
         print("Status CSV write disabled (WRITE_AGGREGATE_OUTPUTS=False).")
 
@@ -605,7 +718,8 @@ if __name__ == "__main__":
                 print(f"\nMerged summary CSV saved : {merged_summary_csv}")
                 print(f"Total rows               : {len(merged_df)}")
             except Exception as exc:
-                print(f"Warning: could not save merged summary CSV: {exc}")
+                merge_write_failed = True
+                print(f"FAILED: could not save merged summary CSV: {exc}")
 
 
     # ============================================================
@@ -637,3 +751,10 @@ if __name__ == "__main__":
         print("No cases were processed.")
 
     print("\nBatch post-processing complete.")
+    raise SystemExit(
+        extract_batch_exit_code(
+            status_records,
+            status_write_failed=status_write_failed,
+            merge_write_failed=merge_write_failed,
+        )
+    )

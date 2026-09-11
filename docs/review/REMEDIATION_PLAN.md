@@ -67,7 +67,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. | COMPLETE |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `src/ro/session_retry.py` (신규); `scripts/batch_solver_sweep.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/batch_meshing.py` (socket 패턴 import); tests | R-02 | WSL 2026-09-11 `1131 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). socket / Scheme heap / launch-spawn (`LaunchFluentError`, `Deadline Exceeded`, `hwtree`, `Aborting:`) → 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G/inlet readback/manifest → attempts==1. session 서명이 blob 어디에 있어도 wrapper보다 이김. attempt 로그는 `{geo}__{mesh}__{run}__solver_attemptN.log`. leftover RUNNING+files는 skip 아님 (R-02). | COMPLETE |
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; `tests/test_mesh_skip.py`; `tests/test_rebuild_mesh_manifest.py` | R-01 | WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). msh만 / empty msh / invalid manifest / SHA mismatch / layout mismatch → skip 아님. msh+valid manifest+`mesh_sha256` 일치+현재 case layout 일치 → `skipped_existing`. `--from-log`는 log+`.msh.h5`+registry+run config로 payload 생성; 기존 manifest·로그 부재·x-extent 실패는 write 없음. `created_utc`/`generator_version`=`unrecoverable-from-log`, `inlet_profile_G`=null. workstation `--report-skip` 명령은 본문에 기록 (WSL은 `C:/ro_data` 없음). | COMPLETE |
-| R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`) | R-03 | pytest: wide CSV가 있어도 `final_data`보다 오래되면 skip 아님. FAILED/write 실패 → 드라이버 exit ≠ 0. listing `OSError` → 빈 트리로 성공하지 않음. skipped unreadable manifest → inventory exit ≠ 0. | NOT STARTED |
+| R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `src/ro/extract_skip.py` (신규); `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/pyfluent_report_extract.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`); `tests/test_extract_skip.py` | R-03 | WSL 2026-09-11 `1169 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). CSV-only / sidecar 없음 / R-02 hash·attempt 없음 / file 또는 sidecar hash mismatch → skip 아님 (mtime은 보지 않음). matching sidecar+manifest hashes+file bytes → skip. extract/post FAILED 또는 aggregate write 실패 → exit ≠ 0; selected 0건은 0. listing `OSError` → 빈 트리로 성공하지 않음. `--skip-unreadable-manifests`는 계속 스캔하되 skipped leaf가 있으면 inventory exit ≠ 0. workstation `--report-skip` 명령은 본문에 기록 (WSL은 `C:/ro_data` 없음). | COMPLETE |
 | R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `scripts/solver_code_260616.py` (`apply_parsed_inlet_profile_g` / finalize); `src/ro/solver_common.py` (settings parse); tests | R-01; `run_id` 검사는 R-07 generator와 같은 parser | pytest: blocked ≠ 0.0 reject; mesh≠run blocked reject; `u_mean_ms * G != u_target_ms` reject (정의는 유지); `run_id` token ≠ `(u,p)` reject; malformed `max_iterations`는 default 대체 없이 raise; SHA mismatch reject. | NOT STARTED |
 | R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `scripts/pyfluent_report_extract.py`; `src/ro/fluent_report_helpers.py`; tests | R-01 | pytest: `pp_area_mem` vs `pp_udm_area_sum` (rel_tol `1e-9`부터); `pp_pressure_drop_spacer` vs active-cell per-cell 합; CSV `pp_m_in_with_sources == pp_m_in + pp_m_in_mass_source` (inlet/outlet). physical flux 키는 `(without-sources)` 유지. | NOT STARTED |
 | R-13 | `Sin_ST` / `GEO_ORDER` leftover | **can wait** — `post_cases=[]`이면 geometries 리스트는 안 쓰이고, figures는 279 solver를 막지 않음 | Cursor T5-04 T5-05 (요청문이 명시한 Cursor-only 항목) | `configs/batch_post_config.py`; `scripts/make_summary_figures.py` | none | live config/figure 기본 순서에 archive `Sin_ST`/`Sin_SL`/`Empty`/`Diamond_Spacer` 없음. `CAMPAIGN_GEO_IDS` 또는 family 이름. | NOT STARTED |
@@ -384,32 +384,101 @@ unrecoverable 필드는 marker/null.
 
 ### 변경
 
-- `batch_report_extract.py`: `SKIP_EXISTING_REPORTS`일 때
-  `summary_metrics_wide.csv` 존재 + `validate_summary_wide_csv`뿐 아니라
-  **freshness**. CSV mtime이 `final_data`보다 오래됐거나, 기록된 layout
-  `n_total` / mesh hash가 현재 run과 다르면 재실행. Cursor T4-04 (10-cell CSV가
-  30-cell을 skip)와 Claude C4-04를 함께 막는다.
-- 같은 드라이버: `FAILED` / `FAILED_METRIC_VALIDATION` / status·merged CSV write
-  실패 / per-case merge `continue` 누락이 있으면 `sys.exit(1)`.
-  `batch_solver_sweep.py:272-273`과 맞춘다.
-- `batch_postprocess_all_cases.py`: `run()`이 항상 `return 0` (`:1645`).
-  FAILED stage가 있으면 nonzero. `--skip-existing`의 `summary_wide.is_file()`는
-  extract와 같은 validation+freshness를 쓴다. PNG glob만으로 skip하지 않는다.
-  (그림 내용 검증 전부는 이 작업이 아님 — skip만 강화.)
-- `case_inventory.py`: `run_inventory` 끝 `return 0` (`:2304`).
-  `skipped_manifests` nonempty 또는 listing 실패면 nonzero.
-- `manifest._iter_child_dirs`: `OSError → []` 금지. 전파하거나 skipped-root를
-  모아 호출자가 nonzero. Astra A-09 / Claude C2-12 / Cursor T2-17 / Sol T2.
+Skip (`extract_skip_block_reason`): wide CSV 존재 + non-empty columns만으로
+skip하지 않는다. V-03이 본문의 mtime 비교를 덮는다. 나중에 복사한 old CSV는
+mtime이 새롭고, `copy2`/백업 복원은 old mtime을 보존할 수 있으므로 mtime은
+보조도 아니다. 현재 solve의 증거는 R-02가 run manifest에 남긴
+`solver_attempt_id` / `final_case_sha256` / `final_data_sha256`이다.
+두 번째 hash 메커니즘은 만들지 않았다.
+
+Extract는 성공 완료 시에만 같은 필드 이름의 sidecar
+`post/reports/extract_source.json`을 쓴다 (CSV 옆, atomic replace).
+이 해시는 extract가 읽은 cas/dat bytes이며, run manifest의 R-02 필드를
+extract가 덮어쓰지 않는다. `convergence_quality` manifest write가 실패하면
+sidecar를 쓰지 않고 raise한다. 그때 CSV가 디스크에 남아 있어도 sidecar가
+없으므로 다음 실행은 skip하지 않는다. load-bearing column guard는
+`pyfluent_report_extract.py`에 이미 있고 여기서 재구현하지 않는다.
+
+Skip은 다음을 모두 만족할 때만 (`skip_block is None`):
+
+- `summary_metrics_wide.csv` 존재, size > 0. extract 배치는 여기에
+  `validate_summary_wide_csv`를 더한다.
+- sidecar가 있고 JSON object로 읽힌다.
+- run manifest가 `read_run_manifest`로 통과하고 `solver_attempt_id`와
+  cas/dat SHA가 비어 있지 않다.
+- 디스크의 final cas/dat SHA가 run manifest와 같다.
+- sidecar의 세 필드가 run manifest와 같다.
+
+하나라도 실패하면 재extract. **증거가 없으면 skip이 아니라 재extract.**
+기존 ~15 run 중 R-02 이전 leaf는 hash 필드가 없고, sidecar도 없다. 그
+상태는 `extract source record was not found` 또는 `missing solver_attempt_id`
+/ `missing current-attempt final artifact hashes`로 RUN이다. 한 번 이
+코드로 extract가 성공한 뒤에야, R-02 hash가 있는 leaf만 skip할 수 있다.
+hash가 없는 leaf는 sidecar를 써도 run manifest 증거가 없어 계속 RUN이다.
+
+`batch_report_extract.py`: `SKIP_EXISTING_REPORTS`가 위 skip을 쓴다.
+증거가 부족하면 `Not skipping existing report: …`를 찍고 진행한다.
+`--report-skip`은 Fluent 없이 모든 run leaf를 나열한다.
+
+드라이버 exit: `FAILED` / `FAILED_METRIC_VALIDATION` / `MISSING_CASE_DATA`
+또는 status·merged CSV write 실패 → `sys.exit(1)`. selected 0건
+(`No cases were processed.`)은 실패가 아니다.
+
+`batch_postprocess_all_cases.py`: `--skip-existing`의
+`summary_wide.is_file()`와 PNG glob만으로 skip하지 않는다. extract skip이
+통과할 때만 report/contour/shear를 `SKIPPED_EXISTING`으로 둔다. 그림 내용
+검증 전부는 이 작업이 아니다. `run()`은 FAILED stage가 있으면 1, selected
+0건은 0.
+
+`case_inventory.py`: listing `OSError`는 빈 트리로 바꾸지 않는다
+(`_iter_child_dirs`가 `Could not list directory {parent}`로 raise, `main`
+exit 2). 첫 unreadable manifest는 `{manifest_path}: …`로 이름을 남긴다.
+`--skip-unreadable-manifests`는 계속 스캔하지만 skipped leaf가 하나라도
+있으면 exit 1 — 빠진 행이 있는 inventory는 쓸 수 없다. `classify_case`는
+stale CSV+contours를 `POSTPROCESSED_*`로 두지 않는다
+(`extract_is_current`가 있어야 한다). 합성 classify fixture에 그 키가
+없으면 예전처럼 `has_summary_metrics_wide`를 current로 본다.
+
+### workstation skip 리포트
+
+WSL은 `C:/ro_data`를 보지 못한다. 기존 run leaf의 CSV / sidecar / R-02
+hash / skip 결정을 보려면 Git Bash:
+
+```text
+cd /c/pyfluent
+source .venv/Scripts/activate
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export RO_DATA_ROOT='C:/ro_data'
+export PYFLUENT_PROJECT_ROOT='C:/pyfluent'
+unset PYFLUENT_RUN_CONFIG PYFLUENT_SKIP_VALIDATION
+python scripts/batch_report_extract.py --report-skip
+```
+
+`--report-skip`은 Fluent를 켜지 않는다. 각 줄: csv 존재/size, sidecar
+유무, run manifest hash 필드 유무, SKIP/RUN, RUN이면 reason. 기존 15 run은
+sidecar가 없거나 (R-02 이전) hash 필드가 없으면 RUN이어야 한다. mtime이
+새 CSV처럼 보여도 sidecar가 현재 hash와 다르면 RUN.
 
 ### 포함하지 않음
 
+- report-stage retry (이미 `efbced9` + R-03).
+- load-bearing column guards (이미 `pyfluent_report_extract.py`; V-01).
 - contour/shear 픽셀 검증, PyEnSight except 전수 (Claude T2 미착수).
 - `batch_solver_rerun` CSV skip (Claude C4-03, 우선순위 낮음).
+- extract가 run manifest의 R-02 hash 필드를 쓰는 것.
 
 ### 검증
 
-pytest: stale CSV fixture → skip 아님. FAILED row → extract main ≠ 0.
-inventory에 skipped manifest → ≠ 0. `_iter_child_dirs`가 막힌 dir에서 raise/error.
+WSL 2026-09-11 `1169 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+CSV만 / sidecar 없음 / R-02 hash 없음 / cas·dat SHA mismatch / sidecar
+attempt mismatch → skip 아님. matching sidecar+hashes는 CSV mtime이
+`final_data`보다 오래돼도 skip. extract/post empty selected → exit 0;
+FAILED / write 실패 → exit 1. listing `OSError` → empty success 아님.
+unreadable manifest는 경로를 찍고, `--skip-unreadable-manifests`면 exit 1.
+stale extract + contours → `NEEDS_REPORT_EXTRACTION`, `POSTPROCESSED_*` 아님.
+
+다음 행: **R-11**.
 
 ---
 

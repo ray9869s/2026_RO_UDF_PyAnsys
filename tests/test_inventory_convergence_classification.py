@@ -284,6 +284,8 @@ EXPECTED_CASE_INVENTORY_FIELDNAMES = (
     "launch_error_evidence",
     "has_summary_metrics_wide",
     "summary_metrics_wide_file",
+    "extract_is_current",
+    "extract_skip_block",
     "report_csv_count",
     "report_files",
     "summary_metrics_read_error",
@@ -399,6 +401,16 @@ class TestClassifyCaseLikelyComplete:
         assert record["likely_complete"] is True
         assert record["case_status"] == inventory.POSTPROCESSED_BASIC
         assert record["needs_solver_rerun"] is False
+
+    def test_stale_extract_with_contours_is_not_postprocessed(self, inventory):
+        record = classify_record(
+            inventory,
+            convergence_status=inventory.CONVERGED,
+            extract_is_current=False,
+        )
+        assert record["case_status"] == inventory.NEEDS_REPORT_EXTRACTION
+        assert record["needs_report_extraction"] is True
+        assert record["likely_complete"] is True
 
     def test_missing_pair_is_missing_case_or_data(self, inventory):
         record = classify_record(
