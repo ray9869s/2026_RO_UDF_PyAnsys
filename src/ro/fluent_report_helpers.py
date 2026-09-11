@@ -1031,6 +1031,247 @@ def require_load_bearing_summary_columns(wide_record: Mapping[str, Any]) -> None
         )
 
 
+# Wide CSV names (V-01). Fluent report names are pp_area_mem / pp_m_in.
+# Do not add these to LOAD_BEARING_SUMMARY_METRICS; missing keys are N/A.
+CSV_AREA_MEM_KEY = "area_mem"
+CSV_UDM_AREA_SUM_KEY = "pp_udm_area_sum"
+CSV_PRESSURE_DROP_SPACER_KEY = "pressure_drop_spacer"
+CSV_FLUX_IN_KEYS = ("m_in", "m_in_with_sources", "m_in_mass_source")
+CSV_FLUX_OUT_KEYS = ("m_out", "m_out_with_sources", "m_out_mass_source")
+
+# REF_empty u0p2_p6M measured 1.8e-15 relative (1.680871416727065e-4 vs
+# 1.680871416727068e-4). Start the live gate at 1e-9.
+AREA_MEM_UDM_REL_TOL = 1e-9
+
+# spacer_x_in/out == layout.active_span == first/last active unit-cell
+# boundaries. Sum of pp_pressure_drop_cell_N over active cells telescopes
+# to p(upstream of first active) - p(downstream of last active) on the
+# unit-cell iso-surfaces. pressure_drop_spacer is the same two x locations
+# on separately created pp_plane_spacer_in/out. Algebraic equality of the
+# two Fluent area-averages is not expected; this is a discretisation-gap
+# check.
+SPACER_DP_CELL_SUM_REL_TOL = 1e-6
+SPACER_DP_CELL_SUM_ABS_TOL_PA = 1e-4
+
+
+def _record_has_value(record: Mapping[str, Any], key: str) -> bool:
+    return key in record and not _summary_column_is_blank(record[key])
+
+
+def _record_finite_number(record: Mapping[str, Any], key: str):
+    """Return (number, None) or (None, reject-reason). Caller checks presence."""
+    raw = record[key]
+    if isinstance(raw, bool):
+        return None, f"{key} is not numeric: {raw!r}"
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None, f"{key} is not numeric: {raw!r}"
+    if not math.isfinite(value):
+        return None, f"{key} is not finite: {raw!r}"
+    return value, None
+
+
+def area_mem_udm_identity_block_reason(
+    record: Mapping[str, Any],
+    *,
+    rel_tol: float = AREA_MEM_UDM_REL_TOL,
+):
+    """Return why CSV area_mem disagrees with pp_udm_area_sum, or None.
+
+    Missing/blank keys are N/A (not a reject). Do not default them to 0.
+    """
+    if not _record_has_value(record, CSV_AREA_MEM_KEY) or not _record_has_value(
+        record, CSV_UDM_AREA_SUM_KEY
+    ):
+        return None
+    area_mem, area_err = _record_finite_number(record, CSV_AREA_MEM_KEY)
+    if area_err:
+        return area_err
+    udm_area, udm_err = _record_finite_number(record, CSV_UDM_AREA_SUM_KEY)
+    if udm_err:
+        return udm_err
+    if area_mem <= 0.0 or udm_area <= 0.0:
+        return (
+            "area_mem and pp_udm_area_sum must be positive, "
+            f"got area_mem={area_mem!r} pp_udm_area_sum={udm_area!r}"
+        )
+    if math.isclose(area_mem, udm_area, rel_tol=rel_tol, abs_tol=0.0):
+        return None
+    relative = abs(area_mem - udm_area) / max(abs(area_mem), abs(udm_area))
+    return (
+        "area_mem does not match pp_udm_area_sum: "
+        f"area_mem={area_mem!r} pp_udm_area_sum={udm_area!r} "
+        f"(relative {relative:.3g} > {rel_tol})"
+    )
+
+
+def area_mem_udm_identity_applies(record: Mapping[str, Any]) -> bool:
+    return _record_has_value(record, CSV_AREA_MEM_KEY) and _record_has_value(
+        record, CSV_UDM_AREA_SUM_KEY
+    )
+
+
+def csv_flux_three_key_block_reason(
+    record: Mapping[str, Any],
+    *,
+    side: str,
+    abs_tol_kg_s: float | None = None,
+):
+    """Return why CSV with_sources != without_sources + mass_source, or None.
+
+    CSV names are m_in / m_in_with_sources / m_in_mass_source (and outlet).
+    m_in is the physical (without-sources) flux. A missing key is N/A, not 0.
+    """
+    if abs_tol_kg_s is None:
+        abs_tol_kg_s = FLUX_DECOMPOSITION_ABS_TOL_KG_S
+    if side == "in":
+        physical_key, with_key, source_key = CSV_FLUX_IN_KEYS
+    elif side == "out":
+        physical_key, with_key, source_key = CSV_FLUX_OUT_KEYS
+    else:
+        raise ValueError(f"side must be 'in' or 'out', got {side!r}")
+    if not (
+        _record_has_value(record, physical_key)
+        and _record_has_value(record, with_key)
+        and _record_has_value(record, source_key)
+    ):
+        return None
+    physical, physical_err = _record_finite_number(record, physical_key)
+    if physical_err:
+        return physical_err
+    with_sources, with_err = _record_finite_number(record, with_key)
+    if with_err:
+        return with_err
+    mass_source, source_err = _record_finite_number(record, source_key)
+    if source_err:
+        return source_err
+    expected = physical + mass_source
+    if math.isclose(with_sources, expected, rel_tol=0.0, abs_tol=abs_tol_kg_s):
+        return None
+    residual = with_sources - expected
+    return (
+        f"{with_key} != {physical_key} + {source_key}: "
+        f"{with_key}={with_sources!r}, {physical_key}={physical!r}, "
+        f"{source_key}={mass_source!r}, residual={residual!r} kg/s"
+    )
+
+
+def csv_flux_three_key_applies(record: Mapping[str, Any], *, side: str) -> bool:
+    if side == "in":
+        keys = CSV_FLUX_IN_KEYS
+    elif side == "out":
+        keys = CSV_FLUX_OUT_KEYS
+    else:
+        raise ValueError(f"side must be 'in' or 'out', got {side!r}")
+    return all(_record_has_value(record, key) for key in keys)
+
+
+def active_cell_numbers_from_counts(n_buffer_in, n_active_cells) -> list[int]:
+    """Global 1-based active cell indices from manifest layout counts."""
+    if isinstance(n_buffer_in, bool) or not isinstance(n_buffer_in, int):
+        raise TypeError(f"n_buffer_in must be an int, got {n_buffer_in!r}.")
+    if isinstance(n_active_cells, bool) or not isinstance(n_active_cells, int):
+        raise TypeError(
+            f"n_active_cells must be an int, got {n_active_cells!r}."
+        )
+    if n_buffer_in < 0 or n_active_cells <= 0:
+        raise ValueError(
+            "n_buffer_in must be >= 0 and n_active_cells must be > 0, "
+            f"got n_buffer_in={n_buffer_in!r} n_active_cells={n_active_cells!r}."
+        )
+    first = n_buffer_in + 1
+    last = n_buffer_in + n_active_cells
+    return list(range(first, last + 1))
+
+
+def spacer_dp_active_cell_sum_block_reason(
+    record: Mapping[str, Any],
+    active_cell_numbers: Iterable[int],
+    *,
+    rel_tol: float = SPACER_DP_CELL_SUM_REL_TOL,
+    abs_tol_pa: float = SPACER_DP_CELL_SUM_ABS_TOL_PA,
+):
+    """Return why pressure_drop_spacer disagrees with Σ active-cell dP, or None.
+
+    N is active cells, not the evaluation window. Missing/blank columns are
+    N/A. See SPACER_DP_CELL_SUM_REL_TOL for the discretisation gap.
+    """
+    cells = list(active_cell_numbers)
+    if not cells:
+        return None
+    if not _record_has_value(record, CSV_PRESSURE_DROP_SPACER_KEY):
+        return None
+    cell_keys = [f"pp_pressure_drop_cell_{number}" for number in cells]
+    if any(not _record_has_value(record, key) for key in cell_keys):
+        return None
+    spacer, spacer_err = _record_finite_number(
+        record, CSV_PRESSURE_DROP_SPACER_KEY
+    )
+    if spacer_err:
+        return spacer_err
+    cell_sum = 0.0
+    for key in cell_keys:
+        value, err = _record_finite_number(record, key)
+        if err:
+            return err
+        cell_sum += value
+    if math.isclose(spacer, cell_sum, rel_tol=rel_tol, abs_tol=abs_tol_pa):
+        return None
+    denom = max(abs(spacer), abs(cell_sum), abs_tol_pa)
+    relative = abs(spacer - cell_sum) / denom
+    return (
+        "pressure_drop_spacer does not match sum of active-cell "
+        f"pp_pressure_drop_cell_N {cells}: spacer={spacer!r} "
+        f"cell_sum={cell_sum!r} (relative {relative:.3g} > {rel_tol}, "
+        f"abs_tol={abs_tol_pa} Pa)"
+    )
+
+
+def spacer_dp_active_cell_sum_applies(
+    record: Mapping[str, Any],
+    active_cell_numbers: Iterable[int],
+) -> bool:
+    cells = list(active_cell_numbers)
+    if not cells or not _record_has_value(record, CSV_PRESSURE_DROP_SPACER_KEY):
+        return False
+    return all(
+        _record_has_value(record, f"pp_pressure_drop_cell_{number}")
+        for number in cells
+    )
+
+
+def extract_identity_block_reasons(
+    record: Mapping[str, Any],
+    *,
+    active_cell_numbers: Iterable[int],
+) -> dict[str, str | None]:
+    """Return per-identity reject reasons. None is PASS or N/A."""
+    return {
+        "area": area_mem_udm_identity_block_reason(record),
+        "flux_in": csv_flux_three_key_block_reason(record, side="in"),
+        "flux_out": csv_flux_three_key_block_reason(record, side="out"),
+        "spacer_dp": spacer_dp_active_cell_sum_block_reason(
+            record, active_cell_numbers
+        ),
+    }
+
+
+def require_extract_identities(
+    record: Mapping[str, Any],
+    *,
+    active_cell_numbers: Iterable[int],
+) -> None:
+    reasons = extract_identity_block_reasons(
+        record, active_cell_numbers=active_cell_numbers
+    )
+    failed = [
+        f"{name}: {reason}" for name, reason in reasons.items() if reason
+    ]
+    if failed:
+        raise RuntimeError("Extract identity failed: " + "; ".join(failed))
+
+
 def iso_surface_reduction_locations(solver, iso_surface_names):
     """Resolve iso-surface names via ``solver.settings.results.surfaces``.
 
@@ -2455,7 +2696,13 @@ def derive_spacer_cell_metrics_for_layout(
     computed_values: Mapping[str, Any],
     layout: DomainLayout,
 ) -> dict[str, Optional[float]]:
-    """Asymmetric DomainLayout variant of :func:`derive_spacer_cell_metrics`."""
+    """Asymmetric DomainLayout variant of :func:`derive_spacer_cell_metrics`.
+
+    Active-cell dP telescopes between the unit-cell planes at
+    ``layout.active_span``. That is the same x as ``pressure_drop_spacer``'s
+    separately created iso-surfaces, so R-12 compares them with a
+    discretisation gap rather than exact equality.
+    """
     derived: dict[str, Optional[float]] = {}
     for cell_number in layout.active_cell_numbers():
         upstream_index = cell_number - 1

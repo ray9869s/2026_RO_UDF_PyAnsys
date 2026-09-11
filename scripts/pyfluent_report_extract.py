@@ -73,6 +73,7 @@ from ro.fluent_report_helpers import (  # noqa: E402
     mass_fraction_to_molar_concentration,
     midplane_window_bulk_aggregate,
     require_canonical_cp_summary_columns,
+    require_extract_identities,
     require_load_bearing_report_computes,
     require_load_bearing_report_definitions,
     require_load_bearing_summary_columns,
@@ -2440,6 +2441,10 @@ if __name__ == "__main__":
         # blank cells, etc.). Non-zero exit marks batch_postprocess FAILED.
         require_load_bearing_summary_columns(wide_record)
         require_canonical_cp_summary_columns(wide_record)
+        require_extract_identities(
+            wide_record,
+            active_cell_numbers=layout.active_cell_numbers(),
+        )
 
         try:
             update_run_manifest_fields(
