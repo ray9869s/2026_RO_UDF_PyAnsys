@@ -86,6 +86,12 @@ def build_mesh_manifest_payload(cfg, mesh_metrics, mesh_sha256, *, created_utc=N
     merged["porosity_eps"] = (
         float(measured_porosity) if measured_porosity is not None else None
     )
+    # Measured extents from Fluent /mesh/check (mm → m in the parser). Optional:
+    # not in MESH_MANIFEST_REQUIRED_FIELDS / _GEOMETRY_FIELDS. Copy the parse
+    # result as-is (float or None). Do not substitute 0.0 for a missing parse,
+    # and do not compute cell_length_x_m * n_total.
+    for key in ("domain_extent_x_m", "domain_extent_y_m", "domain_extent_z_m"):
+        merged[key] = mesh_metrics.get(key)
     return merged
 
 

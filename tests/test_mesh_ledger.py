@@ -18,6 +18,7 @@ from ro.mesh_common import (
     build_mesh_ledger_record,
     evaluate_quality_gate,
     mesh_parameters_from_mapping,
+    parse_mesh_metrics_from_log,
     parse_mesh_metrics_text,
     parse_meshing_input_summary,
     upsert_mesh_ledger_csv,
@@ -276,6 +277,17 @@ def test_partial_mesh_check_blocks_leave_derived_metrics_none():
     assert metrics["total_fluid_volume_m3"] is None
     assert metrics["bounding_box_volume_m3"] is None
     assert metrics["porosity"] is None
+
+
+def test_missing_or_unparseable_log_returns_none_extent_keys_not_zero(tmp_path):
+    """R-09 needs None (no measurement) distinct from a measured 0.0."""
+    missing = parse_mesh_metrics_from_log(tmp_path / "no_such_mesh_log.txt")
+    empty = parse_mesh_metrics_text("")
+    for metrics in (missing, empty):
+        assert "domain_extent_x_m" in metrics
+        assert metrics["domain_extent_x_m"] is None
+        assert metrics["domain_extent_y_m"] is None
+        assert metrics["domain_extent_z_m"] is None
 
 
 def test_input_summary_recovers_logged_mesh_parameters():

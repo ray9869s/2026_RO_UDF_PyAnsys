@@ -17,6 +17,7 @@ from helpers import (
     populate_valid_solver_config,
 )
 from ro.manifest import read_mesh_manifest, read_run_manifest
+from ro.mesh_common import parse_mesh_metrics_text
 
 
 def load_meshing_code():
@@ -52,6 +53,15 @@ def _mesh_metrics(**updates):
     return metrics
 
 
+_MESH_CHECK_EXTENTS = """
+---------------- 2106112 cells were created in :  1.80 minutes
+Domain extents.
+  x-coordinate: min = 0.000000e+00, max = 1.732500e+01.
+  y-coordinate: min = -1.732500e+00, max = 1.732500e+00.
+  z-coordinate: min = -3.853586e-01, max = 3.853551e-01.
+"""
+
+
 def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     created_utc = "2026-08-21T08:00:00Z"
@@ -78,6 +88,9 @@ def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     assert mesh_manifest["inlet_profile_G"] is None
     assert mesh_manifest["bridge_radius_m"] == mesh_cfg.bridge_radius_m
     assert mesh_manifest["n_lead_excluded"] == mesh_cfg.n_lead_excluded
+    assert mesh_manifest["domain_extent_x_m"] is None
+    assert mesh_manifest["domain_extent_y_m"] is None
+    assert mesh_manifest["domain_extent_z_m"] is None
 
     solver = load_solver_code()
     run_cfg = load_run_config()
@@ -147,6 +160,60 @@ def test_mesh_manifest_fields_have_no_worker_defaults():
             "a" * 64,
             created_utc="2026-08-21T08:00:00Z",
         )
+
+
+def test_mesh_manifest_payload_keeps_parsed_domain_extents(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    meshing = load_meshing_code()
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    parsed = parse_mesh_metrics_text(_MESH_CHECK_EXTENTS)
+    metrics = _mesh_metrics(
+        domain_extent_x_m=parsed["domain_extent_x_m"],
+        domain_extent_y_m=parsed["domain_extent_y_m"],
+        domain_extent_z_m=parsed["domain_extent_z_m"],
+    )
+    payload = meshing.build_mesh_manifest_payload(
+        cfg,
+        metrics,
+        "a" * 64,
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    assert payload["domain_extent_x_m"] == parsed["domain_extent_x_m"]
+    assert payload["domain_extent_y_m"] == parsed["domain_extent_y_m"]
+    assert payload["domain_extent_z_m"] == parsed["domain_extent_z_m"]
+    n_total = cfg.n_buffer_in + cfg.n_active_cells + cfg.n_buffer_out
+    assert payload["domain_extent_x_m"] != cfg.cell_length_x_m * n_total
+
+    mesh_paths = meshing.resolve_meshing_paths(cfg)
+    mesh_paths["mesh_directory"].mkdir(parents=True)
+    mesh_paths["mesh_file"].write_bytes(b"test mesh bytes")
+    meshing.write_worker_mesh_manifest(
+        cfg,
+        mesh_paths["mesh_directory"],
+        mesh_paths["mesh_file"],
+        metrics,
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    stored = read_mesh_manifest(mesh_paths["mesh_directory"])
+    assert stored["domain_extent_x_m"] == parsed["domain_extent_x_m"]
+    assert stored["domain_extent_y_m"] == parsed["domain_extent_y_m"]
+    assert stored["domain_extent_z_m"] == parsed["domain_extent_z_m"]
+
+
+def test_mesh_manifest_payload_stores_unparsed_extent_as_none():
+    meshing = load_meshing_code()
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    payload = meshing.build_mesh_manifest_payload(
+        cfg,
+        _mesh_metrics(),
+        "a" * 64,
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    assert payload["domain_extent_x_m"] is None
+    assert payload["domain_extent_y_m"] is None
+    assert payload["domain_extent_z_m"] is None
 
 
 def test_mesh_manifest_porosity_eps_from_measured_metrics():

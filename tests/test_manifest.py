@@ -16,6 +16,7 @@ from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
     MESH_MANIFEST_REQUIRED_FIELDS,
     RUN_MANIFEST_REQUIRED_FIELDS,
+    _GEOMETRY_FIELDS,
     ManifestError,
     assert_mesh_file_overwrite_allowed,
     iter_mesh_manifests,
@@ -170,6 +171,37 @@ def write_test_run(*, run_id: str = RUN_ID, **updates) -> Path:
 def test_required_field_tuples_match_schema_payloads():
     assert set(MESH_MANIFEST_REQUIRED_FIELDS) == set(mesh_payload())
     assert set(RUN_MANIFEST_REQUIRED_FIELDS) == set(run_payload())
+
+
+def test_domain_extent_fields_are_not_required():
+    for name in ("domain_extent_x_m", "domain_extent_y_m", "domain_extent_z_m"):
+        assert name not in MESH_MANIFEST_REQUIRED_FIELDS
+        assert name not in RUN_MANIFEST_REQUIRED_FIELDS
+        assert name not in _GEOMETRY_FIELDS
+        assert name not in mesh_payload()
+
+
+def test_mesh_manifest_without_extent_keys_still_reads(monkeypatch, tmp_path):
+    """Old leaves must stay readable; missing is not the same as required-null.
+
+    Adding membrane_blocked_area_frac_geometric to _GEOMETRY_FIELDS in e493975
+    made read_mesh_manifest raise on 34 of 44 leaves. Extent keys must not
+    repeat that: they are extra, and a fixture with no extent keys must load.
+    """
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    directory.mkdir(parents=True)
+    payload = mesh_payload()
+    assert "domain_extent_x_m" not in payload
+    assert "domain_extent_y_m" not in payload
+    assert "domain_extent_z_m" not in payload
+    (directory / "manifest.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    loaded = read_mesh_manifest(directory)
+    assert "domain_extent_x_m" not in loaded
+    assert loaded["geo_id"] == GEO_ID
 
 
 def test_mesh_manifest_round_trip(monkeypatch, tmp_path):
