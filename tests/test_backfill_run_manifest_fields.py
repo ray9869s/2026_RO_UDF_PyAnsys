@@ -42,7 +42,7 @@ def test_backfill_adds_missing_geometry_field_only(monkeypatch, tmp_path):
 
     additions = backfill.backfill_run_manifest(directory, apply=False)
 
-    assert additions == {"membrane_blocked_area_frac_geometric": 0.0}
+    assert additions == {"membrane_blocked_area_frac_geometric": None}
 
 
 def test_backfill_refuses_to_overwrite_existing_field(monkeypatch, tmp_path):
@@ -75,7 +75,7 @@ def test_backfill_apply_writes_valid_manifest(monkeypatch, tmp_path):
     backfill.backfill_run_manifest(directory, apply=True)
 
     read_back = read_run_manifest(directory)
-    assert read_back["membrane_blocked_area_frac_geometric"] == 0.0
+    assert read_back["membrane_blocked_area_frac_geometric"] is None
 
 
 def test_backfill_ref_empty_adds_missing_geometry_field(monkeypatch, tmp_path):

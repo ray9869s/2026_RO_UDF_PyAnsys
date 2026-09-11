@@ -51,13 +51,14 @@ python -m pip install -e .
 ```bash
 cd /c/pyfluent
 source .venv/Scripts/activate
-python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider
 ```
 
-Expect over 800 passed on WSL. On the Windows server without symlink privilege,
-one test is skipped (`test_07_path_parity`). That skip is host privilege, not a
-regression. Any real failure means the pull or the venv is wrong — do not
-proceed.
+On WSL the same selection is `scripts/run_full_pytest.sh` (uses `.venv/bin/python`).
+WSL measured 2026-09-11: **1059 passed, 1 skipped, 0 failed**. The skip is
+`tests/test_campaign_geo_ids.py` when `RO_DATA_ROOT` is unset. Re-measure on
+this Windows host; do not copy the WSL count. Any failed test means the pull
+or the venv is wrong — do not proceed.
 
 ---
 

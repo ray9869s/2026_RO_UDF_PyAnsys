@@ -148,8 +148,15 @@ tests that pass on both from the start.
 
 ## Verification
 
-- Run the full pytest suite; it must stay green on both platforms
-  (WSL **784 passed**; Windows without symlink privilege **783 passed, 1 skipped**).
+- Run the full pytest suite. Local (existing `.venv`):
+  `scripts/run_full_pytest.sh`, which is
+  `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider`.
+  WSL measured 2026-09-11: **1059 passed, 1 skipped, 0 failed**. The skip is
+  `tests/test_campaign_geo_ids.py` when `RO_DATA_ROOT` is unset. Windows is a
+  separate host run; do not reuse the WSL count as a Windows baseline.
+- `.github/workflows/pytest.yml` runs that same pytest selection on push and
+  pull request (its own Python + pip install, not `.venv`) and fails the
+  check on a nonzero exit. It does not by itself block merges.
 - Preserve exit-code contracts: `0` success, `1` exception/preflight, `2`
   failure (post-processing partial = `1` WARN, total = `2`; solver artifact
   failure = `2`).

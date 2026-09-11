@@ -114,9 +114,11 @@ relative and abort before `iterate` on mismatch. `G` is not copied across
 
 ## Tests
 
-`python -m pytest -q` is over 800 passed on WSL. On Windows without symlink
-privilege, one path-parity test is skipped (`test_07_path_parity`); the rest
-must still pass. The suite is pure Python: no Fluent, no real `RO_DATA_ROOT`.
+Full suite: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider`
+(local helper: `scripts/run_full_pytest.sh`). WSL measured 2026-09-11:
+**1059 passed, 1 skipped, 0 failed**. The skip is
+`tests/test_campaign_geo_ids.py` when `RO_DATA_ROOT` is unset. Windows is a
+separate host run. The suite is pure Python: no Fluent, no real `RO_DATA_ROOT`.
 It covers path
 builders and id grammar, manifest read/write and stale-path refusal, domain
 layout from the mesh manifest, UDM index parity with the C enum, UDF

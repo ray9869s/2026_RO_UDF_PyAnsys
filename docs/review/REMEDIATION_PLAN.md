@@ -59,7 +59,7 @@ Claude는 279 전, Cursor는 NEEDS-ASTRA라 **넣지 않는다.**
 
 | id | title | why now | source findings | files | depends on | verification | status |
 |---|---|---|---|---|---|---|---|
-| R-01 | Green full pytest + suite gate | **before sweep** — 이후 모든 검증이 pytest이고, 현재 suite는 red | Claude C6-01 C6-02 C6-03 C6-04 C5-20; Cursor T6-01 T6-02 T6-04 T5-08; Astra D-01 | `tests/test_backfill_run_manifest_fields.py`; `tests/test_inventory_convergence_classification.py`; `docs/AGENTS.md`; `docs/DEPLOY_RUNBOOK.md`; `README.md`; `scripts/run_full_pytest.sh` (신규); `.github/workflows/pytest.yml` (신규) | none | 아래 R-01 명령이 `1056 passed, 1 skipped, 0 failed`. skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py:114` 하나. | NOT STARTED |
+| R-01 | Green full pytest + suite gate | **before sweep** — 이후 모든 검증이 pytest이고, 현재 suite는 red | Claude C6-01 C6-02 C6-03 C6-04 C5-20; Cursor T6-01 T6-02 T6-04 T5-08; Astra D-01 | `tests/test_backfill_run_manifest_fields.py`; `tests/test_inventory_convergence_classification.py`; `docs/AGENTS.md`; `docs/DEPLOY_RUNBOOK.md`; `README.md`; `scripts/run_full_pytest.sh` (신규); `.github/workflows/pytest.yml` (신규) | none | 성공 조건은 고정 숫자가 아니다. 실행 후 측정: WSL 2026-09-11 `1059 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`. workflow는 push/PR에서 같은 pytest 선택을 돌리고 nonzero면 check 실패. merge 차단은 GitHub branch protection required check가 필요하며 이 작업이 설정하지 않는다. | COMPLETE |
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | pytest: stop-reason except → terminal reason + nonzero, `write_case_data` 없음. RUNNING+비어 있지 않은 finals → skip 안 함. 허용 stop_reason+비어 있지 않은 쌍 → skip. | NOT STARTED |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `scripts/batch_solver_sweep.py`; `tests/` (meshing retry 테스트를 모델로) | R-02 | pytest: socket/Scheme signature면 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G 실패는 재시도 없음. attempt 1 leftover finals가 attempt 2를 skip하지 않음. | NOT STARTED |
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; 해당 tests | R-01 | pytest: msh만 있음 → skip 아님. msh+valid manifest+`mesh_sha256` 일치+layout 필드 일치 → skip. `--from-log`는 manifest 없이 log+`.msh.h5`+registry로 payload 생성. | NOT STARTED |
@@ -85,23 +85,33 @@ Claude는 279 전, Cursor는 NEEDS-ASTRA라 **넣지 않는다.**
   `membrane_blocked_area_frac_geometric`은 registry `None`이다
   (`campaign_geometry.py:297`). 기대값을 `None`으로. `0.0`은 형제 필드
   `membrane_blocked_area_frac`(consumed, campaign policy)와 혼동한 것이다.
-- `tests/test_inventory_convergence_classification.py:216`:
-  `len(CASE_INVENTORY_FIELDNAMES) == 120`을 **이름 집합 exact match**로 교체.
-  현재 123이고 추가분은 `convergence_quality_warnings`,
-  `pp_pressure_drop_rel_spread_window`, `pp_pressure_drop_rel_spread_note`.
-  count assertion은 이름/의미 변경을 못 잡는다 (Astra D-01).
-- `docs/AGENTS.md:151-152`, `docs/DEPLOY_RUNBOOK.md:54-60`, `README.md:117`의
-  “784 passed / over 800 / green”을 실제 명령과 숫자로 교체. Windows symlink skip
-  숫자는 이 머신에서 재측정하지 말고, WSL 숫자와 “Windows는 별도 실행”만 적는다.
-- `scripts/run_full_pytest.sh` 하나: 아래 명령을 그대로 실행, nonzero면 실패.
-- `.github/workflows/pytest.yml`: 같은 스크립트. Fluent/`RO_DATA_ROOT` 없음.
-  없는 `.github/`를 만드는 것이 맞다 — 지금 full suite를 강제하는 장치가 0개다.
+- `tests/test_inventory_convergence_classification.py`:
+  `len(CASE_INVENTORY_FIELDNAMES) == 120`을 독립 named sequence 계약으로 교체
+  (exact set + duplicate 없음 + 열 순서). expected를 production constant에서
+  복사하지 않는다. 현재 123열이며 추가분은
+  `convergence_quality_warnings`, `pp_pressure_drop_rel_spread_window`,
+  `pp_pressure_drop_rel_spread_note`.
+- `docs/AGENTS.md`, `docs/DEPLOY_RUNBOOK.md`, `README.md`의
+  “784 passed / over 800 / green”을 실제 명령과 **실행 후 측정한** 숫자로 교체.
+  Windows symlink skip 숫자는 이 머신에서 재측정하지 말고, WSL 숫자와
+  “Windows는 별도 실행”만 적는다. workflow가 merge를 차단한다고 쓰지 않는다.
+- `scripts/run_full_pytest.sh`: 로컬 `.venv/bin/python`으로 아래와 같은
+  pytest 선택을 실행, nonzero면 실패. CI는 이 스크립트를 호출하지 않는다.
+- `.github/workflows/pytest.yml`: 자체 Python setup + pip install 후
+  **같은 pytest 선택** (`python -m pytest -q -p no:cacheprovider`).
+  Fluent/`RO_DATA_ROOT` 없음. push와 pull request에서 돌고 nonzero면
+  check가 실패한다. protected-branch required status check는 GitHub에서
+  사용자가 설정한다 — 이 작업의 범위가 아니다.
 
-명령:
+로컬 명령:
 
 ```text
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
 ```
+
+CSV contract test는 `CASE_INVENTORY_FIELDNAMES`를 복사해 expected를 만들지
+않는다. 이름을 독립적으로 나열하고 exact set, duplicate 없음, **sequence**
+(CSV 열 순서가 계약)를 검사한다.
 
 ### 포함하지 않음
 
@@ -112,7 +122,11 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
 
 ### 검증
 
-위 명령 → `1056 passed, 1 skipped, 0 failed`. workflow 파일이 같은 명령을 호출한다.
+숫자를 성공 조건으로 고정하지 않는다. 실행 후 기록한다.
+
+- 2026-09-11 WSL: `scripts/run_full_pytest.sh` → **1059 passed, 1 skipped, 0 failed**.
+  skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+- workflow는 `.venv`를 쓰지 않고 같은 pytest 선택을 설치한 환경에서 돌린다.
 
 ---
 

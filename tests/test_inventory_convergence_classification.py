@@ -210,25 +210,151 @@ class TestInventoryConvergenceClassification:
         assert args.max_iter == 2000
 
 
+# Independent CSV column contract for case_inventory.csv. Do not build this
+# from CASE_INVENTORY_FIELDNAMES — that would make the test self-validating.
+EXPECTED_CASE_INVENTORY_FIELDNAMES = (
+    "geo_name",
+    "case_name",
+    "family",
+    "geo_id",
+    "mesh_id",
+    "run_id",
+    "u_target_ms",
+    "p_gauge_pa",
+    "case_dir",
+    "post_dir",
+    "reports_dir",
+    "contours_dir",
+    "cas_files",
+    "dat_files",
+    "final_cas_file",
+    "final_dat_file",
+    "has_final_cas",
+    "has_final_dat",
+    "has_case_data_pair",
+    "cas_file_count",
+    "dat_file_count",
+    "log_files",
+    "transcript_files",
+    "latest_log_file",
+    "log_file_count",
+    "transcript_file_count",
+    "log_files_by_role",
+    "log_role_by_file",
+    "solver_log_files",
+    "postprocessing_log_files",
+    "report_log_files",
+    "meshing_log_files",
+    "udf_compile_log_files",
+    "unknown_log_files",
+    "convergence_status",
+    "stop_reason",
+    "convergence_quality",
+    "needs_longer_solve",
+    "convergence_quality_failures",
+    "convergence_quality_warnings",
+    "continuity_final",
+    "lmh_relative_difference",
+    "mass_balance_relative_error",
+    "pp_pressure_drop_rel_spread_window",
+    "pp_pressure_drop_rel_spread_cells_4_7",
+    "pp_pressure_drop_rel_spread_note",
+    "max_iteration_detected",
+    "max_iter_target",
+    "hit_max_iter_target",
+    "likely_complete_from_logs",
+    "likely_complete",
+    "convergence_evidence",
+    "failure_evidence",
+    "warning_evidence",
+    "completion_evidence",
+    "max_iter_evidence",
+    "iteration_notes",
+    "log_parse_errors",
+    "report_expression_warning_count",
+    "report_expression_warning_files",
+    "report_expression_warning_evidence",
+    "postprocessing_graphics_error_files",
+    "postprocessing_graphics_error_evidence",
+    "meshing_error_files",
+    "meshing_error_evidence",
+    "udf_compile_error_files",
+    "udf_compile_error_evidence",
+    "launch_error_files",
+    "launch_error_evidence",
+    "has_summary_metrics_wide",
+    "summary_metrics_wide_file",
+    "report_csv_count",
+    "report_files",
+    "summary_metrics_read_error",
+    "c_bulk_center_whole_domain_area_avg",
+    "lmh",
+    "cp",
+    "pressure_drop",
+    "mass_balance",
+    "wall_shear_avg",
+    "wall_shear_rate_avg",
+    "has_cp_contour",
+    "has_water_flux_contour",
+    "has_lmh_contour",
+    "has_salt_flux_contour",
+    "has_all_pyensight_contours",
+    "has_shear_contour",
+    "has_all_basic_contours",
+    "contour_status_file",
+    "shear_status_file",
+    "colorbar_metadata_files",
+    "contour_export_overall_status",
+    "contour_success_count",
+    "contour_failed_count",
+    "shear_export_status",
+    "shear_native_status",
+    "shear_fallback_status",
+    "shear_derived_variable_mode",
+    "shear_legend_mode",
+    "shear_colorbar_metadata_written",
+    "postprocessing_status",
+    "report_status",
+    "case_status",
+    "has_postprocessing_graphics_errors",
+    "has_report_expression_warnings",
+    "has_udf_compile_errors",
+    "has_meshing_errors",
+    "has_launch_errors",
+    "hard_solver_failure_detected",
+    "max_iter_only",
+    "has_postprocessing_runtime_crash",
+    "postprocessing_runtime_crash_evidence",
+    "failed_postprocessing_stage",
+    "inventory_confidence",
+    "failure_evidence_short",
+    "needs_solver_rerun",
+    "needs_report_extraction",
+    "needs_basic_contours",
+    "needs_shear_contour",
+    "needs_shear_postprocessing",
+    "needs_manual_review",
+    "ready_for_batch_contours",
+    "suggested_next_action",
+)
+
+
 class TestClassifyCaseLikelyComplete:
     def test_inventory_csv_schema_unchanged(self, inventory):
-        fieldnames = inventory.CASE_INVENTORY_FIELDNAMES
-        assert len(fieldnames) == 120
-        assert fieldnames[2:8] == [
-            "family",
-            "geo_id",
-            "mesh_id",
-            "run_id",
-            "u_target_ms",
-            "p_gauge_pa",
-        ]
-        assert fieldnames.count("likely_complete") == 1
-        assert fieldnames[fieldnames.index("likely_complete_from_logs") + 1] == "likely_complete"
-        assert "stop_reason" in fieldnames
-        assert fieldnames[fieldnames.index("convergence_status") + 1] == "stop_reason"
-        assert fieldnames[fieldnames.index("stop_reason") + 1] == "convergence_quality"
-        assert "needs_longer_solve" in fieldnames
-        assert fieldnames == list(dict.fromkeys(fieldnames))
+        """CSV column contract is the sequence: names and order.
+
+        Exact set is also asserted, plus uniqueness. A matching set in a
+        different order is a contract break because writers emit this order.
+        EXPECTED_CASE_INVENTORY_FIELDNAMES is listed independently of
+        CASE_INVENTORY_FIELDNAMES so a rename, add, or drop in the production
+        constant fails this test.
+        """
+        fieldnames = list(inventory.CASE_INVENTORY_FIELDNAMES)
+        expected = list(EXPECTED_CASE_INVENTORY_FIELDNAMES)
+        assert len(expected) == len(set(expected))
+        assert len(fieldnames) == len(set(fieldnames))
+        assert set(fieldnames) == set(expected)
+        assert fieldnames == expected
 
     def test_max_iter_with_full_artifacts_is_postprocessed_unconverged(self, inventory):
         # F-02c: was POSTPROCESSED_BASIC; now honest unconverged completeness.
