@@ -18,14 +18,21 @@ from ro.campaign_matrix import (
     CASE_SET_EXPLORATORY,
     cases_for_case_set,
 )
+from ro.manifest import ManifestError, read_run_manifest
 from ro.paths import mesh_dir, project_root, run_dir
 from ro.solver_common import (
+    FINAL_CASE_SHA256_FIELD,
+    FINAL_DATA_SHA256_FIELD,
+    SOLVER_ATTEMPT_ID_FIELD,
+    SOLVER_SKIP_ALLOWED_STOP_REASONS,
+    collect_solver_final_artifact_failures,
     describe_solver_worker_failure,
     make_base_case_name,
     merge_batch_case_overrides,
     pressure_to_case_token,
     resolve_case_names,
     resolve_input_mode,
+    sha256_file,
     solver_worker_succeeded,
     velocity_to_case_token,
 )
@@ -49,22 +56,81 @@ def solver_case_label(geo_id, mesh_id, run_id):
     return f"{geo_id}/{mesh_id}/{run_id}"
 
 
+def solver_skip_block_reason(
+    run_directory,
+    final_case_path,
+    final_data_path,
+    mesh_file_path,
+):
+    """Return None when this leaf may be skipped; else why it must run.
+
+    Skip evidence is the pair of SHA-256 digests stamped onto the run
+    manifest only after this attempt's canonical write_case_data succeeded,
+    plus the attempt id assigned before launch. A previous attempt's
+    nonempty finals cannot satisfy those hashes: a new worker start rewrites
+    the manifest without them, and a terminal stop_reason written before a
+    failed write never restamps them.
+    """
+    artifact_failures = collect_solver_final_artifact_failures(
+        final_case_path,
+        final_data_path,
+    )
+    if artifact_failures:
+        return artifact_failures[0]
+    try:
+        payload = read_run_manifest(run_directory)
+    except (OSError, ManifestError) as exc:
+        return f"run manifest not usable for skip: {exc}"
+    stop_reason = payload.get("stop_reason")
+    if stop_reason not in SOLVER_SKIP_ALLOWED_STOP_REASONS:
+        return f"stop_reason {stop_reason!r} is not a skip-complete reason"
+    attempt_id = payload.get(SOLVER_ATTEMPT_ID_FIELD)
+    if not attempt_id:
+        return "missing solver_attempt_id"
+    case_sha = payload.get(FINAL_CASE_SHA256_FIELD)
+    data_sha = payload.get(FINAL_DATA_SHA256_FIELD)
+    if not case_sha or not data_sha:
+        return "missing current-attempt final artifact hashes"
+    if sha256_file(final_case_path) != case_sha:
+        return "final case sha256 does not match run manifest"
+    if sha256_file(final_data_path) != data_sha:
+        return "final data sha256 does not match run manifest"
+    try:
+        mesh_sha = sha256_file(mesh_file_path)
+    except OSError as exc:
+        return f"mesh file not readable for skip: {exc}"
+    if payload.get("mesh_sha256") != mesh_sha:
+        return "run mesh_sha256 does not match current mesh file"
+    return None
+
+
 def classify_solver_pre_execution(
     *,
     skip_existing_final_data,
-    final_pair_exists,
     dry_run,
+    run_directory,
+    final_case_path,
+    final_data_path,
+    mesh_file_path,
 ):
-    """Decide dry-run vs existing-final skip before Fluent is launched.
+    """Decide dry-run vs current-attempt skip before Fluent is launched.
 
-    Existing-final skip wins over dry-run so a dry-run summary can still
-    show that skip_existing_final_data fired.
+    Existing-final skip wins over dry-run only when current-attempt
+    completion evidence is present. File existence alone is not enough.
     """
-    if skip_existing_final_data and final_pair_exists:
-        return "skipped_existing", "existing final pair"
+    skip_block = None
+    if skip_existing_final_data:
+        skip_block = solver_skip_block_reason(
+            run_directory,
+            final_case_path,
+            final_data_path,
+            mesh_file_path,
+        )
+        if skip_block is None:
+            return "skipped_existing", "complete current-attempt finals"
     if dry_run:
-        return "dry_run", None
-    return "run", None
+        return "dry_run", skip_block
+    return "run", skip_block
 
 
 def _print_batch_summary(dry_run_cases, skipped_existing, successes, failures):
@@ -233,14 +299,13 @@ def main(argv=None):
         cmd = [sys.executable, str(SOLVER_SCRIPT_PATH)]
         print(f"Command: {' '.join(cmd)}")
 
-        final_pair_exists = (
-            os.path.isfile(expected_final_case)
-            and os.path.isfile(expected_final_data)
-        )
         outcome, skip_reason = classify_solver_pre_execution(
             skip_existing_final_data=skip_existing_final_data,
-            final_pair_exists=final_pair_exists,
             dry_run=dry_run,
+            run_directory=target_case_folder,
+            final_case_path=expected_final_case,
+            final_data_path=expected_final_data,
+            mesh_file_path=expected_mesh,
         )
         if outcome == "skipped_existing":
             print(f"SKIP: {skip_reason}:")
@@ -248,6 +313,9 @@ def main(argv=None):
             print(f"  {expected_final_data}")
             skipped_existing.append((label, skip_reason))
             continue
+
+        if skip_existing_final_data and skip_reason:
+            print(f"Not skipping existing finals: {skip_reason}")
 
         if outcome == "dry_run":
             if input_mode == "mesh_initialization" and not os.path.isfile(expected_mesh):

@@ -9,6 +9,7 @@ import json
 import sys
 import math
 import time
+import uuid
 import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,10 @@ from ro.solver_common import normalize_path, path_to_fluent_str as as_fluent_pat
 from ro.solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
     SOLVER_EXIT_SUCCESS,
+    STOP_REASON_DETERMINATION_FAILED,
+    FINAL_CASE_SHA256_FIELD,
+    FINAL_DATA_SHA256_FIELD,
+    SOLVER_ATTEMPT_ID_FIELD,
     classify_solver_stop_reason,
     collect_solver_final_artifact_failures,
     fluent_report_relative_window_met,
@@ -33,6 +38,7 @@ from ro.solver_common import (
     parse_fluent_report_file_series,
     parse_last_residual_iteration_from_transcript_text,
     resolve_solver_final_artifact_exit_code,
+    sha256_file,
 )
 from ro.domain_layout import (
     layout_from_mesh_manifest,
@@ -51,7 +57,7 @@ def _utc_now_string():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
+def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_attempt_id=None):
     inlet_bc_type = (
         "parabolic" if bool(cfg.use_inlet_velocity_profile) else "plug"
     )
@@ -79,6 +85,7 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None):
         },
         "stop_reason": "RUNNING",
         "created_utc": created_utc or _utc_now_string(),
+        SOLVER_ATTEMPT_ID_FIELD: solver_attempt_id or str(uuid.uuid4()),
     }
     return merge_geometry_into_run_manifest(
         base,
@@ -126,15 +133,86 @@ def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=
     )
     if payload["inlet_bc_type"] == "parabolic":
         if inlet_profile_g is None:
-            raise RuntimeError(
-                "Cannot finalize a parabolic run manifest without "
-                "inlet_profile_G from fluent-*.trn."
-            )
-        if payload["u_mean_ms"] is None:
+            if stop_reason != STOP_REASON_DETERMINATION_FAILED:
+                raise RuntimeError(
+                    "Cannot finalize a parabolic run manifest without "
+                    "inlet_profile_G from fluent-*.trn."
+                )
+        elif payload["u_mean_ms"] is None:
             payload["u_mean_ms"] = (
                 float(payload["u_target_ms"]) / float(inlet_profile_g)
             )
     return write_run_manifest(run_directory, payload)
+
+
+def failed_attempt_case_path(run_directory, attempt_id):
+    return Path(run_directory) / f"failed_attempt_{attempt_id}.cas.h5"
+
+
+def isolate_failed_attempt_write(solver, run_directory, *, as_fluent_path):
+    """Write case/data to an attempt-scoped name, not the canonical finals."""
+    payload = read_run_manifest(run_directory)
+    attempt_id = payload.get(SOLVER_ATTEMPT_ID_FIELD) or "unknown"
+    dest = failed_attempt_case_path(run_directory, attempt_id)
+    solver.settings.file.write_case_data(file_name=as_fluent_path(dest))
+    print(f"Isolated failed-attempt case/data: {dest}")
+    return dest
+
+
+def stamp_run_manifest_final_artifact_hashes(
+    run_directory,
+    final_case_file,
+    final_data_file,
+):
+    payload = read_run_manifest(run_directory)
+    payload[FINAL_CASE_SHA256_FIELD] = sha256_file(final_case_file)
+    payload[FINAL_DATA_SHA256_FIELD] = sha256_file(final_data_file)
+    return write_run_manifest(run_directory, payload)
+
+
+def publish_stop_reason_and_finals(
+    solver,
+    run_directory,
+    solver_stop_reason,
+    *,
+    inlet_profile_g,
+    final_case_file,
+    as_fluent_path,
+):
+    """Finalize the run manifest, then publish canonical finals or isolate.
+
+    ``None`` stop reason becomes ``stop_reason_determination_failed``. That
+    path never writes the canonical ``*_final.cas.h5`` pair. Isolated write
+    failure is warned and does not replace the determination failure.
+    """
+    if not solver_stop_reason:
+        solver_stop_reason = STOP_REASON_DETERMINATION_FAILED
+        print(format_stop_reason_marker(solver_stop_reason))
+    run_manifest_path = finalize_worker_run_manifest(
+        run_directory,
+        solver_stop_reason,
+        inlet_profile_g=inlet_profile_g,
+    )
+    print(
+        f"Run manifest finalized with stop_reason={solver_stop_reason}: "
+        f"{run_manifest_path}"
+    )
+    if solver_stop_reason == STOP_REASON_DETERMINATION_FAILED:
+        try:
+            isolate_failed_attempt_write(
+                solver,
+                run_directory,
+                as_fluent_path=as_fluent_path,
+            )
+        except Exception as isolate_exc:
+            print(
+                "WARNING: isolated failed-attempt write failed: "
+                f"{type(isolate_exc).__name__}: {isolate_exc}"
+            )
+        raise RuntimeError("stop_reason_determination_failed")
+    solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
+    print(f"Final case/data write command completed: {final_case_file}")
+    return solver_stop_reason
 
 
 def resolve_solver_paths(cfg):
@@ -3693,6 +3771,7 @@ if __name__ == "__main__":
                         "WARNING: could not determine stop reason: "
                         f"{type(stop_exc).__name__}: {stop_exc}"
                     )
+                    solver_stop_reason = None
 
             print("\nSolver calculation completed.")
 
@@ -3734,25 +3813,16 @@ if __name__ == "__main__":
                     "WARNING: could not determine stop reason: "
                     f"{type(stop_exc).__name__}: {stop_exc}"
                 )
+                solver_stop_reason = None
 
-        if solver_stop_reason is not None:
-            run_manifest_path = finalize_worker_run_manifest(
-                case_path,
-                solver_stop_reason,
-                inlet_profile_g=inlet_profile_g,
-            )
-            print(
-                f"Run manifest finalized with stop_reason={solver_stop_reason}: "
-                f"{run_manifest_path}"
-            )
-
-
-        # ======================================================
-        # ##### [18] Save Final Case/Data #####
-        # ======================================================
-
-        solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
-        print(f"Final case/data write command completed: {final_case_file}")
+        publish_stop_reason_and_finals(
+            solver,
+            case_path,
+            solver_stop_reason,
+            inlet_profile_g=inlet_profile_g,
+            final_case_file=final_case_file,
+            as_fluent_path=as_fluent_path,
+        )
 
 
     except Exception as e:
@@ -3807,3 +3877,16 @@ if __name__ == "__main__":
 
     print(f"Verified final case file: {final_case_file}")
     print(f"Verified final data file: {final_data_file}")
+    try:
+        stamp_run_manifest_final_artifact_hashes(
+            case_path,
+            final_case_file,
+            final_data_file,
+        )
+    except Exception as stamp_exc:
+        print("\n" + "=" * 72)
+        print("ERROR: Could not record current-attempt final artifact hashes.")
+        print("=" * 72)
+        print(f"{type(stamp_exc).__name__}: {stamp_exc}")
+        print("=" * 72 + "\n")
+        sys.exit(1)

@@ -493,6 +493,7 @@ class TestManifestStopReasonClassification:
             ("iteration_unknown", "POSSIBLY_INCOMPLETE"),
             ("not_run", "POSSIBLY_INCOMPLETE"),
             ("RUNNING", "POSSIBLY_INCOMPLETE"),
+            ("stop_reason_determination_failed", "FAILED_OR_DIVERGED"),
         ],
     )
     def test_mapping(self, inventory, stop_reason, expected):

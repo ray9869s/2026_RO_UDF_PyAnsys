@@ -63,7 +63,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-07 | Production 279 matrix를 registry에서 생성 | **before sweep** — `_COMMON_MESH` 복사는 Diamond에 `n_active_cells=7`을 찍는다. 31 mesh 수리 아님 | Claude C1-03 C1-13 C3-07 C5-16 C5-17; Cursor T1-06 T1-07 T5-09; Sol T1-03 T3-08; Astra A-02 D-02 | `src/ro/campaign_matrix.py` (신규); `configs/batch_config.py`; `scripts/batch_meshing.py`; `scripts/batch_solver_sweep.py`; `tests/test_campaign_matrix.py`; `docs/PIPELINE_MAP.md`; `docs/DEPLOY_RUNBOOK.md` | R-01 | WSL 2026-09-11 `1070 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). live lists: exploratory `mesh_batch_cases` 22 / `solver_sweep_cases` 5; production mesh 31, production solver 279, geo set == `CAMPAIGN_GEO_IDS`, 각 geo 9 `(u,p)`, `run_id` == `make_base_case_name(u,p)`. 31 mesh의 `n_active_cells`/`cell_length_x_m`/`periodic_shift_y`가 registry와 per-geo 일치 (Diamond는 `_DIAMOND_LAYOUTS`와 동일). distinct `mesh_id` 2: 전부 `max085_min006_cpg5_bl4_peel2` except `D0817_a60` → `max060_min006_cpg5_bl4_peel2` (`m_max==0.060`). `--case-set` default exploratory. | COMPLETE |
 | R-08 | mesh manifest에 측정 `domain_extent_*_m` writer (optional field) | **before sweep** — gate를 나중에 달면 재meshing 없이 검증할 값이 없다. required로 올리면 31 leaf가 깨진다 | Claude C1-14 C3-01; Sol T3-10; Cursor T3-01 T3-12; Astra A-04 | `scripts/meshing_code_260616.py` (`build_mesh_manifest_payload`); `src/ro/mesh_common.py` (이미 파싱함, 미변경); `src/ro/manifest.py` **REQUIRED 목록은 건드리지 않음**; tests | R-01 | WSL 2026-09-11 `1075 passed, 1 skipped, 0 failed`. payload가 `parse_mesh_metrics_text`의 `domain_extent_x/y/z_m`를 그대로 보존 (config `cell_length_x_m * n_total` 아님). 파서 miss는 **키 있음 + `None`** (0.0 아님; 로그 파일 없음도 동일). extent 키 없는 raw JSON fixture는 `read_mesh_manifest` 성공. `MESH_MANIFEST_REQUIRED_FIELDS` / `_GEOMETRY_FIELDS` 미변경. | COMPLETE |
 | R-09 | 31 leaf backfill + `validate_layout_against_x_extent` live gate | **before sweep** — validator는 구현·테스트만 있고 live caller가 없다. 31 log에 `/mesh/check`가 남아 있다 | Claude C1-15 C3-01 C5-03; Sol T3-10; Cursor T3-01 T5-01; Astra A-04 | `scripts/backfill_mesh_manifest_fields.py` (extent는 registry가 아니라 log에서); `scripts/meshing_code_260616.py` write 직전; `scripts/solver_code_260616.py` preflight; `src/ro/domain_layout.py` (`require_*`가 `.ok`를 보고 raise); tests | R-08 | **Part 1 (WSL 2026-09-11):** `1084 passed, 1 skipped, 0 failed`. **Part 2 (workstation 2026-09-11):** dry-run then `--apply` 31 log addition, 0 registry, 0 NO-MEASUREMENT, 0 fail. **Part 3 (WSL 2026-09-11):** x-only live gate, `rel_tol=1e-5`. `1096 passed, 1 skipped, 0 failed`. **gate check after apply+pull:** 31 pass / 0 fail / 0 skip (`rel < 1e-5` vs `layout.total_length_m`). | COMPLETE |
-| R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | pytest: stop-reason except → terminal reason + nonzero, `write_case_data` 없음. RUNNING+비어 있지 않은 finals → skip 안 함. 허용 stop_reason+비어 있지 않은 쌍 → skip. | NOT STARTED |
+| R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | WSL 2026-09-11 `1108 passed, 1 skipped, 0 failed`. stop-reason None → `stop_reason_determination_failed` + isolated write only + raise. RUNNING+finals → run. residual_converged+previous files+no cas/dat SHA → run. matching SHA+attempt id+allowed reason+mesh hash → skipped_existing. | COMPLETE |
 | R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; 해당 tests | R-02 | pytest: TUI except 경로가 raise. 성공 로그는 설정이 실제로 적용된 뒤에만. | NOT STARTED |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `scripts/batch_solver_sweep.py`; `tests/` (meshing retry 테스트를 모델로) | R-02 | pytest: socket/Scheme signature면 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G 실패는 재시도 없음. attempt 1 leftover finals가 attempt 2를 skip하지 않음. | NOT STARTED |
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; 해당 tests | R-01 | pytest: msh만 있음 → skip 아님. msh+valid manifest+`mesh_sha256` 일치+layout 필드 일치 → skip. `--from-log`는 manifest 없이 log+`.msh.h5`+registry로 payload 생성. | NOT STARTED |
@@ -133,43 +133,65 @@ CSV contract test는 `CASE_INVENTORY_FIELDNAMES`를 복사해 expected를 만들
 ## R-02 — Stop-reason fail-closed + solver skip 강화
 
 분리 금지. Claude C4-09 / Cursor T4-02 / Astra A-07이 같은 결합이다.
+V-03이 본문의 skip 계약을 확장한다: 새 terminal manifest + **이전** final 파일
+쌍도 “완료처럼 보이고 재실행되지 않음”이다.
 
-### 현재 계약
+### 현재 계약 (수정 전)
 
 - `determine_and_print_stop_reason` except → warning, `solver_stop_reason is None`
-  이면 `finalize_worker_run_manifest` skip, 그래도 `write_case_data` (`:3746`),
+  이면 `finalize_worker_run_manifest` skip, 그래도 `write_case_data`,
   artifact가 있으면 worker가 성공으로 끝날 수 있음.
 - `classify_solver_pre_execution`는 `skip_existing_final_data and final_pair_exists`
-  만 본다 (`batch_solver_sweep.py:47-58`). size/hash/stop_reason 없음.
-- `collect_solver_final_artifact_failures`는 이미 존재/0-byte를 본다.
-  skip 경로가 안 쓴다.
+  만 본다. size/hash/stop_reason/current-attempt 없음.
 
 ### 변경
 
 Worker (`solver_code_260616.py`):
 
-1. stop-reason except 또는 `None`이면 `STOP_REASON_VALUES`에 **새 값 하나**를 더한다
-   (예: `stop_reason_determination_failed`). 기존 `unknown_early_stop`과 섞지 않는다.
-2. 그 값으로 manifest를 **terminal FAILED**로 finalize한다. `RUNNING`으로 두지 않는다.
-3. `write_case_data`를 호출하지 않는다. 이미 부분 파일이 있으면 rename
-   (`*_incomplete_*`) 또는 실패로 남기고 skip 조건에서 제외.
-4. worker exit ≠ 0.
+1. 새 enum `stop_reason_determination_failed`. `unknown_early_stop`과 섞지 않는다.
+2. except/`None`이면 그 값으로 manifest를 **terminal FAILED**로 finalize한다.
+   `RUNNING`으로 두지 않는다. parabolic이어도 G를 요구하지 않는다 (V-03).
+3. canonical `*_final.cas.h5`/`.dat.h5`는 쓰지 않는다. 세션이 살아 있으면
+   `failed_attempt_{solver_attempt_id}.cas.h5`로만 격리 저장을 시도한다.
+   그 write 실패는 WARNING이고 원래 determination failure를 가리지 않는다.
+   이전 attempt의 canonical 파일은 rename하지 않는다 — skip이 삼키지 못하게
+   하는 쪽은 아래 증거이지 파일 삭제다.
+4. worker는 `RuntimeError("stop_reason_determination_failed")`로 exit ≠ 0.
 
-Skip (`classify_solver_pre_execution` 확장, 파일 존재만으로 결정하지 않음):
+Skip (`classify_solver_pre_execution`): 파일 존재만으로 결정하지 않음.
 
 Skip은 다음을 **모두** 만족할 때만.
 
-- `os.path.isfile` 쌍 + `collect_solver_final_artifact_failures`가 빈 리스트
-  (size > 0).
-- run manifest가 읽히고 `stop_reason`이 완료로 허용된 집합:
-  `residual_converged` / `qoi_converged` / `max_iter_reached`.
-  `RUNNING`, 새 determination-failed, `diverged`, `not_run`은 skip 아님.
-- 기록된 `mesh_sha256`(또는 run이 가리키는 mesh hash)이 현재 `.msh.h5`와 일치.
-  hash 로직은 `rebuild_mesh_manifest.py:311-319`를 재사용.
+- `collect_solver_final_artifact_failures`가 빈 리스트 (둘 다 존재, size > 0).
+- run manifest가 읽히고 `stop_reason` ∈
+  `{residual_converged, qoi_converged, max_iter_reached}`.
+  `RUNNING`, `stop_reason_determination_failed`, `diverged`, `not_run`은 skip 아님.
+- `mesh_sha256`이 현재 `.msh.h5` bytes와 일치 (`sha256_file`, rebuild와 동일 알고리즘).
+- **current-attempt 증거** (아래).
 
-`tests/test_batch_driver_outcomes.py`의
-`test_solver_existing_final_wins_over_dry_run`는 새 skip 계약에 맞게 고친다.
-파일만 있는 fixture는 skip이 아니어야 한다.
+`tests/test_batch_driver_outcomes.py`의 파일-only fixture는 skip이 아니다.
+
+### current-attempt 증거
+
+mtime이 아니다. V-03이 경고한 대로 copy/`touch`가 mtime을 속인다.
+
+증거는 두 조각이다.
+
+1. **`solver_attempt_id`** — `write_worker_run_manifest`가 Fluent iterate **전**에
+   새 UUID를 넣는다. 새 attempt가 시작되면 이전 completion hash 필드는 payload를
+   새로 쓰면서 사라진다.
+2. **`final_case_sha256` / `final_data_sha256`** — canonical `write_case_data`가
+   성공하고 파일이 nonempty인 뒤에만 manifest에 찍는다.
+
+Skip은 두 SHA가 **있고** 디스크 상의 그 파일 bytes와 일치할 때만 통과한다.
+
+이전 파일 쌍이 이 증거를 만족할 수 없는 이유: 새 solve는 시작 때 hash 필드를
+지운다. stop-reason이 `residual_converged`로 finalize된 뒤 canonical write가
+죽으면 hash는 다시 찍히지 않는다. 디스크에 남은 것은 이전 attempt의 bytes다.
+manifest에는 그 bytes의 SHA가 없다. 따라서 skip은 거부하고 재실행한다.
+
+해시 없는 기존 완료 leaf(R-02 이전 exploratory)도 skip하지 않는다. fail-closed.
+campaign 279는 아직 시작하지 않았다.
 
 ### 포함하지 않음
 
@@ -177,14 +199,21 @@ Skip은 다음을 **모두** 만족할 때만.
 - URF abort, QoI monitor 부재, `batch_solver_rerun` skip CSV.
 - extract/mesh skip (R-04, R-05).
 - autosave/checkpoint (UNKNOWN).
+- attempt-specific temp 디렉터리로 올린 뒤 atomic rename publish 전체 (V-03의
+  더 큰 계약). 이번 작업은 hash stamp가 그 구멍만 막는다.
+- solver/UDF/template fingerprint를 skip에 넣기 (R-02 행의 mesh hash까지).
 
 ### 검증
 
 Fluent 없이 pytest:
 
-- stop-reason이 raise하는 stub → finalize된 terminal reason, `write_case_data` 미호출, exit ≠ 0.
-- 임시 `.cas.h5`/`.dat.h5` + manifest `RUNNING` → `classify_*`가 `run`.
-- 같은 파일 + `stop_reason=residual_converged` + matching hash → `skipped_existing`.
+- stop-reason None → `stop_reason_determination_failed` finalize, canonical
+  `write_case_data` 없음, isolated 경로만, raise → exit ≠ 0.
+- isolated write 실패가 determination failure를 가리지 않음.
+- `.cas.h5`/`.dat.h5` + `RUNNING` → `run`.
+- 같은 파일 + `residual_converged` + **hash 없음** (새 terminal + 이전 파일) → `run`.
+- 같은 파일 + 허용 stop_reason + matching cas/dat/mesh hash + attempt id →
+  `skipped_existing` (dry-run보다 우선).
 
 ---
 

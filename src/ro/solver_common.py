@@ -10,6 +10,7 @@ No PyFluent imports.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -283,6 +284,15 @@ def resolve_input_mode(case_settings: dict[str, Any]) -> tuple[str, Any, Any]:
 #   2 = final artifact verification failure after write
 SOLVER_EXIT_SUCCESS = 0
 SOLVER_EXIT_ARTIFACT_FAILURE = 2
+
+
+def sha256_file(path) -> str:
+    """Return the SHA-256 hex digest of a file's bytes."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def collect_solver_final_artifact_failures(
@@ -633,7 +643,22 @@ STOP_REASON_UNKNOWN_EARLY_STOP = "unknown_early_stop"
 STOP_REASON_QOI_REPORT_UNAVAILABLE = "qoi_report_unavailable"
 STOP_REASON_ITERATION_UNKNOWN = "iteration_unknown"
 STOP_REASON_NOT_RUN = "not_run"
+STOP_REASON_DETERMINATION_FAILED = "stop_reason_determination_failed"
 STOP_REASON_MARKER_PREFIX = "SOLVER_STOP_REASON="
+
+# Skip may treat only these as complete. determination_failed is terminal
+# FAILED and must not skip. Hashes below are written only after this attempt's
+# canonical write_case_data succeeds; a previous pair cannot match them.
+SOLVER_SKIP_ALLOWED_STOP_REASONS = frozenset(
+    {
+        STOP_REASON_RESIDUAL_CONVERGED,
+        STOP_REASON_QOI_CONVERGED,
+        STOP_REASON_MAX_ITER_REACHED,
+    }
+)
+SOLVER_ATTEMPT_ID_FIELD = "solver_attempt_id"
+FINAL_CASE_SHA256_FIELD = "final_case_sha256"
+FINAL_DATA_SHA256_FIELD = "final_data_sha256"
 
 # Fluent console phrases. The QoI phrase contains the residual phrase as a
 # substring, so match QoI first.
@@ -649,6 +674,7 @@ STOP_REASON_VALUES = (
     STOP_REASON_QOI_REPORT_UNAVAILABLE,
     STOP_REASON_ITERATION_UNKNOWN,
     STOP_REASON_NOT_RUN,
+    STOP_REASON_DETERMINATION_FAILED,
 )
 
 _ITERATION_PREFIX_RE = re.compile(r"^iteration\s+(\d+)\s*:", re.IGNORECASE)

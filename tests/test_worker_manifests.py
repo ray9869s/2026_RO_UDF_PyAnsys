@@ -136,6 +136,7 @@ def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     assert run_manifest["u_target_ms"] == 0.2
     assert run_manifest["u_mean_ms"] == 0.2
     assert run_manifest["stop_reason"] == "RUNNING"
+    assert run_manifest["solver_attempt_id"]
 
     solver.finalize_worker_run_manifest(
         run_paths["run_directory"],

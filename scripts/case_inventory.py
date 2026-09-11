@@ -534,6 +534,8 @@ def convergence_status_from_stop_reason(stop_reason: str) -> str:
         "RUNNING",
     }:
         return POSSIBLY_INCOMPLETE
+    if stop_reason == "stop_reason_determination_failed":
+        return FAILED_OR_DIVERGED
     raise ValueError(f"Unsupported run manifest stop_reason: {stop_reason!r}")
 
 
@@ -1017,7 +1019,7 @@ def parse_logs(
     has_converged = bool(result.convergence_evidence)
     has_completion = bool(result.completion_evidence)
 
-    if stop_reason == "diverged" or has_failure:
+    if stop_reason == "diverged" or stop_reason == "stop_reason_determination_failed" or has_failure:
         result.convergence_status = FAILED_OR_DIVERGED
         if not stop_reason and has_failure:
             result.stop_reason = "diverged"
@@ -1059,6 +1061,7 @@ def parse_logs(
             "qoi_report_unavailable",
             "iteration_unknown",
             "not_run",
+            "stop_reason_determination_failed",
         }
     )
     return result

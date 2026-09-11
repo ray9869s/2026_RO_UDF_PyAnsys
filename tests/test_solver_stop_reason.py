@@ -115,6 +115,7 @@ def test_stop_reason_enum_is_complete(common):
         "qoi_report_unavailable",
         "iteration_unknown",
         "not_run",
+        "stop_reason_determination_failed",
     }
 
 
