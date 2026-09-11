@@ -206,26 +206,15 @@ def test_sha256_file_matches_helper(tmp_path):
     assert sha256_file(path) == hashlib.sha256(b"abc").hexdigest()
 
 
-def test_mesh_existing_file_wins_over_dry_run():
-    meshing = _load_batch_meshing()
-    outcome, reason = meshing.classify_mesh_pre_execution(
-        skip_existing_mesh=True,
-        mesh_exists=True,
-        dry_run=True,
-    )
-    assert outcome == "skipped_existing"
-    assert reason == "existing mesh"
-
-
 def test_mesh_dry_run_when_file_is_missing():
     meshing = _load_batch_meshing()
     outcome, reason = meshing.classify_mesh_pre_execution(
         skip_existing_mesh=True,
-        mesh_exists=False,
         dry_run=True,
+        skip_block="mesh file was not found: missing.msh.h5",
     )
     assert outcome == "dry_run"
-    assert reason is None
+    assert "was not found" in reason
 
 
 def test_select_mesh_batch_cases_filters_sin_geo_id():

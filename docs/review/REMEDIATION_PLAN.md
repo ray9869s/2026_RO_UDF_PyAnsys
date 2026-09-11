@@ -66,7 +66,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | WSL 2026-09-11 `1108 passed, 1 skipped, 0 failed`. stop-reason None → `stop_reason_determination_failed` + isolated write only + raise. RUNNING+finals → run. residual_converged+previous files+no cas/dat SHA → run. matching SHA+attempt id+allowed reason+mesh hash → skipped_existing. | COMPLETE |
 | R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. | COMPLETE |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `src/ro/session_retry.py` (신규); `scripts/batch_solver_sweep.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/batch_meshing.py` (socket 패턴 import); tests | R-02 | WSL 2026-09-11 `1131 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). socket / Scheme heap / launch-spawn (`LaunchFluentError`, `Deadline Exceeded`, `hwtree`, `Aborting:`) → 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G/inlet readback/manifest → attempts==1. session 서명이 blob 어디에 있어도 wrapper보다 이김. attempt 로그는 `{geo}__{mesh}__{run}__solver_attemptN.log`. leftover RUNNING+files는 skip 아님 (R-02). | COMPLETE |
-| R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; 해당 tests | R-01 | pytest: msh만 있음 → skip 아님. msh+valid manifest+`mesh_sha256` 일치+layout 필드 일치 → skip. `--from-log`는 manifest 없이 log+`.msh.h5`+registry로 payload 생성. | NOT STARTED |
+| R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; `tests/test_mesh_skip.py`; `tests/test_rebuild_mesh_manifest.py` | R-01 | WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). msh만 / empty msh / invalid manifest / SHA mismatch / layout mismatch → skip 아님. msh+valid manifest+`mesh_sha256` 일치+현재 case layout 일치 → `skipped_existing`. `--from-log`는 log+`.msh.h5`+registry+run config로 payload 생성; 기존 manifest·로그 부재·x-extent 실패는 write 없음. `created_utc`/`generator_version`=`unrecoverable-from-log`, `inlet_profile_G`=null. workstation `--report-skip` 명령은 본문에 기록 (WSL은 `C:/ro_data` 없음). | COMPLETE |
 | R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`) | R-03 | pytest: wide CSV가 있어도 `final_data`보다 오래되면 skip 아님. FAILED/write 실패 → 드라이버 exit ≠ 0. listing `OSError` → 빈 트리로 성공하지 않음. skipped unreadable manifest → inventory exit ≠ 0. | NOT STARTED |
 | R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `scripts/solver_code_260616.py` (`apply_parsed_inlet_profile_g` / finalize); `src/ro/solver_common.py` (settings parse); tests | R-01; `run_id` 검사는 R-07 generator와 같은 parser | pytest: blocked ≠ 0.0 reject; mesh≠run blocked reject; `u_mean_ms * G != u_target_ms` reject (정의는 유지); `run_id` token ≠ `(u,p)` reject; malformed `max_iterations`는 default 대체 없이 raise; SHA mismatch reject. | NOT STARTED |
 | R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `scripts/pyfluent_report_extract.py`; `src/ro/fluent_report_helpers.py`; tests | R-01 | pytest: `pp_area_mem` vs `pp_udm_area_sum` (rel_tol `1e-9`부터); `pp_pressure_drop_spacer` vs active-cell per-cell 합; CSV `pp_m_in_with_sources == pp_m_in + pp_m_in_mass_source` (inlet/outlet). physical flux 키는 `(without-sources)` 유지. | NOT STARTED |
@@ -283,41 +283,100 @@ retryable로 바꾸지 않음.
 
 ### 변경
 
-Skip (`classify_mesh_pre_execution`): `.msh.h5` 존재만으로 skip하지 않는다.
+Skip (`mesh_skip_block_reason` / `classify_mesh_pre_execution`): `.msh.h5`
+존재만으로 skip하지 않는다. skip은 루프 **앞**에서 한 번. skip이 켜져 있는데
+증거가 부족하면 `Not skipping existing mesh: …`를 찍고 진행한다.
 
-Skip은 다음을 모두 만족할 때만.
+Skip은 다음을 모두 만족할 때만 (`skip_block is None` → `skipped_existing`,
+이유 `complete current-case mesh`):
 
 - `.msh.h5` 존재, size > 0.
 - `manifest.json`이 `read_mesh_manifest`로 통과.
-- `mesh_sha256` == 파일 bytes (`rebuild_mesh_manifest.py:311-319`).
-- manifest layout 필드가 **현재 case dict**와 같다:
+- `mesh_sha256` == 파일 bytes (`sha256_file`, rebuild `_sha256_file`과 동일).
+- manifest layout 필드가 **현재 case dict** (common_mesh merge 후)와 같다:
   `n_active_cells`, `cell_length_x_m`, `buffer_length_in_m`, `buffer_length_out_m`,
-  `periodic_shift_y_m`(config mm→m 변환 포함).
+  `periodic_shift_y_m` (config `periodic_shift_y` mm → m).
 
-하나라도 실패하면 remesh (또는 아래 rebuild). “파일 있음”은 이유가 아니다.
+하나라도 실패하면 remesh 또는 아래 `--from-log`. “파일 있음”은 이유가 아니다.
+R-09 x-extent gate가 `write_mesh_manifest` **앞**에서 raise하므로, layout과
+어긋난 mesh는 `.msh.h5`만 남고 manifest가 없다. 그 상태는 skip되면 안 된다.
 
-`--from-log`: `rebuild_mesh_manifest.py` discovery는 지금 `manifest.json` 있는
-leaf만 yield하고 `_read_mesh_manifest_for_rebuild`가 기존 payload를 요구한다.
-새 모드:
+`--from-log` (`rebuild_mesh_manifest.py`): 기존 rebuild는 `manifest.json`이
+있는 leaf만 yield하고 기존 payload를 요구한다. 새 모드는 **없는** manifest를
+만든다. `--allow-field`와 섞지 않는다. `--mesh-dir PATH`로 한 leaf.
 
-- 입력: mesh directory, `mesh_log_*.txt`, `.msh.h5`.
-- layout/config는 log의 `parse_meshing_input_summary` + `campaign_geometry` registry.
-  기존 manifest layout을 요구하지 않는다.
-- SHA는 파일에서 계산.
-- dry-run 기본, `--apply`로 write. `MESH_MANIFEST_REQUIRED_FIELDS`를 통과해야 한다.
-  R-08 이전이면 extent는 비워 둔다 (optional). R-08 이후면 log에서 채워 넣는다.
-  구현 시점에 R-08이 끝나 있으면 extent를 함께 쓴다.
+소스는 R-09 backfill처럼 구분해 찍는다:
+
+- **registry** (`geometry_parameters_for_geo_id`): geometry / layout
+  (`n_active_cells`, `cell_length_x_m`, `periodic_shift_y` mm 포함).
+- **log** (`parse_mesh_metrics_from_log`): quality, `porosity_eps`,
+  `domain_extent_*_m`.
+- **log** (`parse_meshing_input_summary`): size/BL/label knobs. layout
+  periodic shift는 registry가 이긴다.
+- **mesh file** (`_sha256_file` of `.msh.h5`): `mesh_sha256`.
+- **run config** (`common_mesh_settings`): buffers, `n_lead_excluded`,
+  default size knobs.
+
+복구 불가 — 시계/버전/G를 만들지 않는다:
+
+- `created_utc` = `"unrecoverable-from-log"` (validator가 non-empty string을 요구).
+- `generator_version` = `"unrecoverable-from-log"`.
+- `inlet_profile_G` = `null` (허용된 기본값; solver가 profile load 후 채움).
+
+Refuse (write 없음, 이유 출력):
+
+- mesh log 없음 (extent backfill과 같은 규칙).
+- `manifest.json`이 이미 있음 (그건 기존 rebuild + `--allow-field`).
+- `.msh.h5` 없음/empty.
+- payload가 일반 validator 또는 R-09 x-extent gate 실패.
+
+dry-run 기본, `--apply`로 write. write 전에 live와 같은
+`require_layout_matches_measured_x_extent` + `_validate_mesh_payload`.
+
+`S_a193_l1733`: curvature gate는 바꾸지 않았다.
+`_CURVATURE_MARGIN_ACKNOWLEDGED_GEO_IDS`에 있어 margin < 1.0이어도 validator는
+warn 후 통과한다. `--from-log`도 그 validator를 쓰므로, 오늘 실패한 그 leaf가
+지금은 extents/quality/SHA만 맞으면 write될 수 있다. msh-without-manifest는
+강화된 skip이 막는다. 두 번째 curvature 검사는 넣지 않았다.
+
+### workstation skip 리포트
+
+WSL은 `C:/ro_data`를 보지 못한다. 31 production leaf + `meshes/` 아래 extra를
+한 번에 보려면 Git Bash:
+
+```text
+cd /c/pyfluent
+source .venv/Scripts/activate
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export RO_DATA_ROOT='C:/ro_data'
+export PYFLUENT_PROJECT_ROOT='C:/pyfluent'
+unset PYFLUENT_RUN_CONFIG PYFLUENT_SKIP_VALIDATION
+python scripts/batch_meshing.py --case-set production --report-skip
+```
+
+`--report-skip`은 Fluent를 켜지 않는다. `--case-set`은 무시하고 항상 production
+31 + extra leaf. 각 줄: msh 존재/size, manifest ok/missing/invalid, SHA match,
+layout match, SKIP/RUN. 기대: 31 전부 SKIP. 옆으로 옮겨 둔 msh-only archive는
+extra RUN (manifest not usable)이어야 한다.
 
 ### 포함하지 않음
 
 - 31개 재meshing.
 - quality-gate 실패 mesh를 자동 삭제.
 - `mesh_run_record.json` write 실패를 fatal로 승격 (Claude C2-33, 별건).
+- curvature acknowledged set 변경.
 
 ### 검증
 
-tmp_path: msh만 → skip 아님. msh+valid manifest+hash → skip.
-`--from-log` fixture log로 payload에 `geo_id`/`n_active_cells`/`mesh_sha256` 존재.
+WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+msh만 / empty msh / SHA mismatch / `n_active_cells` layout mismatch → skip 아님.
+complete manifest+hash+layout → dry-run보다 `skipped_existing` 우선.
+`--from-log` dry-run은 write 없음; `--apply`는 `read_mesh_manifest` 통과.
+로그 없음 / 기존 manifest / extents 없는 로그(x-extent gate) → write 없음.
+unrecoverable 필드는 marker/null.
+
+다음 행: **R-05**.
 
 ---
 

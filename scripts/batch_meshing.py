@@ -8,6 +8,7 @@
 import argparse
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -19,6 +20,7 @@ from pathlib import Path
 from ro.campaign_matrix import (
     CASE_SET_CHOICES,
     CASE_SET_EXPLORATORY,
+    CASE_SET_PRODUCTION,
     cases_for_case_set,
 )
 from ro.mesh_common import (
@@ -32,12 +34,13 @@ from ro.mesh_common import (
     upsert_mesh_ledger_csv,
     write_mesh_run_record,
 )
-from ro.paths import data_root, mesh_dir, project_root
+from ro.manifest import ManifestError, read_mesh_manifest
+from ro.paths import data_root, mesh_dir, meshes_root, project_root
 from ro.session_retry import (
     RETRY_KIND_SOCKET_RESET,
     is_session_socket_reset_failure,
 )
-from ro.solver_common import merge_batch_case_overrides
+from ro.solver_common import merge_batch_case_overrides, sha256_file
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = project_root() / "configs" / "batch_config.py"
@@ -88,6 +91,113 @@ def mesh_case_label(geo_id, mesh_id):
     return f"{geo_id}/{mesh_id}"
 
 
+MESH_SKIP_LAYOUT_FIELDS = (
+    "n_active_cells",
+    "cell_length_x_m",
+    "buffer_length_in_m",
+    "buffer_length_out_m",
+    "periodic_shift_y_m",
+)
+
+
+def expected_mesh_layout_from_case(case_dict, common_mesh_settings=None):
+    """Layout skip compares against: current case after common-mesh merge.
+
+    ``periodic_shift_y`` on the case is millimetres (Fluent ShiftY). The
+    manifest stores metres.
+    """
+    merged = merge_batch_case_overrides(common_mesh_settings or {}, case_dict)
+    missing = [
+        key
+        for key in (
+            "n_active_cells",
+            "cell_length_x_m",
+            "buffer_length_in_m",
+            "buffer_length_out_m",
+        )
+        if merged.get(key) is None
+    ]
+    if merged.get("periodic_shift_y_m") is None and merged.get("periodic_shift_y") is None:
+        missing.append("periodic_shift_y")
+    if missing:
+        raise ValueError(
+            "case dict missing layout fields for mesh skip: "
+            + ", ".join(missing)
+        )
+    if merged.get("periodic_shift_y_m") is not None:
+        shift_m = float(merged["periodic_shift_y_m"])
+    else:
+        shift_m = float(merged["periodic_shift_y"]) * 1.0e-3
+    return {
+        "n_active_cells": int(merged["n_active_cells"]),
+        "cell_length_x_m": float(merged["cell_length_x_m"]),
+        "buffer_length_in_m": float(merged["buffer_length_in_m"]),
+        "buffer_length_out_m": float(merged["buffer_length_out_m"]),
+        "periodic_shift_y_m": shift_m,
+    }
+
+
+def _mesh_skip_layout_field_equal(field, observed, expected):
+    if field == "n_active_cells":
+        try:
+            return int(observed) == int(expected)
+        except (TypeError, ValueError):
+            return False
+    try:
+        return math.isclose(
+            float(observed),
+            float(expected),
+            rel_tol=1.0e-9,
+            abs_tol=0.0,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def mesh_skip_block_reason(mesh_directory, mesh_file, expected_layout):
+    """Return None when this leaf may be skipped; else why it must remesh.
+
+    File existence is not enough. Skip requires a nonempty ``.msh.h5``, a
+    ``manifest.json`` that ``read_mesh_manifest`` accepts, a matching
+    ``mesh_sha256``, and layout fields equal to the current case dict.
+    """
+    if expected_layout is None:
+        return "no current-case layout for skip"
+    mesh_file = Path(mesh_file)
+    if not mesh_file.is_file():
+        return f"mesh file was not found: {mesh_file}"
+    try:
+        size = mesh_file.stat().st_size
+    except OSError as exc:
+        return f"mesh file size could not be read ({mesh_file}): {exc}"
+    if size <= 0:
+        return f"mesh file is empty: {mesh_file}"
+    try:
+        payload = read_mesh_manifest(mesh_directory)
+    except (OSError, ManifestError) as exc:
+        return f"mesh manifest not usable for skip: {exc}"
+    recorded = payload.get("mesh_sha256")
+    if not recorded:
+        return "missing mesh_sha256"
+    try:
+        digest = sha256_file(mesh_file)
+    except OSError as exc:
+        return f"mesh file not readable for skip: {exc}"
+    if digest != recorded:
+        return "mesh_sha256 does not match mesh file"
+    for field in MESH_SKIP_LAYOUT_FIELDS:
+        if field not in payload:
+            return f"manifest missing layout field {field}"
+        if not _mesh_skip_layout_field_equal(
+            field, payload[field], expected_layout[field]
+        ):
+            return (
+                f"manifest {field}={payload[field]!r} does not match "
+                f"current case {expected_layout[field]!r}"
+            )
+    return None
+
+
 def parse_batch_meshing_cli(argv=None):
     parser = argparse.ArgumentParser(
         description=(
@@ -114,6 +224,15 @@ def parse_batch_meshing_cli(argv=None):
         "--mesh-id",
         help="Run only selected case-set entries with this mesh_id.",
     )
+    parser.add_argument(
+        "--report-skip",
+        action="store_true",
+        help=(
+            "Print skip evidence for the 31 production mesh leaves plus any "
+            "other leaf under meshes/. Does not launch Fluent. Ignores "
+            "--case-set (always production + extras)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -127,17 +246,268 @@ def select_mesh_batch_cases(cases, *, geo_id=None, mesh_id=None):
     return selected
 
 
-def classify_mesh_pre_execution(*, skip_existing_mesh, mesh_exists, dry_run):
-    """Decide dry-run vs existing-mesh skip before Fluent is launched.
+def classify_mesh_pre_execution(
+    *,
+    skip_existing_mesh,
+    dry_run,
+    mesh_directory=None,
+    mesh_file=None,
+    expected_layout=None,
+    skip_block=None,
+):
+    """Decide dry-run vs complete-mesh skip before Fluent is launched.
 
-    Existing-mesh skip wins over dry-run so a dry-run summary can still
-    show that skip_existing_mesh fired.
+    Existing-mesh skip wins over dry-run only when the mesh file, validated
+    manifest, SHA, and current-case layout all match. File existence alone
+    is not enough.
     """
-    if skip_existing_mesh and mesh_exists:
-        return "skipped_existing", "existing mesh"
+    if skip_existing_mesh:
+        if skip_block is None:
+            skip_block = mesh_skip_block_reason(
+                mesh_directory,
+                mesh_file,
+                expected_layout,
+            )
+        if skip_block is None:
+            return "skipped_existing", "complete current-case mesh"
     if dry_run:
-        return "dry_run", None
-    return "run", None
+        return "dry_run", skip_block
+    return "run", skip_block
+
+
+def _mesh_file_for_leaf(mesh_directory, geo_id, mesh_id):
+    expected = Path(mesh_directory) / f"{geo_id}_{mesh_id}.msh.h5"
+    if expected.is_file():
+        return expected
+    matches = sorted(Path(mesh_directory).glob("*.msh.h5"))
+    if matches:
+        return matches[0]
+    return expected
+
+
+def _iter_on_disk_mesh_leaves(root):
+    """Yield three-level mesh directories that have a .msh.h5 or manifest.json."""
+    root = Path(root)
+    if not root.is_dir():
+        return
+    for family_dir in sorted(root.iterdir()):
+        if not family_dir.is_dir():
+            continue
+        for geo_dir in sorted(family_dir.iterdir()):
+            if not geo_dir.is_dir():
+                continue
+            for mesh_directory in sorted(geo_dir.iterdir()):
+                if not mesh_directory.is_dir():
+                    continue
+                has_msh = any(mesh_directory.glob("*.msh.h5"))
+                has_manifest = (mesh_directory / "manifest.json").is_file()
+                if has_msh or has_manifest:
+                    yield mesh_directory
+
+
+def _case_for_skip_report(family, geo_id, mesh_id, production_by_geo, common_mesh_settings):
+    """Return (case_dict, layout_error) for --report-skip layout comparison."""
+    case = production_by_geo.get(geo_id)
+    if case is None:
+        return None, f"no current-case layout (geo_id {geo_id!r} not in production set)"
+    synthetic = dict(case)
+    synthetic["family"] = family
+    synthetic["geo_id"] = geo_id
+    synthetic["mesh_id"] = mesh_id
+    try:
+        expected_mesh_layout_from_case(synthetic, common_mesh_settings)
+    except (TypeError, ValueError) as exc:
+        return None, f"no current-case layout: {exc}"
+    return synthetic, None
+
+
+def inspect_mesh_skip_leaf(
+    mesh_directory,
+    mesh_file,
+    expected_layout,
+    *,
+    in_production,
+    family,
+    geo_id,
+    mesh_id,
+):
+    """Skip evidence for one leaf. ``skip_decision`` is SKIP or RUN."""
+    mesh_directory = Path(mesh_directory)
+    mesh_file = Path(mesh_file)
+    msh_exists = mesh_file.is_file()
+    msh_size = mesh_file.stat().st_size if msh_exists else 0
+    manifest_path = mesh_directory / "manifest.json"
+    manifest_exists = manifest_path.is_file()
+    manifest_valid = False
+    sha_match = None
+    layout_match = None
+    if expected_layout is None:
+        skip_block = "no current-case layout for skip"
+    else:
+        skip_block = mesh_skip_block_reason(
+            mesh_directory, mesh_file, expected_layout
+        )
+    if manifest_exists:
+        try:
+            payload = read_mesh_manifest(mesh_directory)
+            manifest_valid = True
+        except (OSError, ManifestError):
+            payload = None
+        if payload is not None and msh_exists and msh_size > 0:
+            try:
+                digest = sha256_file(mesh_file)
+            except OSError:
+                sha_match = False
+            else:
+                sha_match = payload.get("mesh_sha256") == digest
+            if expected_layout is not None:
+                layout_match = all(
+                    field in payload
+                    and _mesh_skip_layout_field_equal(
+                        field, payload[field], expected_layout[field]
+                    )
+                    for field in MESH_SKIP_LAYOUT_FIELDS
+                )
+    return {
+        "in_production": bool(in_production),
+        "family": family,
+        "geo_id": geo_id,
+        "mesh_id": mesh_id,
+        "leaf": f"{family}/{geo_id}/{mesh_id}",
+        "mesh_directory": str(mesh_directory),
+        "msh_exists": msh_exists,
+        "msh_size": msh_size,
+        "manifest_exists": manifest_exists,
+        "manifest_valid": manifest_valid,
+        "sha_match": sha_match,
+        "layout_match": layout_match,
+        "skip_block": skip_block,
+        "skip_decision": "SKIP" if skip_block is None else "RUN",
+    }
+
+
+def _format_skip_report_flag(value, *, yes="match", no="mismatch"):
+    if value is True:
+        return yes
+    if value is False:
+        return no
+    return "n/a"
+
+
+def format_mesh_skip_report_row(row):
+    msh = (
+        f"msh=yes:{row['msh_size']}" if row["msh_exists"] else "msh=no"
+    )
+    if not row["manifest_exists"]:
+        manifest = "manifest=missing"
+    elif row["manifest_valid"]:
+        manifest = "manifest=ok"
+    else:
+        manifest = "manifest=invalid"
+    scope = "production" if row["in_production"] else "extra"
+    reason = "" if row["skip_block"] is None else row["skip_block"]
+    return (
+        f"{scope:11} {row['skip_decision']:4}  {msh}  {manifest}  "
+        f"sha={_format_skip_report_flag(row['sha_match'])}  "
+        f"layout={_format_skip_report_flag(row['layout_match'])}  "
+        f"{row['leaf']}"
+        + (f"  reason={reason}" if reason else "")
+    )
+
+
+def report_mesh_skip_status(
+    production_cases,
+    common_mesh_settings,
+    *,
+    root=None,
+    file=None,
+):
+    """Inspect production leaves plus any extra on-disk mesh leaf.
+
+    Does not launch Fluent. Returns the row dicts; also prints them.
+    """
+    if file is None:
+        file = sys.stdout
+    root = Path(root) if root is not None else meshes_root()
+    production_cases = list(production_cases)
+    production_by_geo = {}
+    for case in production_cases:
+        production_by_geo[case["geo_id"]] = case
+
+    rows = []
+    seen = set()
+    for case in production_cases:
+        family = case["family"]
+        geo_id = case["geo_id"]
+        mesh_id = case["mesh_id"]
+        seen.add((family, geo_id, mesh_id))
+        mesh_directory = mesh_dir(family, geo_id, mesh_id)
+        mesh_file = mesh_directory / f"{geo_id}_{mesh_id}.msh.h5"
+        expected_layout = expected_mesh_layout_from_case(
+            case, common_mesh_settings
+        )
+        rows.append(
+            inspect_mesh_skip_leaf(
+                mesh_directory,
+                mesh_file,
+                expected_layout,
+                in_production=True,
+                family=family,
+                geo_id=geo_id,
+                mesh_id=mesh_id,
+            )
+        )
+
+    extra_count = 0
+    for mesh_directory in _iter_on_disk_mesh_leaves(root):
+        family = mesh_directory.parent.parent.name
+        geo_id = mesh_directory.parent.name
+        mesh_id = mesh_directory.name
+        key = (family, geo_id, mesh_id)
+        if key in seen:
+            continue
+        extra_count += 1
+        seen.add(key)
+        case, layout_error = _case_for_skip_report(
+            family, geo_id, mesh_id, production_by_geo, common_mesh_settings
+        )
+        expected_layout = None
+        if case is not None:
+            expected_layout = expected_mesh_layout_from_case(
+                case, common_mesh_settings
+            )
+        mesh_file = _mesh_file_for_leaf(mesh_directory, geo_id, mesh_id)
+        row = inspect_mesh_skip_leaf(
+            mesh_directory,
+            mesh_file,
+            expected_layout,
+            in_production=False,
+            family=family,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+        )
+        if layout_error is not None and row["skip_block"] == "no current-case layout for skip":
+            row["skip_block"] = layout_error
+        rows.append(row)
+
+    print("MESH SKIP REPORT (no Fluent)", file=file)
+    print(f"meshes_root={root}", file=file)
+    for row in rows:
+        print(format_mesh_skip_report_row(row), file=file)
+
+    prod_rows = [row for row in rows if row["in_production"]]
+    extra_rows = [row for row in rows if not row["in_production"]]
+    prod_skip = sum(1 for row in prod_rows if row["skip_decision"] == "SKIP")
+    extra_skip = sum(1 for row in extra_rows if row["skip_decision"] == "SKIP")
+    print(
+        f"Summary: production {prod_skip} SKIP / "
+        f"{len(prod_rows) - prod_skip} RUN "
+        f"(listed {len(prod_rows)}); extra {extra_skip} SKIP / "
+        f"{len(extra_rows) - extra_skip} RUN "
+        f"(listed {len(extra_rows)}, walked {extra_count}).",
+        file=file,
+    )
+    return rows
 
 
 def is_cad_attach_assembly_failure(text):
@@ -504,6 +874,17 @@ def _write_case_ledger(
 def main(argv=None):
     cli_args = parse_batch_meshing_cli(argv)
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
+    common_mesh_settings = getattr(batchcfg, "common_mesh_settings", {})
+
+    if cli_args.report_skip:
+        production_cases = cases_for_case_set(
+            batchcfg,
+            CASE_SET_PRODUCTION,
+            exploratory_attr="mesh_batch_cases",
+            production_attr="production_mesh_batch_cases",
+        )
+        report_mesh_skip_status(production_cases, common_mesh_settings)
+        return 0
 
     dry_run = getattr(batchcfg, "dry_run", False)
     continue_on_failure = _continue_on_failure(batchcfg)
@@ -524,7 +905,6 @@ def main(argv=None):
     clean_fm_scratch_on_success = bool(
         getattr(batchcfg, "clean_fm_scratch_on_success", True)
     )
-    common_mesh_settings = getattr(batchcfg, "common_mesh_settings", {})
     mesh_batch_cases = select_mesh_batch_cases(
         cases_for_case_set(
             batchcfg,
@@ -590,10 +970,17 @@ def main(argv=None):
         mesh_run_record_path = mesh_directory / "mesh_run_record.json"
         print(f"Expected mesh output: {expected_mesh}")
 
+        expected_layout = None
+        if skip_existing_mesh:
+            expected_layout = expected_mesh_layout_from_case(
+                case_dict, common_mesh_settings
+            )
         outcome, skip_reason = classify_mesh_pre_execution(
             skip_existing_mesh=skip_existing_mesh,
-            mesh_exists=os.path.isfile(expected_mesh),
             dry_run=dry_run,
+            mesh_directory=mesh_directory,
+            mesh_file=expected_mesh,
+            expected_layout=expected_layout,
         )
         if outcome == "skipped_existing":
             print(f"SKIP: {skip_reason}: {expected_mesh}")
@@ -610,6 +997,9 @@ def main(argv=None):
                 mesh_file_path=expected_mesh,
             )
             continue
+
+        if skip_existing_mesh and skip_reason:
+            print(f"Not skipping existing mesh: {skip_reason}")
 
         print(f"Overrides: {json.dumps(overrides, indent=2)}")
 
