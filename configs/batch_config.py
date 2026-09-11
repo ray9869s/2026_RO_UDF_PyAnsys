@@ -111,8 +111,9 @@ skip_existing_final_data = True
 # post_failure_settle_s: floor applied after any non-SUCCESS case before the
 #   next case (even when inter_case_delay_s is 0). Leftover Fluent/Discovery/
 #   CADReaders processes are scanned after this settle.
-# transient_failure_max_retries: retries after CAD AttachAssembly or socket-
-#   reset (2 => up to 3 total worker invocations for that case).
+# transient_failure_max_retries: retries after CAD AttachAssembly, socket-
+#   reset, Scheme heap, or Fluent launch/spawn death (2 => up to 3 total
+#   worker invocations for that case). Solver sweep uses the same knobs.
 # clean_fm_scratch_on_success: remove FM_<HOST>_<PID>/ dirs after SUCCESS*.
 inter_case_delay_s = 0.0
 post_failure_settle_s = 15.0

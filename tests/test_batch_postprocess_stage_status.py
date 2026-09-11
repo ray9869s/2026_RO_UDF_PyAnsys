@@ -366,6 +366,13 @@ MISSING_CAS_ERROR = (
     "Final case file not found: C:/ro_data/runs/diamond/D0817_a45/"
     "mesh/u0p3_p6M/D0817_a45_u0p3_p6M_final.cas.h5"
 )
+LAUNCH_SPAWN_ERROR = (
+    "ansys.fluent.core.launcher.error_handler.LaunchFluentError:\n"
+    "Fluent Launch command: fluent 3ddp -sifile=C:/tmp/serverinfo-hwtree.txt\n"
+    "Deadline Exceeded\n"
+    "Failed to construct hwtree for collect command. 0x8000ffff\n"
+    "Aborting:"
+)
 
 
 class TestReportTransientRetry:
@@ -395,6 +402,22 @@ class TestReportTransientRetry:
 
     def test_missing_cas_is_not_retryable(self, batch_post):
         assert batch_post.classify_retryable_report_failure(MISSING_CAS_ERROR) is None
+
+    def test_launch_spawn_is_retryable(self, batch_post):
+        assert (
+            batch_post.classify_retryable_report_failure(LAUNCH_SPAWN_ERROR)
+            == batch_post.RETRY_KIND_LAUNCH_SPAWN
+        )
+
+    def test_launch_spawn_wrapped_in_non_retryable_is_retryable(self, batch_post):
+        wrapped = (
+            "RuntimeError: Inlet BC readback failed on inlet: stale magnitude\n"
+            + LAUNCH_SPAWN_ERROR
+        )
+        assert (
+            batch_post.classify_retryable_report_failure(wrapped)
+            == batch_post.RETRY_KIND_LAUNCH_SPAWN
+        )
 
     def test_retries_socket_reset_then_succeeds(self, batch_post, tmp_path):
         calls = []

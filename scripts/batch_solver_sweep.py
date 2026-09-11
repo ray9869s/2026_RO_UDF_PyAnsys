@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ro.campaign_matrix import (
@@ -20,6 +21,10 @@ from ro.campaign_matrix import (
 )
 from ro.manifest import ManifestError, read_run_manifest
 from ro.paths import mesh_dir, project_root, run_dir
+from ro.session_retry import (
+    classify_retryable_session_crash,
+    describe_attempt_orphans,
+)
 from ro.solver_common import (
     FINAL_CASE_SHA256_FIELD,
     FINAL_DATA_SHA256_FIELD,
@@ -40,6 +45,8 @@ from ro.solver_common import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH_CONFIG_PATH = project_root() / "configs" / "batch_config.py"
 SOLVER_SCRIPT_PATH = SCRIPT_DIR / "solver_code_260616.py"
+SOLVER_TRANSIENT_FAILURE_MAX_RETRIES = 2
+SOLVER_POST_FAILURE_SETTLE_S = 15.0
 
 
 def _load_module(name, path):
@@ -102,6 +109,173 @@ def solver_skip_block_reason(
     if payload.get("mesh_sha256") != mesh_sha:
         return "run mesh_sha256 does not match current mesh file"
     return None
+
+
+def solver_attempt_log_path(run_directory, geo_id, mesh_id, run_id, attempt):
+    """Driver log for one solver worker attempt; mesh_id and attempt are required."""
+    return Path(run_directory) / (
+        f"{geo_id}__{mesh_id}__{run_id}__solver_attempt{int(attempt)}.log"
+    )
+
+
+def solver_worker_log_paths(run_directory, case_name):
+    run_directory = Path(run_directory)
+    return (
+        run_directory / f"solver_log_{case_name}.txt",
+        run_directory / f"solver_mesh_replace_log_{case_name}.txt",
+    )
+
+
+def collect_solver_attempt_evidence(log_path, extra_paths=()):
+    """Read this attempt's driver log and current worker transcripts only.
+
+    Older attempt logs are not included: a leftover socket string must not
+    make a later UDF/G/inlet/manifest failure look retryable.
+    """
+    chunks = []
+    for path in (Path(log_path),) + tuple(Path(p) for p in extra_paths):
+        if not path.is_file():
+            continue
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            pass
+    return "\n".join(chunks)
+
+
+def preserve_solver_worker_logs(run_directory, case_name, attempt):
+    """Rename canonical worker logs so the next attempt cannot overwrite them."""
+    preserved = []
+    for src in solver_worker_log_paths(run_directory, case_name):
+        if not src.is_file():
+            continue
+        dest = src.with_name(f"{src.stem}__attempt{int(attempt)}{src.suffix}")
+        src.replace(dest)
+        preserved.append(dest)
+    return preserved
+
+
+def write_solver_retry_record(
+    run_directory,
+    *,
+    attempts,
+    retry_kinds,
+    attempt_logs,
+):
+    directory = Path(run_directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "solver_retry_record.json"
+    payload = {
+        "transient_failure_attempts": int(attempts),
+        "retry_kinds": list(retry_kinds or []),
+        "attempt_logs": [str(p) for p in attempt_logs],
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def run_solver_worker_tee(cmd, env, cwd, log_path):
+    """Run the solver worker, teeing stdout/stderr to an attempt-specific log."""
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log_file.write(line)
+        returncode = proc.wait()
+    return subprocess.CompletedProcess(cmd, returncode)
+
+
+def run_solver_attempts(
+    *,
+    cmd,
+    env,
+    cwd,
+    run_directory,
+    geo_id,
+    mesh_id,
+    run_id,
+    case_name,
+    max_retries,
+    settle_s=0.0,
+    runner=None,
+    sleeper=None,
+    process_lister=None,
+):
+    """Run the solver worker, retrying Fluent session deaths.
+
+    max_retries is retries after the first attempt (default 2 → 3 total).
+    Each attempt is a new subprocess. Skip is not re-evaluated here: leftover
+    finals from a failed attempt are not skip-complete under R-02, and this
+    loop must not consult skip.
+
+    Returns (result, attempts, retry_kinds, attempt_logs).
+    """
+    if runner is None:
+        runner = run_solver_worker_tee
+    if sleeper is None:
+        sleeper = time.sleep
+    max_retries = max(0, int(max_retries))
+    max_attempts = max_retries + 1
+    retry_kinds = []
+    attempt_logs = []
+    result = None
+    run_directory = Path(run_directory)
+    for attempt in range(1, max_attempts + 1):
+        log_path = solver_attempt_log_path(
+            run_directory, geo_id, mesh_id, run_id, attempt
+        )
+        attempt_logs.append(log_path)
+        print(
+            f"Solver worker attempt {attempt}/{max_attempts}: "
+            f"{' '.join(cmd)}"
+        )
+        print(f"Attempt log: {log_path}")
+        result = runner(cmd, env=env, cwd=cwd, log_path=log_path)
+        if solver_worker_succeeded(result.returncode):
+            return result, attempt, retry_kinds, attempt_logs
+
+        evidence = collect_solver_attempt_evidence(
+            log_path,
+            solver_worker_log_paths(run_directory, case_name),
+        )
+        for line in describe_attempt_orphans(
+            evidence, process_lister=process_lister
+        ):
+            print(line)
+        preserve_solver_worker_logs(run_directory, case_name, attempt)
+
+        retry_kind = classify_retryable_session_crash(evidence)
+        can_retry = attempt < max_attempts and retry_kind is not None
+        if can_retry:
+            retry_kinds.append(retry_kind)
+            remaining = max_attempts - attempt
+            print(
+                f"Solver: transient {retry_kind} on attempt {attempt}; "
+                f"retrying after {float(settle_s):g}s ({remaining} retry left)."
+            )
+            if settle_s > 0.0:
+                sleeper(float(settle_s))
+            continue
+        if attempt < max_attempts:
+            print(
+                f"Solver: non-retryable failure on attempt {attempt} "
+                f"(return code {result.returncode}); not retrying."
+            )
+        return result, attempt, retry_kinds, attempt_logs
+    return result, max_attempts, retry_kinds, attempt_logs
 
 
 def classify_solver_pre_execution(
@@ -226,6 +400,16 @@ def main(argv=None):
     continue_on_failure = getattr(batchcfg, "continue_on_failure", False)
     skip_existing_final_data = getattr(batchcfg, "skip_existing_final_data", True)
     common_solver_settings = getattr(batchcfg, "common_solver_settings", {})
+    transient_failure_max_retries = getattr(
+        batchcfg,
+        "transient_failure_max_retries",
+        SOLVER_TRANSIENT_FAILURE_MAX_RETRIES,
+    )
+    post_failure_settle_s = getattr(
+        batchcfg,
+        "post_failure_settle_s",
+        SOLVER_POST_FAILURE_SETTLE_S,
+    )
     solver_sweep_cases = cases_for_case_set(
         batchcfg,
         cli_args.case_set,
@@ -246,6 +430,10 @@ def main(argv=None):
     print(f"\n{'='*72}")
     print(f"BATCH SOLVER SWEEP: {total} case(s)  case_set={cli_args.case_set}")
     print(f"dry_run={dry_run}  continue_on_failure={continue_on_failure}  skip_existing_final_data={skip_existing_final_data}")
+    print(
+        f"transient_failure_max_retries={transient_failure_max_retries}  "
+        f"post_failure_settle_s={post_failure_settle_s}"
+    )
     print(f"{'='*72}\n")
 
     for i, case_dict in enumerate(solver_sweep_cases):
@@ -353,15 +541,40 @@ def main(argv=None):
         env.pop("PYFLUENT_RUN_CONFIG", None)
         env.pop("PYFLUENT_SKIP_VALIDATION", None)
 
-        result = subprocess.run(cmd, env=env, cwd=str(SCRIPT_DIR), check=False)
+        result, attempts, retry_kinds, attempt_logs = run_solver_attempts(
+            cmd=cmd,
+            env=env,
+            cwd=str(SCRIPT_DIR),
+            run_directory=target_case_folder,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            run_id=run_id,
+            case_name=case_name,
+            max_retries=transient_failure_max_retries,
+            settle_s=post_failure_settle_s,
+        )
+        try:
+            write_solver_retry_record(
+                target_case_folder,
+                attempts=attempts,
+                retry_kinds=retry_kinds,
+                attempt_logs=attempt_logs,
+            )
+        except OSError as exc:
+            print(f"Warning: could not write solver_retry_record.json: {exc}")
 
         if solver_worker_succeeded(result.returncode):
-            print(f"\nSUCCESS: {label} (return code {result.returncode})")
+            status = "SUCCESS_AFTER_RETRY" if attempts > 1 else "SUCCESS"
+            print(
+                f"\nSUCCESS: {label} (return code {result.returncode}, "
+                f"attempts={attempts}, status={status})"
+            )
             successes.append(label)
         else:
             failure_detail = describe_solver_worker_failure(result.returncode)
             print(
-                f"\nFAILED: {label} (return code {result.returncode}: {failure_detail})"
+                f"\nFAILED: {label} (return code {result.returncode}: {failure_detail}, "
+                f"attempts={attempts})"
             )
             failures.append(label)
             if not continue_on_failure:

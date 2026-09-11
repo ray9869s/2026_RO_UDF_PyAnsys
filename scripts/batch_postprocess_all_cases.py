@@ -31,6 +31,12 @@ from ro.domain_layout import (  # noqa: E402
     layout_post_config_values,
 )
 from ro.manifest import ManifestError  # noqa: E402
+from ro.session_retry import (  # noqa: E402
+    RETRY_KIND_LAUNCH_SPAWN,
+    RETRY_KIND_SCHEME_HEAP,
+    RETRY_KIND_SOCKET_RESET,
+    classify_retryable_session_crash,
+)
 from ro.paths import (  # noqa: E402
     any_id_filter,
     complete_run_identity,
@@ -69,21 +75,6 @@ SHEAR_EXPORT_MODE_FALLBACK = "fallback"
 # Same defaults as batch_meshing: 2 retries after the first attempt, 15 s settle.
 REPORT_TRANSIENT_FAILURE_MAX_RETRIES = 2
 REPORT_POST_FAILURE_SETTLE_S = 15.0
-RETRY_KIND_SOCKET_RESET = "session_socket_reset"
-RETRY_KIND_SCHEME_HEAP = "scheme_heap_corruption"
-
-SESSION_SOCKET_RESET_PATTERNS = (
-    re.compile(r"IOCP/Socket", re.IGNORECASE),
-    re.compile(r"Connection reset", re.IGNORECASE),
-    re.compile(r"\b10054\b"),
-    re.compile(r"forcibly closed", re.IGNORECASE),
-)
-SCHEME_HEAP_CORRUPTION_PATTERNS = (
-    re.compile(r"wta\(1st\) to string->symbol", re.IGNORECASE),
-    re.compile(r"#\[free", re.IGNORECASE),
-    re.compile(r"Attempt to mark a free block", re.IGNORECASE),
-    re.compile(r"Error encountered in critical code section", re.IGNORECASE),
-)
 
 DEFAULT_CASE_STATUS = "READY_FOR_POSTPROCESSING"
 POSTPROCESSED_BASIC = "POSTPROCESSED_BASIC"
@@ -952,16 +943,10 @@ def classify_retryable_report_failure(text: str) -> Optional[str]:
 
     Session signatures win even when wrapped in a Canonical CP or
     load-bearing guard message. Those wrappers are how extract re-raises a
-    Scheme crash. A Canonical CP / load-bearing / missing-cas failure with
-    no session signature is not retried.
+    Scheme crash. A Canonical CP / load-bearing / missing-cas / inlet
+    readback failure with no session signature is not retried.
     """
-    if not text:
-        return None
-    if any(pattern.search(text) for pattern in SESSION_SOCKET_RESET_PATTERNS):
-        return RETRY_KIND_SOCKET_RESET
-    if any(pattern.search(text) for pattern in SCHEME_HEAP_CORRUPTION_PATTERNS):
-        return RETRY_KIND_SCHEME_HEAP
-    return None
+    return classify_retryable_session_crash(text)
 
 
 def run_report_stage_with_retries(

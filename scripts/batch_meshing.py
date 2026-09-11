@@ -33,6 +33,10 @@ from ro.mesh_common import (
     write_mesh_run_record,
 )
 from ro.paths import data_root, mesh_dir, project_root
+from ro.session_retry import (
+    RETRY_KIND_SOCKET_RESET,
+    is_session_socket_reset_failure,
+)
 from ro.solver_common import merge_batch_case_overrides
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -48,16 +52,7 @@ CAD_ATTACH_ASSEMBLY_PATTERNS = (
     re.compile(r"pIPartMgr", re.IGNORECASE),
 )
 
-# Session/socket-reset contention (gRPC dropped mid-mesh after prior failure).
-SESSION_SOCKET_RESET_PATTERNS = (
-    re.compile(r"IOCP/Socket", re.IGNORECASE),
-    re.compile(r"Connection reset", re.IGNORECASE),
-    re.compile(r"\b10054\b"),
-    re.compile(r"forcibly closed", re.IGNORECASE),
-)
-
 RETRY_KIND_CAD_ATTACH = "cad_attach_assembly"
-RETRY_KIND_SOCKET_RESET = "session_socket_reset"
 
 # Process-image markers checked after a failed case settles.
 LEFTOVER_PROCESS_MARKERS = (
@@ -150,13 +145,6 @@ def is_cad_attach_assembly_failure(text):
     if not text:
         return False
     return any(pattern.search(text) for pattern in CAD_ATTACH_ASSEMBLY_PATTERNS)
-
-
-def is_session_socket_reset_failure(text):
-    """True when failure text matches gRPC/IOCP connection-reset signatures."""
-    if not text:
-        return False
-    return any(pattern.search(text) for pattern in SESSION_SOCKET_RESET_PATTERNS)
 
 
 def classify_retryable_session_failure(text):

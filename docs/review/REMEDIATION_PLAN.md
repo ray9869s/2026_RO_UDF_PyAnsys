@@ -65,7 +65,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-09 | 31 leaf backfill + `validate_layout_against_x_extent` live gate | **before sweep** — validator는 구현·테스트만 있고 live caller가 없다. 31 log에 `/mesh/check`가 남아 있다 | Claude C1-15 C3-01 C5-03; Sol T3-10; Cursor T3-01 T5-01; Astra A-04 | `scripts/backfill_mesh_manifest_fields.py` (extent는 registry가 아니라 log에서); `scripts/meshing_code_260616.py` write 직전; `scripts/solver_code_260616.py` preflight; `src/ro/domain_layout.py` (`require_*`가 `.ok`를 보고 raise); tests | R-08 | **Part 1 (WSL 2026-09-11):** `1084 passed, 1 skipped, 0 failed`. **Part 2 (workstation 2026-09-11):** dry-run then `--apply` 31 log addition, 0 registry, 0 NO-MEASUREMENT, 0 fail. **Part 3 (WSL 2026-09-11):** x-only live gate, `rel_tol=1e-5`. `1096 passed, 1 skipped, 0 failed`. **gate check after apply+pull:** 31 pass / 0 fail / 0 skip (`rel < 1e-5` vs `layout.total_length_m`). | COMPLETE |
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | WSL 2026-09-11 `1108 passed, 1 skipped, 0 failed`. stop-reason None → `stop_reason_determination_failed` + isolated write only + raise. RUNNING+finals → run. residual_converged+previous files+no cas/dat SHA → run. matching SHA+attempt id+allowed reason+mesh hash → skipped_existing. | COMPLETE |
 | R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. | COMPLETE |
-| R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `scripts/batch_solver_sweep.py`; `tests/` (meshing retry 테스트를 모델로) | R-02 | pytest: socket/Scheme signature면 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G 실패는 재시도 없음. attempt 1 leftover finals가 attempt 2를 skip하지 않음. | NOT STARTED |
+| R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `src/ro/session_retry.py` (신규); `scripts/batch_solver_sweep.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/batch_meshing.py` (socket 패턴 import); tests | R-02 | WSL 2026-09-11 `1131 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). socket / Scheme heap / launch-spawn (`LaunchFluentError`, `Deadline Exceeded`, `hwtree`, `Aborting:`) → 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G/inlet readback/manifest → attempts==1. session 서명이 blob 어디에 있어도 wrapper보다 이김. attempt 로그는 `{geo}__{mesh}__{run}__solver_attemptN.log`. leftover RUNNING+files는 skip 아님 (R-02). | COMPLETE |
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; 해당 tests | R-01 | pytest: msh만 있음 → skip 아님. msh+valid manifest+`mesh_sha256` 일치+layout 필드 일치 → skip. `--from-log`는 manifest 없이 log+`.msh.h5`+registry로 payload 생성. | NOT STARTED |
 | R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`) | R-03 | pytest: wide CSV가 있어도 `final_data`보다 오래되면 skip 아님. FAILED/write 실패 → 드라이버 exit ≠ 0. listing `OSError` → 빈 트리로 성공하지 않음. skipped unreadable manifest → inventory exit ≠ 0. | NOT STARTED |
 | R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `scripts/solver_code_260616.py` (`apply_parsed_inlet_profile_g` / finalize); `src/ro/solver_common.py` (settings parse); tests | R-01; `run_id` 검사는 R-07 generator와 같은 parser | pytest: blocked ≠ 0.0 reject; mesh≠run blocked reject; `u_mean_ms * G != u_target_ms` reject (정의는 유지); `run_id` token ≠ `(u,p)` reject; malformed `max_iterations`는 default 대체 없이 raise; SHA mismatch reject. | NOT STARTED |
@@ -223,29 +223,59 @@ Fluent 없이 pytest:
 
 `batch_solver_sweep.py`의 `subprocess.run` 한 번을 extract와 같은 루프로 교체.
 
-- 분류기는 `batch_postprocess_all_cases.classify_retryable_report_failure`와
-  `batch_meshing.classify_retryable_session_failure`를 **복사하지 말고** 한 helper로
-  모으거나, solver 드라이버가 그 함수를 import한다. signature는 session
-  socket-reset / Scheme heap 뿐.
-- Canonical CP, load-bearing, residual, QoI, UDF `INLET_G` out of range, 일반
-  `RuntimeError`는 재시도하지 않는다. extract docstring과 동일.
-- `max_retries=2` → 최대 3 attempt, 매번 **새 프로세스**. 부분 `.dat.h5`에서 resume하지 않는다.
-- attempt 실패 후 leftover finals는 R-02 skip이 삼키지 못하게 rename/delete.
-  이 때문에 R-02가 선행이다.
-- 재시도 횟수/kind를 stdout과 가능하면 run leaf의 작은 JSON에 남긴다. 새 schema
-  required field는 만들지 않는다.
+분류기는 `src/ro/session_retry.py` `classify_retryable_session_crash` 하나.
+extract `classify_retryable_report_failure`는 위임. meshing CAD는 그대로 두고
+socket 패턴만 공유한다.
+
+Retryable (세션 사망, blob **어디든** 있으면 wrapper보다 이김):
+
+- socket: `IOCP/Socket`, `Connection reset`, `10054`, `forcibly closed`
+- Scheme heap: `wta(1st) to string->symbol`, `#[free`, `Attempt to mark a free block`, `Error encountered in critical code section`
+- launch/spawn: `LaunchFluentError`, `Deadline Exceeded`, `Failed to construct hwtree`, `Aborting:`
+
+extract 분류기는 세 번째를 커버하지 않았다. R-03에서 같이 넣었다. 바깥
+메시지(inlet readback / Canonical CP 등)만 보고 분류하지 않는다.
+
+Non-retryable: residual / QoI 수렴 실패, UDF compile, G marker 부재, R-06
+inlet readback, manifest validation. 재시도하면 같은 실패가 난다.
+
+`max_retries=2` → 최대 3 attempt, 매번 **새 프로세스**. 부분 `.dat.h5`에서
+resume하지 않는다. skip은 루프 **앞**에서 한 번만. leftover finals 정리는
+R-02 skip이 이미 거부한다 (RUNNING+files / hashes 없음 → `run`). retry가
+finals를 rename/delete하지 않는다.
+
+로그: `{geo_id}__{mesh_id}__{run_id}__solver_attemptN.log`. worker
+`solver_log_*.txt`는 실패 후 `__attemptN`으로 옮겨서 다음 attempt가 덮지
+않는다. mesh_id 없는 `{geo}__{run}__report.log` 버그는 재현하지 않는다.
+
+재시도 횟수/kind는 stdout과 run leaf `solver_retry_record.json` (required
+schema 아님).
+
+### 고아 Fluent 프로세스
+
+launch가 session handle 전에 죽으면 `solver.exit()`가 없고 fluent.exe가
+남을 수 있다. 이 attempt 출력의 고유 `-sifile serverinfo-*.txt`로 command
+line을 대조하면 **그 attempt의 프로세스만** 식별할 수 있다. 손으로 연
+Fluent는 다른 sifile이라 매칭되지 않는다. **자동 kill은 하지 않는다** —
+오탐 한 번이 workstation의 다른 세션을 죽인다. 매칭 PID는 `ORPHAN-PID`로
+찍고 수동 종료. sifile이 없거나 process list를 못 읽으면 “프로세스 없음”으로
+치지 않고 수동 정리하라고 찍는다.
 
 ### 포함하지 않음
 
 - crash 이후 수렴 이력을 이어 풀기. 항상 fresh session.
 - 라이선스 실패를 transient로 분류하기 (UNKNOWN, 넣지 않음).
-- meshing/extract retry 재설계.
+- meshing/extract retry 재설계 (extract 분류기에 launch-spawn만 추가).
+- 모든 `fluent.exe` taskkill.
 
 ### 검증
 
-`tests/test_batch_meshing_cad_retry.py` / `tests/test_batch_postprocess_stage_status.py`
-패턴: fake runner가 1회 socket text, 2회 success → attempts==2, 최종 success.
-diverge/QoI 텍스트 → attempts==1.
+WSL 2026-09-11 `1131 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+socket 1회 후 success → attempts==2. launch-spawn 동일. residual/QoI/UDF/G/inlet
+readback → attempts==1. leftover RUNNING+files는 skip `run`. attempt 1 로그가
+attempt 2에 덮이지 않음. 옛 attempt 로그의 socket 문자열이 현재 UDF 실패를
+retryable로 바꾸지 않음.
 
 ---
 
