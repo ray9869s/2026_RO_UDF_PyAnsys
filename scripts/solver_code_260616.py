@@ -1035,6 +1035,117 @@ def apply_parsed_inlet_profile_g(mesh_directory, g):
     return stored
 
 
+def _inlet_setting_state(obj):
+    """Read a Fluent settings child: get_state, call, or .value."""
+    errors = []
+    readers = []
+    get_state = getattr(obj, "get_state", None)
+    if callable(get_state):
+        readers.append(get_state)
+    if callable(obj):
+        readers.append(obj)
+    raw_value = getattr(obj, "value", None)
+    if raw_value is not None and not callable(raw_value):
+        readers.append(lambda: raw_value)
+    elif callable(raw_value):
+        readers.append(raw_value)
+    for reader in readers:
+        try:
+            return reader()
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+    if errors:
+        raise RuntimeError(
+            "inlet setting unreadable (" + "; ".join(errors) + ")"
+        )
+    raise RuntimeError(f"inlet setting unreadable: {obj!r}")
+
+
+def read_inlet_plug_magnitude(vin):
+    mag = vin.momentum.velocity_magnitude
+    raw = getattr(mag, "value", None)
+    if raw is not None and not callable(raw):
+        return float(raw)
+    return float(_inlet_setting_state(mag))
+
+
+def inlet_plug_readback_error(observed, requested):
+    if observed is None:
+        return "velocity_magnitude unreadable"
+    if not math.isclose(
+        float(observed), float(requested), rel_tol=1e-9, abs_tol=1e-12
+    ):
+        return (
+            f"velocity_magnitude {observed!r} != requested {requested!r}"
+        )
+    return None
+
+
+def read_inlet_profile_state(vin):
+    mom = vin.momentum
+    spec = None
+    try:
+        spec = mom.velocity_specification_method()
+    except Exception:
+        try:
+            spec = mom.velocity_specification_method.get_state()
+        except Exception as exc:
+            spec = f"<unreadable: {type(exc).__name__}: {exc}>"
+    try:
+        active = bool(mom.velocity_components.is_active())
+    except Exception:
+        active = False
+    state = {
+        "specification": spec,
+        "components_active": active,
+        "x_option": None,
+        "x_udf": None,
+        "y_value": None,
+        "z_value": None,
+    }
+    if not active:
+        return state
+    comps = mom.velocity_components
+    try:
+        state["x_option"] = _inlet_setting_state(comps[0].option)
+        state["x_udf"] = _inlet_setting_state(comps[0].udf)
+        state["y_value"] = _inlet_component_numeric(comps[1])
+        state["z_value"] = _inlet_component_numeric(comps[2])
+    except Exception:
+        pass
+    return state
+
+
+def _inlet_component_numeric(comp):
+    raw = getattr(comp, "value", None)
+    if raw is not None and not callable(raw):
+        return float(raw)
+    if callable(raw):
+        return float(raw())
+    return float(_inlet_setting_state(comp))
+
+
+def inlet_profile_readback_error(observed, profile_udf_name):
+    spec = observed.get("specification")
+    if not (isinstance(spec, str) and "component" in spec.lower()):
+        return f"specification {spec!r} is not Components"
+    if not observed.get("components_active"):
+        return "velocity_components inactive"
+    x_option = observed.get("x_option")
+    if str(x_option).lower() != "udf":
+        return f"x-velocity option {x_option!r} is not udf"
+    x_udf = observed.get("x_udf")
+    if x_udf != profile_udf_name:
+        return f"x-velocity UDF {x_udf!r} != requested {profile_udf_name!r}"
+    for axis, key in (("y", "y_value"), ("z", "z_value")):
+        value = observed.get(key)
+        if value is None or not math.isclose(
+            float(value), 0.0, rel_tol=0.0, abs_tol=1e-12
+        ):
+            return f"{axis}-velocity {value!r} != 0"
+    return None
+
+
 def apply_inlet_velocity_boundary(
     vin,
     inlet_zone_name,
@@ -1056,6 +1167,13 @@ def apply_inlet_velocity_boundary(
     """
     if not use_profile:
         vin.momentum.velocity_magnitude.value = inlet_velocity
+        err = inlet_plug_readback_error(
+            read_inlet_plug_magnitude(vin), inlet_velocity
+        )
+        if err is not None:
+            raise RuntimeError(
+                f"Inlet BC readback failed on {inlet_zone_name}: {err}"
+            )
         print(
             f"Inlet BC set on {inlet_zone_name}: "
             f"velocity_magnitude={inlet_velocity} m/s"
@@ -1248,12 +1366,19 @@ def apply_inlet_velocity_boundary(
             )
             # Fall through to TUI if settings child assignment failed.
         else:
-            print(
-                f"Inlet BC set on {inlet_zone_name}: Components; "
-                f"x-velocity UDF={profile_udf_name}; y=z=0 "
-                f"(U_TARGET patched from inlet_velocity_value={inlet_velocity})"
+            err = inlet_profile_readback_error(
+                read_inlet_profile_state(vin), profile_udf_name
             )
-            return
+            if err is None:
+                print(
+                    f"Inlet BC set on {inlet_zone_name}: Components; "
+                    f"x-velocity UDF={profile_udf_name}; y=z=0 "
+                    f"(U_TARGET patched from inlet_velocity_value={inlet_velocity})"
+                )
+                return
+            print(
+                f"{tag} settings assignment returned but readback failed: {err}"
+            )
 
     # Settings API path unavailable — TUI fallback.
     # Dead on this host: settings API path confirmed working on Fluent 25.1.0
@@ -1274,11 +1399,11 @@ def apply_inlet_velocity_boundary(
     )
     print(f"{tag} TUI fallback command (untested on this host): {tui_cmd}")
     if solver is None:
-        print(
-            f"{tag} TUI fallback SKIPPED: solver session was not passed to "
-            "apply_inlet_velocity_boundary."
+        raise RuntimeError(
+            f"Inlet profile BC could not be applied on {inlet_zone_name}: "
+            "settings path unmatched and solver session was not passed "
+            "for TUI fallback."
         )
-        return
     try:
         solver.execute_tui(tui_cmd)
         print(f"{tag} TUI fallback execute_tui completed.")
@@ -1286,6 +1411,17 @@ def apply_inlet_velocity_boundary(
         print(
             f"{tag} TUI fallback execute_tui: "
             f"EXCEPTION {type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError(
+            f"Inlet profile BC TUI fallback failed on {inlet_zone_name}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    err = inlet_profile_readback_error(
+        read_inlet_profile_state(vin), profile_udf_name
+    )
+    if err is not None:
+        raise RuntimeError(
+            f"Inlet BC readback failed on {inlet_zone_name} after TUI: {err}"
         )
     print(
         f"Inlet BC set on {inlet_zone_name}: TUI Components+UDF fallback; "

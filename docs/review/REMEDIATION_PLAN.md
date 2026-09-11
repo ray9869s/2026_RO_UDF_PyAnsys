@@ -64,7 +64,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-08 | mesh manifest에 측정 `domain_extent_*_m` writer (optional field) | **before sweep** — gate를 나중에 달면 재meshing 없이 검증할 값이 없다. required로 올리면 31 leaf가 깨진다 | Claude C1-14 C3-01; Sol T3-10; Cursor T3-01 T3-12; Astra A-04 | `scripts/meshing_code_260616.py` (`build_mesh_manifest_payload`); `src/ro/mesh_common.py` (이미 파싱함, 미변경); `src/ro/manifest.py` **REQUIRED 목록은 건드리지 않음**; tests | R-01 | WSL 2026-09-11 `1075 passed, 1 skipped, 0 failed`. payload가 `parse_mesh_metrics_text`의 `domain_extent_x/y/z_m`를 그대로 보존 (config `cell_length_x_m * n_total` 아님). 파서 miss는 **키 있음 + `None`** (0.0 아님; 로그 파일 없음도 동일). extent 키 없는 raw JSON fixture는 `read_mesh_manifest` 성공. `MESH_MANIFEST_REQUIRED_FIELDS` / `_GEOMETRY_FIELDS` 미변경. | COMPLETE |
 | R-09 | 31 leaf backfill + `validate_layout_against_x_extent` live gate | **before sweep** — validator는 구현·테스트만 있고 live caller가 없다. 31 log에 `/mesh/check`가 남아 있다 | Claude C1-15 C3-01 C5-03; Sol T3-10; Cursor T3-01 T5-01; Astra A-04 | `scripts/backfill_mesh_manifest_fields.py` (extent는 registry가 아니라 log에서); `scripts/meshing_code_260616.py` write 직전; `scripts/solver_code_260616.py` preflight; `src/ro/domain_layout.py` (`require_*`가 `.ok`를 보고 raise); tests | R-08 | **Part 1 (WSL 2026-09-11):** `1084 passed, 1 skipped, 0 failed`. **Part 2 (workstation 2026-09-11):** dry-run then `--apply` 31 log addition, 0 registry, 0 NO-MEASUREMENT, 0 fail. **Part 3 (WSL 2026-09-11):** x-only live gate, `rel_tol=1e-5`. `1096 passed, 1 skipped, 0 failed`. **gate check after apply+pull:** 31 pass / 0 fail / 0 skip (`rel < 1e-5` vs `layout.total_length_m`). | COMPLETE |
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | WSL 2026-09-11 `1108 passed, 1 skipped, 0 failed`. stop-reason None → `stop_reason_determination_failed` + isolated write only + raise. RUNNING+finals → run. residual_converged+previous files+no cas/dat SHA → run. matching SHA+attempt id+allowed reason+mesh hash → skipped_existing. | COMPLETE |
-| R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; 해당 tests | R-02 | pytest: TUI except 경로가 raise. 성공 로그는 설정이 실제로 적용된 뒤에만. | NOT STARTED |
+| R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. | COMPLETE |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `scripts/batch_solver_sweep.py`; `tests/` (meshing retry 테스트를 모델로) | R-02 | pytest: socket/Scheme signature면 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G 실패는 재시도 없음. attempt 1 leftover finals가 attempt 2를 skip하지 않음. | NOT STARTED |
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; 해당 tests | R-01 | pytest: msh만 있음 → skip 아님. msh+valid manifest+`mesh_sha256` 일치+layout 필드 일치 → skip. `--from-log`는 manifest 없이 log+`.msh.h5`+registry로 payload 생성. | NOT STARTED |
 | R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`) | R-03 | pytest: wide CSV가 있어도 `final_data`보다 오래되면 skip 아님. FAILED/write 실패 → 드라이버 exit ≠ 0. listing `OSError` → 빈 트리로 성공하지 않음. skipped unreadable manifest → inventory exit ≠ 0. | NOT STARTED |
@@ -328,21 +328,45 @@ inventory에 skipped manifest → ≠ 0. `_iter_child_dirs`가 막힌 dir에서 
 
 ### 변경
 
-`solver_code_260616.py` inlet 적용 (`:1204` 부근): Settings/TUI 후보가 모두
-실패하면 현재는 print 후 `Inlet BC set`을 찍고 return한다. except를 re-raise.
-성공 메시지는 readback 또는 current-attempt transcript marker 뒤에만.
+`solver_code_260616.py` `apply_inlet_velocity_boundary`: Settings/TUI 후보가 모두
+실패해도 예전에는 print 후 `Inlet BC set`을 찍고 return했다. 입구는 UDF
+velocity profile이 붙는 자리이므로, TUI가 실패하고 run이 계속되면 이전
+plug/stale magnitude로 solve되고 로그는 성공처럼 보인다. 기존 gate를 통과하는
+물리적으로 틀린 run.
+
+TUI `execute_tui` except는 `RuntimeError`로 다시 올린다. TUI 세션이 없으면
+skip-return 하지 않고 raise. 워커 nonzero exit는 R-02가 이미 담당하므로
+여기선 raise + readback만.
 
 G marker gate (`agreed_inlet_profile_g`, Claude C1-06)는 **약화하지 않는다.**
+
+### 성공 로그의 증거
+
+`"Inlet BC set"`은 호출이 예외 없이 돌아온 뒤가 아니라, **같은 `vin`
+Settings 객체를 다시 읽어 요청값과 비교한 뒤**에만 찍는다. TUI가 예외 없이
+반환한 것은 증거가 아니다.
+
+- profile: `velocity_specification_method`가 Components, `velocity_components`
+  active, x option `udf`, x UDF 이름 == 요청 `profile_udf_name`, y·z ≈ 0.
+- plug: `velocity_magnitude` == 요청 `inlet_velocity` (`math.isclose`).
+- 비교 실패면 `RuntimeError` (`Inlet BC readback failed ...`). Settings
+  assignment가 예외 없이 끝나도 readback이 틀리면 TUI로 넘기고, TUI 뒤에도
+  틀리면 raise.
 
 ### 포함하지 않음
 
 - `INLET_G_MAX = 1.02` band 변경 (open questions).
 - `u_mean_ms`를 physical bulk로 재정의.
 - thread-name 3단 fallback (Cursor T2-22, UDF 의존 NEEDS-ASTRA).
+- 워커 exit handling (R-02).
 
 ### 검증
 
-해당 함수 단위 테스트: 모든 candidate raise → `RuntimeError`, “Inlet BC set” 없음.
+WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+`tests/test_apply_inlet_velocity_boundary.py`: Settings+TUI 실패, TUI 무예외+stale
+readback, solver None, plug 불일치 → raise / `"Inlet BC set"` 없음. Settings
+또는 TUI 뒤 matching readback, plug matching magnitude → 성공 로그.
 
 ---
 
