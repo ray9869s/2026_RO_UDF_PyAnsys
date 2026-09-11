@@ -95,6 +95,10 @@
 # continue_on_failure stays True: a CAD or gate failure on a new family is a
 # result, and the four bad CAD files may still be mid-repair.
 # ---------------------------------------------------------------------------
+from ro.campaign_matrix import (
+    build_production_mesh_batch_cases,
+    build_production_solver_sweep_cases,
+)
 from ro.solver_common import make_base_case_name
 
 dry_run = False
@@ -448,6 +452,15 @@ solver_sweep_cases = [
         "outlet_gauge_pressure": 6.0e6,
     },
 ]
+
+# Production 31-mesh / 279-run matrix. Distinct names and a distinct
+# --case-set production entrypoint. mesh_batch_cases (22) and
+# solver_sweep_cases (5) stay the exploratory lists used by default.
+# Layout knobs come from the registry, never from a _COMMON_MESH copy.
+production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
+production_solver_sweep_cases = build_production_solver_sweep_cases(
+    production_mesh_batch_cases
+)
 
 # ---------------------------------------------------------------------------
 # Diamond campaign meshes, built. Reference data, not used by this config.

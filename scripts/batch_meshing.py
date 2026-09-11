@@ -16,6 +16,11 @@ import sys
 import time
 from pathlib import Path
 
+from ro.campaign_matrix import (
+    CASE_SET_CHOICES,
+    CASE_SET_EXPLORATORY,
+    cases_for_case_set,
+)
 from ro.mesh_common import (
     MESH_METRIC_NAMES,
     MESH_PARAMETER_NAMES,
@@ -92,16 +97,27 @@ def parse_batch_meshing_cli(argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "Sequential meshing batch from configs/batch_config.py. "
-            "Use --geo-id to run one campaign case with its batch overrides."
+            "Default --case-set exploratory uses mesh_batch_cases (22). "
+            "Pass --case-set production for production_mesh_batch_cases (31)."
+        ),
+    )
+    parser.add_argument(
+        "--case-set",
+        choices=CASE_SET_CHOICES,
+        default=CASE_SET_EXPLORATORY,
+        help=(
+            "exploratory: mesh_batch_cases (22, no Diamond). "
+            "production: production_mesh_batch_cases (31). "
+            "Default exploratory so existing batch runs cannot launch the 31-mesh set."
         ),
     )
     parser.add_argument(
         "--geo-id",
-        help="Run only mesh_batch_cases entries with this geo_id.",
+        help="Run only selected case-set entries with this geo_id.",
     )
     parser.add_argument(
         "--mesh-id",
-        help="Run only mesh_batch_cases entries with this mesh_id.",
+        help="Run only selected case-set entries with this mesh_id.",
     )
     return parser.parse_args(argv)
 
@@ -522,7 +538,12 @@ def main(argv=None):
     )
     common_mesh_settings = getattr(batchcfg, "common_mesh_settings", {})
     mesh_batch_cases = select_mesh_batch_cases(
-        getattr(batchcfg, "mesh_batch_cases", []),
+        cases_for_case_set(
+            batchcfg,
+            cli_args.case_set,
+            exploratory_attr="mesh_batch_cases",
+            production_attr="production_mesh_batch_cases",
+        ),
         geo_id=cli_args.geo_id,
         mesh_id=cli_args.mesh_id,
     )
@@ -550,7 +571,7 @@ def main(argv=None):
 
     total = len(mesh_batch_cases)
     print(f"\n{'='*72}")
-    print(f"BATCH MESHING: {total} case(s)")
+    print(f"BATCH MESHING: {total} case(s)  case_set={cli_args.case_set}")
     print(
         f"dry_run={dry_run}  continue_on_failure={continue_on_failure}  "
         f"skip_existing_mesh={skip_existing_mesh}"

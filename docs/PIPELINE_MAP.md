@@ -19,8 +19,8 @@ spawned by a batch driver; then leftovers.
 
 | Script | Purpose | Command form | Required env |
 |---|---|---|---|
-| `batch_meshing.py` | Sequential meshing batch from `configs/batch_config.py` | `python scripts/batch_meshing.py` (no argparse; reads `mesh_batch_cases`, `common_mesh_settings`, `dry_run`, `continue_on_failure`, `skip_existing_mesh`) | `RO_DATA_ROOT` |
-| `batch_solver_sweep.py` | Sequential solver sweep from `batch_config.py` | `python scripts/batch_solver_sweep.py` (no argparse; reads `solver_sweep_cases`, `common_solver_settings`, `dry_run`, `continue_on_failure`, `skip_existing_final_data`) | `RO_DATA_ROOT` |
+| `batch_meshing.py` | Sequential meshing batch from `configs/batch_config.py` | `python scripts/batch_meshing.py [--case-set exploratory\|production] [--geo-id ID] [--mesh-id ID]` (default `--case-set exploratory` reads `mesh_batch_cases`; `production` reads `production_mesh_batch_cases`) | `RO_DATA_ROOT` |
+| `batch_solver_sweep.py` | Sequential solver sweep from `batch_config.py` | `python scripts/batch_solver_sweep.py [--case-set exploratory\|production]` (default `exploratory` reads `solver_sweep_cases`; `production` reads `production_solver_sweep_cases`) | `RO_DATA_ROOT` |
 | `batch_solver_rerun.py` | Continue / strategy-rerun embeds Fluent; does **not** spawn `solver_code_260616.py` | `python scripts/batch_solver_rerun.py [--candidates-csv PATH] [--results-root PATH] [--output-dir PATH] [--logs-dir PATH] [--report-script PATH] [--family ID] [--geo-id ID] [--mesh-id ID] [--run-id ID] [--convergence-status …] [--limit N] [--start-index N] [--dry-run] [--continue-on-error] [--force] [--skip-existing-rerun-success] [--additional-iterations N] [--solver-strategy …] [many strategy / residual / launch flags — see `parse_args`]` | `RO_DATA_ROOT` (path defaults) |
 | `batch_postprocess_all_cases.py` | Inventory-driven reports + contours + shear | `python scripts/batch_postprocess_all_cases.py [--inventory-csv PATH] [--results-root PATH] [--python-exe PATH] [--family] [--geo-id] [--mesh-id] [--run-id] [--case-status] [--fields] [--membrane-surface] [--run-reports] [--auto-run-missing-reports / --no-…] [--run-pyensight-contours / --no-…] [--run-shear / --no-…] [--skip-existing / --no-…] [--force] [--dry-run] [--limit] [--start-index] [--continue-on-error / --no-…] [view/shear/cff flags]` | `RO_DATA_ROOT` |
 | `batch_report_extract.py` | Report-only batch from `configs/batch_post_config.py` | `python scripts/batch_report_extract.py` (no argparse; config-driven) | `RO_DATA_ROOT` |
@@ -225,7 +225,7 @@ All `_probe_*`, `_tmp_*`, and `scripts/analysis/*` (section 1.3). Nothing in `ba
 ### 4.6 Confusing for a fresh reader
 
 - Header comments in `batch_meshing.py` / `batch_solver_sweep.py` still say `My_CFD_Project/01_Scripts/...`.
-- `configs/batch_config.py` holds the **31-mesh campaign matrix** (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) plus a two-case `solver_sweep_cases` starter (`REF_empty` / `u0p2_p6M` and `u0p3_p6M`). Campaign size is 31 × 9 = 279 solver runs; the solver list is not yet the full 279.
+- `configs/batch_config.py` holds two distinct matrices. Exploratory `mesh_batch_cases` is 22 meshes (3 ML + 9 pillar + 9 sin + `REF_empty`, **diamond 0**) and `solver_sweep_cases` is 5 (`REF_empty` u0p2/u0p3 p6M, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3). Production `production_mesh_batch_cases` is the 31 campaign geos (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) and `production_solver_sweep_cases` is 31 × 9 = 279. Default batch entrypoints stay exploratory; `--case-set production` is required to launch the 279.
 - Dual metadata filenames (`manifest.json` + `mesh_run_record.json`) without a single glossary in code.
 - Orchestrators take `--family --geo-id --mesh-id --run-id`; workers still accept `--geo-name` / `--case-name` as **filename labels** equal to those ids (post) or via overrides JSON (solve/mesh).
 - `needs_lead_recheck` is written and validated but **never read** by any post/solve script to change behaviour (see §6).
@@ -342,5 +342,5 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
 9. **Archive vs live identity mapping**  
    Fresh-start diagnostic hardcodes archive-derived scalars; no automated archive→four-id importer. Recovering other archive cases is manual.
 
-10. **Solver sweep list is not yet 279**  
-    `mesh_batch_cases` is the 31-mesh campaign. `solver_sweep_cases` currently holds `REF_empty` at `u0p2_p6M` and `u0p3_p6M`. Filling 31 × 9 operating points is still a config edit, not a code gap.
+10. **Solver sweep list is two named sets**  
+    Exploratory `mesh_batch_cases` is 22 (no Diamond); `solver_sweep_cases` is 5. Production is `production_mesh_batch_cases` (31) and `production_solver_sweep_cases` (279). `python scripts/batch_solver_sweep.py` without `--case-set production` cannot launch 279.

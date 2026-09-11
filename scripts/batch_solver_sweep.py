@@ -5,6 +5,7 @@
 # Usage: python My_CFD_Project/01_Scripts/batch_solver_sweep.py
 # ==========================================================
 
+import argparse
 import importlib.util
 import json
 import os
@@ -12,6 +13,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ro.campaign_matrix import (
+    CASE_SET_CHOICES,
+    CASE_SET_EXPLORATORY,
+    cases_for_case_set,
+)
 from ro.paths import mesh_dir, project_root, run_dir
 from ro.solver_common import (
     describe_solver_worker_failure,
@@ -125,14 +131,41 @@ def require_explicit_inlet_velocity_profile(
         )
 
 
-def main():
+def parse_batch_solver_sweep_cli(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Sequential solver sweep from configs/batch_config.py. "
+            "Default --case-set exploratory uses solver_sweep_cases. "
+            "Pass --case-set production for production_solver_sweep_cases (279)."
+        ),
+    )
+    parser.add_argument(
+        "--case-set",
+        choices=CASE_SET_CHOICES,
+        default=CASE_SET_EXPLORATORY,
+        help=(
+            "exploratory: solver_sweep_cases (currently 5). "
+            "production: production_solver_sweep_cases (279). "
+            "Default exploratory so existing batch runs cannot launch 279 solves."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    cli_args = parse_batch_solver_sweep_cli(argv)
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
     dry_run = getattr(batchcfg, "dry_run", False)
     continue_on_failure = getattr(batchcfg, "continue_on_failure", False)
     skip_existing_final_data = getattr(batchcfg, "skip_existing_final_data", True)
     common_solver_settings = getattr(batchcfg, "common_solver_settings", {})
-    solver_sweep_cases = getattr(batchcfg, "solver_sweep_cases", [])
+    solver_sweep_cases = cases_for_case_set(
+        batchcfg,
+        cli_args.case_set,
+        exploratory_attr="solver_sweep_cases",
+        production_attr="production_solver_sweep_cases",
+    )
     require_explicit_inlet_velocity_profile(
         common_solver_settings,
         solver_sweep_cases,
@@ -145,7 +178,7 @@ def main():
 
     total = len(solver_sweep_cases)
     print(f"\n{'='*72}")
-    print(f"BATCH SOLVER SWEEP: {total} case(s)")
+    print(f"BATCH SOLVER SWEEP: {total} case(s)  case_set={cli_args.case_set}")
     print(f"dry_run={dry_run}  continue_on_failure={continue_on_failure}  skip_existing_final_data={skip_existing_final_data}")
     print(f"{'='*72}\n")
 

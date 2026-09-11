@@ -96,8 +96,7 @@ runs/diamond/D2450_a45/max085_min006_cpg5_bl4_peel2/u0p2_p6M/D2450_a45_u0p2_p6M_
 `batch_config.py` `common_solver_settings.max_iterations` is **2000**.
 `batch_solver_rerun.py`'s 3000 is a different knob (rerun budget).
 
-`mesh_batch_cases` is empty so this file cannot accidentally remesh. Meshing is
-an explicit worker call (see below) or a temporary case list you add on purpose.
+`mesh_batch_cases` is the exploratory 22-mesh list (ML + Pillar + Sin + `REF_empty`, no Diamond). It is the default `--case-set` for `batch_meshing.py`. The 31-mesh campaign lives in `production_mesh_batch_cases` and is reached only with `--case-set production`.
 
 ---
 
@@ -139,15 +138,19 @@ Workers take `PYFLUENT_RUN_OVERRIDES` JSON. Four ids locate the leaf;
 `geo_name` / `case_name` are filename labels and must equal `geo_id` / `run_id`
 (solver) or `geo_id` / `mesh_id` (meshing).
 
-The nine-case sweep (`u` = 0.1/0.2/0.3 × `p` = 4/6/8 MPa) is
-`configs/batch_config.py` → `python scripts/batch_solver_sweep.py`.
-That sweep looks for
+The nine-point production sweep (`u` = 0.1/0.2/0.3 × `p` = 4/6/8 MPa, 31 × 9 = 279) is
+
+`python scripts/batch_solver_sweep.py --case-set production`
+
+Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently five: two `REF_empty`, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3). Do not point the default entrypoint at 279.
+
+Production mesh leaves look like
 
 `meshes/diamond/D2450_a45/max085_min006_cpg5_bl4_peel2/D2450_a45_max085_min006_cpg5_bl4_peel2.msh.h5`
 
-and writes
+Every production geo uses `max085_min006_cpg5_bl4_peel2` except `D0817_a60`, which uses `max060_min006_cpg5_bl4_peel2`. Solver output is
 
-`runs/.../{run_id}/D2450_a45_{run_id}_final.cas.h5`.
+`runs/.../{run_id}/{geo_id}_{run_id}_final.cas.h5`.
 
 Do not remesh a hashed `.msh.h5` that still has dependent run manifests.
 `--force` on `meshing_code_260616.py` is refused while any run cites that
