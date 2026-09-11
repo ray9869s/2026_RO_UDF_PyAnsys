@@ -62,7 +62,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-01 | Green full pytest + suite gate | **before sweep** — 이후 모든 검증이 pytest이고, 현재 suite는 red | Claude C6-01 C6-02 C6-03 C6-04 C5-20; Cursor T6-01 T6-02 T6-04 T5-08; Astra D-01 | `tests/test_backfill_run_manifest_fields.py`; `tests/test_inventory_convergence_classification.py`; `docs/AGENTS.md`; `docs/DEPLOY_RUNBOOK.md`; `README.md`; `scripts/run_full_pytest.sh` (신규); `.github/workflows/pytest.yml` (신규) | none | 성공 조건은 고정 숫자가 아니다. 실행 후 측정: WSL 2026-09-11 `1059 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`. workflow는 push/PR에서 같은 pytest 선택을 돌리고 nonzero면 check 실패. merge 차단은 GitHub branch protection required check가 필요하며 이 작업이 설정하지 않는다. | COMPLETE |
 | R-07 | Production 279 matrix를 registry에서 생성 | **before sweep** — `_COMMON_MESH` 복사는 Diamond에 `n_active_cells=7`을 찍는다. 31 mesh 수리 아님 | Claude C1-03 C1-13 C3-07 C5-16 C5-17; Cursor T1-06 T1-07 T5-09; Sol T1-03 T3-08; Astra A-02 D-02 | `src/ro/campaign_matrix.py` (신규); `configs/batch_config.py`; `scripts/batch_meshing.py`; `scripts/batch_solver_sweep.py`; `tests/test_campaign_matrix.py`; `docs/PIPELINE_MAP.md`; `docs/DEPLOY_RUNBOOK.md` | R-01 | WSL 2026-09-11 `1070 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). live lists: exploratory `mesh_batch_cases` 22 / `solver_sweep_cases` 5; production mesh 31, production solver 279, geo set == `CAMPAIGN_GEO_IDS`, 각 geo 9 `(u,p)`, `run_id` == `make_base_case_name(u,p)`. 31 mesh의 `n_active_cells`/`cell_length_x_m`/`periodic_shift_y`가 registry와 per-geo 일치 (Diamond는 `_DIAMOND_LAYOUTS`와 동일). distinct `mesh_id` 2: 전부 `max085_min006_cpg5_bl4_peel2` except `D0817_a60` → `max060_min006_cpg5_bl4_peel2` (`m_max==0.060`). `--case-set` default exploratory. | COMPLETE |
 | R-08 | mesh manifest에 측정 `domain_extent_*_m` writer (optional field) | **before sweep** — gate를 나중에 달면 재meshing 없이 검증할 값이 없다. required로 올리면 31 leaf가 깨진다 | Claude C1-14 C3-01; Sol T3-10; Cursor T3-01 T3-12; Astra A-04 | `scripts/meshing_code_260616.py` (`build_mesh_manifest_payload`); `src/ro/mesh_common.py` (이미 파싱함, 미변경); `src/ro/manifest.py` **REQUIRED 목록은 건드리지 않음**; tests | R-01 | WSL 2026-09-11 `1075 passed, 1 skipped, 0 failed`. payload가 `parse_mesh_metrics_text`의 `domain_extent_x/y/z_m`를 그대로 보존 (config `cell_length_x_m * n_total` 아님). 파서 miss는 **키 있음 + `None`** (0.0 아님; 로그 파일 없음도 동일). extent 키 없는 raw JSON fixture는 `read_mesh_manifest` 성공. `MESH_MANIFEST_REQUIRED_FIELDS` / `_GEOMETRY_FIELDS` 미변경. | COMPLETE |
-| R-09 | 31 leaf backfill + `validate_layout_against_x_extent` live gate | **before sweep** — validator는 구현·테스트만 있고 live caller가 없다. 31 log에 `/mesh/check`가 남아 있다 | Claude C1-15 C3-01 C5-03; Sol T3-10; Cursor T3-01 T5-01; Astra A-04 | `scripts/backfill_mesh_manifest_fields.py` (extent는 registry가 아니라 log에서); `scripts/meshing_code_260616.py` write 직전; `scripts/solver_code_260616.py` preflight; `src/ro/domain_layout.py` (`require_*`가 `.ok`를 보고 raise); tests | R-08 | **Part 1 (WSL 2026-09-11):** `1084 passed, 1 skipped, 0 failed`. **Part 2 (workstation 2026-09-11, dry-run):** 31 leaf, 0 registry, 31 log addition, 0 NO-MEASUREMENT, 31 usable `/mesh/check`, 0 fail. x vs `layout.total_length_m` max rel ~1.6e-7; naive `n_total*pitch`는 Diamond에서 틀림. y/z CAD 잡음. **Part 3 (WSL 2026-09-11):** x-only live gate, `rel_tol=1e-5`. `1096 passed, 1 skipped, 0 failed`. `--apply`는 게이트 pull 전 서버에서. | COMPLETE |
+| R-09 | 31 leaf backfill + `validate_layout_against_x_extent` live gate | **before sweep** — validator는 구현·테스트만 있고 live caller가 없다. 31 log에 `/mesh/check`가 남아 있다 | Claude C1-15 C3-01 C5-03; Sol T3-10; Cursor T3-01 T5-01; Astra A-04 | `scripts/backfill_mesh_manifest_fields.py` (extent는 registry가 아니라 log에서); `scripts/meshing_code_260616.py` write 직전; `scripts/solver_code_260616.py` preflight; `src/ro/domain_layout.py` (`require_*`가 `.ok`를 보고 raise); tests | R-08 | **Part 1 (WSL 2026-09-11):** `1084 passed, 1 skipped, 0 failed`. **Part 2 (workstation 2026-09-11):** dry-run then `--apply` 31 log addition, 0 registry, 0 NO-MEASUREMENT, 0 fail. **Part 3 (WSL 2026-09-11):** x-only live gate, `rel_tol=1e-5`. `1096 passed, 1 skipped, 0 failed`. **gate check after apply+pull:** 31 pass / 0 fail / 0 skip (`rel < 1e-5` vs `layout.total_length_m`). | COMPLETE |
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | pytest: stop-reason except → terminal reason + nonzero, `write_case_data` 없음. RUNNING+비어 있지 않은 finals → skip 안 함. 허용 stop_reason+비어 있지 않은 쌍 → skip. | NOT STARTED |
 | R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; 해당 tests | R-02 | pytest: TUI except 경로가 raise. 성공 로그는 설정이 실제로 적용된 뒤에만. | NOT STARTED |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `scripts/batch_solver_sweep.py`; `tests/` (meshing retry 테스트를 모델로) | R-02 | pytest: socket/Scheme signature면 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G 실패는 재시도 없음. attempt 1 leftover finals가 attempt 2를 skip하지 않음. | NOT STARTED |
@@ -487,9 +487,12 @@ mismatch 1건이면 apply 하지 않는다.
 registry 채움과 log 측정 extent를 분리한다. 단위 테스트 + full suite
 `1084 passed, 1 skipped, 0 failed`. live gate는 아직 배선하지 않음.
 
-**Part 2 (workstation, 2026-09-11, still dry-run):** 31/31 leaf가 파싱 가능한
-`/mesh/check`를 갖고, 전부 log addition. registry addition 0, NO-MEASUREMENT 0,
-failure 0. `S_a193_l1733`은 기존 curvature_margin UserWarning만 냈고 측정은 됨.
+**Part 2 (workstation, 2026-09-11):** dry-run과 `--apply` 모두 31/31 leaf가
+파싱 가능한 `/mesh/check`를 갖고, 전부 log addition. registry addition 0,
+NO-MEASUREMENT 0, failure 0. apply 요약:
+`31 leaf(s), 0 registry, 31 log addition(s), 0 NO-MEASUREMENT, 31 usable, 0 failure(s)`.
+`S_a193_l1733`은 기존 curvature_margin UserWarning만 냈고 측정은 됨. apply는
+게이트 커밋 `ca1e895` pull **전**(`cdf6277`)에 돌렸다.
 
 x identity는 `layout.total_length_m` (= `buffer_in + n_active * pitch +
 buffer_out`)이다. naive `cell_length_x_m * n_total`은 Diamond에서 틀림
@@ -508,8 +511,9 @@ y/z를 `1e-5`로 묶으면 기존 유효 mesh를 거절한다. **gate는 x only.
 `require_layout_matches_measured_x_extent`가 missing/null/`not ok`에서 raise.
 meshing은 `write_worker_mesh_manifest`가 `write_mesh_manifest` 직전; solver는
 Fluent launch 전 preflight. full suite `1096 passed, 1 skipped, 0 failed`.
-`--apply`는 이 커밋을 pull 하기 **전**에 서버에서 돌려 31 leaf에 숫자를 넣는다.
-apply 없이 solver preflight는 키 없음으로 31개 전부 거절한다.
+apply 후 `ca1e895` pull + 같은 날 x-gate 확인: **pass 31 / fail 0 / skip 0**
+(`rel < 1e-5` vs `buffer_in + n_active * pitch + buffer_out`). missing/null
+skip 없음. apply 없이 solver preflight는 키 없음으로 31개 전부 거절한다.
 
 ---
 
