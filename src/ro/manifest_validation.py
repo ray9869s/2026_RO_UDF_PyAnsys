@@ -669,3 +669,66 @@ def validate_run_geometry_fields(run_payload: Mapping[str, Any]) -> None:
         raise ManifestValidationError(
             f"Run manifest spacer_wall_zones must be non-empty for {geo_id!r}."
         )
+
+
+CAMPAIGN_MEMBRANE_BLOCKED_AREA_FRAC = 0.0
+
+
+def campaign_blocked_frac_block_reason(payload: Mapping[str, Any]):
+    """Return why campaign blocked-frac fails, or None.
+
+    Schema stays ``[0, 1)``. Campaign policy is exact 0.0. Missing key is
+    not a campaign reject here — that leaf is unreadable by ``read_*``.
+    """
+    if "membrane_blocked_area_frac" not in payload:
+        return None
+    value = payload["membrane_blocked_area_frac"]
+    try:
+        blocked = float(value)
+    except (TypeError, ValueError):
+        return f"membrane_blocked_area_frac is not a number: {value!r}"
+    if isinstance(value, bool) or blocked != CAMPAIGN_MEMBRANE_BLOCKED_AREA_FRAC:
+        return (
+            "campaign membrane_blocked_area_frac must be exactly "
+            f"{CAMPAIGN_MEMBRANE_BLOCKED_AREA_FRAC}, got {value!r}"
+        )
+    return None
+
+
+def require_campaign_membrane_blocked_area_frac(
+    payload: Mapping[str, Any],
+    *,
+    kind: str = "Manifest",
+) -> None:
+    reason = campaign_blocked_frac_block_reason(payload)
+    if reason is not None:
+        raise ManifestValidationError(f"{kind} {reason}")
+
+
+def mesh_run_blocked_frac_block_reason(
+    mesh_payload: Mapping[str, Any],
+    run_payload: Mapping[str, Any],
+):
+    """Return why mesh/run blocked-frac disagree, or None."""
+    if (
+        "membrane_blocked_area_frac" not in mesh_payload
+        or "membrane_blocked_area_frac" not in run_payload
+    ):
+        return None
+    mesh_value = mesh_payload["membrane_blocked_area_frac"]
+    run_value = run_payload["membrane_blocked_area_frac"]
+    if mesh_value != run_value:
+        return (
+            "mesh and run membrane_blocked_area_frac disagree: "
+            f"mesh={mesh_value!r} run={run_value!r}"
+        )
+    return None
+
+
+def require_mesh_run_blocked_frac_agree(
+    mesh_payload: Mapping[str, Any],
+    run_payload: Mapping[str, Any],
+) -> None:
+    reason = mesh_run_blocked_frac_block_reason(mesh_payload, run_payload)
+    if reason is not None:
+        raise ManifestValidationError(reason)

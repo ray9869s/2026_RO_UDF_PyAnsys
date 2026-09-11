@@ -53,6 +53,7 @@ def _prepared_run(monkeypatch, tmp_path, solver, *, parabolic=False):
     cfg.geo_id = GEO_ID
     cfg.mesh_id = MESH_ID
     cfg.run_id = "u0p1_p6M"
+    cfg.outlet_gauge_pressure = 6.0e6
     cfg.use_inlet_velocity_profile = parabolic
     mesh_directory = mesh_dir(cfg.family, cfg.geo_id, cfg.mesh_id)
     mesh_directory.mkdir(parents=True)

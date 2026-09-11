@@ -375,20 +375,18 @@ class LogParseResult:
     launch_error_evidence: list[str] = field(default_factory=list)
 
 
-# Fallback when batch_config has no usable common_solver_settings.max_iterations.
-# Kept at 2000 to match run_config.max_iterations / _solver_common default.
+# Fallback only when batch_config.py cannot be loaded. Malformed
+# common_solver_settings raise; they are not replaced with this default.
 _DEFAULT_MAX_ITER_FALLBACK = DEFAULT_MAX_ITERATIONS_FALLBACK
 
 
 def max_iter_target_from_common_solver_settings(settings) -> int:
     """Resolve max_iter from an injected common_solver_settings mapping.
 
-    Pure relative to batch_config.py: callers supply the settings (or None).
+    Pure relative to batch_config.py: callers supply the settings.
+    Malformed values raise; they are not replaced with a default.
     """
-    return max_iterations_from_common_solver_settings(
-        settings,
-        fallback=_DEFAULT_MAX_ITER_FALLBACK,
-    )
+    return max_iterations_from_common_solver_settings(settings)
 
 
 def _load_batch_config_module(batch_config_path: Path):

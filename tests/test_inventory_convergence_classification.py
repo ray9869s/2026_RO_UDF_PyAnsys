@@ -80,24 +80,9 @@ class TestInventoryConvergenceClassification:
         )
         assert result.convergence_status == inventory.MAX_ITER_REACHED
 
-    def test_missing_common_solver_settings_falls_back_to_2000_with_warning(
-        self, inventory, capsys
-    ):
-        max_iter_target = inventory.max_iter_target_from_common_solver_settings(None)
-        assert max_iter_target == 2000
-        err = capsys.readouterr().err
-        assert "WARNING" in err
-        assert "common_solver_settings" in err
-        assert "falling back to 2000" in err
-        # A 1000-iteration transcript against that fallback is incomplete, not max-iter.
-        result = inventory.parse_logs(
-            analyses=[solver_analysis(inventory, "iteration: 1000\n")],
-            max_iter_target=max_iter_target,
-            has_case_data_pair=True,
-            has_summary_metrics_wide=True,
-        )
-        assert result.hit_max_iter_target is False
-        assert result.convergence_status == inventory.POSSIBLY_INCOMPLETE
+    def test_missing_common_solver_settings_raises(self, inventory):
+        with pytest.raises(ValueError, match="must be a dict"):
+            inventory.max_iter_target_from_common_solver_settings(None)
 
     def test_present_common_solver_settings_uses_campaign_cap_without_warning(
         self, inventory, capsys
@@ -109,27 +94,27 @@ class TestInventoryConvergenceClassification:
         err = capsys.readouterr().err
         assert "WARNING" not in err
 
-    def test_malformed_max_iterations_falls_back_with_warning(self, inventory, capsys):
-        max_iter_target = inventory.max_iter_target_from_common_solver_settings(
-            {"max_iterations": "not-an-int"}
-        )
-        assert max_iter_target == 2000
-        err = capsys.readouterr().err
-        assert "WARNING" in err
-        assert "max_iterations" in err
-        assert "falling back to 2000" in err
+    def test_malformed_max_iterations_raises(self, inventory):
+        with pytest.raises(ValueError, match="max_iterations"):
+            inventory.max_iter_target_from_common_solver_settings(
+                {"max_iterations": "not-an-int"}
+            )
 
-    def test_tmp_batch_config_without_common_settings_warns(
-        self, inventory, tmp_path: Path, capsys
+    def test_tmp_batch_config_without_common_settings_raises(
+        self, inventory, tmp_path: Path
     ):
-        # Fixture injection via tmp_path-written config (not live batch_config.py).
         cfg = tmp_path / "batch_config.py"
         cfg.write_text("mesh_batch_cases = []\n", encoding="utf-8")
-        max_iter_target = inventory._default_max_iter_target(cfg)
+        with pytest.raises(ValueError, match="must be a dict"):
+            inventory._default_max_iter_target(cfg)
+
+    def test_missing_batch_config_file_falls_back(self, inventory, tmp_path: Path, capsys):
+        missing = tmp_path / "missing_batch_config.py"
+        max_iter_target = inventory._default_max_iter_target(missing)
         assert max_iter_target == 2000
         err = capsys.readouterr().err
         assert "WARNING" in err
-        assert "common_solver_settings" in err
+        assert "falling back to" in err
 
     def test_tmp_batch_config_with_common_settings_happy_path(
         self, inventory, tmp_path: Path, capsys

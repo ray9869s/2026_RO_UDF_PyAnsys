@@ -22,6 +22,7 @@ from helpers import (
 
 _solver_common = load_solver_common()
 merge_batch_case_overrides = _solver_common.merge_batch_case_overrides
+make_base_case_name = _solver_common.make_base_case_name
 
 
 @pytest.fixture
@@ -106,7 +107,18 @@ class TestSolverValidation:
             cfg.validate_for_solver()
 
     def test_string_numeric_inlet_velocity_is_accepted(self, cfg):
-        cfg.inlet_velocity_value = "0.15"
+        cfg.inlet_velocity_value = "0.1"
+        cfg.validate_for_solver()
+
+    def test_run_id_must_match_operating_point(self, cfg):
+        cfg.run_id = "u0p2_p6M"
+        with pytest.raises(ValueError, match="does not match make_base_case_name"):
+            cfg.validate_for_solver()
+
+    def test_matching_run_id_and_operating_point_are_accepted(self, cfg):
+        assert cfg.run_id == "u0p1_p4M"
+        assert cfg.inlet_velocity_value == 0.1
+        assert cfg.outlet_gauge_pressure == 4.0e6
         cfg.validate_for_solver()
 
     def test_outlet_gauge_pressure_negative_is_rejected(self, cfg):
@@ -230,6 +242,7 @@ class TestCampaignSolverOperatingValues:
         cfg.inlet_velocity_value = inlet_velocity
         cfg.outlet_gauge_pressure = outlet_gauge_pressure
         cfg.operating_pressure = operating_pressure
+        cfg.run_id = make_base_case_name(inlet_velocity, outlet_gauge_pressure)
         cfg.validate_for_solver()
 
 

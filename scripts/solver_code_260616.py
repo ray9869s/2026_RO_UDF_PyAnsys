@@ -37,12 +37,19 @@ from ro.solver_common import (
     parse_fluent_convergence_marker,
     parse_fluent_report_file_series,
     parse_last_residual_iteration_from_transcript_text,
+    require_mesh_sha256_matches_file,
+    require_run_id_matches_operating_point,
+    require_u_mean_profile_identity,
     resolve_solver_final_artifact_exit_code,
     sha256_file,
 )
 from ro.domain_layout import (
     layout_from_mesh_manifest,
     require_mesh_manifest_x_extent_matches_layout,
+)
+from ro.manifest_validation import (
+    require_campaign_membrane_blocked_area_frac,
+    require_mesh_run_blocked_frac_agree,
 )
 from ro.lmh_metrics import lmh_mass_balance_expression
 from ro.fluent_report_helpers import create_x_normal_plane
@@ -102,16 +109,30 @@ def write_worker_run_manifest(
     created_utc=None,
 ):
     mesh_manifest = read_mesh_manifest(mesh_directory)
+    require_campaign_membrane_blocked_area_frac(mesh_manifest, kind="Mesh")
     payload = build_run_manifest_payload(
         cfg,
         mesh_manifest,
         created_utc=created_utc,
+    )
+    require_campaign_membrane_blocked_area_frac(payload, kind="Run")
+    require_mesh_run_blocked_frac_agree(mesh_manifest, payload)
+    require_run_id_matches_operating_point(
+        payload["run_id"],
+        payload["u_target_ms"],
+        payload["p_gauge_pa"],
     )
     existing_path = Path(run_directory) / "manifest.json"
     if existing_path.is_file():
         existing = read_run_manifest(run_directory)
         if existing["u_mean_ms"] is not None and payload["u_mean_ms"] is None:
             payload["u_mean_ms"] = existing["u_mean_ms"]
+    require_u_mean_profile_identity(
+        payload.get("u_mean_ms"),
+        mesh_manifest.get("inlet_profile_G"),
+        payload["u_target_ms"],
+        inlet_bc_type=payload["inlet_bc_type"],
+    )
     return write_run_manifest(run_directory, payload)
 
 
@@ -142,6 +163,12 @@ def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=
             payload["u_mean_ms"] = (
                 float(payload["u_target_ms"]) / float(inlet_profile_g)
             )
+        require_u_mean_profile_identity(
+            payload["u_mean_ms"],
+            inlet_profile_g,
+            payload["u_target_ms"],
+            inlet_bc_type=payload["inlet_bc_type"],
+        )
     return write_run_manifest(run_directory, payload)
 
 
@@ -1010,7 +1037,14 @@ def wait_for_agreed_inlet_profile_g(
         time.sleep(float(poll_interval_s))
 
 
-def apply_parsed_inlet_profile_g(mesh_directory, g):
+def apply_parsed_inlet_profile_g(
+    mesh_directory,
+    g,
+    *,
+    u_mean_ms=None,
+    u_target_ms=None,
+    inlet_bc_type="parabolic",
+):
     """Lazy-fill mesh inlet_profile_G once; later runs compare at 1e-6 relative."""
     payload = read_mesh_manifest(mesh_directory)
     stored = payload["inlet_profile_G"]
@@ -1019,20 +1053,28 @@ def apply_parsed_inlet_profile_g(mesh_directory, g):
         payload["inlet_profile_G"] = g
         write_mesh_manifest(mesh_directory, payload)
         print(f"Mesh manifest inlet_profile_G filled: {g:.12g}")
-        return g
-    stored = float(stored)
-    relative = abs(g - stored) / abs(stored)
-    if relative > INLET_PROFILE_G_REL_TOL:
-        raise RuntimeError(
-            f"inlet_profile_G mismatch: transcript {g:.12g} vs mesh manifest "
-            f"{stored:.12g} (relative {relative:.3g} > {INLET_PROFILE_G_REL_TOL}). "
-            "Aborting before iterate."
+        agreed = g
+    else:
+        stored = float(stored)
+        relative = abs(g - stored) / abs(stored)
+        if relative > INLET_PROFILE_G_REL_TOL:
+            raise RuntimeError(
+                f"inlet_profile_G mismatch: transcript {g:.12g} vs mesh manifest "
+                f"{stored:.12g} (relative {relative:.3g} > {INLET_PROFILE_G_REL_TOL}). "
+                "Aborting before iterate."
+            )
+        print(
+            f"Mesh manifest inlet_profile_G matches transcript "
+            f"({stored:.12g}, relative {relative:.3g})."
         )
-    print(
-        f"Mesh manifest inlet_profile_G matches transcript "
-        f"({stored:.12g}, relative {relative:.3g})."
+        agreed = stored
+    require_u_mean_profile_identity(
+        u_mean_ms,
+        agreed,
+        u_target_ms,
+        inlet_bc_type=inlet_bc_type,
     )
-    return stored
+    return agreed
 
 
 def _inlet_setting_state(obj):
@@ -2872,6 +2914,34 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"UDF source file not found: {udf_master_path}")
 
     require_mesh_manifest_x_extent_matches_layout(mesh_case_path)
+    mesh_manifest = read_mesh_manifest(mesh_case_path)
+    require_campaign_membrane_blocked_area_frac(mesh_manifest, kind="Mesh")
+    if os.path.isfile(mesh_file_path):
+        require_mesh_sha256_matches_file(
+            mesh_manifest.get("mesh_sha256"),
+            mesh_file_path,
+        )
+    run_manifest_path = Path(case_path) / "manifest.json"
+    if run_manifest_path.is_file():
+        run_payload = read_run_manifest(case_path)
+        require_campaign_membrane_blocked_area_frac(run_payload, kind="Run")
+        require_mesh_run_blocked_frac_agree(mesh_manifest, run_payload)
+        require_run_id_matches_operating_point(
+            run_payload["run_id"],
+            run_payload["u_target_ms"],
+            run_payload["p_gauge_pa"],
+        )
+        if os.path.isfile(mesh_file_path):
+            require_mesh_sha256_matches_file(
+                run_payload.get("mesh_sha256"),
+                mesh_file_path,
+            )
+        require_u_mean_profile_identity(
+            run_payload.get("u_mean_ms"),
+            mesh_manifest.get("inlet_profile_G"),
+            run_payload["u_target_ms"],
+            inlet_bc_type=run_payload["inlet_bc_type"],
+        )
 
     print(f"Case path: {case_path}")
     if input_mode == "restart_continuation":
@@ -3463,7 +3533,14 @@ if __name__ == "__main__":
             case_dir=case_path,
             solver_log_path=solver_log_path,
         )
-        apply_parsed_inlet_profile_g(mesh_case_path, inlet_profile_g)
+        run_payload = read_run_manifest(case_path)
+        apply_parsed_inlet_profile_g(
+            mesh_case_path,
+            inlet_profile_g,
+            u_mean_ms=run_payload.get("u_mean_ms"),
+            u_target_ms=run_payload["u_target_ms"],
+            inlet_bc_type=run_payload["inlet_bc_type"],
+        )
 
         if use_inlet_velocity_profile:
             print("\nRe-applying inlet BC as Components + UDF after libudf load...")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import re
 import sys
@@ -184,66 +185,184 @@ def merge_batch_case_overrides(
 
 DEFAULT_MAX_ITERATIONS_FALLBACK = 2000
 DEFAULT_RESIDUAL_TARGET_FALLBACK = 1.0e-7
+U_MEAN_PROFILE_IDENTITY_REL_TOL = 1e-6
 
 
-def max_iterations_from_common_solver_settings(
-    settings: Any,
-    *,
-    fallback: int = DEFAULT_MAX_ITERATIONS_FALLBACK,
-    warn: Any = None,
-) -> int:
-    """Resolve max_iterations from a common_solver_settings mapping.
+def max_iterations_from_common_solver_settings(settings: Any) -> int:
+    """Return max_iterations from a common_solver_settings mapping.
 
-    Missing or malformed settings warn (when ``warn`` is provided) and return
-    ``fallback``. Does not load batch_config.py itself.
+    Missing or malformed values raise. Does not load batch_config.py.
     """
-    if warn is None:
-        def warn(message: str) -> None:
-            print(message, file=sys.stderr)
-
     if not isinstance(settings, dict):
-        warn(
-            "WARNING: common_solver_settings is not a usable dict "
-            f"(got {type(settings).__name__}); falling back to {fallback}."
+        raise ValueError(
+            "common_solver_settings must be a dict, "
+            f"got {type(settings).__name__}."
         )
-        return int(fallback)
-    raw = settings.get("max_iterations", fallback)
+    if "max_iterations" not in settings:
+        raise ValueError("common_solver_settings missing max_iterations.")
+    raw = settings["max_iterations"]
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            "common_solver_settings.max_iterations must be an int, "
+            f"got {raw!r}."
+        )
+    if raw <= 0:
+        raise ValueError(
+            "common_solver_settings.max_iterations must be positive, "
+            f"got {raw!r}."
+        )
+    return raw
+
+
+def residual_target_from_common_solver_settings(settings: Any) -> float:
+    """Return residual_target from a common_solver_settings mapping.
+
+    Missing or malformed values raise. Does not load batch_config.py.
+    """
+    if not isinstance(settings, dict):
+        raise ValueError(
+            "common_solver_settings must be a dict, "
+            f"got {type(settings).__name__}."
+        )
+    if "residual_target" not in settings:
+        raise ValueError("common_solver_settings missing residual_target.")
+    raw = settings["residual_target"]
+    if isinstance(raw, bool):
+        raise ValueError(
+            "common_solver_settings.residual_target must be numeric, "
+            f"got {raw!r}."
+        )
     try:
-        return int(raw)
-    except (TypeError, ValueError):
-        warn(
-            "WARNING: common_solver_settings.max_iterations="
-            f"{raw!r} is not an int; falling back to {fallback}."
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "common_solver_settings.residual_target must be numeric, "
+            f"got {raw!r}."
+        ) from exc
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(
+            "common_solver_settings.residual_target must be a positive "
+            f"finite number, got {raw!r}."
         )
-        return int(fallback)
+    return value
 
 
-def residual_target_from_common_solver_settings(
-    settings: Any,
+def operating_point_token_from_run_id(run_id) -> str:
+    """Return the ``u0p2_p6M`` token, stripping an optional letter-led suffix."""
+    parts = str(run_id).split("_")
+    if len(parts) < 2:
+        raise ValueError(f"run_id is not a campaign operating-point token: {run_id!r}")
+    token = f"{parts[0]}_{parts[1]}"
+    if MATRIX_BASE_CASE_RE.fullmatch(token) is None:
+        raise ValueError(f"run_id is not a campaign operating-point token: {run_id!r}")
+    return token
+
+
+def run_id_operating_point_block_reason(run_id, u_target_ms, p_gauge_pa):
+    """Return why run_id does not match ``make_base_case_name(u, p)``, or None."""
+    expected = make_base_case_name(u_target_ms, p_gauge_pa)
+    try:
+        token = operating_point_token_from_run_id(run_id)
+    except ValueError as exc:
+        return str(exc)
+    if token != expected:
+        return (
+            f"run_id {run_id!r} does not match make_base_case_name("
+            f"{u_target_ms!r}, {p_gauge_pa!r}) = {expected!r}"
+        )
+    return None
+
+
+def require_run_id_matches_operating_point(run_id, u_target_ms, p_gauge_pa) -> None:
+    reason = run_id_operating_point_block_reason(run_id, u_target_ms, p_gauge_pa)
+    if reason is not None:
+        raise ValueError(reason)
+
+
+def u_mean_profile_identity_block_reason(
+    u_mean_ms,
+    inlet_profile_g,
+    u_target_ms,
     *,
-    fallback: float = DEFAULT_RESIDUAL_TARGET_FALLBACK,
-    warn: Any = None,
-) -> float:
-    """Resolve residual_target from a common_solver_settings mapping."""
-    if warn is None:
-        def warn(message: str) -> None:
-            print(message, file=sys.stderr)
+    inlet_bc_type="parabolic",
+    rel_tol: float = U_MEAN_PROFILE_IDENTITY_REL_TOL,
+):
+    """Return why ``u_mean_ms * G != u_target_ms``, or None.
 
-    if not isinstance(settings, dict):
-        warn(
-            "WARNING: common_solver_settings is not a usable dict "
-            f"(got {type(settings).__name__}); falling back to {fallback}."
-        )
-        return float(fallback)
-    raw = settings.get("residual_target", fallback)
+    Plug runs and unfilled ``u_mean_ms`` / ``inlet_profile_G`` are N/A
+    (not a reject). ``u_mean_ms`` stays the legacy profile coefficient.
+    """
+    if inlet_bc_type != "parabolic":
+        return None
+    if u_mean_ms is None or inlet_profile_g is None:
+        return None
     try:
-        return float(raw)
+        product = float(u_mean_ms) * float(inlet_profile_g)
+        target = float(u_target_ms)
     except (TypeError, ValueError):
-        warn(
-            "WARNING: common_solver_settings.residual_target="
-            f"{raw!r} is not numeric; falling back to {fallback}."
+        return (
+            "u_mean_ms * inlet_profile_G identity is not numeric: "
+            f"u_mean_ms={u_mean_ms!r} G={inlet_profile_g!r} "
+            f"u_target_ms={u_target_ms!r}"
         )
-        return float(fallback)
+    denom = abs(target)
+    if denom == 0.0 or not math.isfinite(product) or not math.isfinite(target):
+        return (
+            "u_mean_ms * inlet_profile_G identity is not finite: "
+            f"{u_mean_ms!r} * {inlet_profile_g!r} vs {u_target_ms!r}"
+        )
+    relative = abs(product - target) / denom
+    if relative > rel_tol:
+        return (
+            "u_mean_ms * inlet_profile_G does not equal u_target_ms: "
+            f"{u_mean_ms!r} * {inlet_profile_g!r} = {product!r} vs "
+            f"{u_target_ms!r} (relative {relative:.3g} > {rel_tol})"
+        )
+    return None
+
+
+def require_u_mean_profile_identity(
+    u_mean_ms,
+    inlet_profile_g,
+    u_target_ms,
+    *,
+    inlet_bc_type="parabolic",
+    rel_tol: float = U_MEAN_PROFILE_IDENTITY_REL_TOL,
+) -> None:
+    reason = u_mean_profile_identity_block_reason(
+        u_mean_ms,
+        inlet_profile_g,
+        u_target_ms,
+        inlet_bc_type=inlet_bc_type,
+        rel_tol=rel_tol,
+    )
+    if reason is not None:
+        raise ValueError(reason)
+
+
+def mesh_sha256_file_block_reason(recorded_sha256, mesh_file):
+    """Return why recorded SHA does not match ``.msh.h5`` bytes, or None."""
+    path = Path(mesh_file)
+    if not path.is_file():
+        return f"mesh file was not found: {path}"
+    if not recorded_sha256:
+        return "missing mesh_sha256"
+    try:
+        actual = sha256_file(path)
+    except OSError as exc:
+        return f"mesh file not readable for sha256 ({path}): {exc}"
+    if actual != recorded_sha256:
+        return (
+            f"mesh_sha256 does not match {path}: recorded "
+            f"{recorded_sha256} vs file {actual}"
+        )
+    return None
+
+
+def require_mesh_sha256_matches_file(recorded_sha256, mesh_file) -> None:
+    reason = mesh_sha256_file_block_reason(recorded_sha256, mesh_file)
+    if reason is not None:
+        raise ValueError(reason)
 
 
 # ---------------------------------------------------------------------------

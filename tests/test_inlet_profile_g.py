@@ -113,6 +113,7 @@ def test_parabolic_finalize_fills_u_mean(monkeypatch, tmp_path):
     populate_valid_solver_config(cfg)
     cfg.use_inlet_velocity_profile = True
     cfg.inlet_velocity_value = 0.1
+    cfg.outlet_gauge_pressure = 6.0e6
     cfg.family = FAMILY
     cfg.geo_id = GEO_ID
     cfg.mesh_id = MESH_ID
@@ -152,6 +153,7 @@ def test_parabolic_finalize_without_g_raises(monkeypatch, tmp_path):
     cfg.geo_id = GEO_ID
     cfg.mesh_id = MESH_ID
     cfg.run_id = "u0p1_p6M"
+    cfg.outlet_gauge_pressure = 6.0e6
 
     mesh_directory = mesh_dir(cfg.family, cfg.geo_id, cfg.mesh_id)
     mesh_directory.mkdir(parents=True)
@@ -168,7 +170,7 @@ def test_parabolic_finalize_without_g_raises(monkeypatch, tmp_path):
 
 def test_g_assert_is_before_iterate():
     source = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
-    apply_at = source.index("apply_parsed_inlet_profile_g(mesh_case_path, inlet_profile_g)")
+    apply_at = source.index("apply_parsed_inlet_profile_g(")
     iterate_at = source.index("solution.run_calculation.iterate")
     assert apply_at < iterate_at
     assert "solver_log_*.txt is not" in source

@@ -66,9 +66,9 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-02 | Stop-reason fail-closed + solver skip 강화 | **before sweep** — 완료처럼 보이고 재실행되지 않는 유일한 경로. 둘은 한 작업 | Claude C2-17 C4-02 C4-09; Cursor T2-20 T4-02; Sol T2 `solver_code:3686-3749`; Astra A-07 C-02 | `scripts/solver_code_260616.py`; `scripts/batch_solver_sweep.py`; `src/ro/solver_common.py` (`STOP_REASON_VALUES`); `tests/test_batch_driver_outcomes.py` 및 solver stop-reason 테스트 | R-01 | WSL 2026-09-11 `1108 passed, 1 skipped, 0 failed`. stop-reason None → `stop_reason_determination_failed` + isolated write only + raise. RUNNING+finals → run. residual_converged+previous files+no cas/dat SHA → run. matching SHA+attempt id+allowed reason+mesh hash → skipped_existing. | COMPLETE |
 | R-06 | Inlet TUI 실패를 fatal로 | **before sweep** — 잘못된 inlet이 `Inlet BC set` + exit 0으로 남음 | Cursor T2-21; Sol T2 `solver_code:1204` | `scripts/solver_code_260616.py`; `tests/test_apply_inlet_velocity_boundary.py` | R-02 | WSL 2026-09-11 `1115 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). TUI except / TUI 무예외+불일치 readback / solver None / plug 불일치 → `RuntimeError`, `"Inlet BC set"` 없음. 성공 로그는 `vin` Settings readback이 요청값과 일치한 뒤에만. 워커 exit는 R-02. | COMPLETE |
 | R-03 | Solver-stage transient retry | **before sweep** — 가장 긴 세션에 retry가 없고, leftover finals는 R-02 없이는 2회차를 죽인다 | Claude T4 부수; Cursor T4-02; Astra C-02; extract 패턴 `efbced9` / `classify_retryable_report_failure` | `src/ro/session_retry.py` (신규); `scripts/batch_solver_sweep.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/batch_meshing.py` (socket 패턴 import); tests | R-02 | WSL 2026-09-11 `1131 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). socket / Scheme heap / launch-spawn (`LaunchFluentError`, `Deadline Exceeded`, `hwtree`, `Aborting:`) → 최대 3 attempt, 새 subprocess. residual/QoI/UDF/G/inlet readback/manifest → attempts==1. session 서명이 blob 어디에 있어도 wrapper보다 이김. attempt 로그는 `{geo}__{mesh}__{run}__solver_attemptN.log`. leftover RUNNING+files는 skip 아님 (R-02). | COMPLETE |
-| R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; `tests/test_mesh_skip.py`; `tests/test_rebuild_mesh_manifest.py` | R-01 | WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). msh만 / empty msh / invalid manifest / SHA mismatch / layout mismatch → skip 아님. msh+valid manifest+`mesh_sha256` 일치+현재 case layout 일치 → `skipped_existing`. `--from-log`는 log+`.msh.h5`+registry+run config로 payload 생성; 기존 manifest·로그 부재·x-extent 실패는 write 없음. `created_utc`/`generator_version`=`unrecoverable-from-log`, `inlet_profile_G`=null. workstation `--report-skip` 명령은 본문에 기록 (WSL은 `C:/ro_data` 없음). | COMPLETE |
-| R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `src/ro/extract_skip.py` (신규); `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/pyfluent_report_extract.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`); `tests/test_extract_skip.py` | R-03 | WSL 2026-09-11 `1169 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). CSV-only / sidecar 없음 / R-02 hash·attempt 없음 / file 또는 sidecar hash mismatch → skip 아님 (mtime은 보지 않음). matching sidecar+manifest hashes+file bytes → skip. extract/post FAILED 또는 aggregate write 실패 → exit ≠ 0; selected 0건은 0. listing `OSError` → 빈 트리로 성공하지 않음. `--skip-unreadable-manifests`는 계속 스캔하되 skipped leaf가 있으면 inventory exit ≠ 0. workstation `--report-skip` 명령은 본문에 기록 (WSL은 `C:/ro_data` 없음). | COMPLETE |
-| R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `scripts/solver_code_260616.py` (`apply_parsed_inlet_profile_g` / finalize); `src/ro/solver_common.py` (settings parse); tests | R-01; `run_id` 검사는 R-07 generator와 같은 parser | pytest: blocked ≠ 0.0 reject; mesh≠run blocked reject; `u_mean_ms * G != u_target_ms` reject (정의는 유지); `run_id` token ≠ `(u,p)` reject; malformed `max_iterations`는 default 대체 없이 raise; SHA mismatch reject. | NOT STARTED |
+| R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; `tests/test_mesh_skip.py`; `tests/test_rebuild_mesh_manifest.py` | R-01 | WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). msh만 / empty msh / invalid manifest / SHA mismatch / layout mismatch → skip 아님. msh+valid manifest+`mesh_sha256` 일치+현재 case layout 일치 → `skipped_existing`. `--from-log`는 log+`.msh.h5`+registry+run config로 payload 생성; 기존 manifest·로그 부재·x-extent 실패는 write 없음. `created_utc`/`generator_version`=`unrecoverable-from-log`, `inlet_profile_G`=null. **workstation 2026-09-11:** production 31/31 SKIP (sha+layout match); extra 13 SKIP / 2 RUN (`bl12_peel2`, `bl12_f015_peel2`, ~4.79 MB msh, no manifest, AR 251.9). | COMPLETE |
+| R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `src/ro/extract_skip.py` (신규); `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/pyfluent_report_extract.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`); `tests/test_extract_skip.py` | R-03 | WSL 2026-09-11 `1169 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). CSV-only / sidecar 없음 / R-02 hash·attempt 없음 / file 또는 sidecar hash mismatch → skip 아님 (mtime은 보지 않음). matching sidecar+manifest hashes+file bytes → skip. extract/post FAILED 또는 aggregate write 실패 → exit ≠ 0; selected 0건은 0. listing `OSError` → 빈 트리로 성공하지 않음. `--skip-unreadable-manifests`는 계속 스캔하되 skipped leaf가 있으면 inventory exit ≠ 0. **workstation 2026-09-11:** 0 SKIP / 19 RUN (3 no CSV, 13 pre-`lmh_mass_balance_signed_python`, 3 column+no sidecar). 19개는 campaign 아님; 재extract 안 함. | COMPLETE |
+| R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `src/ro/solver_common.py`; `scripts/solver_code_260616.py`; `configs/run_config.py`; `scripts/case_inventory.py`; `scripts/report_campaign_identities.py` (신규); `tests/test_campaign_identities.py` | R-01; `run_id` 검사는 R-07 `make_base_case_name` | WSL 2026-09-11 `1205 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). 스키마 `[0,1)` 유지 — 0.08은 `read_mesh_manifest` 통과, campaign gate만 exact 0.0. mesh≠run blocked reject. `u_mean_ms * G == u_target_ms` (rel 1e-6; `u_mean_ms` 정의 유지; D2450 `0.1992807169514518 * 1.00360939613 == 0.2`); unfilled G/`u_mean_ms`와 plug는 N/A. `run_id` token == `make_base_case_name(u,p)` (`u0p2_p6M_plug` 허용). SHA mismatch reject; msh 없으면 SHA N/A (preflight skip). malformed `max_iterations`/`residual_target`는 default 없이 raise. **C:/ro_data blast는 WSL에서 스캔 불가** — workstation 명령은 R-11 절. | COMPLETE |
 | R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `scripts/pyfluent_report_extract.py`; `src/ro/fluent_report_helpers.py`; tests | R-01 | pytest: `pp_area_mem` vs `pp_udm_area_sum` (rel_tol `1e-9`부터); `pp_pressure_drop_spacer` vs active-cell per-cell 합; CSV `pp_m_in_with_sources == pp_m_in + pp_m_in_mass_source` (inlet/outlet). physical flux 키는 `(without-sources)` 유지. | NOT STARTED |
 | R-13 | `Sin_ST` / `GEO_ORDER` leftover | **can wait** — `post_cases=[]`이면 geometries 리스트는 안 쓰이고, figures는 279 solver를 막지 않음 | Cursor T5-04 T5-05 (요청문이 명시한 Cursor-only 항목) | `configs/batch_post_config.py`; `scripts/make_summary_figures.py` | none | live config/figure 기본 순서에 archive `Sin_ST`/`Sin_SL`/`Empty`/`Diamond_Spacer` 없음. `CAMPAIGN_GEO_IDS` 또는 family 이름. | NOT STARTED |
 | R-10 | 세 dead gate blast radius 후 배선 | **before sweep** — 구현은 있고 배선만 없다. 기존 31을 거절하면 더 나쁘다 | Claude C5-02 C5-04 C5-05 C3-10; Astra A-05 (hash); Cursor는 layout validator를 T5-01로 이미 R-09에 넣음 | `src/ro/manifest_validation.py`; `src/ro/domain_layout.py`; `src/ro/campaign_geo_ids.py`; solver/extract preflight; `scripts/rebuild_mesh_manifest.py` SHA 로직 재사용; 이 파일 R-10 절에 blast 숫자 기록 | R-01; spacer Fluent 대조는 workstation. hash/legacy path는 `RO_DATA_ROOT` | 아래 R-10 절차. blast가 0 reject일 때만 wire. 하나라도 reject면 배선 중단하고 이 절에 목록을 남긴다. | NOT STARTED |
@@ -356,8 +356,15 @@ python scripts/batch_meshing.py --case-set production --report-skip
 
 `--report-skip`은 Fluent를 켜지 않는다. `--case-set`은 무시하고 항상 production
 31 + extra leaf. 각 줄: msh 존재/size, manifest ok/missing/invalid, SHA match,
-layout match, SKIP/RUN. 기대: 31 전부 SKIP. 옆으로 옮겨 둔 msh-only archive는
-extra RUN (manifest not usable)이어야 한다.
+layout match, SKIP/RUN.
+
+**workstation 2026-09-11 (Git Bash, `C:/ro_data`):** production **31/31 SKIP**,
+모든 leaf에서 sha=match · layout=match. R-07 generator가 기존 31 manifest와
+같다. extra **13 SKIP / 2 RUN**. RUN 두 leaf는
+`diamond/D2450_a45/max085_min006_cpg5_bl12_peel2`와
+`.../max085_min006_cpg5_bl12_f015_peel2` — AR gate 실패(AR 251.9),
+`.msh.h5` 약 4.79 MB, `manifest.json` 없음. msh-only를 skip하지 말라고
+R-04를 쓴 바로 그 상태.
 
 ### 포함하지 않음
 
@@ -477,6 +484,12 @@ attempt mismatch → skip 아님. matching sidecar+hashes는 CSV mtime이
 FAILED / write 실패 → exit 1. listing `OSError` → empty success 아님.
 unreadable manifest는 경로를 찍고, `--skip-unreadable-manifests`면 exit 1.
 stale extract + contours → `NEEDS_REPORT_EXTRACTION`, `POSTPROCESSED_*` 아님.
+
+**workstation 2026-09-11:** `batch_report_extract.py --report-skip` →
+**0 SKIP / 19 RUN**. 3개는 CSV 없음, 13개는 `lmh_mass_balance_signed_python`
+컬럼 이전 CSV, 3개는 컬럼은 있으나 sidecar 없음. 19개 전부 campaign 279가
+아니다 (Diamond grid study, REF_empty baseline, 당일 test run). 재extract
+하지 않음. sidecar 없는 leaf를 skip하지 않은 것이 R-05 계약.
 
 다음 행: **R-11**.
 
@@ -785,19 +798,49 @@ raise, match fixture에서 pass.
 ## R-11 — Campaign/solver 항등식
 
 스키마 일반 `[0,1)`를 campaign `== 0.0`으로 바꾸지 않는다 (Claude C3-04).
-campaign preflight / `validate_for_solver` 경로에만 exact 0.0.
+`_GEOMETRY_FIELDS` / `MESH_MANIFEST_REQUIRED_FIELDS`에 필드를 추가하지 않는다 —
+그게 `e493975`가 44 leaf 중 34에서 `read_mesh_manifest`를 막은 경로다.
+이미 있는 필드 위의 validator다.
 
-| 항등식 | 위치 | 허용오차 |
+| 항등식 | 위치 | 허용오차 / N/A |
 |---|---|---|
-| `membrane_blocked_area_frac == 0.0` | mesh+run campaign gate | exact |
-| mesh vs run 동명 필드 | extract/solver가 둘 다 읽기 전 | exact |
-| `u_mean_ms * inlet_profile_G == u_target_ms` | `apply_parsed_inlet_profile_g` / finalize | 기존 G 합의 `1e-6` relative와 맞춤. 정의 변경 금지 |
-| `run_id` ↔ `u_target_ms`,`p_gauge_pa` | manifest write, matrix generator (R-07과 같은 `make_base_case_name`) | exact token |
-| `mesh_sha256` ↔ `.msh.h5` | solver/extract preflight | exact hex |
-| `common_solver_settings`의 `max_iterations`/`residual_target` 파싱 | `solver_common.py:210-245` | 실패 시 default 대체 금지, raise (Claude C2-13, Cursor T2-30, Sol T2) |
+| `membrane_blocked_area_frac == 0.0` | mesh+run campaign gate (`write_worker`, solver preflight) | exact 0.0. `[0,1)` 안의 0.08/0.06/0.05는 스키마 pass, campaign reject (LMH +8.7/+6.4/+5.3%). 키 없음 → N/A |
+| mesh vs run 동명 필드 | solver preflight / `write_worker` | exact `!=`. solver LMH는 mesh manifest, run 경로는 registry. 한쪽 키 없음 → N/A |
+| `u_mean_ms * inlet_profile_G == u_target_ms` | `apply_parsed_inlet_profile_g` / finalize / preflight | rel `1e-6`. `u_mean_ms`는 legacy profile coefficient (재정의 금지). D2450_a45: `0.1992807169514518 * 1.00360939613 == 0.2`. plug / unfilled `u_mean_ms` / unfilled G → N/A |
+| `run_id` ↔ `(u,p)` | `write_worker`, preflight, `validate_for_solver` | R-07과 같은 `make_base_case_name`. token은 앞 두 `_` 조각 (`u0p2_p6M_plug` → `u0p2_p6M`) |
+| `mesh_sha256` ↔ `.msh.h5` | solver preflight (msh가 있을 때만) | exact hex. msh 없으면 SHA skip (restart / 파일 없는 historical). 리포트도 그때 N/A |
+| `max_iterations` / `residual_target` 파싱 | `solver_common.py`; inventory·residual report | 실패 시 default 대체 금지, raise (Claude C2-13). `batch_config.py` **파일 로드 실패**만 2000/1e-7 fallback |
+
+### 기존 artifact blast (R-10과 같은 규칙)
+
+유효한 역사 작업을 거절하는 gate는 없는 것만 못하다. pre-R-02 run은 이후
+필드가 없다. 그래서 unfilled G/`u_mean_ms`와 msh 없는 SHA는 **reject가 아니라
+N/A**다. 0.08을 스키마에서 못 읽게 만들면 campaign gate가 이름을 남기기도
+전에 `read_mesh_manifest`가 죽는다.
+
+WSL은 `C:/ro_data`를 보지 못한다. 15 run / 44 mesh leaf의 실제 REJECT 목록을
+여기서 숫자로 만들지 않는다. 워크스테이션:
+
+```text
+cd /c/pyfluent
+source .venv/Scripts/activate
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export RO_DATA_ROOT='C:/ro_data'
+export PYFLUENT_PROJECT_ROOT='C:/pyfluent'
+unset PYFLUENT_RUN_CONFIG PYFLUENT_SKIP_VALIDATION
+python scripts/report_campaign_identities.py
+```
+
+Fluent 없음. `RO_DATA_ROOT` 미설정은 raise. 각 leaf에 PASS/REJECT/N/A.
+campaign-valid leaf가 REJECT면 그 목록을 이 절에 남기고 gate를 되돌린다
+(R-10 규칙). 이 커밋은 그 스캔 없이 N/A 설계로 배선한다. R-04가 production
+31 mesh의 sha+layout match를 이미 확인했다.
 
 ### 포함하지 않음
 
+- extract SHA wire (helper는 있음; load-bearing은 solver preflight).
+- `u_mean_ms` 정의 변경.
+- 스키마 `[0,1)` 축소, required field 추가.
 - `pp_m_in ≈ rho*u*A` (Claude C3-09, NEEDS-ASTRA).
 - `periodic_shift_y` vs measured y (C3-08).
 - `cp_canon` 재구성 (Cursor T3-16).
@@ -805,7 +848,16 @@ campaign preflight / `validate_for_solver` 경로에만 exact 0.0.
 
 ### 검증
 
-각 항등식에 깨진 fixture 하나, 맞는 fixture 하나. Fluent 없음.
+WSL 2026-09-11 `1205 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
+blocked 0.08/0.06/0.05 reject, 0.0 pass, 키 없음 N/A. mesh≠run reject.
+`u_mean*G` mismatch reject, D2450 fixture pass, plug/unfilled N/A.
+`run_id` mismatch reject, `u0p2_p6M_plug`+(0.2, 6e6) pass.
+SHA mismatch reject, 파일 없음 reason 있음. malformed `max_iterations` /
+`residual_target` (bool, string, missing, non-dict) raise.
+0.08은 여전히 `read_mesh_manifest` 통과.
+
+다음 행: **R-12**.
 
 ---
 

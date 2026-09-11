@@ -21,6 +21,7 @@ from ro.mesh_common import (
     make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
 )
 from ro import paths as ro_paths
+from ro.solver_common import require_run_id_matches_operating_point
 
 REQUIRED = "===== Edit here ====="
 
@@ -708,6 +709,11 @@ def validate_for_solver():
 
     _require_positive_number("operating_pressure", operating_pressure)
     _require_nonnegative_number("outlet_gauge_pressure", outlet_gauge_pressure)
+    require_run_id_matches_operating_point(
+        run_id,
+        inlet_velocity_value,
+        outlet_gauge_pressure,
+    )
 
     _require_set("template_case_file_name", template_case_file_name)
     _require_set("udf_source_file_name", udf_source_file_name)

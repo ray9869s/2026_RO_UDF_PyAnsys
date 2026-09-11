@@ -119,6 +119,7 @@ def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     run_cfg.run_id = "u0p2_p6M"
     run_cfg.mesh_case_name = mesh_cfg.case_name
     run_cfg.inlet_velocity_value = 0.2
+    run_cfg.outlet_gauge_pressure = 6.0e6
     run_paths = solver.resolve_solver_paths(run_cfg)
     run_paths["run_directory"].mkdir(parents=True)
 
@@ -389,3 +390,11 @@ def test_solver_x_extent_preflight_precedes_fluent_launch():
     preflight = source.index("require_mesh_manifest_x_extent_matches_layout(")
     first_launch = source.index("pyfluent.launch_fluent(")
     assert preflight < first_launch
+
+
+def test_solver_campaign_sha_preflight_precedes_fluent_launch():
+    source = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    x_extent = source.index("require_mesh_manifest_x_extent_matches_layout(")
+    sha = source.index("require_mesh_sha256_matches_file(")
+    first_launch = source.index("pyfluent.launch_fluent(")
+    assert x_extent < sha < first_launch
