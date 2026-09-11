@@ -385,12 +385,42 @@ def parse_batch_solver_sweep_cli(argv=None):
         choices=CASE_SET_CHOICES,
         default=CASE_SET_EXPLORATORY,
         help=(
-            "exploratory: solver_sweep_cases (currently 5). "
+            "exploratory: solver_sweep_cases (currently 7). "
             "production: production_solver_sweep_cases (279). "
             "Default exploratory so existing batch runs cannot launch 279 solves."
         ),
     )
+    parser.add_argument(
+        "--geo-id",
+        action="append",
+        dest="geo_ids",
+        default=None,
+        metavar="GEO_ID",
+        help=(
+            "Restrict the selected case-set to these geo_id values. "
+            "Repeatable. Omitted: run the whole case-set. "
+            "A geo_id that is not in the case-set is an error, not an empty sweep."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def filter_solver_cases_by_geo_id(cases, geo_ids):
+    """Keep case-set order. Empty/None geo_ids leaves the list unchanged."""
+    if not geo_ids:
+        return list(cases)
+    requested = list(dict.fromkeys(geo_ids))
+    wanted = set(requested)
+    selected = [case for case in cases if case["geo_id"] in wanted]
+    found = {case["geo_id"] for case in selected}
+    missing = [geo_id for geo_id in requested if geo_id not in found]
+    if missing:
+        available = sorted({case["geo_id"] for case in cases})
+        raise ValueError(
+            "--geo-id not in the selected case-set: "
+            f"{missing}. available={available}."
+        )
+    return selected
 
 
 def main(argv=None):
@@ -411,11 +441,14 @@ def main(argv=None):
         "post_failure_settle_s",
         SOLVER_POST_FAILURE_SETTLE_S,
     )
-    solver_sweep_cases = cases_for_case_set(
-        batchcfg,
-        cli_args.case_set,
-        exploratory_attr="solver_sweep_cases",
-        production_attr="production_solver_sweep_cases",
+    solver_sweep_cases = filter_solver_cases_by_geo_id(
+        cases_for_case_set(
+            batchcfg,
+            cli_args.case_set,
+            exploratory_attr="solver_sweep_cases",
+            production_attr="production_solver_sweep_cases",
+        ),
+        cli_args.geo_ids,
     )
     assert_selected_cases_are_not_legacy_ml(solver_sweep_cases)
     require_explicit_inlet_velocity_profile(
@@ -431,6 +464,8 @@ def main(argv=None):
     total = len(solver_sweep_cases)
     print(f"\n{'='*72}")
     print(f"BATCH SOLVER SWEEP: {total} case(s)  case_set={cli_args.case_set}")
+    if cli_args.geo_ids:
+        print(f"geo_id filter: {list(dict.fromkeys(cli_args.geo_ids))}")
     print(f"dry_run={dry_run}  continue_on_failure={continue_on_failure}  skip_existing_final_data={skip_existing_final_data}")
     print(
         f"transient_failure_max_retries={transient_failure_max_retries}  "

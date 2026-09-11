@@ -225,7 +225,7 @@ All `_probe_*`, `_tmp_*`, and `scripts/analysis/*` (section 1.3). Nothing in `ba
 ### 4.6 Confusing for a fresh reader
 
 - Header comments in `batch_meshing.py` / `batch_solver_sweep.py` still say `My_CFD_Project/01_Scripts/...`.
-- `configs/batch_config.py` holds two distinct matrices. Exploratory `mesh_batch_cases` is 22 meshes (3 ML + 9 pillar + 9 sin + `REF_empty`, **diamond 0**) and `solver_sweep_cases` is 5 (`REF_empty` u0p2/u0p3 p6M, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3). Production `production_mesh_batch_cases` is the 31 campaign geos (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) and `production_solver_sweep_cases` is 31 × 9 = 279. Default batch entrypoints stay exploratory; `--case-set production` is required to launch the 279.
+- `configs/batch_config.py` holds two distinct matrices. Exploratory `mesh_batch_cases` is 22 meshes (3 ML + 9 pillar + 9 sin + `REF_empty`, **diamond 0**) and `solver_sweep_cases` is 7 (`REF_empty` u0p2/u0p3 p6M, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3, `D0817_a60`/`D0817_a30` u0p2_p6M). Production `production_mesh_batch_cases` is the 31 campaign geos (9 diamond + 3 ML + 9 pillar + 9 sin + `REF_empty`) and `production_solver_sweep_cases` is 31 × 9 = 279. Default batch entrypoints stay exploratory; `--case-set production` is required to launch the 279. `--geo-id` restricts the selected case-set.
 - Dual metadata filenames (`manifest.json` + `mesh_run_record.json`) without a single glossary in code.
 - Orchestrators take `--family --geo-id --mesh-id --run-id`; workers still accept `--geo-name` / `--case-name` as **filename labels** equal to those ids (post) or via overrides JSON (solve/mesh).
 - `needs_lead_recheck` is written and validated but **never read** by any post/solve script to change behaviour (see §6).
@@ -343,4 +343,4 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
    Fresh-start diagnostic hardcodes archive-derived scalars; no automated archive→four-id importer. Recovering other archive cases is manual.
 
 10. **Solver sweep list is two named sets**  
-    Exploratory `mesh_batch_cases` is 22 (no Diamond); `solver_sweep_cases` is 5. Production is `production_mesh_batch_cases` (31) and `production_solver_sweep_cases` (279). `python scripts/batch_solver_sweep.py` without `--case-set production` cannot launch 279.
+    Exploratory `mesh_batch_cases` is 22 (no Diamond); `solver_sweep_cases` is 7. Production is `production_mesh_batch_cases` (31) and `production_solver_sweep_cases` (279). `python scripts/batch_solver_sweep.py` without `--case-set production` cannot launch 279.

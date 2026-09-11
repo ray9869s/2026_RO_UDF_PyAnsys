@@ -129,3 +129,19 @@ class TestBatchReportExtractNaming:
         assert resolved["case_name"] == "u0p1_p4M"
         assert resolved["base_case_name"] == "u0p1_p4M"
 
+    def test_resolve_post_case_forwards_four_ids_for_run_dir(self, report_batch):
+        resolved = report_batch.resolve_post_case(
+            {
+                "family": "diamond",
+                "geo_id": "D0817_a60",
+                "mesh_id": "max060_min006_cpg5_bl4_peel2",
+                "run_id": "u0p2_p6M",
+            }
+        )
+        assert resolved["family"] == "diamond"
+        assert resolved["geo_id"] == "D0817_a60"
+        assert resolved["mesh_id"] == "max060_min006_cpg5_bl4_peel2"
+        assert resolved["run_id"] == "u0p2_p6M"
+        assert resolved["geo_name"] == "D0817_a60"
+        assert resolved["case_name"] == "u0p2_p6M"
+

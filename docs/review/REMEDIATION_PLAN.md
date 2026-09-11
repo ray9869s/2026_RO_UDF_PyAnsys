@@ -71,7 +71,7 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `src/ro/solver_common.py`; `scripts/solver_code_260616.py`; `configs/run_config.py`; `scripts/case_inventory.py`; `scripts/report_campaign_identities.py` (신규); `tests/test_campaign_identities.py` | R-01; `run_id` 검사는 R-07 `make_base_case_name` | WSL 2026-09-11 `1205 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). 스키마 `[0,1)` 유지 — 0.08은 `read_mesh_manifest` 통과, campaign gate만 exact 0.0. mesh≠run blocked reject. `u_mean_ms * G == u_target_ms` (rel 1e-6; `u_mean_ms` 정의 유지; D2450 `0.1992807169514518 * 1.00360939613 == 0.2`); unfilled G/`u_mean_ms`와 plug는 N/A. `run_id` token == `make_base_case_name(u,p)` (`u0p2_p6M_plug` 허용). SHA mismatch reject; msh 없으면 SHA N/A (preflight skip). malformed `max_iterations`/`residual_target`는 default 없이 raise. **workstation 2026-09-11:** mesh 44 unread=0 / run 19 unread=0, 모든 identity 0 reject. | COMPLETE |
 | R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `src/ro/fluent_report_helpers.py`; `scripts/pyfluent_report_extract.py`; `scripts/report_extract_identities.py` (신규); `tests/test_extract_identities.py` | R-01 | WSL 2026-09-11 `1223 passed, 1 skipped, 0 failed`. CSV 키는 `area_mem`/`m_in`/`m_in_with_sources`/`m_in_mass_source`/`pressure_drop_spacer` (V-01; `pp_` report 이름 아님). missing key는 N/A이지 0이 아님. area rel `1e-9` (REF_empty 측정 1.8e-15). flux 3-key exact + compute `abs_tol` 1e-8. spacer dP vs active-cell 합은 내부 plane 상쇄로 대수적 항등식 (rel 1e-6 numerical floor). `LOAD_BEARING_SUMMARY_METRICS` 미변경. **workstation 2026-09-11:** run 19 unread=0 no_csv=3; area/flux_in/flux_out/spacer_dp reject 0. CSV 16: area+spacer PASS; flux 3 PASS / 13 N/A. | COMPLETE |
 | R-13 | `Sin_ST` / `GEO_ORDER` leftover | **can wait** — `post_cases=[]`이면 geometries 리스트는 안 쓰이고, figures는 279 solver를 막지 않음 | Cursor T5-04 T5-05 (요청문이 명시한 Cursor-only 항목) | `configs/batch_post_config.py`; `scripts/make_summary_figures.py`; `src/ro/campaign_geo_ids.py` (`CAMPAIGN_GEO_ID_ORDER`); `tests/test_summary_figure_geo_order.py` | none | WSL 2026-09-11 `1228 passed, 1 skipped, 0 failed`. live `geometries`/`GEO_ORDER` == `CAMPAIGN_GEO_ID_ORDER` (31, `REF_empty` first). 두 파일에 archive `Sin_ST`/`Sin_SL`/`Empty`/`Diamond_Spacer`/`Hole_Pillar`/`Multi_Layer_*` 없음. | COMPLETE |
-| R-10 | 세 dead gate blast radius 후 배선 | **before sweep** — 구현은 있고 배선만 없다. 기존 31을 거절하면 더 나쁘다 | Claude C5-02 C5-04 C5-05 C3-10; Astra A-05 (hash); Cursor는 layout validator를 T5-01로 이미 R-09에 넣음 | `src/ro/campaign_geo_ids.py`; `src/ro/domain_layout.py`; `src/ro/manifest_validation.py`; `scripts/batch_meshing.py`; `scripts/batch_solver_sweep.py`; `scripts/report_legacy_ml_paths.py`; `scripts/report_replace_log_identities.py`; `scripts/report_spacer_wall_zones.py`; `tests/test_dead_gates.py` | R-01; spacer Fluent 대조는 workstation. hash/legacy path는 `RO_DATA_ROOT` | WSL 2026-09-11 `1252 passed, 1 skipped, 0 failed`. **wired:** selected-case `M_r*` seatbelt only (production/exploratory lists 0 reject by construction). **not wired:** data-root tree walk; replace-log (explicit campaign triple inspect exists, live caller 없음); spacer vs Fluent (log parser exists, live session 없음). SHA는 R-11 solver preflight. 19-leaf 숫자는 WSL에서 스캔 불가 — 명령은 R-10 절. | COMPLETE |
+| R-10 | 세 dead gate blast radius 후 배선 | **before sweep** — 구현은 있고 배선만 없다. 기존 31을 거절하면 더 나쁘다 | Claude C5-02 C5-04 C5-05 C3-10; Astra A-05 (hash); Cursor는 layout validator를 T5-01로 이미 R-09에 넣음 | `src/ro/campaign_geo_ids.py`; `src/ro/domain_layout.py`; `src/ro/manifest_validation.py`; `scripts/batch_meshing.py`; `scripts/batch_solver_sweep.py`; `scripts/solver_code_260616.py`; `scripts/report_legacy_ml_paths.py`; `scripts/report_replace_log_identities.py`; `scripts/report_spacer_wall_zones.py`; `tests/test_dead_gates.py` | R-01; spacer Fluent 대조는 workstation. hash/legacy path는 `RO_DATA_ROOT` | WSL 2026-09-11 `1252 passed, 1 skipped, 0 failed`. **wired:** selected-case `M_r*` seatbelt only. **not wired:** data-root tree walk; replace-log; spacer vs Fluent. SHA는 R-11. **workstation 2026-09-12:** legacy `campaign_tree_legacy=0`, `_archive` 둘 `PRESENT_OUT_OF_SCOPE`; replace-log run 19 pass=19 reject=0 not_checked=0; spacer mesh 44 registry_reject=0, run 19 `NO_LINE=19` PASS=0. Zone lists now append to `solver_log_*.txt`; gate stays unwired until pilots have those lines. Exploratory solver list is 7 (`D0817_a60`/`D0817_a30` u0p2_p6M). `--geo-id` filters the case-set. | COMPLETE |
 
 ---
 
@@ -792,11 +792,12 @@ prefix에도 안 걸린다. 전역 hard gate를 깔면 archive 공존이 유효 
 **wired:** `assert_selected_cases_are_not_legacy_ml` — 선택된 case의
 `geo_id` prefix만. `batch_meshing.py` / `batch_solver_sweep.py`가 case list
 확정 직후 1회. data root를 걷지 않으므로 `_archive`와 무관.
-증거: exploratory 22 / production 31 mesh, exploratory 5 / production 279
+증거: exploratory 22 / production 31 mesh, exploratory 7 / production 279
 solver의 geo_id가 전부 `CAMPAIGN_GEO_IDS` (0 reject).
 
-**not wired:** 세 tree walk 자체. C:/ro_data 위 campaign-tree `M_r*` 개수는
-이 머신에서 UNKNOWN.
+**not wired:** 세 tree walk 자체. **workstation 2026-09-12:**
+`campaign_tree_legacy=0`. archive `_archive/ml_pre_wedge_rule` 과
+`_archive/sin_a193_l1733_pre_gate` 는 `PRESENT_OUT_OF_SCOPE`.
 
 ```text
 python scripts/report_legacy_ml_paths.py
@@ -816,8 +817,10 @@ Astra V-05 / A-05: **현 함수 그대로 hard gate 배선 반대.** 잘못된 �
 파일 `solver_mesh_replace_log_{run_id}.txt`만 읽고,
 `meshes/{family}/{geo_id}/{mesh_id}/` triple이 manifest와 같을 때만 PASS.
 없으면 NOT_CHECKED. unreadable / 비-campaign path / geo mismatch는 REJECT.
-solver/extract에 호출하지 않음 — 19 leaf 실제 PASS/REJECT는 UNKNOWN.
-replacement **이후**에만 의미가 있고, SHA는 R-11이 담당.
+solver/extract에 호출하지 않음. **workstation 2026-09-12:** run 19
+not_checked=0 pass=19 reject=0 unread=0. blast radius of wiring the
+inspect on those 19 is 0 reject. Still not wired: not byte identity, SHA
+is R-11, replacement **이후**에만 의미가 있다.
 
 ```text
 python scripts/report_replace_log_identities.py
@@ -831,15 +834,19 @@ boundary face **count** (diamond 11, ml 15, pillar h00 13, h15/h30 14, sin
 13, REF_empty 10; 44 leaf 일치)는 라벨 비교가 아니다.
 
 solver는 setup에서 Python으로 `All boundary zones:` 와
-`Detected spacer wall zones:` 를 print한다. Fluent transcript
-(`solver_log_*.txt`)가 아니라 **stdout / attempt tee**
-(`{geo}__{mesh}__{run}__solver_attemptN.log`)에 남는다. 그 줄이 19 run log에
-있으면 post-hoc blast가 공짜다. 없으면 N/A이지 REJECT가 아니다.
+`Detected spacer wall zones:` 를 print한다. Fluent transcript는 그
+print를 담지 않는다. **workstation 2026-09-12:** mesh 44
+registry_reject=0 (manifest↔registry, Fluent 증거가 아님). run 19
+`NO_LOG=0` `NO_LINE=19` `PASS=0` `REJECT=0`. 로그 파일은 있고 게이트가
+읽는 두 줄은 없다.
+
+`print_meshing_input_summary`와 같이, worker가 같은 두 줄을
+`solver_log_{case_name}.txt`에 append한다. stdout print는 유지.
+`validate_spacer_wall_zones`는 **still not wired** — 그 줄이 있는
+pilot run이 나온 뒤 `report_spacer_wall_zones.py`로 blast를 보고 결정.
+
 `All boundary zones: []` 는 REF_empty도 REJECT (discovery 실패를 빈
 declared list로 통과시키지 않음).
-
-**not wired.** live session 또는 19 log의 실제 줄 존재가 UNKNOWN.
-parser (`inspect_solver_log_spacer_zones`)와 리포트만 추가.
 
 ```text
 python scripts/report_spacer_wall_zones.py
@@ -882,6 +889,33 @@ replace-log: missing NOT_CHECKED, campaign triple PASS, 다른 geo / mesh_id-onl
 / unreadable REJECT. spacer: print parse PASS, empty inventory REJECT,
 줄 없음 NO_LINE. batch driver는 selected-case만 호출하고 세 dead gate를
 solver에 넣지 않음.
+
+**workstation 2026-09-12** (`d51afce` pull, Git Bash, `C:/ro_data`):
+
+- legacy: `campaign_tree_legacy=0`; 두 `_archive` `PRESENT_OUT_OF_SCOPE`.
+- replace-log: run 19 pass=19 reject=0 not_checked=0 unread=0.
+- spacer: mesh 44 registry_reject=0; run 19 `NO_LINE=19` PASS=0 REJECT=0
+  UNREADABLE=0. `S_a193_l1733` curvature warn은 acknowledged set.
+
+### 2026-09-12 follow-up (새 행 아님)
+
+`solver_code_260616.py`가 zone 두 줄을 `solver_log_{case_name}.txt`에
+append. `validate_spacer_wall_zones`는 그대로 미배선.
+
+exploratory `solver_sweep_cases`에 V-06 pilot 두 개 (u=0.2, p6M, 기존 8키):
+
+- `D0817_a60` / `max060_min006_cpg5_bl4_peel2`
+- `D0817_a30` / `max085_min006_cpg5_bl4_peel2`
+
+`batch_solver_sweep.py --geo-id`가 case-set을 줄인다. 없는 geo_id는 빈
+sweep이 아니라 error. `--case-set production`과 같이 쓰면 그 geo의 9 OP가
+뜬다 — pilot은 default exploratory만.
+
+extract는 `batch_post_config.py` `post_cases` 두 줄 (four-id). 빈
+`post_cases`는 run-manifest 전체(기존 19)를 연다. `resolve_post_case`가
+family/geo_id/mesh_id/run_id를 넘긴다. 커밋된 `post_cases`는 `[]`.
+
+WSL 2026-09-12 `1257 passed, 1 skipped, 0 failed`.
 
 다음 행: 표에 남은 R 행 없음. 아래 Deferred mechanical / Open questions /
 V-04 승격 항목.
@@ -1088,10 +1122,15 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
    벗어나면 `G=1.0` fallback + warning이고 성공 marker가 안 나와 C1-06이 run을
    세운다. `D0817_a60`만 `m_max=0.060`이라 inlet tessellation이 다르다.
    Diamond 전 범위를 이 band가 덮는지, geometry별 band가 필요한지.
+   **측정 (2026-09-12):** exploratory `D0817_a60` `u0p2_p6M` full solve
+   (`--geo-id D0817_a60`). band는 유지. G halt는 결과이지 a30 blocker가 아님.
 2. **30-cell layout vs Fluent report/surface 한도.** extract는
    `range(n_unit_cells+1)`로 동적 생성 (crash하는 Python index는 세 패스 모두
    못 찾음). 정의 수 ~215, Astra C-05의 135 definitions = 736 s를 선형 외삽하면
    ~1170 s. 실제 한도/시간은 live Fluent (Claude C1-08, Sol T1-07, Cursor T1-08).
+   **측정 (2026-09-12):** exploratory `D0817_a30` `u0p2_p6M` solve 후 extract
+   1회. 3회 반복은 1회 결과를 본 뒤. 한 번 성공이 scale vs transient를
+   가르지 않음. scientific validation 아님.
 3. **CP discriminability와 near-wall mesh.** 0.6% between-geometry vs grid
    dependence, Sc ~600–700, 4 prism / 첫 cell ~6.2 µm (Astra B-04, B-08).
 4. **empty-channel dP vs analytic plane Poiseuille.** u=0.2에서 2.6%, u=0.3에서
@@ -1244,6 +1283,13 @@ CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 works
 |---|---|---|
 | `INLET_G_MAX=1.02`가 모든 mesh를 덮는가 | **band 변경은 필요하다고 입증되지 않았다. 유지한다.** 두 측정 `1.00360939613`, `1.003612623`은 강한 근거이나 `D0817_a60`을 포함한 전31개 증명은 아니다. fail-closed이므로 곧바로 silent corruption은 아니지만 unattended 279의 준비 완료에는 미확인 항목이다. | 먼저 `D0817_a60`의 실제 mesh/UDF로 initialization 및 profile hook이 평가될 최소 단계까지만 실행해 **current-attempt** G success marker, inlet area, physical boundary flux를 기록한다. 31 setup-only qualification에 같은 검사를 묶는다. 전체 solve/새 mesh는 필요하지 않다. out-of-band이면 marker/area/hook/좌표·units를 조사하며 band부터 넓히지 않는다. 실제 G는 **UNKNOWN — live Fluent 필요**. |
 | 30-cell Fluent report/surface 한도인가 | **전체 unattended sweep 전 운영 검증을 막는다.** 한 Scheme fault로 hard limit라고 단정할 수도, unrelated transient라고 치부할 수도 없다. | `D0817_a30`에서 실제 production flags로 create→compute→segmented CP→CSV까지 한 번 완주시키고, fresh session으로 최소 3회 반복하여 중간 크기/10-cell control과 phase·peak memory·resident objects·cleanup·retry 기록을 비교한다. 기존 solved pair가 없다면 작은 pilot으로 유효한 field data를 먼저 만들며 이 실행을 scientific validation으로 세지 않는다. 반복 성공은 hard cap 가설에 반증을 주지만 낮은 crash probability까지 증명하지는 않는다. 실패가 크기/특정 phase와 재현되면 settings calls/동시 object 수를 줄인 경로를 검증한 뒤 시작한다. 실제 원인은 **UNKNOWN — live Fluent 필요**. |
+
+**2026-09-12 pilots (Open questions 1–2, 새 행 아님).** V-06의 G 최소 경로는
+setup-only이나, a30 field data와 spacer log 줄을 같은 solve에서 남기려고
+둘 다 full solve로 둔다. 순서: a60 solve → a30 solve (a60 G halt여도 a30은
+max085이라 독립) → `post_cases` 두 leaf extract 각 1회 →
+`report_spacer_wall_zones.py`. a30 extract 2–3회는 1회 결과를 본 뒤.
+`INLET_G_MAX` 유지. production sweep 아님.
 | pressure-relaxation 적용 실패 시 abort | **명시적으로 requested한 active setting의 확인 실패는 before sweep에 abort하도록 정한다.** 모든 non-`APPLIED_CONFIRMED`를 일괄 abort하는 Claude 처방은 과도하다. | 현재 campaign의 exact solver mode/profile로 setup까지만 실행해 requested/before/after/status를 durable하게 저장한다. `conservative`/`strong`의 `explicit_pressure_under_relaxation`, momentum, 적용 대상 species setting은 expected exact set를 구성하고 confirmed readback을 require한다. `baseline`, 명시적 `preserve`는 적용 실패가 아니며 actual effective state를 기록한다. verbosity는 diagnostic이므로 failure가 solver를 막을 이유가 없다. setting이 그 mode에 실제로 미적용 대상이면 사전에 명시적으로 NOT_APPLICABLE로 승인·기록하고, discovery 실패를 NOT_APPLICABLE로 바꾸지 않는다. 필요한 API/mode 지원 여부는 **UNKNOWN — live Fluent readback 필요**. |
 
 pressure-relaxation의 이유는 “URF가 다르면 반드시 최종 물리가 달라진다”는 주장이 아니다. 현재 종료 기준과 finite iteration budget 아래서 지정한 protocol을 실제로 실행했는지 알 수 없기 때문이다. 해결을 위해 279개를 비교 solve할 필요는 없다. 기존 `set_and_verify_leaf`의 readback outcome을 **필수 항목 목록과 대조하고 저장**하면 된다. `SKIPPED_SPECIES_UNAVAILABLE`를 species가 필요한 campaign에서 자동 성공으로 인정하지 않는다. 이 판단에 따라 “URF abort는 deferred” 문구를 위 범위에 한해 철회한다.

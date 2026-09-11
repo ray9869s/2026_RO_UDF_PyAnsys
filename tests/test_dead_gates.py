@@ -78,3 +78,26 @@ def test_spacer_report_no_log_is_not_reject(monkeypatch, tmp_path, capsys):
     assert "registry=PASS" in out
     assert "log=NO_LOG" in out
     assert "REJECT=0" in out
+
+
+def test_solver_appends_zone_lists_to_solver_log(tmp_path):
+    from helpers import load_solver_code
+    from ro.manifest_validation import inspect_solver_log_spacer_zones
+
+    solver = load_solver_code("zone_discovery_log_append")
+    log_path = tmp_path / "solver_log_u0p2_p6M.txt"
+    log_path.write_text("Fluent transcript without Python prints\n", encoding="utf-8")
+    solver.append_zone_discovery_to_solver_log(
+        log_path,
+        ["inlet", "outlet", "wall_spacer"],
+        ["wall_spacer"],
+    )
+    text = log_path.read_text(encoding="utf-8")
+    status, reason = inspect_solver_log_spacer_zones(
+        text, declared_zones=["wall_spacer"], geo_id="D2450_a45"
+    )
+    assert status == "PASS"
+    assert reason is None
+    source = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    assert "append_zone_discovery_to_solver_log(" in source
+    assert "validate_spacer_wall_zones(" not in source

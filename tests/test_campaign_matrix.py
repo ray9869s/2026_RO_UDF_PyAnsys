@@ -41,7 +41,7 @@ def batchcfg():
 
 def test_exploratory_lists_are_unchanged(batchcfg):
     assert len(batchcfg.mesh_batch_cases) == 22
-    assert len(batchcfg.solver_sweep_cases) == 5
+    assert len(batchcfg.solver_sweep_cases) == 7
     families = Counter(case["family"] for case in batchcfg.mesh_batch_cases)
     assert families == {"ml": 3, "pillar": 9, "sin": 9, "empty": 1}
     assert all(case["family"] != "diamond" for case in batchcfg.mesh_batch_cases)
@@ -180,8 +180,42 @@ def test_default_case_set_is_exploratory(batchcfg):
         exploratory_attr="solver_sweep_cases",
         production_attr="production_solver_sweep_cases",
     )
-    assert len(exploratory_solver) == 5
+    assert len(exploratory_solver) == 7
     assert len(production_solver) == 279
+
+
+def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
+    by_geo = {case["geo_id"]: case for case in batchcfg.solver_sweep_cases}
+    assert by_geo["D0817_a60"]["mesh_id"] == PRODUCTION_MESH_ID_D0817_A60
+    assert by_geo["D0817_a60"]["run_id"] == "u0p2_p6M"
+    assert by_geo["D0817_a60"]["inlet_velocity_value"] == pytest.approx(0.2)
+    assert by_geo["D0817_a60"]["outlet_gauge_pressure"] == pytest.approx(6.0e6)
+    assert by_geo["D0817_a30"]["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
+    assert by_geo["D0817_a30"]["run_id"] == "u0p2_p6M"
+    assert by_geo["D0817_a30"]["inlet_velocity_value"] == pytest.approx(0.2)
+    geos = [case["geo_id"] for case in batchcfg.solver_sweep_cases]
+    assert geos.index("D0817_a60") < geos.index("D0817_a30")
+
+
+def test_geo_id_filter_keeps_case_set_order_and_refuses_unknown():
+    sweep = load_batch_solver_sweep()
+    cases = [
+        {"geo_id": "D0817_a60", "run_id": "u0p2_p6M"},
+        {"geo_id": "D0817_a30", "run_id": "u0p2_p6M"},
+        {"geo_id": "REF_empty", "run_id": "u0p2_p6M"},
+    ]
+    assert sweep.filter_solver_cases_by_geo_id(cases, None) == cases
+    selected = sweep.filter_solver_cases_by_geo_id(
+        cases, ["D0817_a30", "D0817_a60", "D0817_a60"]
+    )
+    assert [case["geo_id"] for case in selected] == ["D0817_a60", "D0817_a30"]
+    with pytest.raises(ValueError, match="not in the selected case-set"):
+        sweep.filter_solver_cases_by_geo_id(cases, ["D2450_a45"])
+    args = sweep.parse_batch_solver_sweep_cli(
+        ["--geo-id", "D0817_a60", "--geo-id", "D0817_a30"]
+    )
+    assert args.geo_ids == ["D0817_a60", "D0817_a30"]
+    assert sweep.parse_batch_solver_sweep_cli([]).geo_ids is None
 
 
 def test_production_solver_cases_pass_inlet_profile_gate(batchcfg):

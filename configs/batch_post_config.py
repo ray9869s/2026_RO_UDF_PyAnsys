@@ -49,7 +49,8 @@ case_prefix = ""
 # entries directly instead of generating geometries x velocities x pressures.
 #
 # Each entry may include:
-#   geo_name               (required)
+#   family, geo_id, mesh_id, run_id  (required to locate runs/{family}/...)
+#   geo_name               (optional; defaults to geo_id)
 #   case_name              (optional; used as-is when given)
 #   base_case_name         (optional; case_name = base_case_name + "__" + mesh_case_name)
 #   mesh_case_name         (optional; qualifies the derived case_name)
@@ -57,10 +58,14 @@ case_prefix = ""
 #   outlet_gauge_pressure  (optional)
 #   final_case_file        (optional explicit path; otherwise derived from case_name)
 #   final_data_file        (optional explicit path; otherwise derived from case_name)
+#
+# geo_id + run_id alone cannot resolve the leaf. Four ids are required.
 
 post_cases = [
     # {
+    #     "family": "diamond",
     #     "geo_id": "D2450_a45",
+    #     "mesh_id": "max085_min006_cpg5_bl4_peel2",
     #     "run_id": "u0p2_p6M",
     # },
 ]

@@ -96,6 +96,7 @@
 # result, and the four bad CAD files may still be mid-repair.
 # ---------------------------------------------------------------------------
 from ro.campaign_matrix import (
+    PRODUCTION_MESH_ID_D0817_A60,
     build_production_mesh_batch_cases,
     build_production_solver_sweep_cases,
 )
@@ -394,7 +395,8 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: REF_empty baselines, D2450_a45 p8M CP-grid pair, D0817_a45 u=0.3 dip.
+# Solver: REF_empty baselines, D2450_a45 p8M CP-grid pair, D0817_a45 u=0.3 dip,
+# plus D0817_a60 / D0817_a30 u0p2_p6M pilots (G band on m_max 0.060; 30-cell extract).
 # skip_existing_final_data skips the two REF_empty finals.
 # Field names match the historical D2450_a45 solver_sweep_cases dict
 # (5931dcc): family, geo_id, mesh_id, run_id, geo_name, case_name,
@@ -452,11 +454,31 @@ solver_sweep_cases = [
         "inlet_velocity_value": 0.3,
         "outlet_gauge_pressure": 6.0e6,
     },
+    {
+        "family": "diamond",
+        "geo_id": "D0817_a60",
+        "mesh_id": PRODUCTION_MESH_ID_D0817_A60,
+        "run_id": "u0p2_p6M",
+        "geo_name": "D0817_a60",
+        "case_name": "u0p2_p6M",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+    },
+    {
+        "family": "diamond",
+        "geo_id": "D0817_a30",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p2_p6M",
+        "geo_name": "D0817_a30",
+        "case_name": "u0p2_p6M",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+    },
 ]
 
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
 # --case-set production entrypoint. mesh_batch_cases (22) and
-# solver_sweep_cases (5) stay the exploratory lists used by default.
+# solver_sweep_cases (7) stay the exploratory lists used by default.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(

@@ -291,9 +291,13 @@ def resolve_post_case(entry):
 
     return {
         "geo_name": geo_name,
+        "geo_id": entry.get("geo_id") or geo_name,
+        "family": entry.get("family"),
+        "mesh_id": entry.get("mesh_id"),
+        "run_id": entry.get("run_id") or case_name,
         "case_name": case_name,
         "base_case_name": base_case_name,
-        "mesh_case_name": mesh_case_name,
+        "mesh_case_name": mesh_case_name or entry.get("mesh_id"),
         "inlet_velocity_value": inlet_velocity_value,
         "outlet_gauge_pressure": outlet_gauge_pressure,
         "final_case_file": entry.get("final_case_file"),

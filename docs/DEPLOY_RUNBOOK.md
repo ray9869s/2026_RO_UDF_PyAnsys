@@ -142,7 +142,7 @@ The nine-point production sweep (`u` = 0.1/0.2/0.3 × `p` = 4/6/8 MPa, 31 × 9 =
 
 `python scripts/batch_solver_sweep.py --case-set production`
 
-Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently five: two `REF_empty`, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3). Do not point the default entrypoint at 279.
+Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently seven: two `REF_empty`, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3, plus `D0817_a60`/`D0817_a30` u0p2_p6M pilots). Do not point the default entrypoint at 279. Use `--geo-id` to run one exploratory leaf without the other six.
 
 Production mesh leaves look like
 

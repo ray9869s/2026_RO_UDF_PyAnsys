@@ -781,6 +781,27 @@ def collect_boundary_zones(setup):
     return zones_by_type
 
 
+def zone_discovery_log_text(boundary_zone_names, wall_spacer_zones):
+    """Same two lines the spacer-gate log parser reads."""
+    return (
+        f"All boundary zones: {list(boundary_zone_names)}\n"
+        f"Detected spacer wall zones: {list(wall_spacer_zones)}\n"
+    )
+
+
+def append_zone_discovery_to_solver_log(
+    solver_log_path,
+    boundary_zone_names,
+    wall_spacer_zones,
+):
+    """Append zone lists to solver_log_*.txt. Python print() is not in the transcript."""
+    text = zone_discovery_log_text(boundary_zone_names, wall_spacer_zones)
+    with open(solver_log_path, "a", encoding="utf-8") as log_handle:
+        log_handle.write(text)
+        if not text.endswith("\n"):
+            log_handle.write("\n")
+
+
 def collect_cell_zones(setup):
     """Collect cell zone names grouped by cell zone type."""
     cell_zone_type_names = [
@@ -3169,6 +3190,11 @@ if __name__ == "__main__":
         print("All wall zones:", wall_zone_names)
         print(f"Active membrane wall base names: {membrane_wall_base_names}")
         print(f"Buffer wall base names: {buffer_wall_base_names}")
+        append_zone_discovery_to_solver_log(
+            solver_log_path,
+            boundary_zone_names,
+            wall_spacer_zones,
+        )
 
 
         # ======================================================
