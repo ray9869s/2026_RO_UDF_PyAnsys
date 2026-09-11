@@ -1045,11 +1045,13 @@ AREA_MEM_UDM_REL_TOL = 1e-9
 
 # spacer_x_in/out == layout.active_span == first/last active unit-cell
 # boundaries. Sum of pp_pressure_drop_cell_N over active cells telescopes
-# to p(upstream of first active) - p(downstream of last active) on the
-# unit-cell iso-surfaces. pressure_drop_spacer is the same two x locations
-# on separately created pp_plane_spacer_in/out. Algebraic equality of the
-# two Fluent area-averages is not expected; this is a discretisation-gap
-# check.
+# to p(upstream of first active) - p(downstream of last active): interior
+# cell-boundary planes cancel. pressure_drop_spacer is the same two x
+# locations on separately created pp_plane_spacer_in/out. Workstation
+# 2026-09-11: all 16 CSV leaves matched within rel 1e-6, including
+# u0p3_p6M where per-cell values spread 15%, so this is an algebraic
+# identity here, not a discretisation gap. Keep rel 1e-6 / abs 1e-4 Pa
+# as the numerical floor.
 SPACER_DP_CELL_SUM_REL_TOL = 1e-6
 SPACER_DP_CELL_SUM_ABS_TOL_PA = 1e-4
 
@@ -1195,7 +1197,7 @@ def spacer_dp_active_cell_sum_block_reason(
     """Return why pressure_drop_spacer disagrees with Σ active-cell dP, or None.
 
     N is active cells, not the evaluation window. Missing/blank columns are
-    N/A. See SPACER_DP_CELL_SUM_REL_TOL for the discretisation gap.
+    N/A. Interior planes cancel; see SPACER_DP_CELL_SUM_REL_TOL.
     """
     cells = list(active_cell_numbers)
     if not cells:
@@ -2699,9 +2701,10 @@ def derive_spacer_cell_metrics_for_layout(
     """Asymmetric DomainLayout variant of :func:`derive_spacer_cell_metrics`.
 
     Active-cell dP telescopes between the unit-cell planes at
-    ``layout.active_span``. That is the same x as ``pressure_drop_spacer``'s
-    separately created iso-surfaces, so R-12 compares them with a
-    discretisation gap rather than exact equality.
+    ``layout.active_span``. Interior cell-boundary planes cancel, so the
+    sum equals ``pressure_drop_spacer`` at the same x on the separately
+    created spacer iso-surfaces (algebraic identity; see
+    SPACER_DP_CELL_SUM_REL_TOL).
     """
     derived: dict[str, Optional[float]] = {}
     for cell_number in layout.active_cell_numbers():

@@ -31,6 +31,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
+from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 from ro.paths import data_root
 
 
@@ -40,16 +41,7 @@ from ro.paths import data_root
 
 EXCLUDE_STATUSES = {"FAILED", "MISSING_CASE_DATA", "FAILED_METRIC_VALIDATION", "DRY_RUN"}
 
-GEO_ORDER = [
-    "Empty",
-    "Diamond_Spacer",
-    "Pillar",
-    "Hole_Pillar",
-    "Multi_Layer_equal",
-    "Multi_Layer_diff",
-    "Sin_ST",
-    "Sin_SL",
-]
+GEO_ORDER = list(CAMPAIGN_GEO_ID_ORDER)
 
 REQUIRED_METRIC_COLS = [
     "lmh_mass_balance",

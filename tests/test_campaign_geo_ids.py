@@ -9,6 +9,7 @@ import pytest
 
 from helpers import REPO_ROOT
 from ro.campaign_geo_ids import (
+    CAMPAIGN_GEO_ID_ORDER,
     CAMPAIGN_GEO_IDS,
     assert_no_legacy_ml_geo_paths,
     campaign_geo_id_shape_re,
@@ -20,6 +21,9 @@ from ro.paths import geometry_dir
 
 def test_whitelist_has_31_entries():
     assert len(CAMPAIGN_GEO_IDS) == 31
+    assert len(CAMPAIGN_GEO_ID_ORDER) == 31
+    assert set(CAMPAIGN_GEO_ID_ORDER) == set(CAMPAIGN_GEO_IDS)
+    assert CAMPAIGN_GEO_ID_ORDER[0] == "REF_empty"
 
 
 def test_f320_pillar_ids_are_excluded():

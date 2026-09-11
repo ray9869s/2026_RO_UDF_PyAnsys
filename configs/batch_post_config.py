@@ -22,6 +22,7 @@ WRITE_AGGREGATE_OUTPUTS = False
 
 from pathlib import Path
 
+from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 from ro.paths import project_root as _discover_project_root
 
 _here = Path(__file__).resolve().parent
@@ -33,16 +34,9 @@ base_post_config = str(_here / "post_config.py")
 
 # --- Case definitions ---
 
-geometries = [
-    # "Empty",
-    # "Diamond_Spacer",
-    # "Pillar",
-    # "Hole_Pillar",
-    # "Multi_Layer_equal",
-    # "Multi_Layer_diff",
-    "Sin_ST",
-    "Sin_SL"
-]
+# Unused while post_cases is empty: batch_report_extract walks run manifests.
+# Campaign ids so re-enabling a product generator cannot target archive names.
+geometries = list(CAMPAIGN_GEO_ID_ORDER)
 
 inlet_velocities = [0.1, 0.2, 0.3]
 
@@ -66,25 +60,12 @@ case_prefix = ""
 
 post_cases = [
     # {
-    #     "geo_name": "Sin_ST",
-    #     "mesh_case_name": "mesh_max085_min005_cpg5_bl4",
-    #     "inlet_velocity_value": 0.1,
-    #     "outlet_gauge_pressure": 4.0e6,
-    #     # case_name is optional; if omitted:
-    #     # u0p1_p4M__mesh_max085_min005_cpg5_bl4
+    #     "geo_id": "D2450_a45",
+    #     "run_id": "u0p2_p6M",
     # },
 ]
 
 # --- Known non-converged cases ---
 
-non_converged_cases = {
-    # ("Diamond_Spacer", "u0p1_p4M"),
-    # ("Diamond_Spacer", "u0p1_p6M"),
-    # ("Diamond_Spacer", "u0p1_p8M"),
-    # ("Multi_Layer_equal", "u0p3_p4M"),
-    # ("Multi_Layer_equal", "u0p3_p6M"),
-    # ("Multi_Layer_equal", "u0p3_p8M"),
-    # ("Multi_Layer_diff", "u0p3_p4M"),
-    # ("Multi_Layer_diff", "u0p3_p6M"),
-    # ("Multi_Layer_diff", "u0p3_p8M"),
-}
+# Keys are (geo_id, run_id).
+non_converged_cases = {}

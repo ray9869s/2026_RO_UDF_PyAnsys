@@ -45,15 +45,19 @@ _SINUSOIDAL_GEO_IDS = tuple(
 
 _REFERENCE_GEO_IDS = ("REF_empty",)
 
-CAMPAIGN_GEO_IDS: frozenset[str] = frozenset(
-    _DIAMOND_GEO_IDS
+# Baseline first, then registry family blocks. Figures and leftover
+# product-generator lists use this order; the frozenset is membership only.
+CAMPAIGN_GEO_ID_ORDER: tuple[str, ...] = (
+    _REFERENCE_GEO_IDS
+    + _DIAMOND_GEO_IDS
     + _MULTI_LAYER_GEO_IDS
     + _PILLAR_GEO_IDS
     + _SINUSOIDAL_GEO_IDS
-    + _REFERENCE_GEO_IDS
 )
 
-assert len(CAMPAIGN_GEO_IDS) == 31, (
+CAMPAIGN_GEO_IDS: frozenset[str] = frozenset(CAMPAIGN_GEO_ID_ORDER)
+
+assert len(CAMPAIGN_GEO_ID_ORDER) == len(CAMPAIGN_GEO_IDS) == 31, (
     f"Expected 31 campaign geo_ids, got {len(CAMPAIGN_GEO_IDS)}."
 )
 

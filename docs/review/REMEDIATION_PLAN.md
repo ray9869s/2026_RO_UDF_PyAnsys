@@ -69,8 +69,8 @@ Row order is execution order. This ordering supersedes both the original body an
 | R-04 | Mesh skip 강화 + `rebuild_mesh_manifest --from-log` | **before sweep** — `.msh.h5`만 있으면 skip되고 rebuild는 기존 manifest를 요구 | Claude C4-01 C4-07; Cursor T4-01; `docs/PIPELINE_MAP.md` §4.7 | `scripts/batch_meshing.py`; `scripts/rebuild_mesh_manifest.py`; `tests/test_mesh_skip.py`; `tests/test_rebuild_mesh_manifest.py` | R-01 | WSL 2026-09-11 `1144 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). msh만 / empty msh / invalid manifest / SHA mismatch / layout mismatch → skip 아님. msh+valid manifest+`mesh_sha256` 일치+현재 case layout 일치 → `skipped_existing`. `--from-log`는 log+`.msh.h5`+registry+run config로 payload 생성; 기존 manifest·로그 부재·x-extent 실패는 write 없음. `created_utc`/`generator_version`=`unrecoverable-from-log`, `inlet_profile_G`=null. **workstation 2026-09-11:** production 31/31 SKIP (sha+layout match); extra 13 SKIP / 2 RUN (`bl12_peel2`, `bl12_f015_peel2`, ~4.79 MB msh, no manifest, AR 251.9). | COMPLETE |
 | R-05 | Extract/post/inventory skip + nonzero exit | **before sweep** — 유효 CSV만 보고 skip하면 재solve 결과가 안 들어가고, 배치는 exit 0 | Claude C2-12 C2-24 C2-26 C2-28 C4-04 C4-05 C4-06 C4-11; Cursor T4-04 T4-05 T2-17 T4-06; Sol T2 batch 4 (`batch_report_extract`, `batch_postprocess` `return 0`) | `src/ro/extract_skip.py` (신규); `scripts/batch_report_extract.py`; `scripts/batch_postprocess_all_cases.py`; `scripts/pyfluent_report_extract.py`; `scripts/case_inventory.py`; `src/ro/manifest.py` (`_iter_child_dirs`); `tests/test_extract_skip.py` | R-03 | WSL 2026-09-11 `1169 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). CSV-only / sidecar 없음 / R-02 hash·attempt 없음 / file 또는 sidecar hash mismatch → skip 아님 (mtime은 보지 않음). matching sidecar+manifest hashes+file bytes → skip. extract/post FAILED 또는 aggregate write 실패 → exit ≠ 0; selected 0건은 0. listing `OSError` → 빈 트리로 성공하지 않음. `--skip-unreadable-manifests`는 계속 스캔하되 skipped leaf가 있으면 inventory exit ≠ 0. **workstation 2026-09-11:** 0 SKIP / 19 RUN (3 no CSV, 13 pre-`lmh_mass_balance_signed_python`, 3 column+no sidecar). 19개는 campaign 아님; 재extract 안 함. | COMPLETE |
 | R-11 | Campaign/solver 항등식 gate | **before sweep** — 이미 있는 값, 계산 비용 없음 | Claude C3-04 C3-05 C3-06 C3-07 C3-10 C2-13; Cursor T3-02 T3-03 T3-04 T3-10 T3-11; Sol T3-07 T3-09; Astra A-02 A-05 | `src/ro/manifest_validation.py`; `src/ro/solver_common.py`; `scripts/solver_code_260616.py`; `configs/run_config.py`; `scripts/case_inventory.py`; `scripts/report_campaign_identities.py` (신규); `tests/test_campaign_identities.py` | R-01; `run_id` 검사는 R-07 `make_base_case_name` | WSL 2026-09-11 `1205 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`). 스키마 `[0,1)` 유지 — 0.08은 `read_mesh_manifest` 통과, campaign gate만 exact 0.0. mesh≠run blocked reject. `u_mean_ms * G == u_target_ms` (rel 1e-6; `u_mean_ms` 정의 유지; D2450 `0.1992807169514518 * 1.00360939613 == 0.2`); unfilled G/`u_mean_ms`와 plug는 N/A. `run_id` token == `make_base_case_name(u,p)` (`u0p2_p6M_plug` 허용). SHA mismatch reject; msh 없으면 SHA N/A (preflight skip). malformed `max_iterations`/`residual_target`는 default 없이 raise. **workstation 2026-09-11:** mesh 44 unread=0 / run 19 unread=0, 모든 identity 0 reject. | COMPLETE |
-| R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `src/ro/fluent_report_helpers.py`; `scripts/pyfluent_report_extract.py`; `scripts/report_extract_identities.py` (신규); `tests/test_extract_identities.py` | R-01 | WSL 2026-09-11 `1223 passed, 1 skipped, 0 failed`. CSV 키는 `area_mem`/`m_in`/`m_in_with_sources`/`m_in_mass_source`/`pressure_drop_spacer` (V-01; `pp_` report 이름 아님). missing key는 N/A이지 0이 아님. area rel `1e-9` (REF_empty 측정 1.8e-15). flux 3-key exact + compute `abs_tol` 1e-8. spacer dP vs active-cell 합은 별도 iso-surface라 이산화 갭 (rel 1e-6, abs 1e-4 Pa). `LOAD_BEARING_SUMMARY_METRICS` 미변경. **19 leaf blast는 WSL에서 스캔 불가** — 명령은 R-12 절. | COMPLETE |
-| R-13 | `Sin_ST` / `GEO_ORDER` leftover | **can wait** — `post_cases=[]`이면 geometries 리스트는 안 쓰이고, figures는 279 solver를 막지 않음 | Cursor T5-04 T5-05 (요청문이 명시한 Cursor-only 항목) | `configs/batch_post_config.py`; `scripts/make_summary_figures.py` | none | live config/figure 기본 순서에 archive `Sin_ST`/`Sin_SL`/`Empty`/`Diamond_Spacer` 없음. `CAMPAIGN_GEO_IDS` 또는 family 이름. | NOT STARTED |
+| R-12 | Extract 항등식 gate | **before sweep** — CSV에 이미 나란히 있음 | Claude C3-02 C3-03; Sol T3-20 T3-22 T3-26; Cursor T3-05 T3-06; 요청문 7 | `src/ro/fluent_report_helpers.py`; `scripts/pyfluent_report_extract.py`; `scripts/report_extract_identities.py` (신규); `tests/test_extract_identities.py` | R-01 | WSL 2026-09-11 `1223 passed, 1 skipped, 0 failed`. CSV 키는 `area_mem`/`m_in`/`m_in_with_sources`/`m_in_mass_source`/`pressure_drop_spacer` (V-01; `pp_` report 이름 아님). missing key는 N/A이지 0이 아님. area rel `1e-9` (REF_empty 측정 1.8e-15). flux 3-key exact + compute `abs_tol` 1e-8. spacer dP vs active-cell 합은 내부 plane 상쇄로 대수적 항등식 (rel 1e-6 numerical floor). `LOAD_BEARING_SUMMARY_METRICS` 미변경. **workstation 2026-09-11:** run 19 unread=0 no_csv=3; area/flux_in/flux_out/spacer_dp reject 0. CSV 16: area+spacer PASS; flux 3 PASS / 13 N/A. | COMPLETE |
+| R-13 | `Sin_ST` / `GEO_ORDER` leftover | **can wait** — `post_cases=[]`이면 geometries 리스트는 안 쓰이고, figures는 279 solver를 막지 않음 | Cursor T5-04 T5-05 (요청문이 명시한 Cursor-only 항목) | `configs/batch_post_config.py`; `scripts/make_summary_figures.py`; `src/ro/campaign_geo_ids.py` (`CAMPAIGN_GEO_ID_ORDER`); `tests/test_summary_figure_geo_order.py` | none | WSL 2026-09-11 `1228 passed, 1 skipped, 0 failed`. live `geometries`/`GEO_ORDER` == `CAMPAIGN_GEO_ID_ORDER` (31, `REF_empty` first). 두 파일에 archive `Sin_ST`/`Sin_SL`/`Empty`/`Diamond_Spacer`/`Hole_Pillar`/`Multi_Layer_*` 없음. | COMPLETE |
 | R-10 | 세 dead gate blast radius 후 배선 | **before sweep** — 구현은 있고 배선만 없다. 기존 31을 거절하면 더 나쁘다 | Claude C5-02 C5-04 C5-05 C3-10; Astra A-05 (hash); Cursor는 layout validator를 T5-01로 이미 R-09에 넣음 | `src/ro/manifest_validation.py`; `src/ro/domain_layout.py`; `src/ro/campaign_geo_ids.py`; solver/extract preflight; `scripts/rebuild_mesh_manifest.py` SHA 로직 재사용; 이 파일 R-10 절에 blast 숫자 기록 | R-01; spacer Fluent 대조는 workstation. hash/legacy path는 `RO_DATA_ROOT` | 아래 R-10 절차. blast가 0 reject일 때만 wire. 하나라도 reject면 배선 중단하고 이 절에 목록을 남긴다. | NOT STARTED |
 
 ---
@@ -883,16 +883,26 @@ wide record에 쓰지 않는다. missing key를 0으로 채우지 않는다.
 | 항등식 | 위치 | 허용오차 / N/A |
 |---|---|---|
 | `area_mem` vs `pp_udm_area_sum` | extract CSV write 뒤 | rel `1e-9`. REF_empty u0p2_p6M: `1.680871416727065e-4` vs `1.680871416727068e-4` (1.8e-15). 키 없음/blank → N/A |
-| `pressure_drop_spacer` vs Σ `pp_pressure_drop_cell_N` | 같은 위치. N = **active cells** (window 아님) | rel `1e-6`, abs `1e-4` Pa. spacer iso-surface와 unit-cell plane은 같은 x(`layout.active_span`)의 **별도** 면이라 대수적 등호가 아니라 이산화 갭. 셀 열 하나라도 없으면 N/A |
+| `pressure_drop_spacer` vs Σ `pp_pressure_drop_cell_N` | 같은 위치. N = **active cells** (window 아님) | rel `1e-6`, abs `1e-4` Pa (numerical floor). 내부 cell-boundary plane이 상쇄되어 iso-surface ΔP와 per-cell 합은 대수적 항등식. 구현 당시 이산화 갭으로 가정했으나 workstation 16 leaf가 rel 1e-6 안 (u0p3_p6M per-cell 15% spread 포함). 셀 열 하나라도 없으면 N/A |
 | `m_in_with_sources == m_in + m_in_mass_source` (outlet 동일) | 같은 위치. compute 경로는 기존 raise | `m_in` = `(without-sources)` 물리값 (뒤집지 않음). 세 키 중 하나라도 없으면 N/A (0 아님). abs_tol = compute `1e-8` kg/s. REF_empty: `5.315285545536234e-4 == 5.326494756117325e-4 + (-1.120921058109091e-6)` exact |
 
 ### 기존 artifact blast (R-10/R-11과 같은 규칙)
 
-유효한 역사 CSV를 거절하는 gate는 없는 것만 못하다. R-05의 19 run:
-3개는 CSV 없음 → 리포트 `NO_CSV`. 13개는 `lmh_mass_balance_signed_python`
-이전이면 flux 분해 컬럼도 없는 것이 보통 → flux **N/A**. 3개는 그 컬럼은
-있으나 sidecar 없음 — flux/area/spacer 실제 PASS/REJECT는 CSV를 읽어야 한다.
-WSL은 `C:/ro_data`를 보지 못해 19줄 REJECT 숫자를 만들지 않는다.
+유효한 역사 CSV를 거절하는 gate는 없는 것만 못하다.
+
+**workstation 2026-09-11** `python scripts/report_extract_identities.py`:
+run 19, unread 0, no_csv 3, area_reject 0, flux_in_reject 0,
+flux_out_reject 0, spacer_dp_reject 0. CSV 있는 16 leaf는 area와 spacer
+dP PASS. flux는 3 PASS / 13 N/A (`lmh_mass_balance_signed_python` 이전,
+분해 컬럼 없음).
+
+spacer dP는 16 leaf 모두 rel 1e-6 안. u0p3_p6M도 포함 (per-cell 값이 15%
+퍼짐). iso-surface ΔP와 active-cell 합은 여기서 대수적 항등식이다 — 내부
+cell-boundary plane이 상쇄. 계획 문구는 이산화 갭으로 적었으나 측정이
+뒤집음. 허용오차 rel 1e-6 / abs 1e-4 Pa는 numerical floor로 유지.
+
+live extract는 새 CSV에만 raise하고, 없는 키는 N/A라 옛 CSV를 재읽어도
+flux 없는 leaf를 거절하지 않는다.
 
 ```text
 cd /c/pyfluent
@@ -903,10 +913,6 @@ export PYFLUENT_PROJECT_ROOT='C:/pyfluent'
 unset PYFLUENT_RUN_CONFIG PYFLUENT_SKIP_VALIDATION
 python scripts/report_extract_identities.py
 ```
-
-Fluent 없음. campaign-valid CSV가 REJECT면 이 절에 목록을 남기고 gate를
-되돌린다. live extract는 새 CSV에만 raise하고, 없는 키는 N/A라 옛 CSV를
-재읽어도 flux 없는 leaf를 거절하지 않는다.
 
 ### 포함하지 않음
 
@@ -922,8 +928,11 @@ WSL 2026-09-11 `1223 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`)
 skip은 `RO_DATA_ROOT` 없는 `tests/test_campaign_geo_ids.py`.
 REF_empty area 1e-15 pass, 0.1% mismatch reject, 키 없음 N/A.
 flux 3-key exact pass, `m_in_mass_source` 없음 N/A (0으로 숨기지 않음),
-mismatch reject. spacer exact/갭-내 pass, 큰 갭 reject, 셀 열 없음 N/A.
+mismatch reject. spacer exact/floor-내 pass, 큰 불일치 reject, 셀 열 없음 N/A.
 `m_in_mass_source`는 load-bearing required가 아님.
+**workstation 2026-09-11:** run 19 unread=0 no_csv=3, identity reject 0.
+area+spacer 16 PASS; flux 3 PASS / 13 N/A. spacer는 16 leaf rel 1e-6
+(대수적 항등식).
 
 다음 행: **R-13**.
 
@@ -934,19 +943,27 @@ mismatch reject. spacer exact/갭-내 pass, 큰 갭 reject, 셀 열 없음 N/A.
 Cursor-only live leftover. Claude는 `geo_id == "empty"` live 잔존을 찾지 못했고
 (`family == "empty"`는 정상), Sol T5는 미착수.
 
-- `configs/batch_post_config.py` `geometries=["Sin_ST","Sin_SL"]`:
-  `post_cases=[]`이면 `cases_from_run_manifests()`라 미사용. 그래도 product
-  generator를 켜면 archive id로 간다. `CAMPAIGN_GEO_IDS` 또는 빈 리스트+주석.
-- `scripts/make_summary_figures.py` `GEO_ORDER`: 현 `geo_id`/family와 불일치.
+- `configs/batch_post_config.py` `geometries`: `CAMPAIGN_GEO_ID_ORDER` (31).
+  `post_cases=[]`이면 `cases_from_run_manifests()`라 미사용. product
+  generator를 켜도 archive id로 가지 않음.
+- `scripts/make_summary_figures.py` `GEO_ORDER`: 같은 31 `geo_id`.
+  `geo_name` 열은 extract/manifest의 `geo_id`라 family 이름이 아님.
+- `CAMPAIGN_GEO_ID_ORDER`: `REF_empty` 다음 diamond → ml → pillar → sin
+  (registry 블록). frozenset `CAMPAIGN_GEO_IDS`는 membership only.
 
 ### 포함하지 않음
 
 - `_tmp_*` 하드코딩 (campaign path 아님).
 - `docs/archive/` 의 `geo_name == "empty"`.
+- tests/fixtures의 archive `Sin_ST` (live leftover가 아님).
 
 ### 검증
 
-해당 두 파일에서 archive 이름 없음. 그림 스크립트 단위 테스트가 있으면 갱신.
+WSL 2026-09-11 `1228 passed, 1 skipped, 0 failed` (`scripts/run_full_pytest.sh`).
+두 live 파일에 archive 이름 없음. `geometries`/`GEO_ORDER` == 31 campaign
+ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
+
+다음 행: **R-10**.
 
 ---
 
