@@ -7,6 +7,7 @@ import json
 import pytest
 
 from helpers import SCRIPTS_DIR, load_module
+from ro.domain_layout import require_mesh_manifest_x_extent_matches_layout
 from ro.manifest import read_mesh_manifest
 from ro.paths import mesh_dir
 from tests.test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
@@ -171,3 +172,51 @@ def test_cli_dry_run_reports_no_measurement(monkeypatch, tmp_path, capsys):
     assert "NO-MEASUREMENT" in captured.out
     assert "1 NO-MEASUREMENT" in captured.out
     assert "0 usable /mesh/check" in captured.out
+
+
+_LAYOUT_MATCH_LOG = """
+---------------- 2106112 cells were created in :  1.80 minutes
+Domain extents.
+  x-coordinate: min = 0.000000e+00, max = 3.465000e+01.
+  y-coordinate: min = -1.732500e+00, max = 1.732500e+00.
+  z-coordinate: min = -3.850000e-01, max = 3.850000e-01.
+"""
+
+
+def _layout_total_x_m(payload):
+    return (
+        payload["buffer_length_in_m"]
+        + payload["n_active_cells"] * payload["cell_length_x_m"]
+        + payload["buffer_length_out_m"]
+    )
+
+
+def test_log_backfill_of_layout_total_passes_x_extent_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    payload = mesh_payload()
+    layout_x = _layout_total_x_m(payload)
+    naive = payload["cell_length_x_m"] * (
+        payload["n_buffer_in"] + payload["n_active_cells"] + payload["n_buffer_out"]
+    )
+    assert layout_x == pytest.approx(0.03465)
+    assert naive == pytest.approx(0.038115)
+    _write_leaf(directory, payload, log_text=_LAYOUT_MATCH_LOG)
+
+    backfill.backfill_mesh_leaf(directory, apply=True)
+
+    stored = read_mesh_manifest(directory)
+    assert stored["domain_extent_x_m"] == pytest.approx(layout_x)
+    result = require_mesh_manifest_x_extent_matches_layout(directory)
+    assert result.ok is True
+
+
+def test_log_backfill_of_short_x_extent_fails_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+    _write_leaf(directory, mesh_payload(), log_text=_MESH_CHECK_LOG)
+
+    backfill.backfill_mesh_leaf(directory, apply=True)
+
+    with pytest.raises(ValueError, match="does not match layout nominal"):
+        require_mesh_manifest_x_extent_matches_layout(directory)

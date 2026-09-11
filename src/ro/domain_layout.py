@@ -91,6 +91,9 @@ _DOMAIN_EXTENTS_HEADER_RE = re.compile(
 
 # Relative tolerance for mesh-coordinate length checks. Diamond_ov020 measures
 # 0.017324968 against nominal 5 * 0.003465 (= 0.017325), ~1.8e-6 relative.
+# 31 production leaves (workstation 2026-09-11): max |x - layout.total_length_m|
+# / layout is ~1.6e-7. 1e-5 keeps ~60x margin vs that noise and is ~1000x
+# below a one-cell error. y/z are not gated (CAD-scale residuals).
 DEFAULT_EXTENT_REL_TOL = 1.0e-5
 
 
@@ -529,4 +532,58 @@ def validate_layout_against_x_extent(
         measured_length_m=measured,
         relative_error=rel_err,
         message=message,
+    )
+
+
+def require_layout_matches_measured_x_extent(
+    layout: DomainLayout,
+    domain_extent_x_m: object,
+    *,
+    rel_tol: float = DEFAULT_EXTENT_REL_TOL,
+) -> LayoutExtentValidation:
+    """Raise unless measured x length matches ``layout.total_length_m``.
+
+    CAD origin is 0: ``x_min=0``, ``x_max=domain_extent_x_m``. y/z are not
+    checked. Missing or null ``domain_extent_x_m`` is a failure, not a skip.
+    The identity is ``total_length_m``, not ``n_total * cell_length_x_m``.
+    """
+    if domain_extent_x_m is None:
+        raise ValueError(
+            "domain_extent_x_m is missing or null; measured x extent is "
+            "required before layout validation. Backfill from the mesh log "
+            "or remesh."
+        )
+    if isinstance(domain_extent_x_m, bool) or not isinstance(
+        domain_extent_x_m, (int, float)
+    ):
+        raise TypeError(
+            f"domain_extent_x_m must be numeric, got {domain_extent_x_m!r}."
+        )
+    result = validate_layout_against_x_extent(
+        layout, 0.0, float(domain_extent_x_m), rel_tol=rel_tol
+    )
+    if not result.ok:
+        raise ValueError(result.message)
+    return result
+
+
+def require_mesh_manifest_x_extent_matches_layout(
+    mesh_directory: Path,
+    *,
+    rel_tol: float = DEFAULT_EXTENT_REL_TOL,
+) -> LayoutExtentValidation:
+    """Read a mesh manifest and raise unless its x extent matches layout."""
+    payload = read_mesh_manifest(mesh_directory)
+    layout = DomainLayout(
+        n_buffer_in=int(payload["n_buffer_in"]),
+        n_active=int(payload["n_active_cells"]),
+        n_buffer_out=int(payload["n_buffer_out"]),
+        cell_length_x_m=float(payload["cell_length_x_m"]),
+        buffer_length_in_m=float(payload["buffer_length_in_m"]),
+        buffer_length_out_m=float(payload["buffer_length_out_m"]),
+    )
+    return require_layout_matches_measured_x_extent(
+        layout,
+        payload.get("domain_extent_x_m"),
+        rel_tol=rel_tol,
     )

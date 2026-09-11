@@ -21,6 +21,8 @@ from ro.domain_layout import (
     layout_post_config_values,
     mesh_case_name_from_solver_replace_log,
     parse_solver_log_domain_extents_m,
+    require_layout_matches_measured_x_extent,
+    require_mesh_manifest_x_extent_matches_layout,
     resolve_layout,
     validate_layout_against_x_extent,
 )
@@ -527,3 +529,69 @@ class TestValidateLayoutAgainstXExtent:
         )
         assert result.ok is False
         assert result.measured_length_m == 0.010395
+
+
+# n_total * pitch = 0.02772; total_length_m = 0.03465 (D0817_a45-style buffers).
+ASYMMETRIC_BUFFER_LAYOUT = DomainLayout(
+    n_buffer_in=1,
+    n_active=5,
+    n_buffer_out=2,
+    cell_length_x_m=CELL_LENGTH_X_M,
+    buffer_length_in_m=3 * CELL_LENGTH_X_M,
+    buffer_length_out_m=BUFFER_LENGTH_OUT_M,
+)
+
+
+class TestRequireLayoutMatchesMeasuredXExtent:
+    def test_matching_layout_total_passes(self):
+        result = require_layout_matches_measured_x_extent(
+            ASYMMETRIC_BUFFER_LAYOUT, ASYMMETRIC_BUFFER_LAYOUT.total_length_m
+        )
+        assert result.ok is True
+
+    def test_missing_or_null_extent_raises(self):
+        with pytest.raises(ValueError, match="missing or null"):
+            require_layout_matches_measured_x_extent(ASYMMETRIC_BUFFER_LAYOUT, None)
+
+    def test_mismatch_raises_using_total_length_not_n_total_pitch(self):
+        naive = (
+            ASYMMETRIC_BUFFER_LAYOUT.cell_length_x_m
+            * ASYMMETRIC_BUFFER_LAYOUT.n_total
+        )
+        assert naive != ASYMMETRIC_BUFFER_LAYOUT.total_length_m
+        with pytest.raises(ValueError, match="does not match layout nominal"):
+            require_layout_matches_measured_x_extent(
+                ASYMMETRIC_BUFFER_LAYOUT, naive
+            )
+
+    def test_mesh_manifest_missing_key_raises(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        write_mesh_manifest(directory, mesh_payload())
+        with pytest.raises(ValueError, match="missing or null"):
+            require_mesh_manifest_x_extent_matches_layout(directory)
+
+    def test_mesh_manifest_null_extent_raises(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        payload = mesh_payload()
+        payload["domain_extent_x_m"] = None
+        write_mesh_manifest(directory, payload)
+        with pytest.raises(ValueError, match="missing or null"):
+            require_mesh_manifest_x_extent_matches_layout(directory)
+
+    def test_mesh_manifest_matching_layout_passes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+        directory = mesh_dir(FAMILY, GEO_ID, MESH_ID)
+        directory.mkdir(parents=True)
+        payload = mesh_payload()
+        payload["domain_extent_x_m"] = (
+            payload["buffer_length_in_m"]
+            + payload["n_active_cells"] * payload["cell_length_x_m"]
+            + payload["buffer_length_out_m"]
+        )
+        write_mesh_manifest(directory, payload)
+        result = require_mesh_manifest_x_extent_matches_layout(directory)
+        assert result.ok is True

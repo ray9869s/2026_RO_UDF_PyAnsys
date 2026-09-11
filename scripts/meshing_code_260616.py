@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
+from ro.domain_layout import DomainLayout, require_layout_matches_measured_x_extent
 from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
     assert_mesh_file_overwrite_allowed,
@@ -108,6 +109,17 @@ def write_worker_mesh_manifest(
         mesh_metrics,
         _sha256_file(mesh_file),
         created_utc=created_utc,
+    )
+    layout = DomainLayout(
+        n_buffer_in=int(payload["n_buffer_in"]),
+        n_active=int(payload["n_active_cells"]),
+        n_buffer_out=int(payload["n_buffer_out"]),
+        cell_length_x_m=float(payload["cell_length_x_m"]),
+        buffer_length_in_m=float(payload["buffer_length_in_m"]),
+        buffer_length_out_m=float(payload["buffer_length_out_m"]),
+    )
+    require_layout_matches_measured_x_extent(
+        layout, payload.get("domain_extent_x_m")
     )
     return write_mesh_manifest(mesh_directory, payload)
 

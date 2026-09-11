@@ -34,7 +34,10 @@ from ro.solver_common import (
     parse_last_residual_iteration_from_transcript_text,
     resolve_solver_final_artifact_exit_code,
 )
-from ro.domain_layout import layout_from_mesh_manifest
+from ro.domain_layout import (
+    layout_from_mesh_manifest,
+    require_mesh_manifest_x_extent_matches_layout,
+)
 from ro.lmh_metrics import lmh_mass_balance_expression
 from ro.fluent_report_helpers import create_x_normal_plane
 from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
@@ -2653,6 +2656,8 @@ if __name__ == "__main__":
 
     if not os.path.isfile(udf_master_path):
         raise FileNotFoundError(f"UDF source file not found: {udf_master_path}")
+
+    require_mesh_manifest_x_extent_matches_layout(mesh_case_path)
 
     print(f"Case path: {case_path}")
     if input_mode == "restart_continuation":

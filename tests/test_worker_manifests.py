@@ -53,6 +53,23 @@ def _mesh_metrics(**updates):
     return metrics
 
 
+def _layout_total_x_m(cfg):
+    return (
+        cfg.buffer_length_in_m
+        + cfg.n_active_cells * cfg.cell_length_x_m
+        + cfg.buffer_length_out_m
+    )
+
+
+def _matching_extent_metrics(cfg, **updates):
+    return _mesh_metrics(
+        domain_extent_x_m=_layout_total_x_m(cfg),
+        domain_extent_y_m=0.003465,
+        domain_extent_z_m=0.00077,
+        **updates,
+    )
+
+
 _MESH_CHECK_EXTENTS = """
 ---------------- 2106112 cells were created in :  1.80 minutes
 Domain extents.
@@ -74,11 +91,12 @@ def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     mesh_bytes = b"test mesh bytes"
     mesh_paths["mesh_file"].write_bytes(mesh_bytes)
 
+    metrics = _matching_extent_metrics(mesh_cfg)
     mesh_manifest_path = meshing.write_worker_mesh_manifest(
         mesh_cfg,
         mesh_paths["mesh_directory"],
         mesh_paths["mesh_file"],
-        _mesh_metrics(),
+        metrics,
         created_utc=created_utc,
     )
     mesh_manifest = read_mesh_manifest(mesh_paths["mesh_directory"])
@@ -88,9 +106,9 @@ def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     assert mesh_manifest["inlet_profile_G"] is None
     assert mesh_manifest["bridge_radius_m"] == mesh_cfg.bridge_radius_m
     assert mesh_manifest["n_lead_excluded"] == mesh_cfg.n_lead_excluded
-    assert mesh_manifest["domain_extent_x_m"] is None
-    assert mesh_manifest["domain_extent_y_m"] is None
-    assert mesh_manifest["domain_extent_z_m"] is None
+    assert mesh_manifest["domain_extent_x_m"] == metrics["domain_extent_x_m"]
+    assert mesh_manifest["domain_extent_y_m"] == metrics["domain_extent_y_m"]
+    assert mesh_manifest["domain_extent_z_m"] == metrics["domain_extent_z_m"]
 
     solver = load_solver_code()
     run_cfg = load_run_config()
@@ -184,7 +202,57 @@ def test_mesh_manifest_payload_keeps_parsed_domain_extents(monkeypatch, tmp_path
     assert payload["domain_extent_z_m"] == parsed["domain_extent_z_m"]
     n_total = cfg.n_buffer_in + cfg.n_active_cells + cfg.n_buffer_out
     assert payload["domain_extent_x_m"] != cfg.cell_length_x_m * n_total
+    assert payload["domain_extent_x_m"] != _layout_total_x_m(cfg)
 
+    mesh_paths = meshing.resolve_meshing_paths(cfg)
+    mesh_paths["mesh_directory"].mkdir(parents=True)
+    mesh_paths["mesh_file"].write_bytes(b"test mesh bytes")
+    with pytest.raises(ValueError, match="does not match layout nominal"):
+        meshing.write_worker_mesh_manifest(
+            cfg,
+            mesh_paths["mesh_directory"],
+            mesh_paths["mesh_file"],
+            metrics,
+            created_utc="2026-08-21T08:00:00Z",
+        )
+    assert not (mesh_paths["mesh_directory"] / "manifest.json").is_file()
+
+
+def test_write_worker_mesh_manifest_rejects_missing_x_extent(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    meshing = load_meshing_code()
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    mesh_paths = meshing.resolve_meshing_paths(cfg)
+    mesh_paths["mesh_directory"].mkdir(parents=True)
+    mesh_paths["mesh_file"].write_bytes(b"test mesh bytes")
+    with pytest.raises(ValueError, match="missing or null"):
+        meshing.write_worker_mesh_manifest(
+            cfg,
+            mesh_paths["mesh_directory"],
+            mesh_paths["mesh_file"],
+            _mesh_metrics(),
+            created_utc="2026-08-21T08:00:00Z",
+        )
+    assert not (mesh_paths["mesh_directory"] / "manifest.json").is_file()
+
+
+def test_write_worker_mesh_manifest_accepts_layout_total_x(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    meshing = load_meshing_code()
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    cfg.n_active_cells = 5
+    cfg.n_buffer_in = 1
+    cfg.n_buffer_out = 2
+    cfg.buffer_length_in_m = 3 * cfg.cell_length_x_m
+    cfg.buffer_length_out_m = 0.00693
+    layout_x = _layout_total_x_m(cfg)
+    naive = cfg.cell_length_x_m * (
+        cfg.n_buffer_in + cfg.n_active_cells + cfg.n_buffer_out
+    )
+    assert layout_x == pytest.approx(0.03465)
+    assert naive == pytest.approx(0.02772)
     mesh_paths = meshing.resolve_meshing_paths(cfg)
     mesh_paths["mesh_directory"].mkdir(parents=True)
     mesh_paths["mesh_file"].write_bytes(b"test mesh bytes")
@@ -192,13 +260,44 @@ def test_mesh_manifest_payload_keeps_parsed_domain_extents(monkeypatch, tmp_path
         cfg,
         mesh_paths["mesh_directory"],
         mesh_paths["mesh_file"],
-        metrics,
+        _matching_extent_metrics(cfg),
         created_utc="2026-08-21T08:00:00Z",
     )
     stored = read_mesh_manifest(mesh_paths["mesh_directory"])
-    assert stored["domain_extent_x_m"] == parsed["domain_extent_x_m"]
-    assert stored["domain_extent_y_m"] == parsed["domain_extent_y_m"]
-    assert stored["domain_extent_z_m"] == parsed["domain_extent_z_m"]
+    assert stored["domain_extent_x_m"] == pytest.approx(layout_x)
+
+
+def test_write_worker_mesh_manifest_rejects_naive_n_total_pitch(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    meshing = load_meshing_code()
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    cfg.n_active_cells = 5
+    cfg.n_buffer_in = 1
+    cfg.n_buffer_out = 2
+    cfg.buffer_length_in_m = 3 * cfg.cell_length_x_m
+    cfg.buffer_length_out_m = 0.00693
+    naive = cfg.cell_length_x_m * (
+        cfg.n_buffer_in + cfg.n_active_cells + cfg.n_buffer_out
+    )
+    mesh_paths = meshing.resolve_meshing_paths(cfg)
+    mesh_paths["mesh_directory"].mkdir(parents=True)
+    mesh_paths["mesh_file"].write_bytes(b"test mesh bytes")
+    with pytest.raises(ValueError, match="does not match layout nominal"):
+        meshing.write_worker_mesh_manifest(
+            cfg,
+            mesh_paths["mesh_directory"],
+            mesh_paths["mesh_file"],
+            _mesh_metrics(
+                domain_extent_x_m=naive,
+                domain_extent_y_m=0.003465,
+                domain_extent_z_m=0.00077,
+            ),
+            created_utc="2026-08-21T08:00:00Z",
+        )
+    assert not (mesh_paths["mesh_directory"] / "manifest.json").is_file()
 
 
 def test_mesh_manifest_payload_stores_unparsed_extent_as_none():
@@ -282,3 +381,10 @@ def test_run_manifest_write_precedes_case_loading_and_udf_handling():
     assert 'solver.tui.define.user_defined.compiled_functions(\n            "compile"' in (
         after_input_load
     )
+
+
+def test_solver_x_extent_preflight_precedes_fluent_launch():
+    source = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    preflight = source.index("require_mesh_manifest_x_extent_matches_layout(")
+    first_launch = source.index("pyfluent.launch_fluent(")
+    assert preflight < first_launch
