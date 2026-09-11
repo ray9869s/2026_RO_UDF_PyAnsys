@@ -30,12 +30,12 @@ from ro.manifest import (
     write_mesh_manifest,
 )
 from ro.mesh_common import parse_mesh_metrics_from_log, parse_meshing_input_summary
+from ro.mesh_manifest_payload import build_mesh_manifest_payload
 from ro.paths import meshes_root, project_root
+from ro.solver_common import sha256_file
 
-SCRIPT_DIR = Path(__file__).resolve().parent
 RUN_CONFIG_PATH = project_root() / "configs" / "run_config.py"
 BATCH_CONFIG_PATH = project_root() / "configs" / "batch_config.py"
-MESHING_SCRIPT_PATH = SCRIPT_DIR / "meshing_code_260616.py"
 
 # Manifest fields stored on the mesh leaf -> run_config override names used by
 # apply_run_config_overrides. Only these manifest keys may seed cfg rebuilds.
@@ -139,10 +139,6 @@ def _load_module(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _load_meshing_helpers():
-    return _load_module("meshing_manifest_rebuild_helpers", MESHING_SCRIPT_PATH)
 
 
 def _manifest_layout_overrides(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -330,8 +326,7 @@ def rebuild_mesh_manifest(
     if not mesh_file.is_file():
         raise FileNotFoundError(f"mesh file not found: {mesh_file}")
 
-    meshing = _load_meshing_helpers()
-    mesh_sha256 = meshing._sha256_file(mesh_file)
+    mesh_sha256 = sha256_file(mesh_file)
     recorded_sha = existing.get("mesh_sha256")
     if recorded_sha and recorded_sha != mesh_sha256:
         raise ManifestError(
@@ -342,11 +337,12 @@ def rebuild_mesh_manifest(
 
     mesh_metrics = parse_mesh_metrics_from_log(mesh_log)
     cfg = _load_cfg(_build_cfg_overrides(mesh_directory, existing))
-    rebuilt = meshing.build_mesh_manifest_payload(
+    rebuilt = build_mesh_manifest_payload(
         cfg,
         mesh_metrics,
         mesh_sha256,
         created_utc=existing.get("created_utc"),
+        generator_version=existing.get("generator_version"),
     )
     rebuilt["generator_version"] = existing.get(
         "generator_version",
@@ -576,15 +572,15 @@ def rebuild_mesh_manifest_from_log(
         )
     ]
     cfg = _from_log_load_cfg(overrides)
-    meshing = _load_meshing_helpers()
-    mesh_sha256 = meshing._sha256_file(mesh_file)
+    mesh_sha256 = sha256_file(mesh_file)
     mesh_metrics = parse_mesh_metrics_from_log(mesh_log)
     unrecoverable = _from_log_unrecoverable()
-    rebuilt = meshing.build_mesh_manifest_payload(
+    rebuilt = build_mesh_manifest_payload(
         cfg,
         mesh_metrics,
         mesh_sha256,
         created_utc=unrecoverable["created_utc"],
+        generator_version=unrecoverable["generator_version"],
     )
     rebuilt["generator_version"] = unrecoverable["generator_version"]
     rebuilt["inlet_profile_G"] = unrecoverable["inlet_profile_G"]

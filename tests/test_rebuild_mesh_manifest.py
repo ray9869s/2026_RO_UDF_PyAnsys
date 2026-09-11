@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 
 import pytest
 
@@ -246,4 +247,24 @@ def test_from_log_rejects_allow_field():
     rebuild = _load_rebuild_script()
     with pytest.raises(SystemExit, match="--allow-field"):
         rebuild.main(["--from-log", "--geo-id", "D2450_a45", "--allow-field", "n_active_cells"])
+
+
+def test_from_log_is_callable_when_ansys_is_absent(monkeypatch, tmp_path):
+    """--from-log must not import the meshing worker (or any ansys package)."""
+    monkeypatch.setitem(sys.modules, "ansys", None)
+    monkeypatch.setitem(sys.modules, "ansys.fluent", None)
+    monkeypatch.setitem(sys.modules, "ansys.fluent.core", None)
+    rebuild = load_module(
+        "rebuild_mesh_manifest_ansys_absent",
+        SCRIPTS_DIR / "rebuild_mesh_manifest.py",
+    )
+    directory = _write_from_log_leaf(monkeypatch, tmp_path)
+    result = rebuild.rebuild_mesh_manifest_from_log(
+        directory,
+        apply=False,
+        common_mesh_settings=_FROM_LOG_COMMON,
+    )
+    assert result["status"] == "would-write"
+    assert result["payload"]["geo_id"] == "D2450_a45"
+    assert result["payload"]["created_utc"] == rebuild.FROM_LOG_UNRECOVERABLE_MARKER
 

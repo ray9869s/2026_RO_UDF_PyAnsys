@@ -199,6 +199,7 @@ def test_mesh_manifest_payload_keeps_parsed_domain_extents(monkeypatch, tmp_path
         "a" * 64,
         created_utc="2026-08-21T08:00:00Z",
     )
+    assert payload["generator_version"] == "meshing_code_260616.py"
     assert payload["domain_extent_x_m"] == parsed["domain_extent_x_m"]
     assert payload["domain_extent_y_m"] == parsed["domain_extent_y_m"]
     assert payload["domain_extent_z_m"] == parsed["domain_extent_z_m"]
