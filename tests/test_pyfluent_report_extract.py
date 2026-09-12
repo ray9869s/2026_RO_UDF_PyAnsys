@@ -10,6 +10,8 @@ import pytest
 from ro.fluent_report_helpers import (
     concentration_range_diagnostics,
     concentration_metric_unit,
+    apply_surface_report_definition,
+    create_or_update_surface_field_report,
     create_x_normal_plane,
     derive_periodic_spacer_pressure_metrics,
     derive_spacer_cell_metrics,
@@ -440,6 +442,22 @@ def test_iso_surface_reduction_locations_uses_settings_results():
     assert iso_surface_reduction_locations(solver, ["pp_plane_zc"]) == [plane]
 
 
+class FakeSettings:
+    def __init__(self):
+        self.field = None
+        self.iso_values = None
+        self.surfaces = None
+        self.range = SimpleNamespace(minimum=None, maximum=None)
+        self.report_type = None
+        self.surface_names = None
+        self.per_surface = None
+        self.definition = None
+
+    def set_state(self, state):
+        for key, value in state.items():
+            setattr(self, key, value)
+
+
 class FakeNamedGroup:
     def __init__(self):
         self.objects = {}
@@ -449,16 +467,7 @@ class FakeNamedGroup:
         return list(self.objects)
 
     def create(self, name):
-        obj = SimpleNamespace(
-            field=None,
-            iso_values=None,
-            surfaces=None,
-            range=SimpleNamespace(minimum=None, maximum=None),
-            report_type=None,
-            surface_names=None,
-            per_surface=None,
-            definition=None,
-        )
+        obj = FakeSettings()
         self.objects[name] = obj
         return obj
 
@@ -1156,3 +1165,66 @@ def test_require_load_bearing_summary_columns_rejects_blank_mass_closure():
     wide["mass_balance_relative_error"] = None
     with pytest.raises(RuntimeError, match="mass_balance_relative_error"):
         require_load_bearing_summary_columns(wide)
+
+
+def test_apply_surface_report_definition_one_shot_set_state_not_child_setattr():
+    child_sets = []
+
+    class Rd:
+        def __setattr__(self, name, value):
+            child_sets.append(name)
+            object.__setattr__(self, name, value)
+
+        def set_state(self, state):
+            self.last_state = dict(state)
+            for key, value in state.items():
+                object.__setattr__(self, key, value)
+
+    rd = Rd()
+    payload = apply_surface_report_definition(
+        rd, "surface-areaavg", "udm-7", ["wall_top_mem"]
+    )
+    assert payload == {
+        "report_type": "surface-areaavg",
+        "surface_names": ["wall_top_mem"],
+        "per_surface": False,
+        "field": "udm-7",
+    }
+    assert rd.last_state == payload
+    assert "report_type" not in child_sets
+    assert "field" not in child_sets
+    assert "surface_names" not in child_sets
+    assert "per_surface" not in child_sets
+
+
+def test_apply_surface_report_definition_omits_field_for_surface_area():
+    class Rd:
+        def set_state(self, state):
+            self.last_state = dict(state)
+
+    rd = Rd()
+    payload = apply_surface_report_definition(
+        rd, "surface-area", None, ["wall_top_mem"]
+    )
+    assert "field" not in payload
+    assert rd.last_state["report_type"] == "surface-area"
+
+
+def test_create_or_update_surface_field_report_uses_set_state():
+    group = FakeNamedGroup()
+    solution = SimpleNamespace(
+        report_definitions=SimpleNamespace(surface=group)
+    )
+    create_or_update_surface_field_report(
+        solution, "pp_cm_avg", "surface-areaavg", "udm-7", ["wall_top_mem"]
+    )
+    rd = group["pp_cm_avg"]
+    assert rd.report_type == "surface-areaavg"
+    assert rd.field == "udm-7"
+    assert rd.surface_names == ["wall_top_mem"]
+    assert rd.per_surface is False
+    create_or_update_surface_field_report(
+        solution, "pp_cm_avg", "surface-facetmax", "udm-7", ["wall_bottom_mem"]
+    )
+    assert rd.report_type == "surface-facetmax"
+    assert rd.surface_names == ["wall_bottom_mem"]

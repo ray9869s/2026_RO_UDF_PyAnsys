@@ -1542,6 +1542,30 @@ def delete_iso_clip(solver, clip_name):
         iso_group.delete(clip_name)
 
 
+def apply_surface_report_definition(
+    report_definition,
+    report_type,
+    field_name,
+    surface_names,
+):
+    """Write a surface report in one ``set_state`` (one ``set_var``).
+
+    Per-child assignment (``rd.report_type = ...``) runs ``is_active()`` →
+    gRPC ``GetAttrs`` before each child. ansys-fluent-core 0.38.0
+    ``set_state`` does not. ``create(name, **kwargs)`` is not supported;
+    call ``group.create(name)`` then this helper.
+    """
+    state = {
+        "report_type": report_type,
+        "surface_names": list(surface_names),
+        "per_surface": False,
+    }
+    if field_name is not None:
+        state["field"] = field_name
+    report_definition.set_state(state)
+    return state
+
+
 def create_or_update_surface_field_report(
     solution,
     report_name,
@@ -1558,11 +1582,9 @@ def create_or_update_surface_field_report(
         rd = group[report_name]
     else:
         rd = group.create(report_name)
-    rd.report_type = report_type
-    if field_name is not None:
-        rd.field = field_name
-    rd.surface_names = list(surface_names)
-    rd.per_surface = False
+    apply_surface_report_definition(
+        rd, report_type, field_name, surface_names
+    )
     return report_name
 
 

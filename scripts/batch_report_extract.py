@@ -4,6 +4,7 @@ import json
 import argparse
 import importlib.util
 import subprocess
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,10 @@ from ro.extract_skip import extract_skip_block_reason, inspect_extract_skip_leaf
 from ro.manifest import ManifestError, iter_run_manifests
 from ro.fluent_report_helpers import LOAD_BEARING_SUMMARY_METRICS
 from ro.paths import data_root, project_root, run_dir, runs_root
+from ro.session_retry import (
+    classify_retryable_session_crash,
+    describe_attempt_orphans,
+)
 
 
 # ============================================================
@@ -26,6 +31,11 @@ from ro.paths import data_root, project_root, run_dir, runs_root
 # ============================================================
 
 CRITICAL_SUMMARY_COLUMNS = list(LOAD_BEARING_SUMMARY_METRICS)
+
+# Same defaults as batch_postprocess_all_cases / batch_solver_sweep:
+# 2 retries after the first attempt (3 total), 15 s settle.
+EXTRACT_TRANSIENT_FAILURE_MAX_RETRIES = 2
+EXTRACT_POST_FAILURE_SETTLE_S = 15.0
 
 
 def try_resolve_post_layout_overrides(mesh_directory):
@@ -350,6 +360,132 @@ def resolve_case_run_directory(case):
     return None
 
 
+def format_selected_post_case(index, total, case):
+    """One four-id line for the pre-Fluent case list."""
+    family = case.get("family") or "?"
+    geo_id = case.get("geo_id") or case.get("geo_name") or "?"
+    mesh_id = case.get("mesh_id") or case.get("mesh_case_name") or "?"
+    run_id = case.get("run_id") or case.get("case_name") or "?"
+    return f"  {index}/{total}  {family}/{geo_id}/{mesh_id}/{run_id}"
+
+
+def extract_attempt_log_path(run_directory, geo_id, mesh_id, run_id, attempt):
+    """Driver log for one extract worker attempt; mesh_id and attempt are required."""
+    return Path(run_directory) / (
+        f"{geo_id}__{mesh_id}__{run_id}__extract_attempt{int(attempt)}.log"
+    )
+
+
+def run_extract_worker_tee(cmd, env, log_path):
+    """Run the extract worker, teeing stdout/stderr to an attempt-specific log."""
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log_file.write(line)
+        returncode = proc.wait()
+    return subprocess.CompletedProcess(cmd, returncode)
+
+
+def collect_extract_attempt_evidence(log_path):
+    """Read this attempt's driver log only.
+
+    Older attempt logs are not included: a leftover socket string must not
+    make a later load-bearing failure look retryable.
+    """
+    path = Path(log_path)
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def run_extract_attempts(
+    *,
+    cmd,
+    env,
+    run_directory,
+    geo_id,
+    mesh_id,
+    run_id,
+    max_retries=EXTRACT_TRANSIENT_FAILURE_MAX_RETRIES,
+    settle_s=EXTRACT_POST_FAILURE_SETTLE_S,
+    runner=None,
+    sleeper=None,
+    process_lister=None,
+):
+    """Run the extract worker, retrying Fluent session deaths.
+
+    max_retries is retries after the first attempt (default 2 → 3 total).
+    Each attempt is a new subprocess and a new Fluent session. Skip is not
+    re-evaluated here.
+
+    Returns (result, attempts, retry_kinds, attempt_logs).
+    """
+    if runner is None:
+        runner = run_extract_worker_tee
+    if sleeper is None:
+        sleeper = time.sleep
+    max_retries = max(0, int(max_retries))
+    max_attempts = max_retries + 1
+    retry_kinds = []
+    attempt_logs = []
+    result = None
+    run_directory = Path(run_directory)
+    for attempt in range(1, max_attempts + 1):
+        log_path = extract_attempt_log_path(
+            run_directory, geo_id, mesh_id, run_id, attempt
+        )
+        attempt_logs.append(log_path)
+        print(
+            f"  extract attempt {attempt}/{max_attempts}: "
+            f"{' '.join(str(part) for part in cmd)}"
+        )
+        print(f"  Attempt log: {log_path}")
+        result = runner(cmd, env=env, log_path=log_path)
+        if result.returncode == 0:
+            return result, attempt, retry_kinds, attempt_logs
+
+        evidence = collect_extract_attempt_evidence(log_path)
+        for line in describe_attempt_orphans(
+            evidence, process_lister=process_lister
+        ):
+            print(f"  {line}")
+        retry_kind = classify_retryable_session_crash(evidence)
+        can_retry = attempt < max_attempts and retry_kind is not None
+        if can_retry:
+            retry_kinds.append(retry_kind)
+            remaining = max_attempts - attempt
+            print(
+                f"  extract: transient {retry_kind} on attempt {attempt}; "
+                f"retrying after {float(settle_s):g}s ({remaining} retry left)."
+            )
+            if settle_s > 0.0:
+                sleeper(float(settle_s))
+            continue
+        if attempt < max_attempts:
+            print(
+                f"  extract: non-retryable failure on attempt {attempt} "
+                f"(return code {result.returncode}); not retrying."
+            )
+        return result, attempt, retry_kinds, attempt_logs
+    return result, max_attempts, retry_kinds, attempt_logs
+
+
 def aggregate_output_paths() -> tuple[Path, Path]:
     inventory = data_root() / "inventory"
     return (
@@ -414,6 +550,12 @@ if __name__ == "__main__":
     print(f"SKIP_EXISTING       : {bcfg.SKIP_EXISTING_REPORTS}")
     print(f"CONTINUE_ON_FAILURE : {bcfg.CONTINUE_ON_FAILURE}")
     print(f"MAX_CASES           : {bcfg.MAX_CASES}")
+    print("Selected cases (Fluent has not launched):")
+    if not cases_to_run:
+        print("  (none)")
+    else:
+        for listed_idx, listed_case in enumerate(cases_to_run, start=1):
+            print(format_selected_post_case(listed_idx, case_count, listed_case))
 
 
     # ============================================================
@@ -575,13 +717,22 @@ if __name__ == "__main__":
 
         print(f"  Running worker ...")
         return_code = -1
+        attempts = 0
         try:
-            result = subprocess.run(
-                [sys.executable, str(worker_script)],
+            result, attempts, retry_kinds, _attempt_logs = run_extract_attempts(
+                cmd=[sys.executable, str(worker_script)],
                 env=env,
-                check=False,
+                run_directory=case_result_dir,
+                geo_id=case.get("geo_id") or geo_name,
+                mesh_id=case.get("mesh_id") or mesh_case_name,
+                run_id=case.get("run_id") or case_name,
             )
             return_code = result.returncode
+            if retry_kinds:
+                print(
+                    f"  extract retries: attempts={attempts} "
+                    f"kinds={retry_kinds}"
+                )
         except Exception as exc:
             record["message"] = f"subprocess exception: {exc}"
 
@@ -590,8 +741,13 @@ if __name__ == "__main__":
         if return_code != 0:
             record["status"] = "FAILED"
             if not record["message"]:
-                record["message"] = f"Worker exited with return code {return_code}"
-            print(f"  FAILED (return code {return_code})")
+                record["message"] = (
+                    f"Worker exited with return code {return_code} "
+                    f"(attempts={attempts})"
+                )
+            print(
+                f"  FAILED (return code {return_code}, attempts={attempts})"
+            )
 
             if not bcfg.CONTINUE_ON_FAILURE:
                 status_records.append(record)

@@ -59,6 +59,7 @@ from ro.fluent_report_helpers import (  # noqa: E402
     concentration_metric_unit,
     MIDPLANE_CB_MIXING_CUP_REL_TOL,
     assert_midplane_c_b_matches_boundary_mixing_cup,
+    apply_surface_report_definition,
     create_channel_midplane_plane,
     create_x_normal_plane as _create_x_normal_plane,
     derive_periodic_spacer_pressure_metrics_for_layout,
@@ -603,15 +604,7 @@ def create_or_update_surface_report(solution, report_name, report_type, field_na
         rd = group.create(report_name)
         print(f"Creating surface report: {report_name}")
 
-    rd.report_type = report_type
-
-    # surface-area does not need a field. Other surface reports do.
-    if field_name is not None:
-        rd.field = field_name
-
-    rd.surface_names = list(surface_names)
-    rd.per_surface = False
-
+    apply_surface_report_definition(rd, report_type, field_name, surface_names)
     return report_name
 
 

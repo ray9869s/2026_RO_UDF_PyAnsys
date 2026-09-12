@@ -265,7 +265,8 @@ Fluent는 다른 sifile이라 매칭되지 않는다. **자동 kill은 하지 �
 
 - crash 이후 수렴 이력을 이어 풀기. 항상 fresh session.
 - 라이선스 실패를 transient로 분류하기 (UNKNOWN, 넣지 않음).
-- meshing/extract retry 재설계 (extract 분류기에 launch-spawn만 추가).
+- meshing retry 재설계. `batch_report_extract.py`는 R-03 당시 루프가 없었고
+  2026-09-12에 같은 classifier로 추가 (아래 follow-up).
 - 모든 `fluent.exe` taskkill.
 
 ### 검증
@@ -276,6 +277,17 @@ socket 1회 후 success → attempts==2. launch-spawn 동일. residual/QoI/UDF/G
 readback → attempts==1. leftover RUNNING+files는 skip `run`. attempt 1 로그가
 attempt 2에 덮이지 않음. 옛 attempt 로그의 socket 문자열이 현재 UDF 실패를
 retryable로 바꾸지 않음.
+
+### 2026-09-12 follow-up (새 행 아님) — `batch_report_extract` retry
+
+`batch_postprocess_all_cases.py`는 `efbced9` / R-03에서 report subprocess를
+재시도한다. `batch_report_extract.py`는 `subprocess.run` 한 번이라 a30
+Scheme heap (`wta(1st) to string->symbol` / `#[free`)에 attempt 번호가
+없었다. 같은 `classify_retryable_session_crash`, `max_retries=2`, 15 s
+settle, 시도마다 `{geo}__{mesh}__{run}__extract_attemptN.log`. load-bearing /
+Canonical CP 메시지에 session signature가 없으면 재시도하지 않음.
+
+WSL 2026-09-12 `1270 passed, 1 skipped, 0 failed`.
 
 ---
 
@@ -957,10 +969,10 @@ WSL 2026-09-12 `1257 passed, 1 skipped, 0 failed`.
 
 **2026-09-12 pilots (zone capture + split periodics).** Both logs contain
 `All boundary zones:` and `Detected spacer wall zones: ['wall_spacer']`.
-R-10 zone capture works. Both runs died at the R-06 plug `float(dict)`
-before UDF load, so `INLET_G_MAX` is still unanswered.
-`report_spacer_wall_zones.py` can now parse these logs; the gate stays
-unwired.
+After the R-06 unwrap, both solves completed (a60 `max_iter_reached`, a30
+`residual_converged`; finals + sha stamped).
+`report_spacer_wall_zones.py`: **2 PASS, 19 NO_LINE**. Gate stays unwired.
+The 58 split periodics on D0817_a30 did not interfere.
 
 Diamond meshes emit many split periodic zones. D0817_a30 has 58
 (`periodic_l:13109`, `periodic_r:13029`, `periodic_l-solid`,
@@ -1171,7 +1183,7 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
 | extract launch = meshing → `switch_to_solver()` | `4fc26b7`: 이 host에서 direct solver는 `Failed to construct hwtree`. |
 | `u_mean_ms = u_target / G` | legacy coefficient, physical bulk velocity 아님 (`manifest.py` docstring, `docs/metrics_conventions.md`). 검사는 하되 정의를 바꾸지 않음. |
 | `n_lead_excluded = 3` | 측정된 evaluation window. Diamond에서 lead 3 cell의 물리적 길이가 5.2배 달라지는 것은 알려진 사실이며 이 계획에서 바꾸지 않음. |
-| 측정된 inlet G 계약 / campaign G 상수를 지금 바꾸지 않음 | empty와 D2450이 3.2e-6로 일치 (Astra B-09/A-10). band `INLET_G_MAX=1.02`는 open question. |
+| 측정된 inlet G는 **campaign constant가 아니다** | 2026-09-12 네 측정: D2450_a45 1.00360940 (area 2.668e-6), REF_empty 1.00361262 (2.668e-6), D0817_a30 1.00392137 (1.258e-6), D0817_a60 1.00203994 (7.262e-7). 범위 1.00204–1.00392. D2450/REF 3.2e-6 일치는 같은 mesh recipe + 같은 inlet area. band `INLET_G_MAX=1.02`는 네 점 모두 여유. 둘 다 area-weighted mean u=0.2 exact. |
 | Diamond `wall_spacer` 단일 라벨 | cross-family는 total, split은 within-family. Diamond 재meshing은 검증 참조를 무효화 (`batch_config.py` Diamond 주석). |
 | origin 0 / centered-z 현재 계약 | 측정 origin gate는 추가할 수 있으나 origin을 재설정하지 않음. |
 | Cell 8 mass-closure silent success는 **이미 수정됨** | `LOAD_BEARING_REPORT_NAMES` / flux compute re-raise (Claude C2-01, Cursor T2-01). 되풀이 “수정” 금지. |
@@ -1183,25 +1195,34 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
 
 판단 패스가 결정할 것. 코드 패치를 여기 적지 않는다.
 
-1. **UDF `INLET_G_MAX = 1.02`.** D2450 측정 excess(+0.308%…+0.3742%)의 약 5배.
-   벗어나면 `G=1.0` fallback + warning이고 성공 marker가 안 나와 C1-06이 run을
-   세운다. `D0817_a60`만 `m_max=0.060`이라 inlet tessellation이 다르다.
-   Diamond 전 범위를 이 band가 덮는지, geometry별 band가 필요한지.
-   **측정 (2026-09-12):** exploratory `D0817_a60` `u0p2_p6M` full solve
-   (`--geo-id D0817_a60`). band는 유지. G halt는 결과이지 a30 blocker가 아님.
+1. **UDF `INLET_G_MAX = 1.02` — answered, band stays.** Four measured G
+   (2026-09-12): D2450_a45 `1.00360940` area `2.668e-6`; REF_empty
+   `1.00361262` area `2.668e-6`; D0817_a30 `1.00392137` area `1.258e-6`;
+   D0817_a60 `1.00203994` area `7.262e-7`. Range 1.00204–1.00392. G is
+   **not** a campaign constant. D2450 vs REF agreed to 3.2e-6 only because
+   they share a mesh recipe and inlet area. Both pilots reported
+   area-weighted mean u = 0.2 exactly. Do not widen the band.
 2. **30-cell layout vs Fluent report/surface 한도.** extract는
    `range(n_unit_cells+1)`로 동적 생성 (crash하는 Python index는 세 패스 모두
    못 찾음). 정의 수 ~215, Astra C-05의 135 definitions = 736 s를 선형 외삽하면
    ~1170 s. 실제 한도/시간은 live Fluent (Claude C1-08, Sol T1-07, Cursor T1-08).
-   **측정 (2026-09-12):** exploratory `D0817_a30` `u0p2_p6M` solve 후 extract
-   1회. 3회 반복은 1회 결과를 본 뒤. 한 번 성공이 scale vs transient를
-   가르지 않음. scientific validation 아님.
+   **측정 (2026-09-12):** a30 extract 5437.9 s, `failed_phase=segmented_membrane_cp`,
+   def_create 1944.4 s (roughly 360–490 of 675 definitions). Crash site is
+   `rd.report_type =` → `is_active()` → gRPC GetAttrs → `wta(1st)` /
+   `#[free]`. REF_empty passes; a45 and a30 die — the two with the most
+   round trips. **Not a scale/cell-count hard limit; round-trip exposure.**
+   One-shot `set_state` is now applied on surface-report create/update.
+   `batch_report_extract.py` now retries Scheme heap on a fresh session.
 3. **CP discriminability와 near-wall mesh.** 0.6% between-geometry vs grid
    dependence, Sc ~600–700, 4 prism / 첫 cell ~6.2 µm (Astra B-04, B-08).
 4. **empty-channel dP vs analytic plane Poiseuille.** u=0.2에서 2.6%, u=0.3에서
    3.9% excess (Astra B-06). solver 없이 원인 단정 금지.
 5. **Diamond u=0.3 converged dP dip.** cells 4/5의 7.8%/15.0% dip, 765 iter
    지속 (Astra B-07). residual 수렴 ≠ time-stable ranking.
+6. **`max_iter_reached` under all-conditions-are-met.** D0817_a60 `u0p2_p6M`
+   hit 2000 with finals written (same pattern as D2450_a45 bl6 at p8M).
+   Do not change the stop-reason gate. Scientific acceptance vs completed
+   skip is V-07; this is not a new R-row.
 
 ---
 
@@ -1307,7 +1328,7 @@ R-05의 mtime 비교는 보조 신호다. 나중에 복사한 old CSV는 mtime�
 | `batch_solver_rerun` skip/promotion/URF | 해당 도구를 campaign recovery에 쓰지 않는 동안만 유예 가능. 쓰기로 하면 R-02/R-05와 같은 artifact/evidence 계약이 **첫 사용 전** 필요하다. |
 | `compute_cp_spread=True` 관련 silent zero/bracket/guard | False를 명시해 동결하는 동안만 deferred mechanical로 남긴다. True로 켜는 시점에는 Astra A-01/A-08과 Sol T2의 검증이 선행돼야 한다. False가 scalar-k 근사의 scientific certification을 뜻하지는 않는다. |
 
-CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 workstation smoke를 수동 release gate로 강제할 수 있으면 짧게 유예할 수 있다. full-suite 검증 자체는 유예하지 않는다. postprocessing one-shot `set_state`는 사전 timing pilot에서 비교할 가치가 높지만 correctness 필수조건은 아니다. case-file definition caching은 invalidation 계약이 복잡하므로 이번 필수 수정에 추가하지 않는다.
+CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 workstation smoke를 수동 release gate로 강제할 수 있으면 짧게 유예할 수 있다. full-suite 검증 자체는 유예하지 않는다. postprocessing one-shot `set_state`는 2026-09-12에 적용했다 — a30 crash는 per-child `is_active` round-trip exposure이지 hard limit가 아니다. case-file definition caching은 invalidation 계약이 복잡하므로 이번 필수 수정에 추가하지 않는다.
 
 ### V-05 — gate 도입 방식과 “31개에서 0 reject” 기준
 
@@ -1335,7 +1356,7 @@ CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 works
 
 #### R-11/R-12 identities가 증명하는 범위를 좁혀라
 
-- `u_mean_ms*G==u_target_ms`는 legacy coefficient bookkeeping 검사다. 둘을 같은 G로 만들면 성립하므로 실제 applied inlet을 증명하지 않는다. 기존 per-mesh G 합의와 서로 다른 meshes 간 campaign 비교를 구별한다. 두 측정 G의 차이 약 `3.2e-6`를 이미 존중하면서 **cross-mesh**에 `1e-6` tolerance를 무차별 적용하면 정상 값도 거절한다.
+- `u_mean_ms*G==u_target_ms`는 legacy coefficient bookkeeping 검사다. 둘을 같은 G로 만들면 성립하므로 실제 applied inlet을 증명하지 않는다. 기존 per-mesh G 합의와 서로 다른 meshes 간 campaign 비교를 구별한다. G는 1.00204–1.00392로 geometry마다 다르다. D2450 vs REF의 `3.2e-6`를 **cross-mesh** `1e-6`에 무차별 적용하면 정상 값도 거절한다.
 - `area_mem≈pp_udm_area_sum`은 측정 합의 `1e-15`에 근거해 `rel_tol=1e-9`를 **초기 qualification 후보**로 둘 수 있다. 두 값의 finite/positive, 동일 membrane scope, area accumulator 초기화·갱신 시점을 확인하고 representative families에서 residual을 기록한 뒤 production gate로 고정한다. 전체 면적 합의는 per-face CP interpolation의 동등성을 증명하지 않는다. 실제 family별 오차는 **UNKNOWN**이다.
 - `pressure_drop_spacer≈sum(active-cell dP)`는 **active span**으로 하는 것이 맞다. 그러나 내부 pressure terms가 telescoping으로 소거되므로 잘못된 내부 plane 위치를 일반적으로 검출하지 못한다. 양쪽 endpoints까지 같은 wrong layout에서 만들면 전부 PASS한다. 이 gate는 R-09나 exact evaluation-window 검사의 대안이 아니다. 반환 dP가 큰 absolute pressure의 차라면 tolerance는 pressure precision/반올림과 별도 report 계산 오차를 고려한 absolute+relative 기준으로 사전 qualification한다. 임의 tolerance로 279회 중 처음 trip할 때 해석하지 않는다.
 - flux identity는 exact requested key와 동일 sibling payload라는 parser 계약을 유지한다. inlet/outlet을 함께 바꿔도 각 decomposition 합은 맞을 수 있으므로 requested report→CSV mapping fixture가 필요하다. 실제 zero-source component를 invalid로 취급하지 않는다.
@@ -1346,15 +1367,14 @@ CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 works
 
 | 질문 | 279-run 시작을 막는가 | 가장 싼 해결 |
 |---|---|---|
-| `INLET_G_MAX=1.02`가 모든 mesh를 덮는가 | **band 변경은 필요하다고 입증되지 않았다. 유지한다.** 두 측정 `1.00360939613`, `1.003612623`은 강한 근거이나 `D0817_a60`을 포함한 전31개 증명은 아니다. fail-closed이므로 곧바로 silent corruption은 아니지만 unattended 279의 준비 완료에는 미확인 항목이다. | 먼저 `D0817_a60`의 실제 mesh/UDF로 initialization 및 profile hook이 평가될 최소 단계까지만 실행해 **current-attempt** G success marker, inlet area, physical boundary flux를 기록한다. 31 setup-only qualification에 같은 검사를 묶는다. 전체 solve/새 mesh는 필요하지 않다. out-of-band이면 marker/area/hook/좌표·units를 조사하며 band부터 넓히지 않는다. 실제 G는 **UNKNOWN — live Fluent 필요**. |
-| 30-cell Fluent report/surface 한도인가 | **전체 unattended sweep 전 운영 검증을 막는다.** 한 Scheme fault로 hard limit라고 단정할 수도, unrelated transient라고 치부할 수도 없다. | `D0817_a30`에서 실제 production flags로 create→compute→segmented CP→CSV까지 한 번 완주시키고, fresh session으로 최소 3회 반복하여 중간 크기/10-cell control과 phase·peak memory·resident objects·cleanup·retry 기록을 비교한다. 기존 solved pair가 없다면 작은 pilot으로 유효한 field data를 먼저 만들며 이 실행을 scientific validation으로 세지 않는다. 반복 성공은 hard cap 가설에 반증을 주지만 낮은 crash probability까지 증명하지는 않는다. 실패가 크기/특정 phase와 재현되면 settings calls/동시 object 수를 줄인 경로를 검증한 뒤 시작한다. 실제 원인은 **UNKNOWN — live Fluent 필요**. |
+| `INLET_G_MAX=1.02`가 모든 mesh를 덮는가 | **band 유지. 이제 측정됨.** 네 점 1.00204–1.00392, 모두 1.02 아래. G는 campaign constant가 아니다. | 기록된 네 값 (D2450_a45 1.00360940 / REF_empty 1.00361262 / D0817_a30 1.00392137 / D0817_a60 1.00203994). area-weighted mean u=0.2 exact. band를 넓히지 않음. |
+| 30-cell Fluent report/surface 한도인가 | **hard limit 아님. round-trip exposure.** a30는 675 definitions에서 ~360–490개 create 중 `rd.report_type=` → GetAttrs → Scheme heap. REF_empty(135)는 통과. | one-shot `set_state` (4 setattr → 1 set_var) + `batch_report_extract` session retry. 다음 측정은 a60 extract (15 active, 7과 27 사이) 후 a30. |
 
-**2026-09-12 pilots (Open questions 1–2, 새 행 아님).** V-06의 G 최소 경로는
-setup-only이나, a30 field data와 spacer log 줄을 같은 solve에서 남기려고
-둘 다 full solve로 둔다. 순서: a60 solve → a30 solve (a60 G halt여도 a30은
-max085이라 독립) → `post_cases` 두 leaf extract 각 1회 →
-`report_spacer_wall_zones.py`. a30 extract 2–3회는 1회 결과를 본 뒤.
-`INLET_G_MAX` 유지. production sweep 아님.
+**2026-09-12 pilots (Open questions 1–2, 새 행 아님).** G는 네 점에서
+answered, band 유지. a60 solve `max_iter_reached`, a30
+`residual_converged`. a30 extract는 exposure crash (아래 set_state +
+retry). 커밋된 `post_cases`는 `[]`. 다음 extract는 a60 단독 후 a30.
+production sweep 아님.
 | pressure-relaxation 적용 실패 시 abort | **명시적으로 requested한 active setting의 확인 실패는 before sweep에 abort하도록 정한다.** 모든 non-`APPLIED_CONFIRMED`를 일괄 abort하는 Claude 처방은 과도하다. | 현재 campaign의 exact solver mode/profile로 setup까지만 실행해 requested/before/after/status를 durable하게 저장한다. `conservative`/`strong`의 `explicit_pressure_under_relaxation`, momentum, 적용 대상 species setting은 expected exact set를 구성하고 confirmed readback을 require한다. `baseline`, 명시적 `preserve`는 적용 실패가 아니며 actual effective state를 기록한다. verbosity는 diagnostic이므로 failure가 solver를 막을 이유가 없다. setting이 그 mode에 실제로 미적용 대상이면 사전에 명시적으로 NOT_APPLICABLE로 승인·기록하고, discovery 실패를 NOT_APPLICABLE로 바꾸지 않는다. 필요한 API/mode 지원 여부는 **UNKNOWN — live Fluent readback 필요**. |
 
 pressure-relaxation의 이유는 “URF가 다르면 반드시 최종 물리가 달라진다”는 주장이 아니다. 현재 종료 기준과 finite iteration budget 아래서 지정한 protocol을 실제로 실행했는지 알 수 없기 때문이다. 해결을 위해 279개를 비교 solve할 필요는 없다. 기존 `set_and_verify_leaf`의 readback outcome을 **필수 항목 목록과 대조하고 저장**하면 된다. `SKIPPED_SPECIES_UNAVAILABLE`를 species가 필요한 campaign에서 자동 성공으로 인정하지 않는다. 이 판단에 따라 “URF abort는 deferred” 문구를 위 범위에 한해 철회한다.
