@@ -216,6 +216,63 @@ def test_geo_id_filter_keeps_case_set_order_and_refuses_unknown():
     )
     assert args.geo_ids == ["D0817_a60", "D0817_a30"]
     assert sweep.parse_batch_solver_sweep_cli([]).geo_ids is None
+    assert sweep.parse_batch_solver_sweep_cli([]).outlet_gauge_pressures is None
+    assert sweep.parse_batch_solver_sweep_cli([]).dry_run is False
+
+
+def test_pressure_filter_keeps_p6m_column_and_refuses_unknown(batchcfg):
+    sweep = load_batch_solver_sweep()
+    production = batchcfg.production_solver_sweep_cases
+    selected = sweep.filter_solver_cases_by_outlet_gauge_pressure(
+        production, [6.0e6]
+    )
+    assert len(selected) == 93
+    assert {case["outlet_gauge_pressure"] for case in selected} == {6.0e6}
+    assert {case["run_id"] for case in selected} == {
+        "u0p1_p6M",
+        "u0p2_p6M",
+        "u0p3_p6M",
+    }
+    assert len({case["geo_id"] for case in selected}) == 31
+    assert [case["geo_id"] for case in selected] == [
+        case["geo_id"]
+        for case in production
+        if case["outlet_gauge_pressure"] == 6.0e6
+    ]
+    assert sweep.filter_solver_cases_by_outlet_gauge_pressure(
+        production, None
+    ) == production
+    with pytest.raises(ValueError, match="not in the selected case-set"):
+        sweep.filter_solver_cases_by_outlet_gauge_pressure(production, [5.0e6])
+    args = sweep.parse_batch_solver_sweep_cli(
+        [
+            "--case-set",
+            "production",
+            "--outlet-gauge-pressure",
+            "6.0e6",
+            "--dry-run",
+        ]
+    )
+    assert args.case_set == "production"
+    assert args.outlet_gauge_pressures == [6.0e6]
+    assert args.dry_run is True
+
+
+def test_format_selected_solver_case_prints_four_id():
+    sweep = load_batch_solver_sweep()
+    line = sweep.format_selected_solver_case(
+        1,
+        93,
+        {
+            "family": "diamond",
+            "geo_id": "D0817_a30",
+            "mesh_id": "max085_min006_cpg5_bl4_peel2",
+            "run_id": "u0p2_p6M",
+        },
+    )
+    assert line == (
+        "  1/93  diamond/D0817_a30/max085_min006_cpg5_bl4_peel2/u0p2_p6M"
+    )
 
 
 def test_production_solver_cases_pass_inlet_profile_gate(batchcfg):

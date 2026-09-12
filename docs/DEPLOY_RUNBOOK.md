@@ -142,6 +142,12 @@ The nine-point production sweep (`u` = 0.1/0.2/0.3 × `p` = 4/6/8 MPa, 31 × 9 =
 
 `python scripts/batch_solver_sweep.py --case-set production`
 
+The p6M column only (31 geos × 3 velocities = 93) is
+
+`python scripts/batch_solver_sweep.py --case-set production --outlet-gauge-pressure 6.0e6 --dry-run`
+
+`--dry-run` prints `Selected cases (Fluent has not launched):` and per-case skip decisions. Drop `--dry-run` only after that list is 93 and `_p6M`. A pressure that is not in the case-set is an error, not an empty sweep. Do not flip `batch_config.dry_run`; that flag is shared with meshing.
+
 Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently seven: two `REF_empty`, `D2450_a45` p8M bl4/bl6, `D0817_a45` u0p3, plus `D0817_a60`/`D0817_a30` u0p2_p6M pilots). Do not point the default entrypoint at 279. Use `--geo-id` to run one exploratory leaf without the other six.
 
 Production mesh leaves look like

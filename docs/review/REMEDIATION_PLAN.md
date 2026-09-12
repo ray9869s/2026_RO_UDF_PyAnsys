@@ -1202,17 +1202,18 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
    **not** a campaign constant. D2450 vs REF agreed to 3.2e-6 only because
    they share a mesh recipe and inlet area. Both pilots reported
    area-weighted mean u = 0.2 exactly. Do not widen the band.
-2. **30-cell layout vs Fluent report/surface 한도.** extract는
-   `range(n_unit_cells+1)`로 동적 생성 (crash하는 Python index는 세 패스 모두
-   못 찾음). 정의 수 ~215, Astra C-05의 135 definitions = 736 s를 선형 외삽하면
-   ~1170 s. 실제 한도/시간은 live Fluent (Claude C1-08, Sol T1-07, Cursor T1-08).
-   **측정 (2026-09-12):** a30 extract 5437.9 s, `failed_phase=segmented_membrane_cp`,
-   def_create 1944.4 s (roughly 360–490 of 675 definitions). Crash site is
-   `rd.report_type =` → `is_active()` → gRPC GetAttrs → `wta(1st)` /
-   `#[free]`. REF_empty passes; a45 and a30 die — the two with the most
-   round trips. **Not a scale/cell-count hard limit; round-trip exposure.**
-   One-shot `set_state` is now applied on surface-report create/update.
-   `batch_report_extract.py` now retries Scheme heap on a fresh session.
+2. **30-cell layout vs Fluent report/surface 한도 — answered, not a hard
+   limit.** extract는 `range(n_unit_cells+1)`로 동적 생성. First a30 attempt
+   died on per-child `rd.report_type=` → `is_active()` → gRPC GetAttrs →
+   Scheme heap (~360–490 of 675 definitions). One-shot `set_state` cut
+   definition cost from 3.9–5.4 s to 2.4–2.9 s. **Both open extract
+   blockers closed (2026-09-12):** D0817_a60 54.6 min (39 segments, 351
+   definitions) and D0817_a30 115.7 min (75 segments, 675 definitions),
+   both `failed_phase None`. 7-active-cell layouts were 40–55 min.
+   Measured QoI (`cp_canon_window_avg` / dP/m / LMH): REF_empty 1.1501 /
+   3,707 / 24.05; D0817_a60 1.0968 / 67,356 / 25.05; D0817_a30 1.0745 /
+   273,130 / 25.57. Membrane blockage 18.8% on both D0817 (angle-
+   independent) vs 6.2% on D2450_a45.
 3. **CP discriminability와 near-wall mesh.** 0.6% between-geometry vs grid
    dependence, Sc ~600–700, 4 prism / 첫 cell ~6.2 µm (Astra B-04, B-08).
 4. **empty-channel dP vs analytic plane Poiseuille.** u=0.2에서 2.6%, u=0.3에서
@@ -1223,6 +1224,17 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
    hit 2000 with finals written (same pattern as D2450_a45 bl6 at p8M).
    Do not change the stop-reason gate. Scientific acceptance vs completed
    skip is V-07; this is not a new R-row.
+7. **Postprocessing definition caching — declined, do not reopen.**
+   Caching would save roughly 30–50% extract wall clock. The user judged
+   that the implementation and invalidation contract cost more of their
+   time than it saves, and the pipeline is working after `set_state` +
+   session retry. Do not add a cache layer.
+8. **First production column is p6M only (93), not 279.** CP
+   discriminability is the campaign risk; if Diamond does not separate,
+   the remaining 186 do not change that. p4M has about a third of p6M's
+   CP excess, so it is the worst column to spend first. Command:
+   `python scripts/batch_solver_sweep.py --case-set production --outlet-gauge-pressure 6.0e6`
+   after a `--dry-run` that prints 93 `_p6M` four-ids.
 
 ---
 
@@ -1328,7 +1340,7 @@ R-05의 mtime 비교는 보조 신호다. 나중에 복사한 old CSV는 mtime�
 | `batch_solver_rerun` skip/promotion/URF | 해당 도구를 campaign recovery에 쓰지 않는 동안만 유예 가능. 쓰기로 하면 R-02/R-05와 같은 artifact/evidence 계약이 **첫 사용 전** 필요하다. |
 | `compute_cp_spread=True` 관련 silent zero/bracket/guard | False를 명시해 동결하는 동안만 deferred mechanical로 남긴다. True로 켜는 시점에는 Astra A-01/A-08과 Sol T2의 검증이 선행돼야 한다. False가 scalar-k 근사의 scientific certification을 뜻하지는 않는다. |
 
-CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 workstation smoke를 수동 release gate로 강제할 수 있으면 짧게 유예할 수 있다. full-suite 검증 자체는 유예하지 않는다. postprocessing one-shot `set_state`는 2026-09-12에 적용했다 — a30 crash는 per-child `is_active` round-trip exposure이지 hard limit가 아니다. case-file definition caching은 invalidation 계약이 복잡하므로 이번 필수 수정에 추가하지 않는다.
+CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 workstation smoke를 수동 release gate로 강제할 수 있으면 짧게 유예할 수 있다. full-suite 검증 자체는 유예하지 않는다. postprocessing one-shot `set_state`는 2026-09-12에 적용했고 a60/a30 extract가 통과했다. case-file definition caching is declined (Open question 7) — do not reopen.
 
 ### V-05 — gate 도입 방식과 “31개에서 0 reject” 기준
 
@@ -1368,14 +1380,15 @@ CI 자동화 완성은 동일 commit에 대한 full-suite 실행 기록과 works
 | 질문 | 279-run 시작을 막는가 | 가장 싼 해결 |
 |---|---|---|
 | `INLET_G_MAX=1.02`가 모든 mesh를 덮는가 | **band 유지. 이제 측정됨.** 네 점 1.00204–1.00392, 모두 1.02 아래. G는 campaign constant가 아니다. | 기록된 네 값 (D2450_a45 1.00360940 / REF_empty 1.00361262 / D0817_a30 1.00392137 / D0817_a60 1.00203994). area-weighted mean u=0.2 exact. band를 넓히지 않음. |
-| 30-cell Fluent report/surface 한도인가 | **hard limit 아님. round-trip exposure.** a30는 675 definitions에서 ~360–490개 create 중 `rd.report_type=` → GetAttrs → Scheme heap. REF_empty(135)는 통과. | one-shot `set_state` (4 setattr → 1 set_var) + `batch_report_extract` session retry. 다음 측정은 a60 extract (15 active, 7과 27 사이) 후 a30. |
+| 30-cell Fluent report/surface 한도인가 | **closed. hard limit 아님.** set_state 이후 a60 54.6 min / a30 115.7 min, 둘 다 `failed_phase None`. | one-shot `set_state` + extract session retry. Caching declined (Open question 7). |
+| pressure-relaxation 적용 실패 시 abort | **명시적으로 requested한 active setting의 확인 실패는 before sweep에 abort하도록 정한다.** 모든 non-`APPLIED_CONFIRMED`를 일괄 abort하는 Claude 처방은 과도하다. | 현재 campaign의 exact solver mode/profile로 setup까지만 실행해 requested/before/after/status를 durable하게 저장한다. `conservative`/`strong`의 `explicit_pressure_under_relaxation`, momentum, 적용 대상 species setting은 expected exact set를 구성하고 confirmed readback을 require한다. `baseline`, 명시적 `preserve`는 적용 실패가 아니며 actual effective state를 기록한다. verbosity는 diagnostic이므로 failure가 solver를 막을 이유가 없다. setting이 그 mode에 실제로 미적용 대상이면 사전에 명시적으로 NOT_APPLICABLE로 승인·기록하고, discovery 실패를 NOT_APPLICABLE로 바꾸지 않는다. 필요한 API/mode 지원 여부는 **UNKNOWN — live Fluent readback 필요**. |
 
 **2026-09-12 pilots (Open questions 1–2, 새 행 아님).** G는 네 점에서
 answered, band 유지. a60 solve `max_iter_reached`, a30
-`residual_converged`. a30 extract는 exposure crash (아래 set_state +
-retry). 커밋된 `post_cases`는 `[]`. 다음 extract는 a60 단독 후 a30.
-production sweep 아님.
-| pressure-relaxation 적용 실패 시 abort | **명시적으로 requested한 active setting의 확인 실패는 before sweep에 abort하도록 정한다.** 모든 non-`APPLIED_CONFIRMED`를 일괄 abort하는 Claude 처방은 과도하다. | 현재 campaign의 exact solver mode/profile로 setup까지만 실행해 requested/before/after/status를 durable하게 저장한다. `conservative`/`strong`의 `explicit_pressure_under_relaxation`, momentum, 적용 대상 species setting은 expected exact set를 구성하고 confirmed readback을 require한다. `baseline`, 명시적 `preserve`는 적용 실패가 아니며 actual effective state를 기록한다. verbosity는 diagnostic이므로 failure가 solver를 막을 이유가 없다. setting이 그 mode에 실제로 미적용 대상이면 사전에 명시적으로 NOT_APPLICABLE로 승인·기록하고, discovery 실패를 NOT_APPLICABLE로 바꾸지 않는다. 필요한 API/mode 지원 여부는 **UNKNOWN — live Fluent readback 필요**. |
+`residual_converged`. Both extracts passed after set_state (a60 54.6 min,
+a30 115.7 min). QoI and blockage as Open question 2. 커밋된 `post_cases`는
+`[]`. Production starts as the p6M column (93), not 279 (Open question 8).
+Postprocessing caching is declined (Open question 7).
 
 pressure-relaxation의 이유는 “URF가 다르면 반드시 최종 물리가 달라진다”는 주장이 아니다. 현재 종료 기준과 finite iteration budget 아래서 지정한 protocol을 실제로 실행했는지 알 수 없기 때문이다. 해결을 위해 279개를 비교 solve할 필요는 없다. 기존 `set_and_verify_leaf`의 readback outcome을 **필수 항목 목록과 대조하고 저장**하면 된다. `SKIPPED_SPECIES_UNAVAILABLE`를 species가 필요한 campaign에서 자동 성공으로 인정하지 않는다. 이 판단에 따라 “URF abort는 deferred” 문구를 위 범위에 한해 철회한다.
 

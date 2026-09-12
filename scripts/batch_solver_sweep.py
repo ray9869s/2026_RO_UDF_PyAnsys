@@ -64,6 +64,15 @@ def solver_case_label(geo_id, mesh_id, run_id):
     return f"{geo_id}/{mesh_id}/{run_id}"
 
 
+def format_selected_solver_case(index, total, case):
+    """One four-id line for the pre-Fluent case list."""
+    family = case.get("family") or "?"
+    geo_id = case.get("geo_id") or "?"
+    mesh_id = case.get("mesh_id") or "?"
+    run_id = case.get("run_id") or "?"
+    return f"  {index}/{total}  {family}/{geo_id}/{mesh_id}/{run_id}"
+
+
 def solver_skip_block_reason(
     run_directory,
     final_case_path,
@@ -402,6 +411,29 @@ def parse_batch_solver_sweep_cli(argv=None):
             "A geo_id that is not in the case-set is an error, not an empty sweep."
         ),
     )
+    parser.add_argument(
+        "--outlet-gauge-pressure",
+        action="append",
+        dest="outlet_gauge_pressures",
+        default=None,
+        type=float,
+        metavar="PA",
+        help=(
+            "Restrict the selected case-set to these outlet_gauge_pressure "
+            "values in Pa. Repeatable. Example: 6.0e6 for the p6M column "
+            "(93 production cases). A value that is not in the case-set is "
+            "an error, not an empty sweep."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the selected cases and skip/dry-run decisions without "
+            "launching Fluent. ORs with batch_config.dry_run. Existing-final "
+            "skip still wins when current-attempt evidence is complete."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -423,11 +455,33 @@ def filter_solver_cases_by_geo_id(cases, geo_ids):
     return selected
 
 
+def filter_solver_cases_by_outlet_gauge_pressure(cases, pressures):
+    """Keep case-set order. Empty/None pressures leaves the list unchanged."""
+    if not pressures:
+        return list(cases)
+    requested = list(dict.fromkeys(pressures))
+    wanted = set(requested)
+    selected = [
+        case for case in cases if case["outlet_gauge_pressure"] in wanted
+    ]
+    found = {case["outlet_gauge_pressure"] for case in selected}
+    missing = [pressure for pressure in requested if pressure not in found]
+    if missing:
+        available = sorted(
+            {case["outlet_gauge_pressure"] for case in cases}
+        )
+        raise ValueError(
+            "--outlet-gauge-pressure not in the selected case-set: "
+            f"{missing}. available={available}."
+        )
+    return selected
+
+
 def main(argv=None):
     cli_args = parse_batch_solver_sweep_cli(argv)
     batchcfg = _load_module("batch_config", BATCH_CONFIG_PATH)
 
-    dry_run = getattr(batchcfg, "dry_run", False)
+    dry_run = bool(getattr(batchcfg, "dry_run", False) or cli_args.dry_run)
     continue_on_failure = getattr(batchcfg, "continue_on_failure", False)
     skip_existing_final_data = getattr(batchcfg, "skip_existing_final_data", True)
     common_solver_settings = getattr(batchcfg, "common_solver_settings", {})
@@ -441,14 +495,17 @@ def main(argv=None):
         "post_failure_settle_s",
         SOLVER_POST_FAILURE_SETTLE_S,
     )
-    solver_sweep_cases = filter_solver_cases_by_geo_id(
-        cases_for_case_set(
-            batchcfg,
-            cli_args.case_set,
-            exploratory_attr="solver_sweep_cases",
-            production_attr="production_solver_sweep_cases",
+    solver_sweep_cases = filter_solver_cases_by_outlet_gauge_pressure(
+        filter_solver_cases_by_geo_id(
+            cases_for_case_set(
+                batchcfg,
+                cli_args.case_set,
+                exploratory_attr="solver_sweep_cases",
+                production_attr="production_solver_sweep_cases",
+            ),
+            cli_args.geo_ids,
         ),
-        cli_args.geo_ids,
+        cli_args.outlet_gauge_pressures,
     )
     assert_selected_cases_are_not_legacy_ml(solver_sweep_cases)
     require_explicit_inlet_velocity_profile(
@@ -466,11 +523,26 @@ def main(argv=None):
     print(f"BATCH SOLVER SWEEP: {total} case(s)  case_set={cli_args.case_set}")
     if cli_args.geo_ids:
         print(f"geo_id filter: {list(dict.fromkeys(cli_args.geo_ids))}")
+    if cli_args.outlet_gauge_pressures:
+        print(
+            "outlet_gauge_pressure filter: "
+            f"{list(dict.fromkeys(cli_args.outlet_gauge_pressures))}"
+        )
     print(f"dry_run={dry_run}  continue_on_failure={continue_on_failure}  skip_existing_final_data={skip_existing_final_data}")
     print(
         f"transient_failure_max_retries={transient_failure_max_retries}  "
         f"post_failure_settle_s={post_failure_settle_s}"
     )
+    print("Selected cases (Fluent has not launched):")
+    if not solver_sweep_cases:
+        print("  (none)")
+    else:
+        for listed_idx, listed_case in enumerate(solver_sweep_cases, start=1):
+            print(
+                format_selected_solver_case(
+                    listed_idx, total, listed_case
+                )
+            )
     print(f"{'='*72}\n")
 
     for i, case_dict in enumerate(solver_sweep_cases):
