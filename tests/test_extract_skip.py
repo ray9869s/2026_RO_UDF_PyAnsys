@@ -229,6 +229,9 @@ def test_extract_batch_exit_code_failed_is_nonzero():
     batch = load_batch_report_extract()
     assert batch.extract_batch_exit_code([{"status": "SUCCESS"}]) == 0
     assert batch.extract_batch_exit_code([{"status": "SKIPPED_EXISTING"}]) == 0
+    assert batch.extract_batch_exit_code(
+        [{"status": batch.EXTRACT_SKIPPED_MISSING_FINALS_STATUS}]
+    ) == 0
     assert batch.extract_batch_exit_code([{"status": "FAILED"}]) == 1
     assert batch.extract_batch_exit_code([{"status": "FAILED_METRIC_VALIDATION"}]) == 1
     assert batch.extract_batch_exit_code([{"status": "MISSING_CASE_DATA"}]) == 1

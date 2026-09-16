@@ -211,6 +211,46 @@ def cases_for_case_set(
     )
 
 
+def filter_cases_by_geo_id(cases, geo_ids):
+    """Keep case-set order. Empty/None geo_ids leaves the list unchanged."""
+    if not geo_ids:
+        return list(cases)
+    requested = list(dict.fromkeys(geo_ids))
+    wanted = set(requested)
+    selected = [case for case in cases if case["geo_id"] in wanted]
+    found = {case["geo_id"] for case in selected}
+    missing = [geo_id for geo_id in requested if geo_id not in found]
+    if missing:
+        available = sorted({case["geo_id"] for case in cases})
+        raise ValueError(
+            "--geo-id not in the selected case-set: "
+            f"{missing}. available={available}."
+        )
+    return selected
+
+
+def filter_cases_by_outlet_gauge_pressure(cases, pressures):
+    """Keep case-set order. Empty/None pressures leaves the list unchanged."""
+    if not pressures:
+        return list(cases)
+    requested = list(dict.fromkeys(pressures))
+    wanted = set(requested)
+    selected = [
+        case for case in cases if case["outlet_gauge_pressure"] in wanted
+    ]
+    found = {case["outlet_gauge_pressure"] for case in selected}
+    missing = [pressure for pressure in requested if pressure not in found]
+    if missing:
+        available = sorted(
+            {case["outlet_gauge_pressure"] for case in cases}
+        )
+        raise ValueError(
+            "--outlet-gauge-pressure not in the selected case-set: "
+            f"{missing}. available={available}."
+        )
+    return selected
+
+
 def _assert_production_mesh_cases(cases: Sequence[Mapping[str, Any]]) -> None:
     assert len(cases) == EXPECTED_PRODUCTION_MESH_COUNT, (
         f"Expected {EXPECTED_PRODUCTION_MESH_COUNT} production meshes, "

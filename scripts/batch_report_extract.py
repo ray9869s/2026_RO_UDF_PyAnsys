@@ -9,6 +9,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from ro.campaign_matrix import (
+    CASE_SET_CHOICES,
+    cases_for_case_set,
+    filter_cases_by_geo_id,
+    filter_cases_by_outlet_gauge_pressure,
+)
 from ro.domain_layout import (
     layout_from_mesh_manifest,
     layout_from_run_directory,
@@ -167,6 +173,7 @@ EXTRACT_BATCH_FAILED_STATUSES = frozenset(
         "MISSING_CASE_DATA",
     }
 )
+EXTRACT_SKIPPED_MISSING_FINALS_STATUS = "SKIPPED_MISSING_FINALS"
 
 
 def extract_batch_exit_code(
@@ -192,8 +199,54 @@ def extract_batch_exit_code(
 def parse_batch_report_extract_cli(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "Batch report extract. Pass --report-skip to print skip evidence "
-            "for every run leaf without launching Fluent."
+            "Batch report extract. Default (no --case-set) uses post_cases "
+            "or walks run manifests. Pass --case-set production to select "
+            "from the production solver matrix. --report-skip prints skip "
+            "evidence for every run leaf without launching Fluent."
+        ),
+    )
+    parser.add_argument(
+        "--case-set",
+        choices=CASE_SET_CHOICES,
+        default=None,
+        help=(
+            "production: production_solver_sweep_cases (279) from "
+            "batch_config. exploratory: solver_sweep_cases. "
+            "Omitted: post_cases if set, otherwise walk run manifests."
+        ),
+    )
+    parser.add_argument(
+        "--geo-id",
+        action="append",
+        dest="geo_ids",
+        default=None,
+        metavar="GEO_ID",
+        help=(
+            "Restrict the selected cases to these geo_id values. "
+            "Repeatable. Omitted: keep the whole selection. "
+            "A geo_id that is not in the selection is an error, not an empty run."
+        ),
+    )
+    parser.add_argument(
+        "--outlet-gauge-pressure",
+        action="append",
+        dest="outlet_gauge_pressures",
+        default=None,
+        type=float,
+        metavar="PA",
+        help=(
+            "Restrict the selected cases to these outlet_gauge_pressure "
+            "values in Pa. Repeatable. Example: 6.0e6 for the p6M column "
+            "(93 production cases). A value that is not in the selection "
+            "is an error, not an empty run."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the selected cases and per-case dry-run details without "
+            "launching Fluent. ORs with batch_post_config.DRY_RUN."
         ),
     )
     parser.add_argument(
@@ -345,6 +398,45 @@ def cases_from_run_manifests():
             }
         )
     return cases
+
+
+def select_extract_cases(post_cfg, cli_args, *, solver_batch_cfg=None):
+    """Choose extract cases. No --case-set keeps post_cases / manifest walk."""
+    if cli_args.case_set:
+        if solver_batch_cfg is None:
+            solver_batch_cfg = load_python_config(
+                project_root() / "configs" / "batch_config.py",
+                "batch_config",
+            )
+        raw = cases_for_case_set(
+            solver_batch_cfg,
+            cli_args.case_set,
+            exploratory_attr="solver_sweep_cases",
+            production_attr="production_solver_sweep_cases",
+        )
+        cases = [resolve_post_case(entry) for entry in raw]
+        source = f"{cli_args.case_set} solver matrix"
+    else:
+        explicit_post_cases = list(getattr(post_cfg, "post_cases", []) or [])
+        if explicit_post_cases:
+            cases = [resolve_post_case(entry) for entry in explicit_post_cases]
+            source = "explicit post_cases"
+        else:
+            cases = cases_from_run_manifests()
+            source = "run manifests"
+    cases = filter_cases_by_geo_id(cases, cli_args.geo_ids)
+    cases = filter_cases_by_outlet_gauge_pressure(
+        cases,
+        cli_args.outlet_gauge_pressures,
+    )
+    return cases, source
+
+
+def missing_finals_status(*, matrix_selected):
+    """Matrix selection reports unfinished solves as skip, not failure."""
+    if matrix_selected:
+        return EXTRACT_SKIPPED_MISSING_FINALS_STATUS
+    return "MISSING_CASE_DATA"
 
 
 def resolve_case_run_directory(case):
@@ -520,18 +612,12 @@ if __name__ == "__main__":
     # ============================================================
     # Build case lists
     # ============================================================
-    # When post_cases is non-empty it is used verbatim (mesh-qualified or
-    # custom case names); otherwise the legacy geometry x velocity x pressure
-    # product is generated.
+    # No --case-set: post_cases if non-empty, otherwise walk run manifests.
+    # --case-set production|exploratory: solver matrix from batch_config.
 
-    explicit_post_cases = list(getattr(bcfg, "post_cases", []) or [])
-
-    if explicit_post_cases:
-        all_cases_full = [resolve_post_case(entry) for entry in explicit_post_cases]
-        case_source = "explicit post_cases"
-    else:
-        all_cases_full = cases_from_run_manifests()
-        case_source = "run manifests"
+    all_cases_full, case_source = select_extract_cases(bcfg, cli_args)
+    matrix_selected = cli_args.case_set is not None
+    dry_run = bool(getattr(bcfg, "DRY_RUN", False) or cli_args.dry_run)
 
     total_defined = len(all_cases_full)
 
@@ -546,7 +632,16 @@ if __name__ == "__main__":
     print(f"Case source         : {case_source}")
     print(f"Total cases defined : {total_defined}")
     print(f"Cases to process    : {case_count}")
-    print(f"DRY_RUN             : {bcfg.DRY_RUN}")
+    if cli_args.case_set:
+        print(f"case_set            : {cli_args.case_set}")
+    if cli_args.geo_ids:
+        print(f"geo_id filter       : {list(dict.fromkeys(cli_args.geo_ids))}")
+    if cli_args.outlet_gauge_pressures:
+        print(
+            "outlet_gauge_pressure filter: "
+            f"{list(dict.fromkeys(cli_args.outlet_gauge_pressures))}"
+        )
+    print(f"DRY_RUN             : {dry_run}")
     print(f"SKIP_EXISTING       : {bcfg.SKIP_EXISTING_REPORTS}")
     print(f"CONTINUE_ON_FAILURE : {bcfg.CONTINUE_ON_FAILURE}")
     print(f"MAX_CASES           : {bcfg.MAX_CASES}")
@@ -643,6 +738,18 @@ if __name__ == "__main__":
             "message":               "",
         }
 
+        missing_files = [
+            str(f) for f in [final_case_file, final_data_file] if not f.is_file()
+        ]
+        if missing_files and matrix_selected:
+            msg = "Missing files: " + "; ".join(missing_files)
+            status = missing_finals_status(matrix_selected=True)
+            print(f"  {status}: {msg}")
+            record["status"] = status
+            record["message"] = msg
+            status_records.append(record)
+            continue
+
         overrides, layout_error = build_post_case_overrides(
             geo_name=geo_name,
             case_name=case_name,
@@ -661,7 +768,7 @@ if __name__ == "__main__":
             continue
 
         # --- Gate 1: DRY_RUN ---
-        if bcfg.DRY_RUN:
+        if dry_run:
             print(f"  [DRY_RUN] geo_name       : {geo_name}")
             print(f"  [DRY_RUN] base_case_name : {base_case_name if base_case_name else '(n/a)'}")
             print(f"  [DRY_RUN] mesh_case_name : {mesh_case_name if mesh_case_name else '(n/a)'}")
@@ -893,6 +1000,7 @@ if __name__ == "__main__":
         all_status_labels = [
             "SUCCESS",
             "SKIPPED_EXISTING",
+            "SKIPPED_MISSING_FINALS",
             "FAILED",
             "MISSING_CASE_DATA",
             "FAILED_METRIC_VALIDATION",
