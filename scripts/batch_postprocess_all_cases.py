@@ -26,12 +26,13 @@ from typing import Any, Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+from ro.contour_campaign import contour_view_bounds_xy  # noqa: E402
 from ro.domain_layout import (  # noqa: E402
     layout_from_run_directory,
     layout_post_config_values,
 )
 from ro.extract_skip import extract_skip_block_reason  # noqa: E402
-from ro.manifest import ManifestError  # noqa: E402
+from ro.manifest import ManifestError, read_mesh_manifest  # noqa: E402
 from ro.session_retry import (  # noqa: E402
     RETRY_KIND_LAUNCH_SPAWN,
     RETRY_KIND_SCHEME_HEAP,
@@ -42,6 +43,7 @@ from ro.paths import (  # noqa: E402
     any_id_filter,
     complete_run_identity,
     data_root,
+    mesh_dir,
     project_root,
     record_matches_id_filters,
     require_existing_run,
@@ -206,7 +208,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--manual-view-bounds", type=str, default="0,0.010395,-0.0017325,0.0017325")
+    parser.add_argument(
+        "--manual-view-bounds",
+        type=str,
+        default=None,
+        help=(
+            "Override PyEnSight XY camera bounds as XMIN,XMAX,YMIN,YMAX. "
+            "Default: derive from the mesh manifest "
+            "(0, domain_extent_x_m, ±y-span/2)."
+        ),
+    )
     parser.add_argument("--manual-view-plane", type=str, default="xy")
     parser.add_argument("--view-margin", type=float, default=1.25)
     parser.add_argument("--zoom-out", type=float, default=1.00)
@@ -798,6 +809,7 @@ def build_pyensight_command(
     run_id: str,
     geo_name: str,
     case_name: str,
+    mesh_payload: Optional[dict[str, Any]] = None,
 ) -> list[str]:
     command = [
         str(args.python_exe),
@@ -824,13 +836,21 @@ def build_pyensight_command(
         str(args.view_margin),
         "--zoom-out",
         str(args.zoom_out),
-        "--manual-view-bounds",
-        args.manual_view_bounds,
         "--manual-view-plane",
         args.manual_view_plane,
         "--legend-mode",
         args.legend_mode,
     ]
+    if args.manual_view_bounds:
+        command.extend(["--manual-view-bounds", args.manual_view_bounds])
+    else:
+        if mesh_payload is None:
+            raise ValueError(
+                "mesh_payload is required to derive contour view bounds when "
+                "--manual-view-bounds is omitted."
+            )
+        derived = contour_view_bounds_xy(mesh_payload)
+        command.extend(["--manual-view-bounds", derived.as_cli()])
     if args.skip_existing and not args.force:
         command.append("--skip-existing")
     return command
@@ -1025,7 +1045,16 @@ def execute_case(
     try:
         case_dir = resolve_run_directory(row)
         layout_record, run_payload = layout_from_run_directory(case_dir)
-    except (ValueError, FileNotFoundError, ManifestError, OSError) as exc:
+        mesh_payload = read_mesh_manifest(
+            mesh_dir(
+                run_payload["family"],
+                run_payload["geo_id"],
+                run_payload["mesh_id"],
+            )
+        )
+        if not args.manual_view_bounds:
+            contour_view_bounds_xy(mesh_payload)
+    except (ValueError, TypeError, FileNotFoundError, ManifestError, OSError) as exc:
         print(f"[{selected_index}] {geo_name}/{case_name}")
         print(f"  layout: {STATUS_FAILED} :: {exc}")
         plan = {
@@ -1109,7 +1138,9 @@ def execute_case(
     shear_log = stage_log_path(log_dir, geo_name, case_name, "shear", mesh_id)
 
     report_command = build_report_command(args)
-    contour_command = build_pyensight_command(args, **worker_ids)
+    contour_command = build_pyensight_command(
+        args, **worker_ids, mesh_payload=mesh_payload
+    )
     cff_file, cff_source = resolve_cff_file(args, paths)
 
     report_status_planned = STATUS_PLANNED

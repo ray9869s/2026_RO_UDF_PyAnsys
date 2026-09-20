@@ -160,6 +160,58 @@ class TestBatchPostLayoutFromManifest:
             (batch_dir / "report_configs").iterdir()
         )
 
+    def test_pyensight_command_derives_bounds_from_mesh_extent(self, batch_post):
+        args = self._minimal_args(
+            batch_post, Path("/tmp/runs"), dry_run=True
+        )
+        args.manual_view_bounds = None
+        payload = mesh_payload()
+        payload["domain_extent_x_m"] = 0.03465
+        payload["domain_extent_y_m"] = 0.003469131
+        command = batch_post.build_pyensight_command(
+            args,
+            family=FAMILY,
+            geo_id=GEO_ID,
+            mesh_id=MESH_ID,
+            run_id="u0p2_p6M",
+            geo_name=GEO_ID,
+            case_name="u0p2_p6M",
+            mesh_payload=payload,
+        )
+        joined = " ".join(command)
+        assert "0.010395" not in joined
+        assert "0.03465" in joined
+        assert "--manual-view-bounds" in command
+
+    def test_missing_extent_fails_when_bounds_not_overridden(
+        self, batch_post, monkeypatch, tmp_path: Path
+    ):
+        run_directory, _layout = _write_mesh_and_run(monkeypatch, tmp_path)
+        args = self._minimal_args(batch_post, tmp_path / "runs", dry_run=True)
+        args.manual_view_bounds = None
+        (tmp_path / "batch").mkdir()
+        (tmp_path / "logs").mkdir()
+        plan, result = batch_post.execute_case(
+            row={
+                "geo_name": GEO_ID,
+                "case_name": "u0p2_p6M",
+                "case_dir": str(run_directory),
+                "family": FAMILY,
+                "geo_id": GEO_ID,
+                "mesh_id": MESH_ID,
+                "run_id": "u0p2_p6M",
+                "case_status": "READY_FOR_POSTPROCESSING",
+                "convergence_status": "MAX_ITER_REACHED",
+            },
+            selected_index=1,
+            args=args,
+            fields=["cp_inlet"],
+            batch_dir=tmp_path / "batch",
+            log_dir=tmp_path / "logs",
+        )
+        assert result["pyensight_contour_stage_status"] == batch_post.STATUS_FAILED
+        assert "domain_extent_x_m" in result["error_summary"]
+
 
 class TestBatchReportOverridesLayoutKeys:
     def test_overrides_from_run_directory(

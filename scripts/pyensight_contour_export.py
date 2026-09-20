@@ -6,7 +6,7 @@ Export presentation-quality contour images from a solved Fluent case using
 PyEnSight (ansys.pyensight.core v0.11+, EnSight 25.1).
 
 Fields exported (membrane wall unless noted):
-  cp_inlet         - Canonical CP = udm-9 * k_window on membrane walls
+  cp_inlet         - Canonical CP = udm-9 * per-cell k_N (same as cp_canon_window_avg)
   water_flux       - Jw [m/s] from solution-diffusion formula on membrane walls
   lmh              - Jw * 3.6e6 [LMH] on membrane walls
   salt_flux        - salt mass flux [kg/m2/s] on membrane walls
@@ -37,7 +37,22 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, FrozenSet, List, Optional, Tuple
 
-from ro.paths import project_root, resolve_selected_run_directory
+from ro.contour_campaign import (
+    CampaignCpContourInputs,
+    cp_canon_field_expression,
+    contour_view_bounds_xy,
+    piecewise_k_expression,
+    read_campaign_cp_contour_inputs,
+    require_figure_matches_csv,
+    window_mask_expression,
+)
+from ro.domain_layout import layout_from_run_directory
+from ro.manifest import read_mesh_manifest
+from ro.paths import mesh_dir, project_root, resolve_selected_run_directory
+from ro.udf_constants import (
+    assert_post_config_matches_udf,
+    load_udf_membrane_constants_from_case,
+)
 
 # ---------------------------------------------------------------------------
 # PyEnSight import guard — fail early with a clear message if not installed
@@ -91,7 +106,7 @@ DEFAULT_FIELDS: List[str] = ["cp_inlet", "water_flux", "lmh", "salt_flux"]
 FIELD_SPECS: dict = {
     "cp_inlet": {
         # Field key kept as cp_inlet for pipeline compatibility; contour is
-        # canonical CP (udm-9 * k), not L1 or raw UDM-9.
+        # campaign canonical CP (udm-9 * per-cell k_N), not L2 or a window k.
         "display_label": "CP [-]",
         "var_candidates": ["udm-9", "UDM-9", "User Defined Memory 9", "udm_9"],
         "surface_type": "membrane",
@@ -171,22 +186,14 @@ FIELD_COLOR_RANGES: dict = {
     "velocity_midplane": (0.0,  0.7),
 }
 
-# ---------------------------------------------------------------------------
-# UDF membrane constants — must exactly match 260612_RO_UDF.c
-# Used to reconstruct CP and LMH directly from primitive EnSight variables.
-# ---------------------------------------------------------------------------
-
-UDF_A_PERM      = 2.50e-12     # Water permeability [m/s/Pa]
-UDF_B_PERM      = 2.50e-8      # Salt permeability [m/s]
-UDF_KAPPA       = 4958.0       # Osmotic pressure coefficient [Pa·m³/mol]
-UDF_P_PERM      = 101325.0     # Permeate-side pressure [Pa]
+# Legacy literals kept only for unused INLET_SALT_MASS_FRAC_REF / center-plane
+# z fallbacks. water_flux / lmh / salt_flux reconstruction reads the
+# case-local UDF via ro.udf_constants and asserts post_config against it.
+UDF_C_INLET_REF = 597.8268309  # Inlet NaCl concentration [mol/m³]
 UDF_MW_SALT     = 0.05844      # NaCl molecular weight [kg/mol]
 UDF_RHO_REF     = 998.20       # Reference density [kg/m³]
-UDF_MS_TO_LMH   = 3600000.0    # [m/s] → [L/m²/hr]
-UDF_C_INLET_REF = 597.8268309  # Inlet NaCl concentration [mol/m³]
 
 # Inlet salt mass fraction reference (≈ 0.035 for 3.5 % seawater).
-# Fallback CP denominator when center-plane average is unavailable.
 INLET_SALT_MASS_FRAC_REF: float = UDF_C_INLET_REF * UDF_MW_SALT / UDF_RHO_REF
 
 # Channel geometry constants for center-plane z fallback.
@@ -199,6 +206,16 @@ CHANNEL_HEIGHT_M: float = 0.00077
 # 0.0 is therefore the correct mid-channel plane; CHANNEL_HEIGHT_M/2 remains
 # only as a legacy bottom-origin fallback candidate.
 CENTER_PLANE_Z_CANDIDATES: List[float] = [0.0, CHANNEL_HEIGHT_M / 2.0]
+
+COORD_X_CANDIDATES: List[str] = [
+    "X",
+    "x",
+    "coordinate[X]",
+    "X-Coordinate",
+    "X Coordinate",
+    "x-coordinate",
+    "Coordinate X",
+]
 
 # ---------------------------------------------------------------------------
 # Salt variable name candidates for primitive matching (tried in order)
@@ -595,8 +612,9 @@ def parse_args() -> argparse.Namespace:
     sg.add_argument(
         "--manual-view-bounds", type=str, default=None, metavar="XMIN,XMAX,YMIN,YMAX",
         help=(
-            "Manual 2D view-plane fit bounds. When provided, these bounds are "
-            "used as the fit target even if automatic PyEnSight part bounds fail."
+            "Manual 2D view-plane fit bounds XMIN,XMAX,YMIN,YMAX. "
+            "When omitted, bounds are derived from the mesh manifest "
+            "(x: 0..domain_extent_x_m; y: origin-centred measured/periodic width)."
         ),
     )
     sg.add_argument(
@@ -726,6 +744,7 @@ def build_export_plan(
     field_ranges: dict,
     auto_range: bool,
     operating_pressure: Optional[float] = None,
+    udf_constants: Optional[dict] = None,
 ) -> List[dict]:
     geo_name = paths["geo_name"]
     case_name = paths["case_name"]
@@ -740,7 +759,24 @@ def build_export_plan(
     )
     wall_spacer_labels = list(cfg_get(cfg, "wall_spacer_labels", []))
 
-    c_inlet_ref_mol = float(cfg_get(cfg, "c_inlet_ref", UDF_C_INLET_REF))
+    recon_keys = {"water_flux", "lmh", "salt_flux"}
+    if recon_keys.intersection(field_keys):
+        if not udf_constants:
+            raise ValueError(
+                "water_flux/lmh/salt_flux reconstruction needs case-local UDF "
+                "constants; none were loaded."
+            )
+        a_perm = float(udf_constants["a_perm"])
+        b_perm = float(udf_constants["b_perm"])
+        kappa = float(udf_constants["kappa"])
+        p_perm = float(udf_constants["p_perm"])
+        mw_salt = float(udf_constants["mw_salt"])
+        rho_ref = float(udf_constants["rho_ref"])
+        ms_to_lmh = float(udf_constants["ms_to_lmh"])
+        c_inlet_ref_mol = float(udf_constants["c_inlet_ref"])
+    else:
+        a_perm = b_perm = kappa = p_perm = mw_salt = rho_ref = ms_to_lmh = 0.0
+        c_inlet_ref_mol = float(cfg_get(cfg, "c_inlet_ref", UDF_C_INLET_REF))
     p_op = (
         operating_pressure
         if operating_pressure is not None
@@ -777,14 +813,14 @@ def build_export_plan(
             "color_range_min": r_min,
             "color_range_max": r_max,
             "color_range_mode": r_mode,
-            # UDF constants for direct CP / LMH derivation
-            "udf_a_perm":     UDF_A_PERM,
-            "udf_b_perm":     UDF_B_PERM,
-            "udf_kappa":      UDF_KAPPA,
-            "udf_p_perm":     UDF_P_PERM,
-            "udf_mw_salt":    UDF_MW_SALT,
-            "udf_rho_ref":    UDF_RHO_REF,
-            "udf_ms_to_lmh":  UDF_MS_TO_LMH,
+            # UDF constants from the case-local copy (asserted vs post_config).
+            "udf_a_perm": a_perm,
+            "udf_b_perm": b_perm,
+            "udf_kappa": kappa,
+            "udf_p_perm": p_perm,
+            "udf_mw_salt": mw_salt,
+            "udf_rho_ref": rho_ref,
+            "udf_ms_to_lmh": ms_to_lmh,
             "c_inlet_ref_mol": c_inlet_ref_mol,
             "operating_pressure": p_op,
             "case_path": str(paths["case_path"]),
@@ -3066,19 +3102,18 @@ def compute_bulk_center_average(
 def create_cp_wall_canon(
     session: Any,
     udm9_var_desc: str,
-    k_value: float,
+    k_expr: str,
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Create CP_WALL_CANON = udm-9 * k on all parts.
-    Returns (var_obj, var_desc, diag_str)."""
+    """Create CP_WALL_CANON = udm-9 * k_N(x) on all parts.
+
+    ``k_expr`` is an EnSight calculator expression for the piecewise per-cell
+    rescale, not a single window scalar.
+    """
     derived_name = "CP_WALL_CANON"
-    safe_var = (
-        f"'{udm9_var_desc}'"
-        if (" " in udm9_var_desc or "-" in udm9_var_desc)
-        else udm9_var_desc
-    )
+    field_expr = cp_canon_field_expression(udm9_var_desc, k_expr)
     try:
         session.ensight.part.select_all()
-        expr = f"{derived_name} = {safe_var} * {k_value:.12g}"
+        expr = f"{derived_name} = {field_expr}"
         session.ensight.variables.evaluate(expr)
         var_obj, var_desc = find_ensight_variable(session, [derived_name])
         if var_obj is not None:
@@ -3086,6 +3121,113 @@ def create_cp_wall_canon(
         return None, None, f"evaluate_ok_but_var_not_found,expr='{expr}'"
     except Exception as e:
         return None, None, f"calculator_err:{e}"
+
+
+def find_coordinate_x(session: Any) -> str:
+    """Return the EnSight DESCRIPTION of the streamwise coordinate."""
+    _var_obj, desc = find_ensight_variable(session, COORD_X_CANDIDATES)
+    if not desc:
+        raise RuntimeError(
+            "CP contour per-cell k_N needs an X coordinate variable in EnSight "
+            f"(tried {COORD_X_CANDIDATES})."
+        )
+    return desc
+
+
+def _read_ensight_scalar(var_obj: Any) -> Optional[float]:
+    for attr in ("CONSTANTVALUE", "CONSTANT", "VALUE", "constantvalue"):
+        try:
+            raw = getattr(var_obj, attr)
+        except Exception:
+            continue
+        if raw is None:
+            continue
+        try:
+            if isinstance(raw, (list, tuple)) and raw:
+                value = float(raw[0])
+            else:
+                value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value == value:  # not NaN
+            return value
+    try:
+        minmax = list(var_obj.MINMAX)
+        lo = float(minmax[0])
+        hi = float(minmax[1]) if len(minmax) > 1 else lo
+        if abs(lo - hi) <= 1.0e-15 * max(1.0, abs(lo), abs(hi)):
+            return lo
+    except Exception:
+        pass
+    return None
+
+
+def _create_ensight_variable(
+    session: Any,
+    name: str,
+    expression: str,
+    source_parts: List[Any],
+) -> Any:
+    errors: List[str] = []
+    create_variable = getattr(getattr(session.ensight.objs, "core", None), "create_variable", None)
+    if callable(create_variable):
+        try:
+            var = create_variable(name, expression, sources=source_parts)
+            if var is not None:
+                return var
+            errors.append("create_variable returned None")
+        except Exception as exc:
+            errors.append(f"create_variable: {exc}")
+    try:
+        if source_parts:
+            session.ensight.utils.parts.select_parts(source_parts)
+        else:
+            session.ensight.part.select_all()
+        session.ensight.variables.evaluate(f"{name} = {expression}")
+        var_obj, _desc = find_ensight_variable(session, [name])
+        if var_obj is not None:
+            return var_obj
+        errors.append("variables.evaluate ran but variable not found afterwards")
+    except Exception as exc:
+        errors.append(f"variables.evaluate: {exc}")
+    raise RuntimeError(
+        f"Could not create EnSight variable {name!r} = {expression!r}: "
+        + "; ".join(errors)
+    )
+
+
+def query_cp_canon_window_areaavg(
+    session: Any,
+    membrane_parts: List[Any],
+    cp_inputs: CampaignCpContourInputs,
+    x_desc: str,
+    cp_desc: str,
+) -> float:
+    """Area-weighted mean of CP_WALL_CANON on both membranes in the eval window."""
+    if not membrane_parts:
+        raise RuntimeError(
+            "CP contour CSV agreement needs both membrane parts; none matched."
+        )
+    mask_name = "pp_cp_eval_window_mask"
+    avg_name = "pp_cp_canon_window_areaavg"
+    mask_expr = window_mask_expression(
+        cp_inputs.evaluation_x_min_m,
+        cp_inputs.evaluation_x_max_m,
+        x_desc,
+    )
+    cp_tok = f"'{cp_desc}'" if (" " in cp_desc or "-" in cp_desc) else cp_desc
+    avg_expr = (
+        f"AreaInt(plist, {cp_tok}*{mask_name}) / AreaInt(plist, {mask_name})"
+    )
+    _create_ensight_variable(session, mask_name, mask_expr, membrane_parts)
+    avg_var = _create_ensight_variable(session, avg_name, avg_expr, membrane_parts)
+    value = _read_ensight_scalar(avg_var)
+    if value is None:
+        raise RuntimeError(
+            "Could not read EnSight area-weighted mean of CP_WALL_CANON over "
+            "the evaluation window; refusing to render an unchecked figure."
+        )
+    return float(value)
 
 
 def create_cp_wall_l1(
@@ -3741,6 +3883,8 @@ def export_contour(
         _record(STATUS_WARN, surface_desc, f"No surfaces found: {surface_warn}")
         return
 
+    agreement_surface_names = list(surface_names)
+
     # 2. Apply membrane-side filter for membrane fields
     if surface_type == "membrane":
         surface_names, side_warn = filter_membrane_surface(surface_names, membrane_side)
@@ -3786,38 +3930,64 @@ def export_contour(
             session, SALT_MASS_FRAC_CANDIDATES, "salt mass fraction"
         )
 
-        # ---- CP wall canonical (udm-9 * k_window) ----
+        # ---- CP wall canonical (udm-9 * per-cell k_N) ----
         if field_key == "cp_inlet":
-            k_window, k_diag = _read_pyfluent_cp_canon_rescale_k_window(plan_item)
-            if k_window is None or k_window <= 0.0:
+            cp_inputs = plan_item.get("campaign_cp")
+            if not isinstance(cp_inputs, CampaignCpContourInputs):
                 raise RuntimeError(
-                    f"CP contour requires window aggregate k from PyFluent reports "
-                    f"({k_diag}); refusing fallback."
+                    "CP contour requires CampaignCpContourInputs from "
+                    "summary_metrics_wide.csv; refusing a window-average k."
                 )
-
+            x_desc = find_coordinate_x(session)
+            k_expr = piecewise_k_expression(cp_inputs.active_spans, x_desc)
             cp_var, cp_desc, cp_diag = create_cp_wall_canon(
-                session, matched_var_desc, k_window
+                session, matched_var_desc, k_expr
             )
             if cp_var is None:
                 raise RuntimeError(
                     f"CP_WALL_CANON calculator failed ({cp_diag})."
                 )
 
+            all_parts = session.ensight.objs.core.PARTS
+            agreement_name_set = set(agreement_surface_names)
+            agreement_parts = [
+                p for p in all_parts if p.DESCRIPTION in agreement_name_set
+            ]
+            figure_mean = query_cp_canon_window_areaavg(
+                session,
+                agreement_parts,
+                cp_inputs,
+                x_desc,
+                cp_desc,
+            )
+            require_figure_matches_csv(
+                figure_mean,
+                cp_inputs.csv_cp_canon_window_avg,
+            )
+
             var_obj = cp_var
             matched_var_desc = cp_desc
-            derived_variable_mode = "direct_cp_canon_window_k"
-            bulk_reference_mode_str = "cp_canon_rescale_k_window"
-            bulk_reference_value_float = k_window
+            derived_variable_mode = "direct_cp_canon_per_cell_k"
+            bulk_reference_mode_str = "cp_canon_rescale_k_per_cell"
+            bulk_reference_value_float = cp_inputs.csv_cp_canon_window_avg
             bulk_reference_units_str = "-"
-            center_plane_name_str = "pyfluent_report_cp_canon_rescale_k"
-            center_plane_diagnostics_dict = {"pyfluent_source": k_diag}
+            center_plane_name_str = "csv_cp_canon_window_avg"
+            center_plane_diagnostics_dict = {
+                "csv_path": str(cp_inputs.csv_path),
+                "evaluation_cells": list(cp_inputs.evaluation_cells),
+                "figure_window_areaavg": figure_mean,
+                "csv_cp_canon_window_avg": cp_inputs.csv_cp_canon_window_avg,
+                "x_variable": x_desc,
+            }
             formula_summary_str = (
-                f"CP_WALL_CANON={matched_var_desc}*{k_window:.6g} "
-                f"(udm-9 * k_window)"
+                f"CP_WALL_CANON={matched_var_desc}*k_N(x) "
+                f"(per-cell k; eval window areaavg={figure_mean:.6g} "
+                f"csv={cp_inputs.csv_cp_canon_window_avg:.6g})"
             )
             info_msgs.append(
-                f"CP_WALL_CANON created: {cp_diag}; k_window={k_window:.6g}; "
-                f"{k_diag}"
+                f"CP_WALL_CANON created: {cp_diag}; "
+                f"figure_window_areaavg={figure_mean:.6g}; "
+                f"csv_cp_canon_window_avg={cp_inputs.csv_cp_canon_window_avg:.6g}"
             )
 
         # ---- LMH wall direct ----
@@ -4708,7 +4878,29 @@ def main() -> int:
     print(f"View margin: {args.view_margin}  |  Zoom-out: {args.zoom_out}")
     print(f"Bounds debug sweep: {'on' if args.bounds_debug_sweep else 'off'}")
     print(f"Bounds diagnostics: {'on' if args.bounds_diagnostics else 'off'}")
-    if manual_view_bounds:
+    if manual_view_bounds is None:
+        try:
+            _layout_record, run_payload = layout_from_run_directory(paths["case_path"])
+            mesh_payload = read_mesh_manifest(
+                mesh_dir(
+                    run_payload["family"],
+                    run_payload["geo_id"],
+                    run_payload["mesh_id"],
+                )
+            )
+            bounds_obj = contour_view_bounds_xy(mesh_payload)
+            manual_view_bounds = bounds_obj.as_tuple()
+            print(
+                f"Layout view bounds ({bounds_obj.x_source}/{bounds_obj.y_source}): "
+                f"{list(manual_view_bounds)}"
+            )
+        except Exception as exc:
+            print(
+                "ERROR: could not derive contour view bounds from the mesh "
+                f"manifest (no 10-cell default): {exc}"
+            )
+            return 3
+    else:
         print(f"Manual view bounds ({manual_view_plane}): {list(manual_view_bounds)}")
     legend_opts = {
         "mode": args.legend_mode,
@@ -4740,11 +4932,53 @@ def main() -> int:
         rng_str = f"{rng[0]} - {rng[1]}" if rng else "auto"
         print(f"  {k}: range = {rng_str}")
 
-    plan = build_export_plan(
-        cfg, paths, field_keys, field_ranges,
-        auto_range=args.auto_range,
-        operating_pressure=args.operating_pressure,
-    )
+    udf_constants = None
+    recon_keys = {"water_flux", "lmh", "salt_flux"}
+    if recon_keys.intersection(field_keys):
+        try:
+            udf_constants = load_udf_membrane_constants_from_case(paths["case_path"])
+            assert_post_config_matches_udf(cfg, udf_constants)
+        except Exception as exc:
+            print(
+                "ERROR: reconstruction constants must come from the case-local "
+                f"UDF and match post_config: {exc}"
+            )
+            return 3
+        print(
+            "UDF constants: "
+            f"A={udf_constants['a_perm']:.4e} B={udf_constants['b_perm']:.4e} "
+            f"kappa={udf_constants['kappa']:.4g} (case-local UDF, asserted vs post_config)"
+        )
+
+    try:
+        plan = build_export_plan(
+            cfg, paths, field_keys, field_ranges,
+            auto_range=args.auto_range,
+            operating_pressure=args.operating_pressure,
+            udf_constants=udf_constants,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 3
+
+    if "cp_inlet" in field_keys:
+        try:
+            cp_inputs = read_campaign_cp_contour_inputs(paths["case_path"])
+        except Exception as exc:
+            print(
+                "ERROR: campaign CP contour needs per-cell k_N from "
+                f"summary_metrics_wide.csv: {exc}"
+            )
+            return 3
+        print(
+            f"CP per-cell k_N: {len(cp_inputs.active_spans)} active cells, "
+            f"eval {list(cp_inputs.evaluation_cells)}, "
+            f"csv_cp_canon_window_avg={cp_inputs.csv_cp_canon_window_avg:.6g}"
+        )
+        for item in plan:
+            if item["field_key"] == "cp_inlet":
+                item["campaign_cp"] = cp_inputs
+
     records: List[ExportRecord] = []
     bounds_diagnostics_records: List[dict] = []
     bounds_diagnostics_path = figures_dir / "pyensight_bounds_diagnostics.json"
