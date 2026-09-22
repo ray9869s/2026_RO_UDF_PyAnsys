@@ -395,15 +395,26 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: REF_empty baselines, D2450_a45 p8M CP-grid pair, D0817_a45 u=0.3 dip,
-# plus D0817_a60 / D0817_a30 u0p2_p6M pilots (G band on m_max 0.060; 30-cell extract).
-# skip_existing_final_data skips the two REF_empty finals.
-# Field names match the historical D2450_a45 solver_sweep_cases dict
-# (5931dcc): family, geo_id, mesh_id, run_id, geo_name, case_name,
-# inlet_velocity_value, outlet_gauge_pressure.
+# Solver: default exploratory list is the four u=0.3 restarts from the
+# same-geometry converged u=0.2 finals. A new run_id (u0p3_p6M_restart)
+# writes a new leaf so the rejected u0p3_p6M result is not overwritten.
+# Restore solver_sweep_cases = _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS after
+# this experiment. --case-set production is still the 279.
 # ---------------------------------------------------------------------------
 _MESH_ID_BL6 = "max085_min006_cpg5_bl6_peel2"
-solver_sweep_cases = [
+_RO_RUNS = "C:/ro_data/runs"
+
+
+def _restart_from_u0p2_finals(family, geo_id):
+    leaf = f"{_RO_RUNS}/{family}/{geo_id}/{_MESH_ID}/u0p2_p6M"
+    stem = f"{geo_id}_u0p2_p6M"
+    return {
+        "restart_from_case_file": f"{leaf}/{stem}_final.cas.h5",
+        "restart_from_data_file": f"{leaf}/{stem}_final.dat.h5",
+    }
+
+
+_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS = [
     {
         "family": "empty",
         "geo_id": "REF_empty",
@@ -476,9 +487,56 @@ solver_sweep_cases = [
     },
 ]
 
+solver_sweep_cases = [
+    {
+        "family": "diamond",
+        "geo_id": "D0817_a30",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M_restart",
+        "geo_name": "D0817_a30",
+        "case_name": "u0p3_p6M_restart",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+        **_restart_from_u0p2_finals("diamond", "D0817_a30"),
+    },
+    {
+        "family": "diamond",
+        "geo_id": "D1225_a30",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M_restart",
+        "geo_name": "D1225_a30",
+        "case_name": "u0p3_p6M_restart",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+        **_restart_from_u0p2_finals("diamond", "D1225_a30"),
+    },
+    {
+        "family": "pillar",
+        "geo_id": "P_p100_h15",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M_restart",
+        "geo_name": "P_p100_h15",
+        "case_name": "u0p3_p6M_restart",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+        **_restart_from_u0p2_finals("pillar", "P_p100_h15"),
+    },
+    {
+        "family": "sin",
+        "geo_id": "S_a144_l1733",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M_restart",
+        "geo_name": "S_a144_l1733",
+        "case_name": "u0p3_p6M_restart",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+        **_restart_from_u0p2_finals("sin", "S_a144_l1733"),
+    },
+]
+
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
-# --case-set production entrypoint. mesh_batch_cases (22) and
-# solver_sweep_cases (7) stay the exploratory lists used by default.
+# --case-set production entrypoint. mesh_batch_cases (22) stays the
+# exploratory mesh list. solver_sweep_cases is the four u0p3 restarts.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(

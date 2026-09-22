@@ -23,7 +23,7 @@ from ro.campaign_matrix import (
     cases_for_case_set,
     mesh_settings_without_layout,
 )
-from ro.solver_common import make_base_case_name
+from ro.solver_common import make_base_case_name, require_run_id_matches_operating_point
 
 
 def _load_batch_config():
@@ -41,7 +41,8 @@ def batchcfg():
 
 def test_exploratory_lists_are_unchanged(batchcfg):
     assert len(batchcfg.mesh_batch_cases) == 22
-    assert len(batchcfg.solver_sweep_cases) == 7
+    assert len(batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS) == 7
+    assert len(batchcfg.solver_sweep_cases) == 4
     families = Counter(case["family"] for case in batchcfg.mesh_batch_cases)
     assert families == {"ml": 3, "pillar": 9, "sin": 9, "empty": 1}
     assert all(case["family"] != "diamond" for case in batchcfg.mesh_batch_cases)
@@ -180,12 +181,15 @@ def test_default_case_set_is_exploratory(batchcfg):
         exploratory_attr="solver_sweep_cases",
         production_attr="production_solver_sweep_cases",
     )
-    assert len(exploratory_solver) == 7
+    assert len(exploratory_solver) == 4
     assert len(production_solver) == 279
 
 
 def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
-    by_geo = {case["geo_id"]: case for case in batchcfg.solver_sweep_cases}
+    by_geo = {
+        case["geo_id"]: case
+        for case in batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS
+    }
     assert by_geo["D0817_a60"]["mesh_id"] == PRODUCTION_MESH_ID_D0817_A60
     assert by_geo["D0817_a60"]["run_id"] == "u0p2_p6M"
     assert by_geo["D0817_a60"]["inlet_velocity_value"] == pytest.approx(0.2)
@@ -193,8 +197,42 @@ def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
     assert by_geo["D0817_a30"]["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
     assert by_geo["D0817_a30"]["run_id"] == "u0p2_p6M"
     assert by_geo["D0817_a30"]["inlet_velocity_value"] == pytest.approx(0.2)
-    geos = [case["geo_id"] for case in batchcfg.solver_sweep_cases]
+    geos = [
+        case["geo_id"] for case in batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS
+    ]
     assert geos.index("D0817_a60") < geos.index("D0817_a30")
+
+
+def test_exploratory_solver_is_u0p3_restart_from_u0p2(batchcfg):
+    cases = batchcfg.solver_sweep_cases
+    assert [case["geo_id"] for case in cases] == [
+        "D0817_a30",
+        "D1225_a30",
+        "P_p100_h15",
+        "S_a144_l1733",
+    ]
+    for case in cases:
+        geo_id = case["geo_id"]
+        family = case["family"]
+        assert case["run_id"] == "u0p3_p6M_restart"
+        assert case["case_name"] == "u0p3_p6M_restart"
+        assert case["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
+        assert case["inlet_velocity_value"] == pytest.approx(0.3)
+        assert case["outlet_gauge_pressure"] == pytest.approx(6.0e6)
+        leaf = (
+            f"C:/ro_data/runs/{family}/{geo_id}/"
+            f"{PRODUCTION_MESH_ID_DEFAULT}/u0p2_p6M"
+        )
+        stem = f"{geo_id}_u0p2_p6M"
+        assert case["restart_from_case_file"] == f"{leaf}/{stem}_final.cas.h5"
+        assert case["restart_from_data_file"] == f"{leaf}/{stem}_final.dat.h5"
+        assert "u0p3_p6M/" not in case["restart_from_case_file"]
+        assert case["run_id"] != "u0p3_p6M"
+        require_run_id_matches_operating_point(
+            case["run_id"],
+            case["inlet_velocity_value"],
+            case["outlet_gauge_pressure"],
+        )
 
 
 def test_geo_id_filter_keeps_case_set_order_and_refuses_unknown():

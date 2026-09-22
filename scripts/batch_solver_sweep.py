@@ -396,7 +396,8 @@ def parse_batch_solver_sweep_cli(argv=None):
         choices=CASE_SET_CHOICES,
         default=CASE_SET_EXPLORATORY,
         help=(
-            "exploratory: solver_sweep_cases (currently 7). "
+            "exploratory: solver_sweep_cases (currently 4 u0p3 "
+            "restarts from u0p2). "
             "production: production_solver_sweep_cases (279). "
             "Default exploratory so existing batch runs cannot launch 279 solves."
         ),
