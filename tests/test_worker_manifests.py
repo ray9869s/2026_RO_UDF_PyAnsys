@@ -376,11 +376,14 @@ def test_run_manifest_write_precedes_case_loading_and_udf_handling():
         "solver.settings.file.read_case("
     )
     assert restart_branch.index(manifest_call) < restart_branch.index(
+        "solver.settings.file.read_case("
+    )
+    assert restart_branch.index(manifest_call) < restart_branch.index(
         "solver.settings.file.read_data("
     )
-    assert restart_branch.index("solver.settings.file.read_data(") < (
-        restart_branch.index("restore_fluent_working_directory_for_restart(")
-    )
+    assert "file_name=as_fluent_path(staged_restart_case_file)" in restart_branch
+    assert "file_name=as_fluent_path(staged_restart_data_file)" in restart_branch
+    assert "restore_fluent_working_directory_for_restart(" not in restart_branch
     assert "restore_fluent_working_directory_for_restart(" not in mesh_branch
 
     assert manifest_call not in after_input_load
@@ -388,7 +391,7 @@ def test_run_manifest_write_precedes_case_loading_and_udf_handling():
     assert 'solver.tui.define.user_defined.compiled_functions(\n            "compile"' in (
         after_input_load
     )
-    assert after_input_load.index("require_fluent_working_directory(") < (
+    assert after_input_load.index("require_restart_read_not_source_folder(") < (
         after_input_load.index("udf_case_path = copy_and_patch_udf_to_case_folder(")
     )
     assert after_input_load.index(

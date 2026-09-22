@@ -666,59 +666,6 @@ def fluent_directory_text_is_absolute(path_text):
     return bool(re.match(r"^[A-Za-z]:[\\/]", text))
 
 
-def _strip_fluent_scheme_string(raw):
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    if text in ("#f", "#F", "False"):
-        return None
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        text = text[1:-1].strip()
-    return text or None
-
-
-def _parse_fluent_directory_response(raw):
-    text = _strip_fluent_scheme_string(raw)
-    if text is None or not fluent_directory_text_is_absolute(text):
-        return None
-    return text
-
-
-def set_fluent_working_directory(solver, directory):
-    """Point Fluent's file working directory at directory.
-
-    Python ``os.chdir`` and ``launch_fluent(cwd=...)`` do not survive
-    ``read_case`` of a saved final: Fluent restores the case file's folder.
-    """
-    fluent_dir = as_fluent_path(directory)
-    command = f'/file/set-working-directory "{fluent_dir}"'
-    print(f"Setting Fluent working directory: {fluent_dir}")
-    solver.execute_tui(command)
-
-
-def read_fluent_working_directory(solver):
-    """Return Fluent's file working directory via Scheme ``(pwd)``."""
-    scheme_eval = getattr(solver, "scheme_eval", None)
-    string_eval = getattr(scheme_eval, "string_eval", None) if scheme_eval is not None else None
-    if not callable(string_eval):
-        raise RuntimeError(
-            "solver.scheme_eval.string_eval is missing; cannot read "
-            "Fluent working directory."
-        )
-    try:
-        raw = string_eval("(pwd)")
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not read Fluent working directory via (pwd): {exc}"
-        ) from exc
-    parsed = _parse_fluent_directory_response(raw)
-    if parsed is None:
-        raise RuntimeError(
-            f"Fluent (pwd) did not return an absolute working directory: {raw!r}"
-        )
-    return parsed
-
-
 def fluent_working_directory_error(
     actual,
     expected_case_path,
@@ -751,38 +698,95 @@ def fluent_working_directory_error(
     return None
 
 
-def require_fluent_working_directory(
-    solver,
-    expected_case_path,
-    *,
-    restart_source_dir=None,
+def restart_staged_case_path(case_path, geo_name, run_id):
+    """Target-leaf copy of the source final case, named for the new run_id."""
+    return os.path.join(case_path, f"{geo_name}_{run_id}_restart_from.cas.h5")
+
+
+def restart_staged_data_path(case_path, geo_name, run_id):
+    """Target-leaf copy of the source final data, named for the new run_id."""
+    return os.path.join(case_path, f"{geo_name}_{run_id}_restart_from.dat.h5")
+
+
+def copy_restart_source_into_case_folder(
+    source_case_file,
+    source_data_file,
+    staged_case_file,
+    staged_data_file,
 ):
-    """Raise unless Fluent cwd is expected_case_path and not the restart source."""
-    actual = read_fluent_working_directory(solver)
-    error = fluent_working_directory_error(
-        actual,
-        expected_case_path,
-        restart_source_dir=restart_source_dir,
-    )
-    if error:
-        raise RuntimeError(error)
-    print(f"Fluent working directory confirmed: {actual}")
-    return actual
+    """Copy only the two source finals into the target leaf. Never the folder."""
+    if normalize_path(source_case_file) == normalize_path(staged_case_file):
+        raise RuntimeError(
+            "Restart staging case path collides with the source file: "
+            f"{source_case_file}"
+        )
+    if normalize_path(source_data_file) == normalize_path(staged_data_file):
+        raise RuntimeError(
+            "Restart staging data path collides with the source file: "
+            f"{source_data_file}"
+        )
+    dest_dir = os.path.dirname(os.path.abspath(staged_case_file))
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copy2(source_case_file, staged_case_file)
+    shutil.copy2(source_data_file, staged_data_file)
+    print(f"Copied restart case into target leaf: {staged_case_file}")
+    print(f"Copied restart data into target leaf: {staged_data_file}")
+    return staged_case_file, staged_data_file
 
 
-def restore_fluent_working_directory_for_restart(
-    solver,
+def require_restart_read_not_source_folder(
+    read_case_file,
+    read_data_file,
     case_path,
-    restart_from_case_file,
+    restart_source_dir,
+    *,
+    source_case_file=None,
+    source_data_file=None,
 ):
-    """After read_case/read_data, pin Fluent cwd to the new run folder."""
-    source_dir = os.path.dirname(os.path.abspath(restart_from_case_file))
-    set_fluent_working_directory(solver, case_path)
-    return require_fluent_working_directory(
-        solver,
-        case_path,
-        restart_source_dir=source_dir,
+    """Raise if Fluent would open files in the restart source folder."""
+    for path, label in (
+        (read_case_file, "case"),
+        (read_data_file, "data"),
+    ):
+        parent = os.path.dirname(os.path.abspath(path))
+        error = fluent_working_directory_error(
+            parent,
+            case_path,
+            restart_source_dir=restart_source_dir,
+        )
+        if error:
+            raise RuntimeError(
+                f"Restart {label} {path} would not keep Fluent in the target "
+                f"case folder: {error}"
+            )
+    if source_case_file is not None and (
+        normalize_path(read_case_file) == normalize_path(source_case_file)
+    ):
+        raise RuntimeError(
+            "Restart would open the source case file "
+            f"{source_case_file}; refusing to read a finished case in place."
+        )
+    if source_data_file is not None and (
+        normalize_path(read_data_file) == normalize_path(source_data_file)
+    ):
+        raise RuntimeError(
+            "Restart would open the source data file "
+            f"{source_data_file}; refusing to read a finished case in place."
+        )
+    print(
+        "Restart read confirmed in target case folder: "
+        f"{read_case_file}, {read_data_file}"
     )
+
+
+def remove_staged_restart_copies(*paths):
+    """Delete target-leaf restart copies after canonical finals exist."""
+    for path in paths:
+        if not path:
+            continue
+        if os.path.isfile(path):
+            os.remove(path)
+            print(f"Removed staged restart copy: {path}")
 
 
 def copy_and_patch_udf_to_case_folder(
@@ -3204,6 +3208,9 @@ if __name__ == "__main__":
     print(f"Target final data: {final_data_file}")
     print("=" * 72)
 
+    staged_restart_case_file = None
+    staged_restart_data_file = None
+    restart_source_dir = None
     if input_mode == "restart_continuation":
         if not os.path.isfile(restart_from_case_file):
             raise FileNotFoundError(
@@ -3213,6 +3220,13 @@ if __name__ == "__main__":
         if not os.path.isfile(restart_from_data_file):
             raise FileNotFoundError(
                 f"Restart data file not found: {restart_from_data_file}"
+            )
+
+        restart_source_dir = os.path.dirname(os.path.abspath(restart_from_case_file))
+        if normalize_path(restart_source_dir) == normalize_path(case_path):
+            raise ValueError(
+                "Restart source folder must not be the target case_path: "
+                f"{restart_source_dir}. Choose a different target case_name."
             )
 
         restart_source_paths = {
@@ -3233,6 +3247,13 @@ if __name__ == "__main__":
 
         if not os.path.exists(case_path):
             os.makedirs(case_path)
+
+        staged_restart_case_file = restart_staged_case_path(
+            case_path, geo_name, case_name
+        )
+        staged_restart_data_file = restart_staged_data_path(
+            case_path, geo_name, case_name
+        )
     else:
         if not os.path.exists(case_path):
             os.makedirs(case_path)
@@ -3280,8 +3301,24 @@ if __name__ == "__main__":
     if input_mode == "restart_continuation":
         print(f"Restart case file: {restart_from_case_file}")
         print(f"Restart data file: {restart_from_data_file}")
+        print(f"Staged restart case: {staged_restart_case_file}")
+        print(f"Staged restart data: {staged_restart_data_file}")
         print("Mesh file: (not used for restart_continuation)")
         print("Template case: (not used for restart_continuation)")
+        copy_restart_source_into_case_folder(
+            restart_from_case_file,
+            restart_from_data_file,
+            staged_restart_case_file,
+            staged_restart_data_file,
+        )
+        require_restart_read_not_source_folder(
+            staged_restart_case_file,
+            staged_restart_data_file,
+            case_path,
+            restart_source_dir,
+            source_case_file=restart_from_case_file,
+            source_data_file=restart_from_data_file,
+        )
     else:
         print(f"Mesh file: {mesh_file_path}")
         print(f"Template case: {template_case_path}")
@@ -3420,21 +3457,15 @@ if __name__ == "__main__":
 
             print("Reading restart case...", flush=True)
             solver.settings.file.read_case(
-                file_name=as_fluent_path(restart_from_case_file)
+                file_name=as_fluent_path(staged_restart_case_file)
             )
             print("Restart case loaded successfully.", flush=True)
 
             print("Reading restart data...", flush=True)
             solver.settings.file.read_data(
-                file_name=as_fluent_path(restart_from_data_file)
+                file_name=as_fluent_path(staged_restart_data_file)
             )
             print("Restart data loaded successfully.", flush=True)
-
-            restore_fluent_working_directory_for_restart(
-                solver,
-                case_path,
-                restart_from_case_file,
-            )
 
         # Update solver-side thread names so the name-based UDF can use THREAD_NAME(t).
         update_solver_thread_names(solver)
@@ -3831,12 +3862,13 @@ if __name__ == "__main__":
         print(f"Requested UDM memory locations: {udm_count}")
 
         if input_mode == "restart_continuation":
-            require_fluent_working_directory(
-                solver,
+            require_restart_read_not_source_folder(
+                staged_restart_case_file,
+                staged_restart_data_file,
                 case_path,
-                restart_source_dir=os.path.dirname(
-                    os.path.abspath(restart_from_case_file)
-                ),
+                restart_source_dir,
+                source_case_file=restart_from_case_file,
+                source_data_file=restart_from_data_file,
             )
 
         udf_case_path = copy_and_patch_udf_to_case_folder(
@@ -4399,6 +4431,11 @@ if __name__ == "__main__":
             final_case_file=final_case_file,
             as_fluent_path=as_fluent_path,
         )
+        if input_mode == "restart_continuation":
+            remove_staged_restart_copies(
+                staged_restart_case_file,
+                staged_restart_data_file,
+            )
 
 
     except Exception as e:
