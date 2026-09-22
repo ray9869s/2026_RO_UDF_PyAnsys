@@ -1182,6 +1182,32 @@ def inlet_plug_readback_error(observed, requested):
     return None
 
 
+def velocity_spec_is_components(vin):
+    """True when the inlet already uses a Components specification.
+
+    Restart finals keep Components+UDF, which deactivates
+    ``velocity_magnitude``. Unwrap Fluent ``{'option': 'value', 'value': ...}``
+    the same way as plug/profile readback.
+    """
+    mom = vin.momentum
+    spec = None
+    try:
+        spec = unwrap_fluent_setting(mom.velocity_specification_method())
+    except Exception:
+        try:
+            spec = unwrap_fluent_setting(
+                mom.velocity_specification_method.get_state()
+            )
+        except Exception:
+            spec = None
+    if isinstance(spec, str) and "component" in spec.lower():
+        return True
+    try:
+        return bool(mom.velocity_components.is_active())
+    except Exception:
+        return False
+
+
 def read_inlet_profile_state(vin):
     mom = vin.momentum
     spec = None
@@ -1269,8 +1295,13 @@ def apply_inlet_velocity_boundary(
     'Magnitude, Normal to Boundary']. velocity_components is a fixed-length
     3-element ListObject in 3D — do not call resize(). TUI fallback below is
     retained but untested on this host (settings API path works).
+
+    If the zone is already Components (restart from a profiled final),
+    ``velocity_magnitude`` is inactive. Do not switch to Magnitude just to
+    write a plug that the later profile pass would overwrite.
     """
-    if not use_profile:
+    already_components = velocity_spec_is_components(vin)
+    if not use_profile and not already_components:
         vin.momentum.velocity_magnitude.value = inlet_velocity
         err = inlet_plug_readback_error(
             read_inlet_plug_magnitude(vin), inlet_velocity
@@ -1370,67 +1401,77 @@ def apply_inlet_velocity_boundary(
         else:
             allowed_candidates.append(source)
 
+    skip_spec_activation = already_components and _components_active()
     # --- Activation attempts ---
-    if debug_inlet_bc_api:
-        print(f"{tag} 6. attempting set_state('Components')")
-    try:
-        vin.momentum.velocity_specification_method.set_state("Components")
-    except Exception as exc:
-        print(
-            f"{tag} 6. set_state('Components'): "
-            f"EXCEPTION {type(exc).__name__}: {exc}"
-        )
-    if debug_inlet_bc_api:
-        print(f"{tag} 6. after Components: spec={_spec_value()!r}")
-        print(f"{tag} 6. after Components: components_active={_components_active()!r}")
-
-    if not _components_active():
-        component_like = [
-            c for c in allowed_candidates
-            if isinstance(c, str) and "omponent" in c.lower()
-        ]
-        # De-duplicate while preserving order.
-        seen = set()
-        component_like_unique = []
-        for cand in component_like:
-            if cand in seen:
-                continue
-            seen.add(cand)
-            component_like_unique.append(cand)
-        if "Components" in seen:
-            # Already tried; skip repeat.
-            component_like_unique = [
-                c for c in component_like_unique if c != "Components"
-            ]
+    if skip_spec_activation:
         if debug_inlet_bc_api:
             print(
-                f"{tag} 7. components still inactive; trying allowed "
-                f"strings containing 'omponent': {component_like_unique!r}"
+                f"{tag} already Components; skipping spec-method activation"
             )
-        for cand in component_like_unique:
+    else:
+        if debug_inlet_bc_api:
+            print(f"{tag} 6. attempting set_state('Components')")
+        try:
+            vin.momentum.velocity_specification_method.set_state("Components")
+        except Exception as exc:
+            print(
+                f"{tag} 6. set_state('Components'): "
+                f"EXCEPTION {type(exc).__name__}: {exc}"
+            )
+        if debug_inlet_bc_api:
+            print(f"{tag} 6. after Components: spec={_spec_value()!r}")
+            print(
+                f"{tag} 6. after Components: "
+                f"components_active={_components_active()!r}"
+            )
+
+        if not _components_active():
+            component_like = [
+                c for c in allowed_candidates
+                if isinstance(c, str) and "omponent" in c.lower()
+            ]
+            # De-duplicate while preserving order.
+            seen = set()
+            component_like_unique = []
+            for cand in component_like:
+                if cand in seen:
+                    continue
+                seen.add(cand)
+                component_like_unique.append(cand)
+            if "Components" in seen:
+                # Already tried; skip repeat.
+                component_like_unique = [
+                    c for c in component_like_unique if c != "Components"
+                ]
             if debug_inlet_bc_api:
-                print(f"{tag} 7. attempting set_state({cand!r})")
-            try:
-                vin.momentum.velocity_specification_method.set_state(cand)
-            except Exception as exc:
                 print(
-                    f"{tag} 7. set_state({cand!r}): "
-                    f"EXCEPTION {type(exc).__name__}: {exc}"
+                    f"{tag} 7. components still inactive; trying allowed "
+                    f"strings containing 'omponent': {component_like_unique!r}"
                 )
-                continue
-            active_now = _components_active()
-            if debug_inlet_bc_api:
-                print(
-                    f"{tag} 7. after {cand!r}: spec={_spec_value()!r}, "
-                    f"components_active={active_now!r}"
-                )
-            if active_now:
+            for cand in component_like_unique:
+                if debug_inlet_bc_api:
+                    print(f"{tag} 7. attempting set_state({cand!r})")
+                try:
+                    vin.momentum.velocity_specification_method.set_state(cand)
+                except Exception as exc:
+                    print(
+                        f"{tag} 7. set_state({cand!r}): "
+                        f"EXCEPTION {type(exc).__name__}: {exc}"
+                    )
+                    continue
+                active_now = _components_active()
                 if debug_inlet_bc_api:
                     print(
-                        f"{tag} 7. ACTIVATED velocity_components via "
-                        f"set_state({cand!r})"
+                        f"{tag} 7. after {cand!r}: spec={_spec_value()!r}, "
+                        f"components_active={active_now!r}"
                     )
-                break
+                if active_now:
+                    if debug_inlet_bc_api:
+                        print(
+                            f"{tag} 7. ACTIVATED velocity_components via "
+                            f"set_state({cand!r})"
+                        )
+                    break
 
     if _components_active():
         components = vin.momentum.velocity_components
@@ -3453,9 +3494,10 @@ if __name__ == "__main__":
 
         for inlet_zone_name in inlet_zone_names:
             vin = setup.boundary_conditions.velocity_inlet[inlet_zone_name]
-            # Always set a magnitude plug here. If use_inlet_velocity_profile is
-            # True, Components+UDF is applied after libudf load (below) so Fluent
-            # does not silently drop an unresolved profile hook.
+            # Before libudf compile/load: write plug when the spec is
+            # Magnitude (template). A restart final is already Components, so
+            # apply_inlet_velocity_boundary skips the inactive magnitude leaf
+            # and sets the x-UDF hook instead. Profile is re-applied after load.
             apply_inlet_velocity_boundary(
                 vin,
                 inlet_zone_name,

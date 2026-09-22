@@ -134,12 +134,36 @@ class _FrozenMagnitude:
         pass
 
 
+class _InactiveMagnitude:
+    """Live restart: Components deactivates velocity_magnitude."""
+
+    def __init__(self, value=0.2):
+        self._payload = fluent_leaf(float(value))
+        self.writes = []
+
+    def get_state(self):
+        return dict(self._payload)
+
+    @property
+    def value(self):
+        return dict(self._payload)
+
+    @value.setter
+    def value(self, new):
+        self.writes.append(new)
+        raise RuntimeError(
+            "InactiveObjectError: velocity_inlet['inlet'].momentum."
+            "velocity_magnitude is currently inactive"
+        )
+
+
 class _Momentum:
     def __init__(
         self,
         *,
         magnitude=0.1,
         frozen_magnitude=False,
+        inactive_magnitude=False,
         activate_on_set=True,
         fail_set_state=False,
     ):
@@ -149,7 +173,9 @@ class _Momentum:
             activate_on_set=activate_on_set,
             fail_set_state=fail_set_state,
         )
-        if frozen_magnitude:
+        if inactive_magnitude:
+            self.velocity_magnitude = _InactiveMagnitude(magnitude)
+        elif frozen_magnitude:
             self.velocity_magnitude = _FrozenMagnitude(magnitude)
         else:
             self.velocity_magnitude = _Magnitude(magnitude)
@@ -351,6 +377,67 @@ def test_read_inlet_profile_state_from_wrapped_components():
         "option": "value",
         "value": 0.0,
     }
+
+
+def test_already_components_skips_inactive_plug_write(capsys):
+    mod = load_solver_code("inlet_bc_restart_components")
+    vin = _Vin(inactive_magnitude=True)
+    _stamp_profile(vin)
+    spec = vin.momentum.velocity_specification_method
+    spec_calls = []
+    original_set_state = spec.set_state
+
+    def tracking_set_state(state):
+        spec_calls.append(state)
+        return original_set_state(state)
+
+    spec.set_state = tracking_set_state
+    _apply(mod, vin, use_profile=False)
+    out = capsys.readouterr().out
+    assert f"Inlet BC set on {ZONE}: Components" in out
+    assert vin.momentum.velocity_magnitude.writes == []
+    assert spec_calls == []
+    observed = mod.read_inlet_profile_state(vin)
+    assert mod.inlet_profile_readback_error(observed, UDF_NAME) is None
+
+
+def test_already_components_profile_pass_skips_spec_activation(capsys):
+    mod = load_solver_code("inlet_bc_restart_components_profile")
+    vin = _Vin(inactive_magnitude=True)
+    _stamp_profile(vin)
+    spec = vin.momentum.velocity_specification_method
+    spec_calls = []
+    original_set_state = spec.set_state
+
+    def tracking_set_state(state):
+        spec_calls.append(state)
+        return original_set_state(state)
+
+    spec.set_state = tracking_set_state
+    _apply(mod, vin, use_profile=True)
+    out = capsys.readouterr().out
+    assert f"Inlet BC set on {ZONE}: Components" in out
+    assert vin.momentum.velocity_magnitude.writes == []
+    assert spec_calls == []
+    observed = mod.read_inlet_profile_state(vin)
+    assert mod.inlet_profile_readback_error(observed, UDF_NAME) is None
+
+
+def test_magnitude_spec_still_writes_plug_when_use_profile_false(capsys):
+    mod = load_solver_code("inlet_bc_plug_inactive_magnitude")
+    vin = _Vin(inactive_magnitude=True)
+    with pytest.raises(RuntimeError, match="currently inactive"):
+        _apply(mod, vin, use_profile=False)
+    assert vin.momentum.velocity_magnitude.writes == [U_MEAN]
+    assert not _success_logged(capsys)
+
+
+def test_velocity_spec_is_components_reads_wrapped_spec():
+    mod = load_solver_code("inlet_spec_wrapped")
+    vin = _Vin()
+    assert mod.velocity_spec_is_components(vin) is False
+    _stamp_profile(vin)
+    assert mod.velocity_spec_is_components(vin) is True
 
 
 def test_read_inlet_profile_state_udf_form_component_dict():
