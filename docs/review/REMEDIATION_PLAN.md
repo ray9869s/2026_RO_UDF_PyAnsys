@@ -1218,8 +1218,18 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
    dependence, Sc ~600–700, 4 prism / 첫 cell ~6.2 µm (Astra B-04, B-08).
 4. **empty-channel dP vs analytic plane Poiseuille.** u=0.2에서 2.6%, u=0.3에서
    3.9% excess (Astra B-06). solver 없이 원인 단정 금지.
-5. **Diamond u=0.3 converged dP dip.** cells 4/5의 7.8%/15.0% dip, 765 iter
-   지속 (Astra B-07). residual 수렴 ≠ time-stable ranking.
+5. **Diamond / 30° u=0.3 residual stall — initial condition is not the
+   issue.** Original mesh_initialization u=0.3 hits the 2000-iter cap
+   (D0817_a30 continuity 3.01e-2). Restart from the same geo's converged
+   u=0.2 field (new `run_id=u0p3_p6M_restart`) still does not reach
+   1e-7 after 2000 more iterates: D0817_a30 2.49e-2, D1225_a30 9.25e-2
+   (worse than its original attempt). Mass imbalance remains
+   (D0817_a30 `m_in` 3.7615e-4 vs `m_out` -3.7758e-4, relative gap
+   3.8e-3). Residual decrease rate itself decays (0.70% → 0.44% per
+   iteration), so raising `max_iterations` is not a fix. Coupled survives
+   `replace_mesh`; next candidate is re-enabling pseudo-transient
+   (`coupled-pseudo-transient`). Do not implement PT in this pass.
+   (Astra B-07 dP dip / ranking-vs-residual still stands.)
 6. **`max_iter_reached` under all-conditions-are-met.** D0817_a60 `u0p2_p6M`
    hit 2000 with finals written (same pattern as D2450_a45 bl6 at p8M).
    Do not change the stop-reason gate. Scientific acceptance vs completed

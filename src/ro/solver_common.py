@@ -869,12 +869,64 @@ def _iteration_from_convergence_line(line: str) -> int | None:
     return None
 
 
-def parse_fluent_convergence_marker(text: str) -> tuple[str | None, int | None]:
+def first_fluent_report_file_iteration(report_file_paths) -> int | None:
+    """Return the earliest data-line iteration across Fluent report files.
+
+    That first row is the iteration Fluent already holds when this session
+    starts writing. On mesh_initialization it is 1. On restart it is the
+    source run's last iterate. Missing or unreadable files are skipped.
+    """
+    firsts: list[int] = []
+    for raw_path in report_file_paths or ():
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        series = parse_fluent_report_file_series(text)
+        if series:
+            firsts.append(int(series[0][0]))
+    if not firsts:
+        return None
+    return min(firsts)
+
+
+def last_fluent_report_file_iteration(report_file_paths) -> int | None:
+    """Return the latest data-line iteration across Fluent report files."""
+    lasts: list[int] = []
+    for raw_path in report_file_paths or ():
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        series = parse_fluent_report_file_series(text)
+        if series:
+            lasts.append(int(series[-1][0]))
+    if not lasts:
+        return None
+    return max(lasts)
+
+
+def parse_fluent_convergence_marker(
+    text: str,
+    *,
+    after_iteration: int | None = None,
+) -> tuple[str | None, int | None]:
     """Return (stop_reason, iteration) from Fluent console convergence lines.
 
     Matches 'report definition solution is converged' before the residual
     phrase 'solution is converged' so a QoI stop is not misclassified.
     Last matching line in *text* wins.
+
+    If *after_iteration* is set, ignore a marker whose iteration is missing
+    or not strictly greater. That bound is this session's inherited
+    iteration (first .out data line). A declaration at that same number
+    belongs to the source run.
     """
     reason: str | None = None
     iteration: int | None = None
@@ -884,12 +936,49 @@ def parse_fluent_convergence_marker(text: str) -> tuple[str | None, int | None]:
             continue
         lower = line.lower()
         if FLUENT_QOI_CONVERGED_PHRASE in lower:
-            reason = STOP_REASON_QOI_CONVERGED
-            iteration = _iteration_from_convergence_line(line)
+            candidate_reason = STOP_REASON_QOI_CONVERGED
+            candidate_iteration = _iteration_from_convergence_line(line)
         elif FLUENT_RESIDUAL_CONVERGED_PHRASE in lower:
-            reason = STOP_REASON_RESIDUAL_CONVERGED
-            iteration = _iteration_from_convergence_line(line)
+            candidate_reason = STOP_REASON_RESIDUAL_CONVERGED
+            candidate_iteration = _iteration_from_convergence_line(line)
+        else:
+            continue
+        if after_iteration is not None:
+            if candidate_iteration is None:
+                continue
+            if int(candidate_iteration) <= int(after_iteration):
+                continue
+        reason = candidate_reason
+        iteration = candidate_iteration
     return reason, iteration
+
+
+def parse_first_residual_iteration_from_transcript_text(text: str) -> int | None:
+    """Return the first residual-table (or 'iteration N:') iteration in *text*."""
+    first: int | None = None
+    saw_header = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        prefix = _ITERATION_PREFIX_RE.match(line)
+        if prefix:
+            value = int(prefix.group(1))
+            if first is None:
+                first = value
+            continue
+        if "continuity" in line.lower() and not line[0].isdigit():
+            if parse_transcript_residual_columns(line):
+                saw_header = True
+            continue
+        if saw_header and line[0].isdigit():
+            try:
+                value = int(float(line.split()[0]))
+            except ValueError:
+                continue
+            if first is None:
+                first = value
+    return first
 
 
 def parse_last_residual_iteration_from_transcript_text(text: str) -> int | None:

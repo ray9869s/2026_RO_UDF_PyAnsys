@@ -35,7 +35,10 @@ from ro.solver_common import (
     fluent_report_relative_window_met,
     format_stop_reason_marker,
     parse_fluent_convergence_marker,
+    first_fluent_report_file_iteration,
+    last_fluent_report_file_iteration,
     parse_fluent_report_file_series,
+    parse_first_residual_iteration_from_transcript_text,
     parse_last_residual_iteration_from_transcript_text,
     require_mesh_sha256_matches_file,
     require_run_id_matches_operating_point,
@@ -2660,8 +2663,12 @@ def determine_and_print_stop_reason(
 
     Primary determination is the console phrases
     'report definition solution is converged' (QoI) and
-    'solution is converged' (residuals). Report-file window checks are a
-    cross-check only.
+    'solution is converged' (residuals), but only when the printed
+    iteration is strictly after this session's start. The start is the
+    first data line of the QoI .out files (fallback: first residual-table
+    row). A marker at that same iteration is inherited from a restart
+    source and is ignored. Report-file window checks are a cross-check
+    only.
     """
     if not calculation_ran:
         reason = classify_solver_stop_reason(
@@ -2681,8 +2688,14 @@ def determine_and_print_stop_reason(
         case_dir,
         solver_log_path,
     )
+    run_start_iteration = first_fluent_report_file_iteration(qoi_report_file_paths)
+    if run_start_iteration is None:
+        run_start_iteration = parse_first_residual_iteration_from_transcript_text(
+            transcript_text
+        )
     transcript_reason, transcript_iteration = parse_fluent_convergence_marker(
-        transcript_text
+        transcript_text,
+        after_iteration=run_start_iteration,
     )
     table_iteration = parse_last_residual_iteration_from_transcript_text(
         transcript_text
@@ -2715,6 +2728,9 @@ def determine_and_print_stop_reason(
         if final_iteration is None:
             final_iteration = report_file_iteration
 
+    if final_iteration is None:
+        final_iteration = last_fluent_report_file_iteration(qoi_report_file_paths)
+
     reason = classify_solver_stop_reason(
         diverged=bool(diverged),
         residuals_met=residuals_met,
@@ -2729,6 +2745,7 @@ def determine_and_print_stop_reason(
         f"transcript_file={transcript_path}",
         f"transcript_reason={transcript_reason}",
         f"transcript_iteration={transcript_iteration}",
+        f"run_start_iteration={run_start_iteration}",
         f"table_iteration={table_iteration}",
         f"residuals_met={residuals_met}",
         f"qoi_met={qoi_met}",

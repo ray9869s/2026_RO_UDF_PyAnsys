@@ -213,6 +213,49 @@ def test_parse_fluent_convergence_marker_does_not_treat_qoi_as_residual(common):
     assert common.parse_fluent_convergence_marker("no such event") == (None, None)
 
 
+def test_parse_fluent_convergence_marker_ignores_inherited_restart_declaration(common):
+    text = (
+        "!  774 solution is converged\n"
+        "iter  continuity  x-velocity  y-velocity  z-velocity  nacl\n"
+        "  2774  2.4900e-02  1.0e-3      1.0e-3      1.0e-3      1.0e-3\n"
+    )
+    reason, iteration = common.parse_fluent_convergence_marker(
+        text, after_iteration=774
+    )
+    assert reason is None
+    assert iteration is None
+    reason, iteration = common.parse_fluent_convergence_marker(text)
+    assert reason == "residual_converged"
+    assert iteration == 774
+
+
+def test_parse_fluent_convergence_marker_keeps_later_declaration(common):
+    text = (
+        "!  774 solution is converged\n"
+        "!  1200 solution is converged\n"
+    )
+    reason, iteration = common.parse_fluent_convergence_marker(
+        text, after_iteration=774
+    )
+    assert reason == "residual_converged"
+    assert iteration == 1200
+
+
+def test_first_fluent_report_file_iteration_reads_first_data_line(common, tmp_path):
+    out = tmp_path / "lmh_udm_avg.out"
+    out.write_text(
+        '"lmh_udm_avg_rfile"\n'
+        '"Iteration" "lmh_udm_avg"\n'
+        "774 25.572\n"
+        "775 25.571\n"
+        "2774 25.570\n",
+        encoding="utf-8",
+    )
+    assert common.first_fluent_report_file_iteration([out]) == 774
+    assert common.last_fluent_report_file_iteration([out]) == 2774
+    assert common.first_fluent_report_file_iteration([]) is None
+
+
 def test_parse_last_residual_iteration_from_table_and_prefix(common):
     assert (
         common.parse_last_residual_iteration_from_transcript_text(RESIDUAL_TABLE)
@@ -308,6 +351,85 @@ def test_determine_stop_reason_iteration_unknown_without_transcript(tmp_path, ca
     out = capsys.readouterr().out
     assert "SOLVER_STOP_REASON=iteration_unknown" in out
     assert "final_iteration=None" in out
+
+
+def test_determine_stop_reason_ignores_inherited_source_convergence(tmp_path, capsys):
+    solver_code = load_solver_code("solver_stop_reason_restart_inherit")
+    out = tmp_path / "lmh_udm_avg.out"
+    header = '"rfile"\n"Iteration" "value"\n'
+    body = "\n".join(f"{i} 25.572" for i in range(774, 2775))
+    out.write_text(header + body + "\n", encoding="utf-8")
+    (tmp_path / "fluent-solve.trn").write_text(
+        "!  774 solution is converged\n"
+        "iter  continuity  x-velocity  y-velocity  z-velocity  nacl\n"
+        "  2774  2.4900e-02  1.0e-3      1.0e-3      1.0e-3      1.0e-3\n",
+        encoding="utf-8",
+    )
+    reason = solver_code.determine_and_print_stop_reason(
+        case_dir=tmp_path,
+        solver_log_path=tmp_path / "solver_log_case.txt",
+        max_iterations=2000,
+        qoi_enabled=False,
+        qoi_report_file_paths=[out],
+        qoi_previous_values_to_consider=100,
+        qoi_stop_criterion=1e-3,
+        diverged=False,
+    )
+    assert reason == "max_iter_reached"
+    printed = capsys.readouterr().out
+    assert "run_start_iteration=774" in printed
+    assert "transcript_reason=None" in printed
+    assert "SOLVER_STOP_REASON=max_iter_reached" in printed
+
+
+def test_determine_stop_reason_without_residual_table_uses_out_span(tmp_path, capsys):
+    solver_code = load_solver_code("solver_stop_reason_no_table")
+    out = tmp_path / "lmh_udm_avg.out"
+    header = '"rfile"\n"Iteration" "value"\n'
+    body = "\n".join(f"{i} 25.572" for i in range(630, 2631))
+    out.write_text(header + body + "\n", encoding="utf-8")
+    (tmp_path / "fluent-solve.trn").write_text(
+        "!  630 solution is converged\n",
+        encoding="utf-8",
+    )
+    reason = solver_code.determine_and_print_stop_reason(
+        case_dir=tmp_path,
+        solver_log_path=tmp_path / "solver_log_case.txt",
+        max_iterations=2000,
+        qoi_enabled=False,
+        qoi_report_file_paths=[out],
+        qoi_previous_values_to_consider=100,
+        qoi_stop_criterion=1e-3,
+        diverged=False,
+    )
+    assert reason == "max_iter_reached"
+    printed = capsys.readouterr().out
+    assert "run_start_iteration=630" in printed
+    assert "table_iteration=None" in printed
+    assert "final_iteration=2630" in printed
+
+
+def test_determine_stop_reason_mesh_init_start_one_keeps_this_run_marker(tmp_path):
+    solver_code = load_solver_code("solver_stop_reason_mesh_init")
+    out = tmp_path / "lmh_udm_avg.out"
+    header = '"rfile"\n"Iteration" "value"\n'
+    body = "\n".join(f"{i} 25.0" for i in range(1, 380))
+    out.write_text(header + body + "\n", encoding="utf-8")
+    (tmp_path / "fluent-solve.trn").write_text(
+        RESIDUAL_TABLE + RESIDUAL_MARKER_LINE + "\n",
+        encoding="utf-8",
+    )
+    reason = solver_code.determine_and_print_stop_reason(
+        case_dir=tmp_path,
+        solver_log_path=tmp_path / "solver_log_case.txt",
+        max_iterations=2000,
+        qoi_enabled=False,
+        qoi_report_file_paths=[out],
+        qoi_previous_values_to_consider=100,
+        qoi_stop_criterion=1e-3,
+        diverged=False,
+    )
+    assert reason == "residual_converged"
 
 
 def test_determine_stop_reason_prefers_newest_trn_without_falling_back_to_old_marker(
