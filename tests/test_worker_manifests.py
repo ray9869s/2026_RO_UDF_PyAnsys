@@ -378,11 +378,24 @@ def test_run_manifest_write_precedes_case_loading_and_udf_handling():
     assert restart_branch.index(manifest_call) < restart_branch.index(
         "solver.settings.file.read_data("
     )
+    assert restart_branch.index("solver.settings.file.read_data(") < (
+        restart_branch.index("restore_fluent_working_directory_for_restart(")
+    )
+    assert "restore_fluent_working_directory_for_restart(" not in mesh_branch
 
     assert manifest_call not in after_input_load
     assert "udf_case_path = copy_and_patch_udf_to_case_folder(" in after_input_load
     assert 'solver.tui.define.user_defined.compiled_functions(\n            "compile"' in (
         after_input_load
+    )
+    assert after_input_load.index("require_fluent_working_directory(") < (
+        after_input_load.index("udf_case_path = copy_and_patch_udf_to_case_folder(")
+    )
+    assert after_input_load.index(
+        'solver.tui.define.user_defined.compiled_functions(\n            "compile"'
+    ) < after_input_load.index("wait_for_agreed_probe_u_target(")
+    assert after_input_load.index("wait_for_agreed_probe_u_target(") < (
+        after_input_load.index("Starting solver calculation.")
     )
 
 

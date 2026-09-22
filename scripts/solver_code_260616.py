@@ -656,6 +656,135 @@ def update_solver_thread_names(solver_session):
     )
 
 
+def fluent_directory_text_is_absolute(path_text):
+    """True for POSIX abs paths and Windows drive/UNC paths on any host."""
+    text = str(path_text).strip()
+    if os.path.isabs(text):
+        return True
+    if text.startswith("\\\\") or text.startswith("//"):
+        return True
+    return bool(re.match(r"^[A-Za-z]:[\\/]", text))
+
+
+def _strip_fluent_scheme_string(raw):
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text in ("#f", "#F", "False"):
+        return None
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    return text or None
+
+
+def _parse_fluent_directory_response(raw):
+    text = _strip_fluent_scheme_string(raw)
+    if text is None or not fluent_directory_text_is_absolute(text):
+        return None
+    return text
+
+
+def set_fluent_working_directory(solver, directory):
+    """Point Fluent's file working directory at directory.
+
+    Python ``os.chdir`` and ``launch_fluent(cwd=...)`` do not survive
+    ``read_case`` of a saved final: Fluent restores the case file's folder.
+    """
+    fluent_dir = as_fluent_path(directory)
+    command = f'/file/set-working-directory "{fluent_dir}"'
+    print(f"Setting Fluent working directory: {fluent_dir}")
+    solver.execute_tui(command)
+
+
+def read_fluent_working_directory(solver):
+    """Return Fluent's file working directory via Scheme ``(pwd)``."""
+    scheme_eval = getattr(solver, "scheme_eval", None)
+    string_eval = getattr(scheme_eval, "string_eval", None) if scheme_eval is not None else None
+    if not callable(string_eval):
+        raise RuntimeError(
+            "solver.scheme_eval.string_eval is missing; cannot read "
+            "Fluent working directory."
+        )
+    try:
+        raw = string_eval("(pwd)")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not read Fluent working directory via (pwd): {exc}"
+        ) from exc
+    parsed = _parse_fluent_directory_response(raw)
+    if parsed is None:
+        raise RuntimeError(
+            f"Fluent (pwd) did not return an absolute working directory: {raw!r}"
+        )
+    return parsed
+
+
+def fluent_working_directory_error(
+    actual,
+    expected_case_path,
+    *,
+    restart_source_dir=None,
+):
+    """Return a RuntimeError message, or None when cwd is the target folder."""
+    if actual is None or not str(actual).strip():
+        return "Fluent working directory is empty"
+    actual_text = str(actual).strip()
+    if not fluent_directory_text_is_absolute(actual_text):
+        return (
+            f"Fluent working directory {actual!r} is not an absolute path"
+        )
+    actual_n = normalize_path(actual_text)
+    expected_n = normalize_path(expected_case_path)
+    if restart_source_dir is not None:
+        source_n = normalize_path(restart_source_dir)
+        if actual_n == source_n:
+            return (
+                "Fluent working directory is the restart source folder "
+                f"{restart_source_dir!r}; refusing to write into a finished "
+                f"case. Expected target case_path {expected_case_path!r}."
+            )
+    if actual_n != expected_n:
+        return (
+            f"Fluent working directory {actual!r} is not the target case_path "
+            f"{expected_case_path!r}."
+        )
+    return None
+
+
+def require_fluent_working_directory(
+    solver,
+    expected_case_path,
+    *,
+    restart_source_dir=None,
+):
+    """Raise unless Fluent cwd is expected_case_path and not the restart source."""
+    actual = read_fluent_working_directory(solver)
+    error = fluent_working_directory_error(
+        actual,
+        expected_case_path,
+        restart_source_dir=restart_source_dir,
+    )
+    if error:
+        raise RuntimeError(error)
+    print(f"Fluent working directory confirmed: {actual}")
+    return actual
+
+
+def restore_fluent_working_directory_for_restart(
+    solver,
+    case_path,
+    restart_from_case_file,
+):
+    """After read_case/read_data, pin Fluent cwd to the new run folder."""
+    source_dir = os.path.dirname(os.path.abspath(restart_from_case_file))
+    set_fluent_working_directory(solver, case_path)
+    return require_fluent_working_directory(
+        solver,
+        case_path,
+        restart_source_dir=source_dir,
+    )
+
+
 def copy_and_patch_udf_to_case_folder(
     source_path,
     destination_path,
@@ -976,6 +1105,10 @@ def assert_transcript_contains(
 
 INLET_PROFILE_G_TOKEN_RE = re.compile(r"RO_UDF_INLET_PROFILE_G=([^\s]+)")
 INLET_PROFILE_G_REL_TOL = 1e-6
+INLET_PROBE_MARKER = "=== RO_UDF probe_inlet_profile ==="
+PROBE_U_TARGET_RE = re.compile(
+    r"U_TARGET\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*m/s"
+)
 
 
 def list_fluent_trn_paths(case_dir, solver_log_path):
@@ -1054,6 +1187,102 @@ def wait_for_agreed_inlet_profile_g(
                 "searched. Searched:\n  "
                 + "\n  ".join(diag_lines)
                 + ". UDF may not have loaded, or G fell back to 1."
+            )
+        time.sleep(float(poll_interval_s))
+
+
+def count_inlet_probe_markers(case_dir, solver_log_path):
+    """Count probe_inlet_profile banners in fluent-*.trn, never solver_log."""
+    count = 0
+    for path in list_fluent_trn_paths(case_dir, solver_log_path):
+        text = _marker_in_transcript_file(path)
+        if text is None:
+            continue
+        count += text.count(INLET_PROBE_MARKER)
+    return count
+
+
+def parse_last_probe_u_target_token(text):
+    """U_TARGET token from the last probe_inlet_profile block, or None."""
+    idx = text.rfind(INLET_PROBE_MARKER)
+    if idx < 0:
+        return None
+    match = PROBE_U_TARGET_RE.search(text[idx:])
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def collect_last_probe_u_target_token(case_dir, solver_log_path):
+    """Last probe-block U_TARGET in fluent-*.trn (newest first). Never solver_log."""
+    for path in list_fluent_trn_paths(case_dir, solver_log_path):
+        text = _marker_in_transcript_file(path)
+        if text is None:
+            continue
+        token = parse_last_probe_u_target_token(text)
+        if token is not None:
+            return token
+    return None
+
+
+def probe_u_target_mismatch_error(observed, requested):
+    if observed is None:
+        return "probe U_TARGET missing from fluent-*.trn"
+    try:
+        observed_value = float(observed)
+    except (TypeError, ValueError):
+        return f"probe U_TARGET {observed!r} is not a number"
+    if not math.isclose(
+        observed_value, float(requested), rel_tol=1e-9, abs_tol=1e-12
+    ):
+        return (
+            f"Compiled U_TARGET {observed!r} from probe does not match "
+            f"inlet_velocity_value {requested!r}"
+        )
+    return None
+
+
+def wait_for_agreed_probe_u_target(
+    *,
+    case_dir,
+    solver_log_path,
+    expected,
+    min_probe_blocks=1,
+    poll_interval_s=0.5,
+    timeout_s=30.0,
+):
+    """Require a new probe block whose U_TARGET matches inlet_velocity_value.
+
+    Restart ``read_case`` can print the source library's U_TARGET before
+    compile. The last probe block after compile/load is the compiled constant.
+    """
+    deadline = time.monotonic() + float(timeout_s)
+    last_token = None
+    while True:
+        n_blocks = count_inlet_probe_markers(case_dir, solver_log_path)
+        last_token = collect_last_probe_u_target_token(case_dir, solver_log_path)
+        if n_blocks >= int(min_probe_blocks) and last_token is not None:
+            error = probe_u_target_mismatch_error(last_token, expected)
+            if error:
+                raise RuntimeError(error)
+            value = float(last_token)
+            print(
+                f"Transcript marker OK for compiled U_TARGET: "
+                f"U_TARGET={value:.12g} m/s "
+                f"(matches inlet_velocity_value {float(expected):.12g})"
+            )
+            return value
+        if time.monotonic() >= deadline:
+            search_paths = list_fluent_trn_paths(case_dir, solver_log_path)
+            diag_lines = [_transcript_path_diag(p) for p in search_paths]
+            if not diag_lines:
+                diag_lines = ["(no fluent-*.trn files)"]
+            raise RuntimeError(
+                "Missing compiled U_TARGET in fluent-*.trn probe block after "
+                f"{timeout_s:g}s (need {min_probe_blocks} probe block(s), "
+                f"last token {last_token!r}). solver_log_*.txt is not "
+                "searched. Searched:\n  "
+                + "\n  ".join(diag_lines)
             )
         time.sleep(float(poll_interval_s))
 
@@ -3201,6 +3430,12 @@ if __name__ == "__main__":
             )
             print("Restart data loaded successfully.", flush=True)
 
+            restore_fluent_working_directory_for_restart(
+                solver,
+                case_path,
+                restart_from_case_file,
+            )
+
         # Update solver-side thread names so the name-based UDF can use THREAD_NAME(t).
         update_solver_thread_names(solver)
 
@@ -3595,6 +3830,15 @@ if __name__ == "__main__":
 
         print(f"Requested UDM memory locations: {udm_count}")
 
+        if input_mode == "restart_continuation":
+            require_fluent_working_directory(
+                solver,
+                case_path,
+                restart_source_dir=os.path.dirname(
+                    os.path.abspath(restart_from_case_file)
+                ),
+            )
+
         udf_case_path = copy_and_patch_udf_to_case_folder(
             source_path=udf_master_path,
             destination_path=udf_case_path,
@@ -3624,6 +3868,9 @@ if __name__ == "__main__":
         # Must run after libudf is loaded. Writes to the main solver transcript.
         # Not gated on run_inlet_profile_probe / use_inlet_velocity_profile:
         # a False probe flag must not skip RO_UDF_INLET_PROFILE_G.
+        probe_blocks_before = count_inlet_probe_markers(
+            case_path, solver_log_path
+        )
         probe_tui = (
             f'/define/user-defined/execute-on-demand '
             f'"{inlet_probe_function_name}"'
@@ -3642,6 +3889,12 @@ if __name__ == "__main__":
         inlet_profile_g = wait_for_agreed_inlet_profile_g(
             case_dir=case_path,
             solver_log_path=solver_log_path,
+        )
+        wait_for_agreed_probe_u_target(
+            case_dir=case_path,
+            solver_log_path=solver_log_path,
+            expected=inlet_velocity,
+            min_probe_blocks=probe_blocks_before + 1,
         )
         run_payload = read_run_manifest(case_path)
         apply_parsed_inlet_profile_g(
