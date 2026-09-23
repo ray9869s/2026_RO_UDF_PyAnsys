@@ -1227,8 +1227,10 @@ ids, `REF_empty` first. extras는 `GEO_ORDER` 뒤에 append.
    (D0817_a30 `m_in` 3.7615e-4 vs `m_out` -3.7758e-4, relative gap
    3.8e-3). Residual decrease rate itself decays (0.70% → 0.44% per
    iteration), so raising `max_iterations` is not a fix. Coupled survives
-   `replace_mesh`; next candidate is re-enabling pseudo-transient
-   (`coupled-pseudo-transient`). Do not implement PT in this pass.
+   `replace_mesh`. Workstation setup/final reads later showed Coupled
+   global-time-step PT already on for the six rejected cases and seven
+   matched accepted setups, so re-enabling PT is not a remedy. Exploratory
+   `u0p3_p6M_ptgts3` tests `time_step_size_scale_factor=3.0` only.
    (Astra B-07 dP dip / ranking-vs-residual still stands.)
 6. **`max_iter_reached` under all-conditions-are-met.** D0817_a60 `u0p2_p6M`
    hit 2000 with finals written (same pattern as D2450_a45 bl6 at p8M).

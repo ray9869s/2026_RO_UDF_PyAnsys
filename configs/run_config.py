@@ -286,6 +286,9 @@ species_implicit_under_relaxation = "preserve"
 # Orthogonal observability control. "preserve" leaves Fluent's verbosity
 # unchanged (typically 0). Values 1/2 print pseudo-time step details per UG.
 pseudo_time_verbosity = "preserve"
+# Coupled GTS automatic scale factor. "preserve" leaves Fluent unchanged.
+# A positive number is the D0817_a30 u0p3_p6M_ptgts3 pilot only.
+pseudo_time_time_step_size_scale_factor = "preserve"
 
 # Ramp/convergence safety.
 # 260612_RO_UDF.c uses a source ramp that reaches full strength after 150 iterations.
@@ -754,6 +757,10 @@ def validate_for_solver():
     _require_preserve_or_verbosity(
         "pseudo_time_verbosity",
         pseudo_time_verbosity,
+    )
+    _require_preserve_or_positive_number(
+        "pseudo_time_time_step_size_scale_factor",
+        pseudo_time_time_step_size_scale_factor,
     )
     _require_bool("use_ramp_convergence_safety", use_ramp_convergence_safety)
     _require_positive_number("ramp_full_iteration", ramp_full_iteration)

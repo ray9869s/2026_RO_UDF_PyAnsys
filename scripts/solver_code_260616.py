@@ -97,6 +97,16 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
         "created_utc": created_utc or _utc_now_string(),
         SOLVER_ATTEMPT_ID_FIELD: solver_attempt_id or str(uuid.uuid4()),
     }
+    verbosity = getattr(cfg, "pseudo_time_verbosity", "preserve")
+    scale_factor = getattr(
+        cfg, "pseudo_time_time_step_size_scale_factor", "preserve"
+    )
+    if not _config_is_preserve(verbosity):
+        base["solver_settings"]["pseudo_time_verbosity"] = verbosity
+    if not _config_is_preserve(scale_factor):
+        base["solver_settings"]["pseudo_time_time_step_size_scale_factor"] = (
+            scale_factor
+        )
     return merge_geometry_into_run_manifest(
         base,
         cfg.geo_id,
@@ -415,6 +425,9 @@ if __name__ == "__main__":
     relaxation_profile = cfg.relaxation_profile
     species_implicit_under_relaxation = cfg.species_implicit_under_relaxation
     pseudo_time_verbosity = cfg.pseudo_time_verbosity
+    pseudo_time_time_step_size_scale_factor = (
+        cfg.pseudo_time_time_step_size_scale_factor
+    )
 
     # Ramp/convergence safety.
     use_ramp_convergence_safety = cfg.use_ramp_convergence_safety
@@ -3075,6 +3088,163 @@ def apply_species_implicit_under_relaxation(solution, species_name, value):
     return leaf_outcome
 
 
+class GtsTimeStepScaleFactorError(RuntimeError):
+    """Pilot abort: GTS scale factor is inactive or did not read back."""
+
+
+def _config_is_preserve(value):
+    return isinstance(value, str) and value.strip().lower() == "preserve"
+
+
+def _require_active_leaf(leaf, label):
+    checker = getattr(leaf, "is_active", None)
+    if not callable(checker):
+        raise GtsTimeStepScaleFactorError(
+            f"{label} is_active() is unavailable"
+        )
+    try:
+        active = bool(checker())
+    except Exception as exc:
+        raise GtsTimeStepScaleFactorError(
+            f"{label} is_active() failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not active:
+        raise GtsTimeStepScaleFactorError(f"{label} is inactive")
+
+
+def _require_get_state(obj, label):
+    try:
+        state = obj.get_state()
+    except Exception as exc:
+        raise GtsTimeStepScaleFactorError(
+            f"{label} get_state failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(state, dict):
+        raise GtsTimeStepScaleFactorError(
+            f"{label} get_state is not a dict: {state!r}"
+        )
+    return state
+
+
+def apply_gts_time_step_size_scale_factor(solution, requested_factor):
+    """Set automatic GTS time_step_size_scale_factor fail-closed.
+
+    Coupled / global-time-step come from solution.methods. Automatic
+    method, conservative length scale, and the scale factor come from
+    solution.run_calculation.pseudo_time_settings.time_step_method
+    (Fluent 25.1). Writes only time_step_size_scale_factor. Raises
+    GtsTimeStepScaleFactorError if that leaf is inactive or readback
+    is not the requested value.
+    """
+    if _config_is_preserve(requested_factor):
+        print(
+            "PT_GTS_PILOT preserve: leaving time_step_size_scale_factor unchanged."
+        )
+        return {"label": "time_step_size_scale_factor", "status": "PRESERVED"}
+
+    try:
+        requested = float(requested_factor)
+    except (TypeError, ValueError) as exc:
+        raise GtsTimeStepScaleFactorError(
+            f"time_step_size_scale_factor must be a positive number, "
+            f"got {requested_factor!r}"
+        ) from exc
+    if requested <= 0.0:
+        raise GtsTimeStepScaleFactorError(
+            f"time_step_size_scale_factor must be positive, got {requested!r}"
+        )
+
+    print(
+        "PT_GTS_PILOT requested "
+        f"flow_scheme=Coupled formulation=global-time-step "
+        f"time_step_method=automatic length_scale_methods=conservative "
+        f"time_step_size_scale_factor={requested}"
+    )
+
+    try:
+        p_v_coupling = solution.methods.p_v_coupling
+        pseudo_time_method = solution.methods.pseudo_time_method
+        time_step_method = (
+            solution.run_calculation.pseudo_time_settings.time_step_method
+        )
+    except Exception as exc:
+        raise GtsTimeStepScaleFactorError(
+            f"Coupled/GTS settings missing: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    p_v_state = _require_get_state(p_v_coupling, "p_v_coupling")
+    flow_scheme = p_v_state.get("flow_scheme")
+    if flow_scheme != "Coupled":
+        raise GtsTimeStepScaleFactorError(
+            f"flow_scheme readback {flow_scheme!r} is not Coupled"
+        )
+
+    pt_state = _require_get_state(pseudo_time_method, "pseudo_time_method")
+    formulation = pt_state.get("formulation")
+    coupled_solver = (
+        formulation.get("coupled_solver")
+        if isinstance(formulation, dict)
+        else None
+    )
+    if coupled_solver != "global-time-step":
+        raise GtsTimeStepScaleFactorError(
+            f"formulation readback {formulation!r} is not global-time-step"
+        )
+
+    tsm_state = _require_get_state(time_step_method, "time_step_method")
+    method_value = tsm_state.get("time_step_method")
+    length_value = tsm_state.get("length_scale_methods")
+    factor_before = tsm_state.get("time_step_size_scale_factor")
+    if method_value != "automatic":
+        raise GtsTimeStepScaleFactorError(
+            f"time_step_method readback {method_value!r} is not automatic"
+        )
+    if length_value != "conservative":
+        raise GtsTimeStepScaleFactorError(
+            f"length_scale_methods readback {length_value!r} is not conservative"
+        )
+
+    try:
+        factor_leaf = time_step_method.time_step_size_scale_factor
+    except Exception as exc:
+        raise GtsTimeStepScaleFactorError(
+            "time_step_size_scale_factor leaf missing: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    _require_active_leaf(factor_leaf, "time_step_size_scale_factor")
+
+    print(
+        "PT_GTS_PILOT observed "
+        f"flow_scheme={flow_scheme!r} formulation={formulation!r} "
+        f"time_step_method={method_value!r} "
+        f"length_scale_methods={length_value!r} "
+        f"time_step_size_scale_factor={factor_before!r}"
+    )
+
+    outcome = set_and_verify_leaf(
+        time_step_method,
+        "time_step_size_scale_factor",
+        requested,
+        "time_step_size_scale_factor",
+    )
+    print(
+        "PT_GTS_PILOT readback "
+        f"requested={requested} before={outcome.get('before')!r} "
+        f"after={outcome.get('after')!r} status={outcome.get('status')}"
+    )
+    if outcome.get("status") != "APPLIED_CONFIRMED":
+        raise GtsTimeStepScaleFactorError(
+            "time_step_size_scale_factor readback failed: "
+            f"{outcome.get('error', outcome)}"
+        )
+    after = outcome.get("after")
+    if not isinstance(after, (int, float)) or abs(float(after) - requested) >= 1.0e-9:
+        raise GtsTimeStepScaleFactorError(
+            f"time_step_size_scale_factor readback {after!r} is not {requested}"
+        )
+    return outcome
+
+
 def apply_pseudo_time_verbosity(solution, value):
     """Optionally raise run_calculation.pseudo_time_settings.verbosity.
 
@@ -4258,6 +4428,25 @@ if __name__ == "__main__":
         print(relaxation_result)
         print("Pseudo-time verbosity application result:")
         print(verbosity_result)
+        gts_scale_result = apply_gts_time_step_size_scale_factor(
+            solution,
+            pseudo_time_time_step_size_scale_factor,
+        )
+        print("GTS time_step_size_scale_factor application result:")
+        print(gts_scale_result)
+        if not _config_is_preserve(pseudo_time_time_step_size_scale_factor):
+            if (
+                _config_is_preserve(pseudo_time_verbosity)
+                or int(pseudo_time_verbosity) != 1
+            ):
+                raise GtsTimeStepScaleFactorError(
+                    "GTS scale-factor pilot requires pseudo_time_verbosity=1"
+                )
+            if verbosity_result.get("status") != "APPLIED_CONFIRMED":
+                raise GtsTimeStepScaleFactorError(
+                    "pseudo_time_verbosity=1 readback failed: "
+                    f"{verbosity_result}"
+                )
 
 
         # ======================================================

@@ -395,8 +395,10 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: exploratory default is the seven-case pilot list. Production 279
-# is production_solver_sweep_cases via --case-set production.
+# Solver: exploratory default is the isolated D0817_a30 GTS scale-factor
+# pilot (u0p3_p6M_ptgts3). Restore solver_sweep_cases =
+# _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS after this experiment.
+# Production 279 is production_solver_sweep_cases via --case-set production.
 # ---------------------------------------------------------------------------
 _MESH_ID_BL6 = "max085_min006_cpg5_bl6_peel2"
 
@@ -473,11 +475,24 @@ _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS = [
     },
 ]
 
-solver_sweep_cases = _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS
+solver_sweep_cases = [
+    {
+        "family": "diamond",
+        "geo_id": "D0817_a30",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p3_p6M_ptgts3",
+        "geo_name": "D0817_a30",
+        "case_name": "u0p3_p6M_ptgts3",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+        "pseudo_time_verbosity": 1,
+        "pseudo_time_time_step_size_scale_factor": 3.0,
+    },
+]
 
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
 # --case-set production entrypoint. mesh_batch_cases (22) stays the
-# exploratory mesh list. solver_sweep_cases is the seven-case pilot list.
+# exploratory mesh list. solver_sweep_cases is the GTS scale-factor pilot.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(

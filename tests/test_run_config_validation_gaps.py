@@ -181,6 +181,19 @@ class TestSolverValidation:
         with pytest.raises(ValueError, match="pseudo_time_verbosity"):
             cfg.validate_for_solver()
 
+    def test_gts_scale_factor_preserve_and_positive_are_accepted(self, cfg):
+        cfg.pseudo_time_time_step_size_scale_factor = "preserve"
+        cfg.validate_for_solver()
+        cfg.pseudo_time_time_step_size_scale_factor = 3.0
+        cfg.validate_for_solver()
+
+    def test_gts_scale_factor_rejects_non_positive(self, cfg):
+        cfg.pseudo_time_time_step_size_scale_factor = 0.0
+        with pytest.raises(
+            ValueError, match="pseudo_time_time_step_size_scale_factor"
+        ):
+            cfg.validate_for_solver()
+
 
 def _load_batch_config_module(filename: str):
     path = (
@@ -320,6 +333,7 @@ class TestRunConfigOverrideAllowlist:
             "relaxation_profile",
             "species_implicit_under_relaxation",
             "pseudo_time_verbosity",
+            "pseudo_time_time_step_size_scale_factor",
             "use_ramp_convergence_safety",
             "ramp_full_iteration",
             "post_ramp_buffer_iterations",

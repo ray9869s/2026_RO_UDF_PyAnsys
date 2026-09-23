@@ -10,8 +10,8 @@ Two constraints:
    Diamond's real ``n_active_cells`` spans 5 to 27.
 
 2. ``mesh_batch_cases`` and ``solver_sweep_cases`` are the exploratory
-   lists (22 meshes, no Diamond; seven-case solver pilot list).
-   Production is
+   lists (22 meshes, no Diamond; currently the D0817_a30
+   ``u0p3_p6M_ptgts3`` GTS scale-factor pilot). Production is
    ``production_mesh_batch_cases`` / ``production_solver_sweep_cases``,
    reached only via ``--case-set production``. Default CLI remains
    exploratory so existing batch scripts cannot launch 279 solves.

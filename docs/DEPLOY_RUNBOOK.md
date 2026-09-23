@@ -154,7 +154,7 @@ The matching extract for that p6M column is
 
 Drop `--dry-run` after the list is 93 `_p6M` four-ids. No `--case-set` still walks every run manifest (grid-study / `_conv2000` / p8M included). Matrix-selected leaves with no final cas/dat are `SKIPPED_MISSING_FINALS` (not a batch failure). Leave `post_cases` empty.
 
-Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (the seven-case pilot list). Do not point the default entrypoint at 279. Use `--geo-id` to run one exploratory leaf without the other six.
+Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `D0817_a30` `u0p3_p6M_ptgts3` GTS scale-factor pilot). Do not point the default entrypoint at 279. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
 
 Production mesh leaves look like
 
