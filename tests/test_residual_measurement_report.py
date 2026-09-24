@@ -17,6 +17,34 @@ HEADER = (
     "iter  continuity  x-velocity  y-velocity  z-velocity  nacl  "
     "lmh  m_out  m_in  area_mem  time/iter"
 )
+HEADER_12 = HEADER
+HEADER_14 = (
+    "iter  continuity  x-velocity  y-velocity  z-velocity  nacl  "
+    "lmh  m_out  m_in  area_mem  qoi_a  qoi_b  time/iter"
+)
+TWELVE_TOKEN_300 = (
+    "300  3.5793e-02  1.0000e-03  2.0000e-03  3.0000e-03  4.0000e-03  "
+    "1.0000e+02  -1.9090e-04  2.6629e-04  6.2423e-05  0:13:30  1700"
+)
+FOURTEEN_TOKEN_2000 = (
+    "2000  1.5732e-02  1.0000e-03  2.0000e-03  3.0000e-03  4.0000e-03  "
+    "1.0000e+02  -1.9090e-04  2.6629e-04  6.2423e-05  1.1111e+00  2.2222e+00  "
+    "0:13:30  0"
+)
+NODES_LINE = "5720551 nodes, 1 zone"
+TWO_PHASE_PILOT_LOG = (
+    HEADER_12
+    + "\n"
+    + TWELVE_TOKEN_300
+    + "\n"
+    "Ramp-up phase completed.\n"
+    + HEADER_14
+    + "\n"
+    + FOURTEEN_TOKEN_2000
+    + "\n"
+    + NODES_LINE
+    + "\n"
+)
 
 
 @pytest.fixture(scope="module")
@@ -129,6 +157,69 @@ class TestPositionalParse:
     def test_reject_non_clock_token(self, residual_mod):
         bad = make_row(1, 1e-6).replace("0:00:01", "not_a_clock")
         assert residual_mod.parse_residual_data_row(bad) is None
+
+    def test_fourteen_token_row_locates_clock_from_the_right(self, residual_mod):
+        line = FOURTEEN_TOKEN_2000
+        assert len(line.split()) == 14
+        row = residual_mod.parse_residual_data_row(line)
+        assert row is not None
+        assert row["iter"] == 2000
+        assert row["continuity"] == pytest.approx(1.5732e-02)
+        assert row["area_mem"] == pytest.approx(6.2423e-05)
+        assert row["clock"] == "0:13:30"
+        assert row["remaining_iters"] == 0
+
+    def test_mesh_node_count_is_not_a_residual_row(self, residual_mod):
+        assert residual_mod.parse_residual_data_row(NODES_LINE) is None
+        assert residual_mod.looks_like_residual_table_row(NODES_LINE) is False
+        assert residual_mod.is_residual_header_line(
+            "iteration 300:  continuity 3.5793e-02"
+        ) is False
+        assert residual_mod.is_residual_header_line(HEADER_12) is True
+
+
+class TestTwoPhasePilotResidualLog:
+    def test_table_keeps_iter_2000_fourteen_token_row(self, residual_mod):
+        assert len(TWELVE_TOKEN_300.split()) == 12
+        assert len(FOURTEEN_TOKEN_2000.split()) == 14
+        rows, detail = residual_mod.parse_residual_table(TWO_PHASE_PILOT_LOG)
+        assert "unparsed_later_residual_rows=" not in detail
+        assert rows[-1]["iter"] == 2000
+        assert rows[-1]["continuity"] == pytest.approx(1.5732e-02)
+        assert rows[0]["iter"] == 300
+        assert rows[0]["continuity"] == pytest.approx(3.5793e-02)
+
+    def test_continuity_final_uses_iter_2000_not_300(self, tmp_path):
+        from ro.convergence_quality import continuity_final_from_case_dir
+
+        case_dir = tmp_path / "diamond" / "D0817_a30" / "mesh" / "u0p3_p6M_ptgts3"
+        case_dir.mkdir(parents=True)
+        (case_dir / "solver_log_u0p3_p6M_ptgts3.txt").write_text(
+            TWO_PHASE_PILOT_LOG, encoding="utf-8"
+        )
+        assert continuity_final_from_case_dir(case_dir) == pytest.approx(1.5732e-02)
+
+    def test_unparsed_later_residual_row_fail_closes(self, tmp_path, residual_mod):
+        from ro.convergence_quality import continuity_final_from_case_dir
+
+        broken_2000 = FOURTEEN_TOKEN_2000.replace("0:13:30", "not_a_clock")
+        text = (
+            HEADER_12
+            + "\n"
+            + TWELVE_TOKEN_300
+            + "\n"
+            + HEADER_14
+            + "\n"
+            + broken_2000
+            + "\n"
+        )
+        rows, detail = residual_mod.parse_residual_table(text)
+        assert rows[-1]["iter"] == 300
+        assert "unparsed_later_residual_rows=" in detail
+        case_dir = tmp_path / "geo" / "case"
+        case_dir.mkdir(parents=True)
+        (case_dir / "solver_log_case.txt").write_text(text, encoding="utf-8")
+        assert continuity_final_from_case_dir(case_dir) is None
 
     def test_iteration_one_zeros_not_target_met(self, residual_mod):
         rows_text = [

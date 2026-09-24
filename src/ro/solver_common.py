@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+from ro.residual_transcript import looks_like_residual_table_row
+
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
@@ -482,10 +484,17 @@ def blending_ramp_values(start: float, end: float, steps: int) -> list[float]:
 
 
 def parse_transcript_residual_columns(header_line: str) -> list[str] | None:
+    """Return residual-table header tokens, or None if this is not a table header.
+
+    Requires the Fluent column header that starts with 'iter' and includes
+    'continuity'. 'iteration N: continuity ...' progress lines are not headers.
+    """
     tokens = header_line.split()
     if not tokens:
         return None
     lowered = [token.lower() for token in tokens]
+    if lowered[0] != "iter":
+        return None
     if "continuity" not in lowered:
         return None
     return lowered
@@ -954,7 +963,10 @@ def parse_fluent_convergence_marker(
 
 
 def parse_first_residual_iteration_from_transcript_text(text: str) -> int | None:
-    """Return the first residual-table (or 'iteration N:') iteration in *text*."""
+    """Return the first residual-table (or 'iteration N:') iteration in *text*.
+
+    Digit-leading mesh inventory lines (cells/faces/nodes) are not iterations.
+    """
     first: int | None = None
     saw_header = False
     for raw in text.splitlines():
@@ -967,22 +979,21 @@ def parse_first_residual_iteration_from_transcript_text(text: str) -> int | None
             if first is None:
                 first = value
             continue
-        if "continuity" in line.lower() and not line[0].isdigit():
-            if parse_transcript_residual_columns(line):
-                saw_header = True
+        if parse_transcript_residual_columns(line):
+            saw_header = True
             continue
-        if saw_header and line[0].isdigit():
-            try:
-                value = int(float(line.split()[0]))
-            except ValueError:
-                continue
+        if saw_header and looks_like_residual_table_row(line):
+            value = int(line.split()[0])
             if first is None:
                 first = value
     return first
 
 
 def parse_last_residual_iteration_from_transcript_text(text: str) -> int | None:
-    """Return the last residual-table (or 'iteration N:') iteration in *text*."""
+    """Return the last residual-table (or 'iteration N:') iteration in *text*.
+
+    Digit-leading mesh inventory lines (cells/faces/nodes) are not iterations.
+    """
     last: int | None = None
     saw_header = False
     for raw in text.splitlines():
@@ -993,15 +1004,11 @@ def parse_last_residual_iteration_from_transcript_text(text: str) -> int | None:
         if prefix:
             last = int(prefix.group(1))
             continue
-        if "continuity" in line.lower() and not line[0].isdigit():
-            if parse_transcript_residual_columns(line):
-                saw_header = True
+        if parse_transcript_residual_columns(line):
+            saw_header = True
             continue
-        if saw_header and line[0].isdigit():
-            try:
-                last = int(float(line.split()[0]))
-            except ValueError:
-                continue
+        if saw_header and looks_like_residual_table_row(line):
+            last = int(line.split()[0])
     return last
 
 

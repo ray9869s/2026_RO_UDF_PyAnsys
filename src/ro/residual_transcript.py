@@ -78,40 +78,84 @@ def read_text_replace(path: Path) -> tuple[Optional[str], Optional[str]]:
 
 
 def is_residual_header_line(line: str) -> bool:
+    """True only for a Fluent residual table header, not 'iteration N:' lines."""
     tokens = line.split()
     if not tokens:
         return False
-    if tokens[0].isdigit():
+    lowered = [token.lower() for token in tokens]
+    if lowered[0] != "iter":
         return False
-    return "continuity" in {t.lower() for t in tokens}
+    return "continuity" in lowered
 
 
-def parse_residual_data_row(line: str) -> Optional[dict[str, Any]]:
-    """Positional parse of a 12-field Fluent residual/monitor row.
+def residual_iteration_and_equations(tokens: list[str]) -> Optional[int]:
+    """Return iter if tokens start with iter + 5 residual floats.
 
-    Layout: iter, 5 residuals, 4 monitors, clock, optional trailing int.
-    Rejects rows that do not match (including naive 11-token zip layouts).
+    Mesh inventory lines such as '5720551 nodes, 1 zone' do not match.
     """
-    tokens = line.split()
-    if len(tokens) not in (11, 12):
+    if len(tokens) < 6:
         return None
     try:
         iteration = int(tokens[0])
     except ValueError:
         return None
     try:
-        residuals = [float(tokens[i]) for i in range(1, 6)]
-        monitors = [float(tokens[i]) for i in range(6, 10)]
+        for index in range(1, 6):
+            float(tokens[index])
     except ValueError:
         return None
-    if not CLOCK_TOKEN_RE.match(tokens[10]):
-        return None
-    remaining: Optional[int] = None
-    if len(tokens) == 12:
+    return iteration
+
+
+def looks_like_residual_table_row(line: str) -> bool:
+    """True for a residual-table data row after a real header, including 6-col."""
+    return residual_iteration_and_equations(line.split()) is not None
+
+
+def _clock_and_remaining_from_right(
+    tokens: list[str],
+) -> tuple[Optional[int], Optional[int]]:
+    """Locate time/iter and optional remaining-iters from the right.
+
+    Extra numeric monitor columns sit before the clock. Returns
+    (clock_index, remaining) or (None, None) if the tail is not a clock.
+    """
+    if not tokens:
+        return None, None
+    if CLOCK_TOKEN_RE.match(tokens[-1]):
+        return len(tokens) - 1, None
+    if len(tokens) >= 2 and CLOCK_TOKEN_RE.match(tokens[-2]):
         try:
-            remaining = int(tokens[11])
+            remaining = int(tokens[-1])
         except ValueError:
-            return None
+            return None, None
+        return len(tokens) - 2, remaining
+    return None, None
+
+
+def parse_residual_data_row(line: str) -> Optional[dict[str, Any]]:
+    """Parse a Fluent residual/monitor row with a trailing time/iter clock.
+
+    Layout: iter, 5 residuals, >=4 numeric monitors, clock, optional remaining
+    int. Extra monitors are accepted; clock and remaining are found from the
+    right. Rejects short rows, mesh counts, and naive zip layouts.
+    """
+    tokens = line.split()
+    iteration = residual_iteration_and_equations(tokens)
+    if iteration is None:
+        return None
+    clock_idx, remaining = _clock_and_remaining_from_right(tokens)
+    if clock_idx is None:
+        return None
+    if clock_idx < 10:
+        return None
+    try:
+        residuals = [float(tokens[i]) for i in range(1, 6)]
+        monitors = [float(tokens[i]) for i in range(6, clock_idx)]
+    except ValueError:
+        return None
+    if len(monitors) < 4:
+        return None
     return {
         "iter": iteration,
         "continuity": residuals[0],
@@ -123,7 +167,7 @@ def parse_residual_data_row(line: str) -> Optional[dict[str, Any]]:
         "m_out": monitors[1],
         "m_in": monitors[2],
         "area_mem": monitors[3],
-        "clock": tokens[10],
+        "clock": tokens[clock_idx],
         "remaining_iters": remaining,
     }
 
@@ -131,12 +175,14 @@ def parse_residual_data_row(line: str) -> Optional[dict[str, Any]]:
 def parse_residual_table(text: str) -> tuple[list[dict[str, Any]], str]:
     """Parse all valid residual rows from transcript text.
 
-    Skips repeated header pages. Last occurrence wins per iteration.
+    Requires a real 'iter ... continuity ...' header. Skips repeated header
+    pages. Last occurrence wins per iteration.
     Returns (rows_sorted_by_iter, detail).
     """
     by_iter: dict[int, dict[str, Any]] = {}
     saw_header = False
     skipped_malformed = 0
+    max_unparsed_residual_iter: Optional[int] = None
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
@@ -151,6 +197,12 @@ def parse_residual_table(text: str) -> tuple[list[dict[str, Any]], str]:
         row = parse_residual_data_row(line)
         if row is None:
             skipped_malformed += 1
+            unparsed_iter = residual_iteration_and_equations(line.split())
+            if unparsed_iter is not None and (
+                max_unparsed_residual_iter is None
+                or unparsed_iter > max_unparsed_residual_iter
+            ):
+                max_unparsed_residual_iter = unparsed_iter
             continue
         by_iter[int(row["iter"])] = row
     rows = [by_iter[k] for k in sorted(by_iter)]
@@ -159,8 +211,17 @@ def parse_residual_table(text: str) -> tuple[list[dict[str, Any]], str]:
         return [], "no residual header found"
     if not rows:
         return [], "residual header found but no valid data rows"
+    last_parsed = int(rows[-1]["iter"])
+    unparsed_later = (
+        max_unparsed_residual_iter is not None
+        and max_unparsed_residual_iter > last_parsed
+    )
     if skipped_malformed:
         detail_parts.append(f"skipped_malformed_rows={skipped_malformed}")
+    if unparsed_later:
+        detail_parts.append(
+            f"unparsed_later_residual_rows={max_unparsed_residual_iter}"
+        )
     detail_parts.append(f"parsed_iters={len(rows)}")
     return rows, "; ".join(detail_parts)
 

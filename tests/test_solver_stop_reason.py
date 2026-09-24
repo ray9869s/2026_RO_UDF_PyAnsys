@@ -268,6 +268,27 @@ def test_parse_last_residual_iteration_from_table_and_prefix(common):
     )
 
 
+def test_parse_last_residual_iteration_ignores_mesh_node_count(common):
+    text = (
+        "iter  continuity  x-velocity  y-velocity  z-velocity  nacl  "
+        "lmh  m_out  m_in  area_mem  qoi_a  qoi_b  time/iter\n"
+        "300  3.5793e-02  1.0000e-03  2.0000e-03  3.0000e-03  4.0000e-03  "
+        "1.0000e+02  -1.9090e-04  2.6629e-04  6.2423e-05  0:13:30  1700\n"
+        "2000  1.5732e-02  1.0000e-03  2.0000e-03  3.0000e-03  4.0000e-03  "
+        "1.0000e+02  -1.9090e-04  2.6629e-04  6.2423e-05  1.1111e+00  "
+        "2.2222e+00  0:13:30  0\n"
+        "5720551 nodes, 1 zone\n"
+    )
+    assert common.parse_last_residual_iteration_from_transcript_text(text) == 2000
+    assert common.parse_first_residual_iteration_from_transcript_text(text) == 300
+    assert (
+        common.parse_transcript_residual_columns(
+            "iteration 300:  continuity 3.5793e-02"
+        )
+        is None
+    )
+
+
 def test_determine_stop_reason_from_qoi_transcript(tmp_path, capsys):
     solver_code = load_solver_code("solver_stop_reason_qoi")
     (tmp_path / "fluent-solve.trn").write_text(

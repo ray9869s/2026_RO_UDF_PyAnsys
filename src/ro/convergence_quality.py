@@ -216,8 +216,10 @@ def continuity_final_from_case_dir(case_dir: str | Path) -> Optional[float]:
     text, _err = read_text_replace(path)
     if text is None:
         return None
-    rows, _table_detail = parse_residual_table(text)
+    rows, table_detail = parse_residual_table(text)
     if not rows:
+        return None
+    if "unparsed_later_residual_rows=" in table_detail:
         return None
     return _as_float(rows[-1].get("continuity"))
 
