@@ -97,8 +97,11 @@
 # ---------------------------------------------------------------------------
 from ro.campaign_matrix import (
     PRODUCTION_MESH_ID_D0817_A60,
+    _layout_from_registry,
     build_production_mesh_batch_cases,
     build_production_solver_sweep_cases,
+    format_production_mesh_id,
+    mesh_settings_without_layout,
 )
 from ro.solver_common import make_base_case_name
 
@@ -166,6 +169,14 @@ common_mesh_settings["bridge_radius_m"] = 1.10e-4
 common_mesh_settings["wall_spacer_labels"] = ["wall_spacer"]
 
 _MESH_ID = "max085_min006_cpg5_bl4_peel2"
+# Isolated D0817_a30 mesh-sensitivity leaf: m_cpg 5 → 7 only.
+_MESH_ID_CPG7 = format_production_mesh_id(
+    m_max=_COMMON_MESH["m_max"],
+    m_min=_COMMON_MESH["m_min"],
+    m_cpg=7,
+    bl_layers=_COMMON_MESH["bl_layers"],
+    peel_layers=_COMMON_MESH["peel_layers"],
+)
 
 # ---------------------------------------------------------------------------
 # Multi-Layer: three layer-thickness distributions, Sigma_d = 0.800 mm fixed
@@ -378,6 +389,22 @@ _case.update({
 })
 mesh_batch_cases.append(_case)
 
+# Parked 22-case ML/Pillar/Sin/empty list. Exploratory default is the isolated
+# D0817_a30 cpg7 mesh-sensitivity leaf. Restore mesh_batch_cases =
+# _MESH_BATCH_CASES_EXPLORATORY after this experiment. Do not copy
+# _COMMON_MESH layout (n_active_cells=7) onto Diamond.
+_MESH_BATCH_CASES_EXPLORATORY = mesh_batch_cases
+_layout_d0817_a30 = _layout_from_registry("D0817_a30")
+_cpg7_mesh_case = mesh_settings_without_layout(_COMMON_MESH)
+_cpg7_mesh_case.update(_layout_d0817_a30)
+_cpg7_mesh_case.update({
+    "family": "diamond",
+    "geo_id": "D0817_a30",
+    "mesh_id": _MESH_ID_CPG7,
+    "m_cpg": 7,
+})
+mesh_batch_cases = [_cpg7_mesh_case]
+
 # ---------------------------------------------------------------------------
 # Solver: nothing this round. Meshing is the gate and CAD probe; solve once
 # the quality results are in and all twelve CAD files are confirmed good.
@@ -395,9 +422,11 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: exploratory default is the isolated D0817_a30 GTS scale-factor
-# pilot (u0p3_p6M_ptgts3). Restore solver_sweep_cases =
-# _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS after this experiment.
+# Solver: exploratory default is the isolated D0817_a30 cpg7 mesh-sensitivity
+# solve (u0p3_p6M on max085_min006_cpg7_bl4_peel2). Fresh template +
+# replace_mesh; no restart; no GTS scale-factor or PT verbosity override.
+# Parked GTS list: _SOLVER_SWEEP_CASES_GTS_PILOT.
+# Parked seven-case list: _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS.
 # Production 279 is production_solver_sweep_cases via --case-set production.
 # ---------------------------------------------------------------------------
 _MESH_ID_BL6 = "max085_min006_cpg5_bl6_peel2"
@@ -475,7 +504,7 @@ _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS = [
     },
 ]
 
-solver_sweep_cases = [
+_SOLVER_SWEEP_CASES_GTS_PILOT = [
     {
         "family": "diamond",
         "geo_id": "D0817_a30",
@@ -490,10 +519,23 @@ solver_sweep_cases = [
     },
 ]
 
+solver_sweep_cases = [
+    {
+        "family": "diamond",
+        "geo_id": "D0817_a30",
+        "mesh_id": _MESH_ID_CPG7,
+        "run_id": "u0p3_p6M",
+        "geo_name": "D0817_a30",
+        "case_name": "u0p3_p6M",
+        "inlet_velocity_value": 0.3,
+        "outlet_gauge_pressure": 6.0e6,
+    },
+]
+
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
-# --case-set production entrypoint. mesh_batch_cases (22) stays the
-# exploratory mesh list. solver_sweep_cases is the GTS scale-factor pilot.
-# Layout knobs come from the registry, never from a _COMMON_MESH copy.
+# --case-set production entrypoint. Exploratory defaults are the isolated
+# D0817_a30 cpg7 mesh and its u0p3_p6M solve. Layout knobs come from the
+# registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(
     production_mesh_batch_cases

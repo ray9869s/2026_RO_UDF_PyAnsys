@@ -96,7 +96,7 @@ runs/diamond/D2450_a45/max085_min006_cpg5_bl4_peel2/u0p2_p6M/D2450_a45_u0p2_p6M_
 `batch_config.py` `common_solver_settings.max_iterations` is **2000**.
 `batch_solver_rerun.py`'s 3000 is a different knob (rerun budget).
 
-`mesh_batch_cases` is the exploratory 22-mesh list (ML + Pillar + Sin + `REF_empty`, no Diamond). It is the default `--case-set` for `batch_meshing.py`. The 31-mesh campaign lives in `production_mesh_batch_cases` and is reached only with `--case-set production`.
+`mesh_batch_cases` is the isolated `D0817_a30` `max085_min006_cpg7_bl4_peel2` mesh. It is the default `--case-set` for `batch_meshing.py`. Dry-run with `python scripts/batch_meshing.py --dry-run` (do not flip `batch_config.dry_run`). The 31-mesh campaign lives in `production_mesh_batch_cases` and is reached only with `--case-set production`. The parked 22-case ML/Pillar/Sin/empty list is `_MESH_BATCH_CASES_EXPLORATORY`.
 
 ---
 
@@ -154,7 +154,7 @@ The matching extract for that p6M column is
 
 Drop `--dry-run` after the list is 93 `_p6M` four-ids. No `--case-set` still walks every run manifest (grid-study / `_conv2000` / p8M included). Matrix-selected leaves with no final cas/dat are `SKIPPED_MISSING_FINALS` (not a batch failure). Leave `post_cases` empty.
 
-Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `D0817_a30` `u0p3_p6M_ptgts3` GTS scale-factor pilot). Do not point the default entrypoint at 279. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
+Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `D0817_a30` `max085_min006_cpg7_bl4_peel2` `u0p3_p6M` mesh-sensitivity solve). Do not point the default entrypoint at 279. Parked GTS list is `_SOLVER_SWEEP_CASES_GTS_PILOT`. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
 
 Production mesh leaves look like
 

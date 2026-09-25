@@ -92,6 +92,14 @@ def mesh_case_label(geo_id, mesh_id):
     return f"{geo_id}/{mesh_id}"
 
 
+def format_selected_mesh_case(index, total, case):
+    """One family/geo_id/mesh_id line for the pre-Fluent case list."""
+    family = case.get("family") or "?"
+    geo_id = case.get("geo_id") or "?"
+    mesh_id = case.get("mesh_id") or "?"
+    return f"  {index}/{total}  {family}/{geo_id}/{mesh_id}"
+
+
 MESH_SKIP_LAYOUT_FIELDS = (
     "n_active_cells",
     "cell_length_x_m",
@@ -203,7 +211,7 @@ def parse_batch_meshing_cli(argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "Sequential meshing batch from configs/batch_config.py. "
-            "Default --case-set exploratory uses mesh_batch_cases (22). "
+            "Default --case-set exploratory uses mesh_batch_cases. "
             "Pass --case-set production for production_mesh_batch_cases (31)."
         ),
     )
@@ -212,7 +220,8 @@ def parse_batch_meshing_cli(argv=None):
         choices=CASE_SET_CHOICES,
         default=CASE_SET_EXPLORATORY,
         help=(
-            "exploratory: mesh_batch_cases (22, no Diamond). "
+            "exploratory: mesh_batch_cases "
+            "(D0817_a30 max085_min006_cpg7_bl4_peel2). "
             "production: production_mesh_batch_cases (31). "
             "Default exploratory so existing batch runs cannot launch the 31-mesh set."
         ),
@@ -224,6 +233,15 @@ def parse_batch_meshing_cli(argv=None):
     parser.add_argument(
         "--mesh-id",
         help="Run only selected case-set entries with this mesh_id.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the selected cases and skip/dry-run decisions without "
+            "launching Fluent. ORs with batch_config.dry_run. Existing-mesh "
+            "skip still wins when skip evidence is complete."
+        ),
     )
     parser.add_argument(
         "--report-skip",
@@ -887,7 +905,7 @@ def main(argv=None):
         report_mesh_skip_status(production_cases, common_mesh_settings)
         return 0
 
-    dry_run = getattr(batchcfg, "dry_run", False)
+    dry_run = bool(getattr(batchcfg, "dry_run", False) or cli_args.dry_run)
     continue_on_failure = _continue_on_failure(batchcfg)
     skip_existing_mesh = getattr(batchcfg, "skip_existing_mesh", True)
     inter_case_delay_s = float(getattr(batchcfg, "inter_case_delay_s", 0.0))
@@ -952,6 +970,12 @@ def main(argv=None):
         f"transient_failure_max_retries={transient_failure_max_retries}  "
         f"clean_fm_scratch_on_success={clean_fm_scratch_on_success}"
     )
+    print("Selected cases (Fluent has not launched):")
+    if not mesh_batch_cases:
+        print("  (none)")
+    else:
+        for listed_idx, listed_case in enumerate(mesh_batch_cases, start=1):
+            print(format_selected_mesh_case(listed_idx, total, listed_case))
     print(f"{'='*72}\n")
 
     for i, case_dict in enumerate(mesh_batch_cases):

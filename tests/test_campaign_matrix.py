@@ -6,7 +6,15 @@ from collections import Counter
 
 import pytest
 
-from helpers import CONFIGS_DIR, SCRIPTS_DIR, load_batch_solver_sweep, load_module
+from helpers import (
+    CONFIGS_DIR,
+    SCRIPTS_DIR,
+    apply_json_overrides,
+    load_batch_solver_sweep,
+    load_module,
+    load_run_config,
+    populate_valid_meshing_config,
+)
 from ro.campaign_geo_ids import CAMPAIGN_GEO_IDS, assert_selected_cases_are_not_legacy_ml
 from ro.campaign_geometry import _DIAMOND_LAYOUTS, geometry_parameters_for_geo_id
 from ro.campaign_matrix import (
@@ -23,7 +31,13 @@ from ro.campaign_matrix import (
     cases_for_case_set,
     mesh_settings_without_layout,
 )
-from ro.solver_common import make_base_case_name, require_run_id_matches_operating_point
+from ro.mesh_manifest_payload import build_mesh_manifest_payload
+from ro.solver_common import (
+    make_base_case_name,
+    merge_batch_case_overrides,
+    require_run_id_matches_operating_point,
+    resolve_input_mode,
+)
 
 
 def _load_batch_config():
@@ -40,13 +54,66 @@ def batchcfg():
 
 
 def test_exploratory_lists_are_unchanged(batchcfg):
-    assert len(batchcfg.mesh_batch_cases) == 22
+    assert len(batchcfg._MESH_BATCH_CASES_EXPLORATORY) == 22
+    parked_families = Counter(
+        case["family"] for case in batchcfg._MESH_BATCH_CASES_EXPLORATORY
+    )
+    assert parked_families == {"ml": 3, "pillar": 9, "sin": 9, "empty": 1}
+    assert all(
+        case["family"] != "diamond"
+        for case in batchcfg._MESH_BATCH_CASES_EXPLORATORY
+    )
+    assert len(batchcfg.mesh_batch_cases) == 1
     assert len(batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS) == 7
     assert len(batchcfg.solver_sweep_cases) == 1
-    assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS
-    families = Counter(case["family"] for case in batchcfg.mesh_batch_cases)
-    assert families == {"ml": 3, "pillar": 9, "sin": 9, "empty": 1}
-    assert all(case["family"] != "diamond" for case in batchcfg.mesh_batch_cases)
+    assert (
+        batchcfg.solver_sweep_cases
+        is not batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS
+    )
+    assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_GTS_PILOT
+    assert batchcfg.mesh_batch_cases is not batchcfg._MESH_BATCH_CASES_EXPLORATORY
+
+
+def test_exploratory_mesh_is_the_d0817_cpg7_leaf(batchcfg):
+    cases = batchcfg.mesh_batch_cases
+    assert len(cases) == 1
+    case = cases[0]
+    geometry = geometry_parameters_for_geo_id("D0817_a30")
+    assert case["family"] == "diamond"
+    assert case["geo_id"] == "D0817_a30"
+    assert case["mesh_id"] == batchcfg._MESH_ID_CPG7
+    assert case["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
+    assert case["m_cpg"] == 7
+    assert case["m_max"] == batchcfg._COMMON_MESH["m_max"]
+    assert case["m_min"] == batchcfg._COMMON_MESH["m_min"]
+    assert case["bl_layers"] == batchcfg._COMMON_MESH["bl_layers"]
+    assert case["peel_layers"] == batchcfg._COMMON_MESH["peel_layers"]
+    assert case["n_active_cells"] == 27
+    assert case["n_active_cells"] != batchcfg._COMMON_MESH["n_active_cells"]
+    assert case["cell_length_x_m"] == pytest.approx(geometry["cell_length_x_m"])
+    assert case["periodic_shift_y"] == pytest.approx(
+        float(geometry["periodic_shift_y_m"]) * 1.0e3
+    )
+    assert case["attack_angle_deg"] == pytest.approx(geometry["attack_angle_deg"])
+    assert case["spacing_code"] == geometry["spacing_code"]
+    assert case["wall_spacer_labels"] == list(geometry["spacer_wall_zones"])
+    assert case["active_membrane_wall_labels"] == batchcfg._COMMON_MESH[
+        "active_membrane_wall_labels"
+    ]
+    assert case["buffer_wall_labels"] == batchcfg._COMMON_MESH["buffer_wall_labels"]
+    assert case["periodic_after_surface_mesh"] is True
+    merged = merge_batch_case_overrides(batchcfg.common_mesh_settings, case)
+    assert merged["n_active_cells"] == 27
+    assert merged["m_cpg"] == 7
+    assert "cpg5" not in case["mesh_id"]
+    production_d0817 = next(
+        entry
+        for entry in batchcfg.production_mesh_batch_cases
+        if entry["geo_id"] == "D0817_a30"
+    )
+    assert production_d0817["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
+    assert production_d0817["m_cpg"] == 5
+    assert production_d0817["n_active_cells"] == 27
 
 
 def test_production_lists_are_distinct_from_exploratory(batchcfg):
@@ -155,6 +222,8 @@ def test_default_case_set_is_exploratory(batchcfg):
     meshing = _load_batch_meshing()
     sweep = load_batch_solver_sweep()
     assert meshing.parse_batch_meshing_cli([]).case_set == CASE_SET_EXPLORATORY
+    assert meshing.parse_batch_meshing_cli([]).dry_run is False
+    assert meshing.parse_batch_meshing_cli(["--dry-run"]).dry_run is True
     assert sweep.parse_batch_solver_sweep_cli([]).case_set == CASE_SET_EXPLORATORY
     exploratory_mesh = cases_for_case_set(
         batchcfg,
@@ -168,7 +237,8 @@ def test_default_case_set_is_exploratory(batchcfg):
         exploratory_attr="mesh_batch_cases",
         production_attr="production_mesh_batch_cases",
     )
-    assert len(exploratory_mesh) == 22
+    assert len(exploratory_mesh) == 1
+    assert exploratory_mesh[0]["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
     assert len(production_mesh) == 31
     exploratory_solver = cases_for_case_set(
         batchcfg,
@@ -204,32 +274,53 @@ def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
     assert geos.index("D0817_a60") < geos.index("D0817_a30")
 
 
-def test_exploratory_solver_is_the_d0817_gts_scale_pilot(batchcfg):
+def test_exploratory_solver_is_the_d0817_cpg7_mesh_sensitivity(batchcfg):
     cases = batchcfg.solver_sweep_cases
     assert len(cases) == 1
     case = cases[0]
     assert case["family"] == "diamond"
     assert case["geo_id"] == "D0817_a30"
-    assert case["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
-    assert case["run_id"] == "u0p3_p6M_ptgts3"
-    assert case["case_name"] == "u0p3_p6M_ptgts3"
+    assert case["mesh_id"] == batchcfg._MESH_ID_CPG7
+    assert case["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
+    assert case["run_id"] == "u0p3_p6M"
+    assert case["case_name"] == "u0p3_p6M"
     assert case["inlet_velocity_value"] == pytest.approx(0.3)
     assert case["outlet_gauge_pressure"] == pytest.approx(6.0e6)
-    assert case["pseudo_time_verbosity"] == 1
-    assert case["pseudo_time_time_step_size_scale_factor"] == pytest.approx(3.0)
+    assert "pseudo_time_verbosity" not in case
+    assert "pseudo_time_time_step_size_scale_factor" not in case
     assert "restart_from_case_file" not in case
     assert "restart_from_data_file" not in case
+    merged = merge_batch_case_overrides(batchcfg.common_solver_settings, case)
+    assert merged["max_iterations"] == 2000
+    assert "pseudo_time_verbosity" not in merged
+    assert "pseudo_time_time_step_size_scale_factor" not in merged
+    assert resolve_input_mode(merged) == ("mesh_initialization", None, None)
     require_run_id_matches_operating_point(
         case["run_id"],
         case["inlet_velocity_value"],
         case["outlet_gauge_pressure"],
     )
+    parked_gts = batchcfg._SOLVER_SWEEP_CASES_GTS_PILOT
+    assert len(parked_gts) == 1
+    assert parked_gts[0]["run_id"] == "u0p3_p6M_ptgts3"
+    assert parked_gts[0]["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
+    assert parked_gts[0]["pseudo_time_time_step_size_scale_factor"] == pytest.approx(
+        3.0
+    )
     production_ids = {
-        (entry["geo_id"], entry["run_id"])
+        (entry["geo_id"], entry["mesh_id"], entry["run_id"])
         for entry in batchcfg.production_solver_sweep_cases
     }
-    assert ("D0817_a30", "u0p3_p6M_ptgts3") not in production_ids
-    assert ("D0817_a30", "u0p3_p6M") in production_ids
+    assert ("D0817_a30", PRODUCTION_MESH_ID_DEFAULT, "u0p3_p6M") in production_ids
+    assert (
+        "D0817_a30",
+        batchcfg._MESH_ID_CPG7,
+        "u0p3_p6M",
+    ) not in production_ids
+    assert "ptgts3" not in case["run_id"]
+    assert "cpg5" not in case["mesh_id"]
+    assert "p4M" not in case["run_id"]
+    assert "p8M" not in case["run_id"]
 
 
 def test_geo_id_filter_keeps_case_set_order_and_refuses_unknown():
@@ -323,3 +414,63 @@ def test_batch_lists_have_no_legacy_ml_geo_ids(batchcfg):
     assert_selected_cases_are_not_legacy_ml(batchcfg.solver_sweep_cases)
     assert_selected_cases_are_not_legacy_ml(batchcfg.production_mesh_batch_cases)
     assert_selected_cases_are_not_legacy_ml(batchcfg.production_solver_sweep_cases)
+
+
+def test_format_selected_mesh_case_prints_three_id():
+    meshing = _load_batch_meshing()
+    line = meshing.format_selected_mesh_case(
+        1,
+        1,
+        {
+            "family": "diamond",
+            "geo_id": "D0817_a30",
+            "mesh_id": "max085_min006_cpg7_bl4_peel2",
+        },
+    )
+    assert line == "  1/1  diamond/D0817_a30/max085_min006_cpg7_bl4_peel2"
+
+
+def test_cpg7_mesh_manifest_preserves_27_cell_layout(batchcfg):
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    meshing = _load_batch_meshing()
+    case = batchcfg.mesh_batch_cases[0]
+    overrides = meshing._build_overrides(case, batchcfg.common_mesh_settings)
+    apply_json_overrides(cfg, overrides)
+    geometry = geometry_parameters_for_geo_id("D0817_a30")
+    payload = build_mesh_manifest_payload(
+        cfg,
+        {
+            "min_orthogonal_quality": 0.12,
+            "max_aspect_ratio": 42.0,
+            "max_skewness": 0.78,
+            "skewed_face_fraction": 1.0e-6,
+            "cell_count": 2000000,
+        },
+        "a" * 64,
+        created_utc="2026-09-25T00:00:00Z",
+    )
+    assert payload["family"] == "diamond"
+    assert payload["geo_id"] == "D0817_a30"
+    assert payload["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
+    assert payload["n_active_cells"] == 27
+    assert payload["n_active_cells"] != batchcfg._COMMON_MESH["n_active_cells"]
+    assert payload["cell_length_x_m"] == pytest.approx(geometry["cell_length_x_m"])
+    assert payload["periodic_shift_y_m"] == pytest.approx(
+        geometry["periodic_shift_y_m"]
+    )
+    assert payload["attack_angle_deg"] == pytest.approx(geometry["attack_angle_deg"])
+    assert payload["cpg"] == 7
+    assert payload["max_size_mm"] == batchcfg._COMMON_MESH["m_max"]
+    assert payload["min_size_mm"] == batchcfg._COMMON_MESH["m_min"]
+    assert payload["bl"] == batchcfg._COMMON_MESH["bl_layers"]
+    assert payload["peel"] == batchcfg._COMMON_MESH["peel_layers"]
+    assert payload["membrane_wall_base_names"] == batchcfg._COMMON_MESH[
+        "active_membrane_wall_labels"
+    ]
+    assert payload["buffer_wall_base_names"] == batchcfg._COMMON_MESH[
+        "buffer_wall_labels"
+    ]
+    assert payload["n_buffer_in"] == batchcfg._COMMON_MESH["n_buffer_in"]
+    assert payload["n_buffer_out"] == batchcfg._COMMON_MESH["n_buffer_out"]
+    assert payload["n_lead_excluded"] == batchcfg._COMMON_MESH["n_lead_excluded"]

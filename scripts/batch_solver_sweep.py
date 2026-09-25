@@ -396,7 +396,8 @@ def parse_batch_solver_sweep_cli(argv=None):
         choices=CASE_SET_CHOICES,
         default=CASE_SET_EXPLORATORY,
         help=(
-            "exploratory: solver_sweep_cases (D0817_a30 u0p3_p6M_ptgts3 GTS pilot). "
+            "exploratory: solver_sweep_cases "
+            "(D0817_a30 cpg7 u0p3_p6M mesh-sensitivity). "
             "production: production_solver_sweep_cases (279). "
             "Default exploratory so existing batch runs cannot launch 279 solves."
         ),
