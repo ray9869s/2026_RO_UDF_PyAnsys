@@ -397,7 +397,7 @@ def parse_batch_solver_sweep_cli(argv=None):
         default=CASE_SET_EXPLORATORY,
         help=(
             "exploratory: solver_sweep_cases "
-            "(D0817_a30 cpg7 u0p3_p6M mesh-sensitivity). "
+            "(D0817_a30 cpg5 u0p3_p6M_src0 source-off diagnostic). "
             "production: production_solver_sweep_cases (279). "
             "Default exploratory so existing batch runs cannot launch 279 solves."
         ),

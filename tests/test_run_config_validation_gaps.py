@@ -338,6 +338,7 @@ class TestRunConfigOverrideAllowlist:
             "ramp_full_iteration",
             "post_ramp_buffer_iterations",
             "enable_qoi_convergence_stop",
+            "disable_membrane_source_terms",
             "qoi_convergence_report_name",
             "qoi_stop_criterion",
             "qoi_previous_values_to_consider",

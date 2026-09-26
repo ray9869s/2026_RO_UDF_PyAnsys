@@ -71,6 +71,7 @@ def test_exploratory_lists_are_unchanged(batchcfg):
         is not batchcfg._SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS
     )
     assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_GTS_PILOT
+    assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_CPG7_PILOT
     assert batchcfg.mesh_batch_cases is not batchcfg._MESH_BATCH_CASES_EXPLORATORY
 
 
@@ -274,24 +275,31 @@ def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
     assert geos.index("D0817_a60") < geos.index("D0817_a30")
 
 
-def test_exploratory_solver_is_the_d0817_cpg7_mesh_sensitivity(batchcfg):
+def test_exploratory_solver_is_the_d0817_cpg5_source_off_diagnostic(batchcfg):
     cases = batchcfg.solver_sweep_cases
     assert len(cases) == 1
     case = cases[0]
     assert case["family"] == "diamond"
     assert case["geo_id"] == "D0817_a30"
-    assert case["mesh_id"] == batchcfg._MESH_ID_CPG7
-    assert case["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
-    assert case["run_id"] == "u0p3_p6M"
-    assert case["case_name"] == "u0p3_p6M"
+    assert case["mesh_id"] == batchcfg._MESH_ID
+    assert case["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
+    assert case["mesh_id"] == "max085_min006_cpg5_bl4_peel2"
+    assert case["run_id"] == "u0p3_p6M_src0"
+    assert case["case_name"] == "u0p3_p6M_src0"
     assert case["inlet_velocity_value"] == pytest.approx(0.3)
     assert case["outlet_gauge_pressure"] == pytest.approx(6.0e6)
+    assert case["enable_qoi_convergence_stop"] is False
+    assert case["disable_membrane_source_terms"] is True
     assert "pseudo_time_verbosity" not in case
     assert "pseudo_time_time_step_size_scale_factor" not in case
     assert "restart_from_case_file" not in case
     assert "restart_from_data_file" not in case
     merged = merge_batch_case_overrides(batchcfg.common_solver_settings, case)
     assert merged["max_iterations"] == 2000
+    assert merged["residual_target"] == pytest.approx(1e-7)
+    assert merged["use_inlet_velocity_profile"] is True
+    assert merged["enable_qoi_convergence_stop"] is False
+    assert merged["disable_membrane_source_terms"] is True
     assert "pseudo_time_verbosity" not in merged
     assert "pseudo_time_time_step_size_scale_factor" not in merged
     assert resolve_input_mode(merged) == ("mesh_initialization", None, None)
@@ -307,6 +315,11 @@ def test_exploratory_solver_is_the_d0817_cpg7_mesh_sensitivity(batchcfg):
     assert parked_gts[0]["pseudo_time_time_step_size_scale_factor"] == pytest.approx(
         3.0
     )
+    parked_cpg7 = batchcfg._SOLVER_SWEEP_CASES_CPG7_PILOT
+    assert len(parked_cpg7) == 1
+    assert parked_cpg7[0]["mesh_id"] == batchcfg._MESH_ID_CPG7
+    assert parked_cpg7[0]["run_id"] == "u0p3_p6M"
+    assert parked_cpg7[0]["mesh_id"] != case["mesh_id"]
     production_ids = {
         (entry["geo_id"], entry["mesh_id"], entry["run_id"])
         for entry in batchcfg.production_solver_sweep_cases
@@ -314,11 +327,16 @@ def test_exploratory_solver_is_the_d0817_cpg7_mesh_sensitivity(batchcfg):
     assert ("D0817_a30", PRODUCTION_MESH_ID_DEFAULT, "u0p3_p6M") in production_ids
     assert (
         "D0817_a30",
+        PRODUCTION_MESH_ID_DEFAULT,
+        "u0p3_p6M_src0",
+    ) not in production_ids
+    assert (
+        "D0817_a30",
         batchcfg._MESH_ID_CPG7,
         "u0p3_p6M",
     ) not in production_ids
     assert "ptgts3" not in case["run_id"]
-    assert "cpg5" not in case["mesh_id"]
+    assert "cpg7" not in case["mesh_id"]
     assert "p4M" not in case["run_id"]
     assert "p8M" not in case["run_id"]
 

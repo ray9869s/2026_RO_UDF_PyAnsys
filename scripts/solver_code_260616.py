@@ -107,6 +107,9 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
         base["solver_settings"]["pseudo_time_time_step_size_scale_factor"] = (
             scale_factor
         )
+    if bool(getattr(cfg, "disable_membrane_source_terms", False)):
+        base["solver_settings"]["disable_membrane_source_terms"] = True
+        base["solver_settings"]["membrane_udm_lmh_cp"] = "nonphysical_source_off"
     return merge_geometry_into_run_manifest(
         base,
         cfg.geo_id,
@@ -273,6 +276,11 @@ def resolve_solver_paths(cfg):
         "udf_case": run_directory / udf_master.name,
     }
 
+
+class MembraneSourceOffError(RuntimeError):
+    """Abort: membrane sources could not be proven disabled on a fluid zone."""
+
+
 # ==========================================================
 # ##### [1] Load Run Configuration #####
 # ==========================================================
@@ -437,6 +445,15 @@ if __name__ == "__main__":
 
     # QoI convergence stop
     enable_qoi_convergence_stop = cfg.enable_qoi_convergence_stop
+    disable_membrane_source_terms = cfg.disable_membrane_source_terms
+    if disable_membrane_source_terms and enable_qoi_convergence_stop:
+        raise MembraneSourceOffError(
+            "disable_membrane_source_terms requires enable_qoi_convergence_stop=False"
+        )
+    if disable_membrane_source_terms and not use_inlet_velocity_profile:
+        raise MembraneSourceOffError(
+            "source-off diagnostic requires use_inlet_velocity_profile=True"
+        )
     qoi_convergence_report_name = cfg.qoi_convergence_report_name
     qoi_stop_criterion = cfg.qoi_stop_criterion
     qoi_previous_values_to_consider = cfg.qoi_previous_values_to_consider
@@ -1524,6 +1541,207 @@ def inlet_profile_readback_error(observed, profile_udf_name):
         ):
             return f"{axis}-velocity {value!r} != 0"
     return None
+
+
+SOURCE_OFF_UDM_NONPHYSICAL_MESSAGE = (
+    "SOURCE-OFF DIAGNOSTIC: membrane cell-zone sources are disabled. "
+    "RO_membrane_adjust may still write UDM LMH/CP; those values are "
+    "nonphysical for this source-off run and must not be used as RO "
+    "acceptance metrics."
+)
+
+
+def membrane_source_term_keys(salt_yi_index):
+    return (
+        "mass",
+        f"species-{int(salt_yi_index)}",
+        "x-momentum",
+        "y-momentum",
+        "z-momentum",
+    )
+
+
+def _settings_object_is_inactive(obj):
+    checker = getattr(obj, "is_active", None)
+    if not callable(checker):
+        return False
+    try:
+        return checker() is False
+    except Exception:
+        return False
+
+
+def read_sources_enable(sources):
+    enable = getattr(sources, "enable", None)
+    if enable is None:
+        raise MembraneSourceOffError("sources.enable is missing")
+    leaf_value = None
+    leaf_ok = False
+    if hasattr(enable, "get_state"):
+        try:
+            leaf_value = enable.get_state()
+            leaf_ok = True
+        except Exception as exc:
+            raise MembraneSourceOffError(
+                f"sources.enable get_state failed: {type(exc).__name__}: {exc}"
+            ) from exc
+    elif isinstance(enable, bool):
+        leaf_value = enable
+        leaf_ok = True
+    parent_value = None
+    try:
+        state = sources.get_state()
+    except Exception:
+        state = None
+    if isinstance(state, dict) and "enable" in state:
+        parent_value = state["enable"]
+    if leaf_ok and parent_value is not None and leaf_value != parent_value:
+        raise MembraneSourceOffError(
+            f"sources.enable leaf {leaf_value!r} disagrees with "
+            f"sources.get_state()['enable'] {parent_value!r}"
+        )
+    if leaf_ok:
+        return leaf_value
+    if parent_value is not None:
+        return parent_value
+    raise MembraneSourceOffError("sources.enable could not be read")
+
+
+def source_term_is_absent_or_inactive(sources, term_key):
+    terms = getattr(sources, "terms", None)
+    if terms is None:
+        raise MembraneSourceOffError("sources.terms is missing")
+    if _settings_object_is_inactive(terms):
+        return True
+    try:
+        state = terms.get_state()
+    except Exception as exc:
+        raise MembraneSourceOffError(
+            f"sources.terms get_state failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(state, dict):
+        raise MembraneSourceOffError(
+            f"sources.terms get_state is not a dict: {state!r}"
+        )
+    if term_key not in state:
+        return True
+    try:
+        term = terms[term_key]
+    except Exception as exc:
+        raise MembraneSourceOffError(
+            f"source term {term_key!r} is unreadable: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if _settings_object_is_inactive(term):
+        return True
+    try:
+        n_entries = len(term)
+    except Exception as exc:
+        raise MembraneSourceOffError(
+            f"source term {term_key!r} length unavailable: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if n_entries == 0:
+        return True
+    for index in range(n_entries):
+        entry = term[index]
+        if _settings_object_is_inactive(entry):
+            continue
+        return False
+    return True
+
+
+def require_membrane_sources_disabled(fluid_zone_object, fluid_zone_name, term_keys):
+    sources = fluid_zone_object.sources
+    enable_value = read_sources_enable(sources)
+    if enable_value is not False:
+        raise MembraneSourceOffError(
+            f"fluid zone {fluid_zone_name!r} sources.enable readback "
+            f"{enable_value!r} is not False"
+        )
+    for term_key in term_keys:
+        if not source_term_is_absent_or_inactive(sources, term_key):
+            raise MembraneSourceOffError(
+                f"fluid zone {fluid_zone_name!r} source term {term_key!r} "
+                "is still present and active"
+            )
+
+
+def require_all_fluid_membrane_sources_disabled(
+    setup, fluid_zone_names, term_keys
+):
+    if not fluid_zone_names:
+        raise MembraneSourceOffError(
+            "no fluid zones for source-off readback"
+        )
+    fluid = setup.cell_zone_conditions.fluid
+    for fluid_zone_name in fluid_zone_names:
+        require_membrane_sources_disabled(
+            fluid[fluid_zone_name],
+            fluid_zone_name,
+            term_keys,
+        )
+
+
+def disable_membrane_source_terms_on_fluid_zones(
+    setup, fluid_zone_names, term_keys
+):
+    if not fluid_zone_names:
+        raise MembraneSourceOffError(
+            "no fluid zones for source-off disable"
+        )
+    fluid = setup.cell_zone_conditions.fluid
+    for fluid_zone_name in fluid_zone_names:
+        sources = fluid[fluid_zone_name].sources
+        try:
+            sources.enable = False
+        except Exception as exc:
+            raise MembraneSourceOffError(
+                f"fluid zone {fluid_zone_name!r} sources.enable=False failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        require_membrane_sources_disabled(
+            fluid[fluid_zone_name],
+            fluid_zone_name,
+            term_keys,
+        )
+
+
+def require_inlet_profile_hooks(setup, inlet_zone_names, profile_udf_name):
+    if not inlet_zone_names:
+        raise MembraneSourceOffError(
+            "no inlet zones for source-off inlet readback"
+        )
+    for inlet_zone_name in inlet_zone_names:
+        vin = setup.boundary_conditions.velocity_inlet[inlet_zone_name]
+        err = inlet_profile_readback_error(
+            read_inlet_profile_state(vin), profile_udf_name
+        )
+        if err is not None:
+            raise MembraneSourceOffError(
+                f"inlet {inlet_zone_name!r} profile readback failed: {err}"
+            )
+
+
+def require_source_off_pre_iteration_state(
+    setup,
+    fluid_zone_names,
+    term_keys,
+    inlet_zone_names,
+    profile_udf_name,
+    *,
+    qoi_convergence_object_names=(),
+):
+    if qoi_convergence_object_names:
+        raise MembraneSourceOffError(
+            "source-off diagnostic cannot have QoI stop objects "
+            f"{list(qoi_convergence_object_names)!r}"
+        )
+    require_all_fluid_membrane_sources_disabled(
+        setup, fluid_zone_names, term_keys
+    )
+    require_inlet_profile_hooks(setup, inlet_zone_names, profile_udf_name)
+    print(SOURCE_OFF_UDM_NONPHYSICAL_MESSAGE)
 
 
 def apply_inlet_velocity_boundary(
@@ -4236,6 +4454,18 @@ if __name__ == "__main__":
             print(f"\nFull fluid zone sources state after hooking for fluid zone '{fluid_zone_name}':")
             print(fluid_zone_object.sources.get_state())
 
+        if disable_membrane_source_terms:
+            print(
+                "SOURCE-OFF DIAGNOSTIC: disabling sources.enable on every "
+                "fluid zone after the production UDF source-term hook. "
+                "No resize(0) fallback."
+            )
+            disable_membrane_source_terms_on_fluid_zones(
+                setup,
+                target_fluid_zones,
+                tuple(source_term_map),
+            )
+
         deferred_solve_time_qoi_report_specs = []
         if enable_solve_time_qoi_reports:
             (
@@ -4453,6 +4683,16 @@ if __name__ == "__main__":
         # ##### [16] Save Setup Case #####
         # ======================================================
 
+        if disable_membrane_source_terms:
+            require_source_off_pre_iteration_state(
+                setup,
+                target_fluid_zones,
+                tuple(source_term_map),
+                inlet_zone_names,
+                inlet_profile_function_name,
+                qoi_convergence_object_names=qoi_convergence_object_names,
+            )
+
         solver.settings.file.write_case(file_name=as_fluent_path(setup_case_file))
         print(f"Setup case saved: {setup_case_file}")
 
@@ -4478,6 +4718,16 @@ if __name__ == "__main__":
             print(f"Maximum iterations requested: {max_iterations}")
             print(f"Residual target: {residual_target}")
             print(f"QoI convergence stop enabled: {enable_qoi_convergence_stop}")
+
+            if disable_membrane_source_terms:
+                require_source_off_pre_iteration_state(
+                    setup,
+                    target_fluid_zones,
+                    tuple(source_term_map),
+                    inlet_zone_names,
+                    inlet_profile_function_name,
+                    qoi_convergence_object_names=qoi_convergence_object_names,
+                )
 
             if use_ramp_convergence_safety:
                 pre_convergence_iterations = minimum_full_source_iterations

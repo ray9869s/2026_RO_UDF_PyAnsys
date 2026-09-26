@@ -308,6 +308,10 @@ post_ramp_buffer_iterations = 50
 # bought nothing is superseded: u=0.3 D2450_a45 stopped at the first
 # legal LMH window (iter 301) while continuity was still 6.4e-3.
 enable_qoi_convergence_stop = True
+# Diagnostic override: after the production five-term UDF hook, set
+# sources.enable=False on every fluid zone. Default False keeps campaign
+# solves on the live membrane-source path.
+disable_membrane_source_terms = False
 qoi_convergence_report_name = "lmh_udm_avg"
 qoi_stop_criterion = 1e-3
 qoi_previous_values_to_consider = 100
@@ -769,6 +773,11 @@ def validate_for_solver():
         post_ramp_buffer_iterations,
     )
     _require_bool("enable_qoi_convergence_stop", enable_qoi_convergence_stop)
+    _require_bool("disable_membrane_source_terms", disable_membrane_source_terms)
+    if disable_membrane_source_terms and enable_qoi_convergence_stop:
+        raise ValueError(
+            "disable_membrane_source_terms requires enable_qoi_convergence_stop=False"
+        )
     if enable_qoi_convergence_stop:
         if not enable_solve_time_qoi_reports:
             raise ValueError(
