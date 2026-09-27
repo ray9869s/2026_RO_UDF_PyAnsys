@@ -422,12 +422,13 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: exploratory default is the isolated P_p100_h00 cpg5 source-off
-# diagnostic (u0p2_p6M_src0 on max085_min006_cpg5_bl4_peel2). Fresh template
-# + replace_mesh; no restart; no GTS scale-factor or PT verbosity override.
+# Solver: exploratory default is the isolated P_p100_h00 cpg5 continuation
+# from accepted u0p1_p6M finals (u0p2_p6M_ic01). Distinct leaf; production
+# membrane sources stay on; no GTS scale-factor or PT verbosity override.
 # Parked GTS list: _SOLVER_SWEEP_CASES_GTS_PILOT.
 # Parked cpg7 solver list: _SOLVER_SWEEP_CASES_CPG7_PILOT.
 # Parked D0817 source-off list: _SOLVER_SWEEP_CASES_D0817_SRC0.
+# Parked Pillar source-off list: _SOLVER_SWEEP_CASES_P_P100_H00_SRC0.
 # Parked seven-case list: _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS.
 # Production 279 is production_solver_sweep_cases via --case-set production.
 # ---------------------------------------------------------------------------
@@ -554,11 +555,10 @@ _SOLVER_SWEEP_CASES_D0817_SRC0 = [
     },
 ]
 
-# Isolated source-off diagnostic on P_p100_h00 cpg5. Not a valid RO
-# campaign case: membrane sources are disabled after the production UDF hook.
-# Distinct run_id so production u0p2_p6M stays untouched. Fresh template +
-# replace_mesh; no restart.
-solver_sweep_cases = [
+# Parked P_p100_h00 cpg5 source-off diagnostic (completed). Restore
+# solver_sweep_cases = _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 after this
+# continuation diagnostic.
+_SOLVER_SWEEP_CASES_P_P100_H00_SRC0 = [
     {
         "family": "pillar",
         "geo_id": "P_p100_h00",
@@ -573,9 +573,35 @@ solver_sweep_cases = [
     },
 ]
 
+# Isolated continuation from accepted P_p100_h00 cpg5 u0p1_p6M finals.
+# Distinct run_id so production u0p2_p6M and completed src0 stay untouched.
+# Existing restart_continuation semantics: 2000 additional iterations.
+_P_P100_H00_U0P1_LEAF = (
+    f"C:/ro_data/runs/pillar/P_p100_h00/{_MESH_ID}/u0p1_p6M"
+)
+solver_sweep_cases = [
+    {
+        "family": "pillar",
+        "geo_id": "P_p100_h00",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p2_p6M_ic01",
+        "geo_name": "P_p100_h00",
+        "case_name": "u0p2_p6M_ic01",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+        "restart_from_case_file": (
+            f"{_P_P100_H00_U0P1_LEAF}/P_p100_h00_u0p1_p6M_final.cas.h5"
+        ),
+        "restart_from_data_file": (
+            f"{_P_P100_H00_U0P1_LEAF}/P_p100_h00_u0p1_p6M_final.dat.h5"
+        ),
+    },
+]
+
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
 # --case-set production entrypoint. Exploratory meshing remains the isolated
-# D0817_a30 cpg7 leaf; exploratory solver is the P_p100_h00 cpg5 source-off.
+# D0817_a30 cpg7 leaf; exploratory solver is the P_p100_h00 u0p1→u0p2
+# continuation.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(
