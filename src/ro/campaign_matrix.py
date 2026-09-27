@@ -11,8 +11,8 @@ Two constraints:
 
 2. ``mesh_batch_cases`` and ``solver_sweep_cases`` are the exploratory
    lists (currently the isolated D0817_a30
-   ``max085_min006_cpg7_bl4_peel2`` mesh and the original cpg5
-   ``u0p3_p6M_src0`` source-off diagnostic, which is not a valid RO
+   ``max085_min006_cpg7_bl4_peel2`` mesh and the P_p100_h00 cpg5
+   ``u0p2_p6M_src0`` source-off diagnostic, which is not a valid RO
    campaign case). Production is
    ``production_mesh_batch_cases`` / ``production_solver_sweep_cases``,
    reached only via ``--case-set production``. Default CLI remains

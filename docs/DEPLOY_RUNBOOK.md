@@ -154,7 +154,7 @@ The matching extract for that p6M column is
 
 Drop `--dry-run` after the list is 93 `_p6M` four-ids. No `--case-set` still walks every run manifest (grid-study / `_conv2000` / p8M included). Matrix-selected leaves with no final cas/dat are `SKIPPED_MISSING_FINALS` (not a batch failure). Leave `post_cases` empty.
 
-Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `D0817_a30` `max085_min006_cpg5_bl4_peel2` `u0p3_p6M_src0` source-off diagnostic; not a valid RO campaign case). Do not point the default entrypoint at 279. Parked GTS list is `_SOLVER_SWEEP_CASES_GTS_PILOT`. Parked cpg7 solver list is `_SOLVER_SWEEP_CASES_CPG7_PILOT`. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
+Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `P_p100_h00` `max085_min006_cpg5_bl4_peel2` `u0p2_p6M_src0` source-off diagnostic; not a valid RO campaign case). Do not point the default entrypoint at 279. Parked GTS list is `_SOLVER_SWEEP_CASES_GTS_PILOT`. Parked cpg7 solver list is `_SOLVER_SWEEP_CASES_CPG7_PILOT`. Parked D0817 source-off list is `_SOLVER_SWEEP_CASES_D0817_SRC0`. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
 
 Production mesh leaves look like
 

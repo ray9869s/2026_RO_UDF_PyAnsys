@@ -72,6 +72,7 @@ def test_exploratory_lists_are_unchanged(batchcfg):
     )
     assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_GTS_PILOT
     assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_CPG7_PILOT
+    assert batchcfg.solver_sweep_cases is not batchcfg._SOLVER_SWEEP_CASES_D0817_SRC0
     assert batchcfg.mesh_batch_cases is not batchcfg._MESH_BATCH_CASES_EXPLORATORY
 
 
@@ -275,18 +276,18 @@ def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
     assert geos.index("D0817_a60") < geos.index("D0817_a30")
 
 
-def test_exploratory_solver_is_the_d0817_cpg5_source_off_diagnostic(batchcfg):
+def test_exploratory_solver_is_the_p_p100_h00_cpg5_source_off_diagnostic(batchcfg):
     cases = batchcfg.solver_sweep_cases
     assert len(cases) == 1
     case = cases[0]
-    assert case["family"] == "diamond"
-    assert case["geo_id"] == "D0817_a30"
+    assert case["family"] == "pillar"
+    assert case["geo_id"] == "P_p100_h00"
     assert case["mesh_id"] == batchcfg._MESH_ID
     assert case["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
     assert case["mesh_id"] == "max085_min006_cpg5_bl4_peel2"
-    assert case["run_id"] == "u0p3_p6M_src0"
-    assert case["case_name"] == "u0p3_p6M_src0"
-    assert case["inlet_velocity_value"] == pytest.approx(0.3)
+    assert case["run_id"] == "u0p2_p6M_src0"
+    assert case["case_name"] == "u0p2_p6M_src0"
+    assert case["inlet_velocity_value"] == pytest.approx(0.2)
     assert case["outlet_gauge_pressure"] == pytest.approx(6.0e6)
     assert case["enable_qoi_convergence_stop"] is False
     assert case["disable_membrane_source_terms"] is True
@@ -320,16 +321,27 @@ def test_exploratory_solver_is_the_d0817_cpg5_source_off_diagnostic(batchcfg):
     assert parked_cpg7[0]["mesh_id"] == batchcfg._MESH_ID_CPG7
     assert parked_cpg7[0]["run_id"] == "u0p3_p6M"
     assert parked_cpg7[0]["mesh_id"] != case["mesh_id"]
+    parked_d0817_src0 = batchcfg._SOLVER_SWEEP_CASES_D0817_SRC0
+    assert len(parked_d0817_src0) == 1
+    assert parked_d0817_src0[0]["geo_id"] == "D0817_a30"
+    assert parked_d0817_src0[0]["run_id"] == "u0p3_p6M_src0"
+    assert parked_d0817_src0[0]["disable_membrane_source_terms"] is True
     production_ids = {
         (entry["geo_id"], entry["mesh_id"], entry["run_id"])
         for entry in batchcfg.production_solver_sweep_cases
     }
-    assert ("D0817_a30", PRODUCTION_MESH_ID_DEFAULT, "u0p3_p6M") in production_ids
+    assert ("P_p100_h00", PRODUCTION_MESH_ID_DEFAULT, "u0p2_p6M") in production_ids
+    assert (
+        "P_p100_h00",
+        PRODUCTION_MESH_ID_DEFAULT,
+        "u0p2_p6M_src0",
+    ) not in production_ids
     assert (
         "D0817_a30",
         PRODUCTION_MESH_ID_DEFAULT,
         "u0p3_p6M_src0",
     ) not in production_ids
+    assert ("D0817_a30", PRODUCTION_MESH_ID_DEFAULT, "u0p3_p6M") in production_ids
     assert (
         "D0817_a30",
         batchcfg._MESH_ID_CPG7,

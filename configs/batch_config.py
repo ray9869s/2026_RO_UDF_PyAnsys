@@ -422,10 +422,12 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: exploratory default is the isolated D0817_a30 cpg7 mesh-sensitivity
-# solve (u0p3_p6M on max085_min006_cpg7_bl4_peel2). Fresh template +
-# replace_mesh; no restart; no GTS scale-factor or PT verbosity override.
+# Solver: exploratory default is the isolated P_p100_h00 cpg5 source-off
+# diagnostic (u0p2_p6M_src0 on max085_min006_cpg5_bl4_peel2). Fresh template
+# + replace_mesh; no restart; no GTS scale-factor or PT verbosity override.
 # Parked GTS list: _SOLVER_SWEEP_CASES_GTS_PILOT.
+# Parked cpg7 solver list: _SOLVER_SWEEP_CASES_CPG7_PILOT.
+# Parked D0817 source-off list: _SOLVER_SWEEP_CASES_D0817_SRC0.
 # Parked seven-case list: _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS.
 # Production 279 is production_solver_sweep_cases via --case-set production.
 # ---------------------------------------------------------------------------
@@ -534,9 +536,10 @@ _SOLVER_SWEEP_CASES_CPG7_PILOT = [
     },
 ]
 
-# Isolated source-off diagnostic on the original cpg5 mesh. Not a valid RO
-# campaign case: membrane sources are disabled after the production UDF hook.
-solver_sweep_cases = [
+# Parked D0817_a30 cpg5 source-off diagnostic (completed). Restore
+# solver_sweep_cases = _SOLVER_SWEEP_CASES_D0817_SRC0 after this Pillar
+# source-off diagnostic.
+_SOLVER_SWEEP_CASES_D0817_SRC0 = [
     {
         "family": "diamond",
         "geo_id": "D0817_a30",
@@ -551,9 +554,28 @@ solver_sweep_cases = [
     },
 ]
 
+# Isolated source-off diagnostic on P_p100_h00 cpg5. Not a valid RO
+# campaign case: membrane sources are disabled after the production UDF hook.
+# Distinct run_id so production u0p2_p6M stays untouched. Fresh template +
+# replace_mesh; no restart.
+solver_sweep_cases = [
+    {
+        "family": "pillar",
+        "geo_id": "P_p100_h00",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p2_p6M_src0",
+        "geo_name": "P_p100_h00",
+        "case_name": "u0p2_p6M_src0",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+        "enable_qoi_convergence_stop": False,
+        "disable_membrane_source_terms": True,
+    },
+]
+
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
 # --case-set production entrypoint. Exploratory meshing remains the isolated
-# D0817_a30 cpg7 leaf; exploratory solver is the cpg5 source-off diagnostic.
+# D0817_a30 cpg7 leaf; exploratory solver is the P_p100_h00 cpg5 source-off.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(
