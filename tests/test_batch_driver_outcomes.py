@@ -217,7 +217,7 @@ def test_mesh_dry_run_when_file_is_missing():
     assert "was not found" in reason
 
 
-def test_select_mesh_batch_cases_filters_d0817_a30():
+def test_select_mesh_batch_cases_filters_p_p100_h00():
     meshing = _load_batch_meshing()
     batchcfg = meshing._load_module(
         "batch_config_select_under_test",
@@ -225,12 +225,19 @@ def test_select_mesh_batch_cases_filters_d0817_a30():
     )
     cases = meshing.select_mesh_batch_cases(
         batchcfg.mesh_batch_cases,
-        geo_id="D0817_a30",
+        geo_id="P_p100_h00",
     )
     assert len(cases) == 1
-    assert cases[0]["geo_id"] == "D0817_a30"
-    assert cases[0]["family"] == "diamond"
-    assert cases[0]["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
+    assert cases[0]["geo_id"] == "P_p100_h00"
+    assert cases[0]["family"] == "pillar"
+    assert cases[0]["mesh_id"] == "max060_min006_cpg5_bl4_peel2"
+    parked_cpg7 = meshing.select_mesh_batch_cases(
+        batchcfg._MESH_BATCH_CASES_CPG7,
+        geo_id="D0817_a30",
+    )
+    assert len(parked_cpg7) == 1
+    assert parked_cpg7[0]["family"] == "diamond"
+    assert parked_cpg7[0]["mesh_id"] == "max085_min006_cpg7_bl4_peel2"
     parked_sin = meshing.select_mesh_batch_cases(
         batchcfg._MESH_BATCH_CASES_EXPLORATORY,
         geo_id="S_a144_l1733",

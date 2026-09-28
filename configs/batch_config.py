@@ -177,6 +177,14 @@ _MESH_ID_CPG7 = format_production_mesh_id(
     bl_layers=_COMMON_MESH["bl_layers"],
     peel_layers=_COMMON_MESH["peel_layers"],
 )
+# Isolated P_p100_h00 mesh-size leaf: m_max 0.085 → 0.060 only.
+_MESH_ID_MAX060 = format_production_mesh_id(
+    m_max=0.060,
+    m_min=_COMMON_MESH["m_min"],
+    m_cpg=_COMMON_MESH["m_cpg"],
+    bl_layers=_COMMON_MESH["bl_layers"],
+    peel_layers=_COMMON_MESH["peel_layers"],
+)
 
 # ---------------------------------------------------------------------------
 # Multi-Layer: three layer-thickness distributions, Sigma_d = 0.800 mm fixed
@@ -389,8 +397,7 @@ _case.update({
 })
 mesh_batch_cases.append(_case)
 
-# Parked 22-case ML/Pillar/Sin/empty list. Exploratory default is the isolated
-# D0817_a30 cpg7 mesh-sensitivity leaf. Restore mesh_batch_cases =
+# Parked 22-case ML/Pillar/Sin/empty list. Restore mesh_batch_cases =
 # _MESH_BATCH_CASES_EXPLORATORY after this experiment. Do not copy
 # _COMMON_MESH layout (n_active_cells=7) onto Diamond.
 _MESH_BATCH_CASES_EXPLORATORY = mesh_batch_cases
@@ -403,7 +410,9 @@ _cpg7_mesh_case.update({
     "mesh_id": _MESH_ID_CPG7,
     "m_cpg": 7,
 })
-mesh_batch_cases = [_cpg7_mesh_case]
+# Parked D0817_a30 cpg7 mesh-sensitivity leaf. Restore mesh_batch_cases =
+# _MESH_BATCH_CASES_CPG7 after this P_p100_h00 m_max diagnostic.
+_MESH_BATCH_CASES_CPG7 = [_cpg7_mesh_case]
 
 # ---------------------------------------------------------------------------
 # Solver: nothing this round. Meshing is the gate and CAD probe; solve once
@@ -422,15 +431,17 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: exploratory default is the isolated P_p100_h00 cpg5 blending-1
-# restore (u0p2_p6M_blend1) from the completed blend0 finals. Production
-# membrane sources stay on; no GTS scale-factor or PT verbosity override.
-# Parked GTS list: _SOLVER_SWEEP_CASES_GTS_PILOT.
+# Solver: exploratory default is the isolated P_p100_h00 m_max=0.060
+# mesh-size solve (u0p2_p6M) on max060_min006_cpg5_bl4_peel2. Fresh
+# mesh_initialization; production membrane sources stay on; GTS and
+# PBNS blending stay preserve. Parked GTS list:
+# _SOLVER_SWEEP_CASES_GTS_PILOT.
 # Parked cpg7 solver list: _SOLVER_SWEEP_CASES_CPG7_PILOT.
 # Parked D0817 source-off list: _SOLVER_SWEEP_CASES_D0817_SRC0.
 # Parked Pillar source-off list: _SOLVER_SWEEP_CASES_P_P100_H00_SRC0.
 # Parked Pillar continuation list: _SOLVER_SWEEP_CASES_P_P100_H00_IC01.
 # Parked Pillar blending-0 list: _SOLVER_SWEEP_CASES_P_P100_H00_BLEND0.
+# Parked Pillar blending-1 list: _SOLVER_SWEEP_CASES_P_P100_H00_BLEND1.
 # Parked seven-case list: _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS.
 # Production 279 is production_solver_sweep_cases via --case-set production.
 # ---------------------------------------------------------------------------
@@ -559,7 +570,7 @@ _SOLVER_SWEEP_CASES_D0817_SRC0 = [
 
 # Parked P_p100_h00 cpg5 source-off diagnostic (completed). Restore
 # solver_sweep_cases = _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 after this
-# blending restore diagnostic.
+# mesh-size diagnostic.
 _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 = [
     {
         "family": "pillar",
@@ -577,7 +588,7 @@ _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 = [
 
 # Parked P_p100_h00 cpg5 u0p1→u0p2 continuation (completed). Restore
 # solver_sweep_cases = _SOLVER_SWEEP_CASES_P_P100_H00_IC01 after this
-# blending restore diagnostic.
+# mesh-size diagnostic.
 _P_P100_H00_U0P1_LEAF = (
     f"C:/ro_data/runs/pillar/P_p100_h00/{_MESH_ID}/u0p1_p6M"
 )
@@ -602,7 +613,7 @@ _SOLVER_SWEEP_CASES_P_P100_H00_IC01 = [
 
 # Parked P_p100_h00 cpg5 blending-0 warm-up (completed; residual_converged
 # at iteration 397). Restore solver_sweep_cases =
-# _SOLVER_SWEEP_CASES_P_P100_H00_BLEND0 after this blending-1 restore.
+# _SOLVER_SWEEP_CASES_P_P100_H00_BLEND0 after this mesh-size diagnostic.
 _P_P100_H00_BLEND0_LEAF = (
     f"C:/ro_data/runs/pillar/P_p100_h00/{_MESH_ID}/u0p2_p6M_blend0"
 )
@@ -622,10 +633,10 @@ _SOLVER_SWEEP_CASES_P_P100_H00_BLEND0 = [
     },
 ]
 
-# Isolated blending-1 restore from completed blend0 finals. Distinct run_id
-# so production u0p2_p6M, src0, ic01, and parked blend0 stay untouched.
-# Existing restart_continuation semantics: 2000 additional iterations.
-solver_sweep_cases = [
+# Parked P_p100_h00 cpg5 blending-1 restore (completed). Restore
+# solver_sweep_cases = _SOLVER_SWEEP_CASES_P_P100_H00_BLEND1 after this
+# mesh-size diagnostic.
+_SOLVER_SWEEP_CASES_P_P100_H00_BLEND1 = [
     {
         "family": "pillar",
         "geo_id": "P_p100_h00",
@@ -646,14 +657,36 @@ solver_sweep_cases = [
 ]
 
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
-# --case-set production entrypoint. Exploratory meshing remains the isolated
-# D0817_a30 cpg7 leaf; exploratory solver is the P_p100_h00 blending-1
-# restore (u0p2_p6M_blend1) from completed blend0 finals.
+# --case-set production entrypoint. Exploratory meshing/solver are the
+# isolated P_p100_h00 m_max=0.060 leaf and its u0p2_p6M solve.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(
     production_mesh_batch_cases
 )
+
+# Isolated P_p100_h00 mesh-size diagnostic. Copy the production mesh/run
+# entries and change only m_max and the resulting mesh_id. Distinct leaf
+# so production max085 / u0p2_p6M and parked pilots stay untouched.
+# skip_existing_mesh / skip_existing_final_data stay True: never force.
+_P_P100_H00_PROD_MESH = next(
+    case
+    for case in production_mesh_batch_cases
+    if case["geo_id"] == "P_p100_h00"
+)
+_p_p100_h00_max060_mesh_case = dict(_P_P100_H00_PROD_MESH)
+_p_p100_h00_max060_mesh_case["m_max"] = 0.060
+_p_p100_h00_max060_mesh_case["mesh_id"] = _MESH_ID_MAX060
+mesh_batch_cases = [_p_p100_h00_max060_mesh_case]
+
+_P_P100_H00_PROD_U0P2 = next(
+    case
+    for case in production_solver_sweep_cases
+    if case["geo_id"] == "P_p100_h00" and case["run_id"] == "u0p2_p6M"
+)
+_p_p100_h00_max060_solver_case = dict(_P_P100_H00_PROD_U0P2)
+_p_p100_h00_max060_solver_case["mesh_id"] = _MESH_ID_MAX060
+solver_sweep_cases = [_p_p100_h00_max060_solver_case]
 
 # ---------------------------------------------------------------------------
 # Diamond campaign meshes, built. Reference data, not used by this config.

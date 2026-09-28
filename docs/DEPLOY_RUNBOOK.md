@@ -96,7 +96,7 @@ runs/diamond/D2450_a45/max085_min006_cpg5_bl4_peel2/u0p2_p6M/D2450_a45_u0p2_p6M_
 `batch_config.py` `common_solver_settings.max_iterations` is **2000**.
 `batch_solver_rerun.py`'s 3000 is a different knob (rerun budget).
 
-`mesh_batch_cases` is the isolated `D0817_a30` `max085_min006_cpg7_bl4_peel2` mesh. It is the default `--case-set` for `batch_meshing.py`. Dry-run with `python scripts/batch_meshing.py --dry-run` (do not flip `batch_config.dry_run`). The 31-mesh campaign lives in `production_mesh_batch_cases` and is reached only with `--case-set production`. The parked 22-case ML/Pillar/Sin/empty list is `_MESH_BATCH_CASES_EXPLORATORY`.
+`mesh_batch_cases` is the isolated `P_p100_h00` `max060_min006_cpg5_bl4_peel2` mesh. It is the default `--case-set` for `batch_meshing.py`. Dry-run with `python scripts/batch_meshing.py --dry-run` (do not flip `batch_config.dry_run`). The 31-mesh campaign lives in `production_mesh_batch_cases` and is reached only with `--case-set production`. The parked 22-case ML/Pillar/Sin/empty list is `_MESH_BATCH_CASES_EXPLORATORY`. The parked D0817_a30 cpg7 leaf is `_MESH_BATCH_CASES_CPG7`.
 
 ---
 
@@ -154,7 +154,7 @@ The matching extract for that p6M column is
 
 Drop `--dry-run` after the list is 93 `_p6M` four-ids. No `--case-set` still walks every run manifest (grid-study / `_conv2000` / p8M included). Matrix-selected leaves with no final cas/dat are `SKIPPED_MISSING_FINALS` (not a batch failure). Leave `post_cases` empty.
 
-Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `P_p100_h00` `max085_min006_cpg5_bl4_peel2` `u0p2_p6M_blend1` blending-1 restore from completed blend0 finals). Do not point the default entrypoint at 279. Parked GTS list is `_SOLVER_SWEEP_CASES_GTS_PILOT`. Parked cpg7 solver list is `_SOLVER_SWEEP_CASES_CPG7_PILOT`. Parked D0817 source-off list is `_SOLVER_SWEEP_CASES_D0817_SRC0`. Parked Pillar source-off list is `_SOLVER_SWEEP_CASES_P_P100_H00_SRC0`. Parked Pillar continuation list is `_SOLVER_SWEEP_CASES_P_P100_H00_IC01`. Parked Pillar blending-0 list is `_SOLVER_SWEEP_CASES_P_P100_H00_BLEND0`. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
+Default `python scripts/batch_solver_sweep.py` stays on exploratory `solver_sweep_cases` (currently the `P_p100_h00` `max060_min006_cpg5_bl4_peel2` `u0p2_p6M` mesh-size solve). Do not point the default entrypoint at 279. Parked GTS list is `_SOLVER_SWEEP_CASES_GTS_PILOT`. Parked cpg7 solver list is `_SOLVER_SWEEP_CASES_CPG7_PILOT`. Parked D0817 source-off list is `_SOLVER_SWEEP_CASES_D0817_SRC0`. Parked Pillar source-off list is `_SOLVER_SWEEP_CASES_P_P100_H00_SRC0`. Parked Pillar continuation list is `_SOLVER_SWEEP_CASES_P_P100_H00_IC01`. Parked Pillar blending-0 list is `_SOLVER_SWEEP_CASES_P_P100_H00_BLEND0`. Parked Pillar blending-1 list is `_SOLVER_SWEEP_CASES_P_P100_H00_BLEND1`. The previous seven-case list is `_SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS`.
 
 Production mesh leaves look like
 

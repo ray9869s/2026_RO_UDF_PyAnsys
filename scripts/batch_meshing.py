@@ -221,7 +221,7 @@ def parse_batch_meshing_cli(argv=None):
         default=CASE_SET_EXPLORATORY,
         help=(
             "exploratory: mesh_batch_cases "
-            "(D0817_a30 max085_min006_cpg7_bl4_peel2). "
+            "(P_p100_h00 max060_min006_cpg5_bl4_peel2). "
             "production: production_mesh_batch_cases (31). "
             "Default exploratory so existing batch runs cannot launch the 31-mesh set."
         ),
