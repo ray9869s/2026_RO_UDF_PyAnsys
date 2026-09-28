@@ -469,15 +469,22 @@ if __name__ == "__main__":
         and first_to_second_order_blending.strip().lower() == "preserve"
     )
     if not blending_is_preserve:
-        if enable_qoi_convergence_stop:
+        if disable_membrane_source_terms:
+            raise PbnsBlendingError(
+                "first_to_second_order_blending write requires "
+                "disable_membrane_source_terms=False"
+            )
+        try:
+            blending_requested = float(first_to_second_order_blending)
+        except (TypeError, ValueError) as exc:
+            raise PbnsBlendingError(
+                "first_to_second_order_blending must be 0.0 or 1.0, got "
+                f"{first_to_second_order_blending!r}"
+            ) from exc
+        if blending_requested == 0.0 and enable_qoi_convergence_stop:
             raise PbnsBlendingError(
                 "first_to_second_order_blending=0.0 requires "
                 "enable_qoi_convergence_stop=False"
-            )
-        if disable_membrane_source_terms:
-            raise PbnsBlendingError(
-                "first_to_second_order_blending=0.0 requires "
-                "disable_membrane_source_terms=False"
             )
     qoi_convergence_report_name = cfg.qoi_convergence_report_name
     qoi_stop_criterion = cfg.qoi_stop_criterion
@@ -3610,17 +3617,22 @@ def _require_finite_blending_readback(value, label):
         raise PbnsBlendingError(f"{label} readback {value!r} is not finite")
 
 
+def _require_blending_equals(value, expected, label):
+    _require_finite_blending_readback(value, label)
+    if abs(float(value) - float(expected)) >= 1.0e-9:
+        raise PbnsBlendingError(
+            f"{label} readback {value!r} is not {expected}"
+        )
+
+
 def require_pbns_blending_pre_iteration(solution, expected_value):
     """Fail-closed readback of blending and production schemes before iterate."""
     _parent, _leaf, value = read_pbns_first_to_second_order_blending(solution)
-    _require_finite_blending_readback(
-        value, "first_to_second_order_blending pre-iterate"
+    _require_blending_equals(
+        value,
+        expected_value,
+        "first_to_second_order_blending pre-iterate",
     )
-    if abs(float(value) - float(expected_value)) >= 1.0e-9:
-        raise PbnsBlendingError(
-            f"first_to_second_order_blending pre-iterate readback {value!r} "
-            f"is not {expected_value}"
-        )
     require_production_pbns_scheme_snapshot(
         read_pbns_scheme_snapshot(solution),
         "pre-iterate",
@@ -3631,25 +3643,31 @@ def require_pbns_blending_pre_iteration(solution, expected_value):
 def apply_pbns_first_to_second_order_blending(solution, requested):
     """Set PBNS first-to-second-order blending fail-closed.
 
-    Writes only numerics_pbns.first_to_second_order_blending. Requires the
-    production Coupled GTS spatial-scheme snapshot before and after. Raises
-    PbnsBlendingError if the leaf is inactive, the set fails, readback is
-    not 0.0, or flow/PT/spatial schemes change.
+    Writes only numerics_pbns.first_to_second_order_blending. 0.0 is the
+    blend0 warm-up. 1.0 is allowed only when the live leaf already reads
+    back 0.0. Requires the production Coupled GTS spatial-scheme snapshot
+    before and after. Raises PbnsBlendingError if the leaf is inactive,
+    the source value is wrong, the set fails, readback is not the
+    requested finite value, or flow/PT/spatial schemes change.
     """
     label = "solution.methods.expert.numerics_pbns.first_to_second_order_blending"
     if _config_is_preserve(requested):
         print(f"PBNS_BLEND preserve: leaving {label} unchanged.")
         return {"label": label, "status": "PRESERVED"}
 
+    if isinstance(requested, bool):
+        raise PbnsBlendingError(
+            f"first_to_second_order_blending must be 0.0 or 1.0, got {requested!r}"
+        )
     try:
         requested_value = float(requested)
     except (TypeError, ValueError) as exc:
         raise PbnsBlendingError(
-            f"first_to_second_order_blending must be 0.0, got {requested!r}"
+            f"first_to_second_order_blending must be 0.0 or 1.0, got {requested!r}"
         ) from exc
-    if requested_value != 0.0:
+    if requested_value not in (0.0, 1.0):
         raise PbnsBlendingError(
-            f"first_to_second_order_blending must be 0.0, got {requested!r}"
+            f"first_to_second_order_blending must be 0.0 or 1.0, got {requested!r}"
         )
 
     snapshot_before = require_production_pbns_scheme_snapshot(
@@ -3658,6 +3676,8 @@ def apply_pbns_first_to_second_order_blending(solution, requested):
     )
     parent, _leaf, before = read_pbns_first_to_second_order_blending(solution)
     print(f"PBNS_BLEND {label} before: {before!r}")
+    if requested_value == 1.0:
+        _require_blending_equals(before, 0.0, f"{label} source")
     try:
         setattr(parent, "first_to_second_order_blending", requested_value)
     except Exception as exc:
@@ -3668,11 +3688,7 @@ def apply_pbns_first_to_second_order_blending(solution, requested):
         solution
     )
     print(f"PBNS_BLEND {label} after: {after!r}")
-    _require_finite_blending_readback(after, label)
-    if abs(float(after) - requested_value) >= 1.0e-9:
-        raise PbnsBlendingError(
-            f"{label} readback {after!r} is not {requested_value}"
-        )
+    _require_blending_equals(after, requested_value, label)
     snapshot_after = require_production_pbns_scheme_snapshot(
         read_pbns_scheme_snapshot(solution),
         "after blending set",
@@ -4964,7 +4980,9 @@ if __name__ == "__main__":
                     qoi_convergence_object_names=qoi_convergence_object_names,
                 )
             if not _config_is_preserve(first_to_second_order_blending):
-                require_pbns_blending_pre_iteration(solution, 0.0)
+                require_pbns_blending_pre_iteration(
+                    solution, float(first_to_second_order_blending)
+                )
 
             if use_ramp_convergence_safety:
                 pre_convergence_iterations = minimum_full_source_iterations

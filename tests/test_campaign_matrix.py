@@ -284,7 +284,7 @@ def test_exploratory_solver_includes_d0817_g_and_30cell_pilots(batchcfg):
     assert geos.index("D0817_a60") < geos.index("D0817_a30")
 
 
-def test_exploratory_solver_is_the_p_p100_h00_blend0_warmup(batchcfg):
+def test_exploratory_solver_is_the_p_p100_h00_blend1_restore(batchcfg):
     cases = batchcfg.solver_sweep_cases
     assert len(cases) == 1
     case = cases[0]
@@ -293,28 +293,38 @@ def test_exploratory_solver_is_the_p_p100_h00_blend0_warmup(batchcfg):
     assert case["mesh_id"] == batchcfg._MESH_ID
     assert case["mesh_id"] == PRODUCTION_MESH_ID_DEFAULT
     assert case["mesh_id"] == "max085_min006_cpg5_bl4_peel2"
-    assert case["run_id"] == "u0p2_p6M_blend0"
-    assert case["case_name"] == "u0p2_p6M_blend0"
+    assert case["run_id"] == "u0p2_p6M_blend1"
+    assert case["case_name"] == "u0p2_p6M_blend1"
     assert case["inlet_velocity_value"] == pytest.approx(0.2)
     assert case["outlet_gauge_pressure"] == pytest.approx(6.0e6)
-    assert case["max_iterations"] == 1000
-    assert case["enable_qoi_convergence_stop"] is False
-    assert case["first_to_second_order_blending"] == pytest.approx(0.0)
+    assert "max_iterations" not in case
+    assert "enable_qoi_convergence_stop" not in case
+    assert case["first_to_second_order_blending"] == pytest.approx(1.0)
     assert "disable_membrane_source_terms" not in case
     assert "pseudo_time_verbosity" not in case
     assert "pseudo_time_time_step_size_scale_factor" not in case
-    assert "restart_from_case_file" not in case
-    assert "restart_from_data_file" not in case
+    blend0_leaf = (
+        f"C:/ro_data/runs/pillar/P_p100_h00/{case['mesh_id']}/u0p2_p6M_blend0"
+    )
+    assert blend0_leaf == batchcfg._P_P100_H00_BLEND0_LEAF
+    restart_case = f"{blend0_leaf}/P_p100_h00_u0p2_p6M_blend0_final.cas.h5"
+    restart_data = f"{blend0_leaf}/P_p100_h00_u0p2_p6M_blend0_final.dat.h5"
+    assert case["restart_from_case_file"] == restart_case
+    assert case["restart_from_data_file"] == restart_data
     merged = merge_batch_case_overrides(batchcfg.common_solver_settings, case)
-    assert merged["max_iterations"] == 1000
+    assert merged["max_iterations"] == 2000
     assert merged["residual_target"] == pytest.approx(1e-7)
     assert merged["use_inlet_velocity_profile"] is True
-    assert merged["enable_qoi_convergence_stop"] is False
-    assert merged["first_to_second_order_blending"] == pytest.approx(0.0)
+    assert "enable_qoi_convergence_stop" not in merged
+    assert merged["first_to_second_order_blending"] == pytest.approx(1.0)
     assert "disable_membrane_source_terms" not in merged
     assert "pseudo_time_verbosity" not in merged
     assert "pseudo_time_time_step_size_scale_factor" not in merged
-    assert resolve_input_mode(merged) == ("mesh_initialization", None, None)
+    assert resolve_input_mode(merged) == (
+        "restart_continuation",
+        restart_case,
+        restart_data,
+    )
     require_run_id_matches_operating_point(
         case["run_id"],
         case["inlet_velocity_value"],
@@ -347,6 +357,15 @@ def test_exploratory_solver_is_the_p_p100_h00_blend0_warmup(batchcfg):
     assert parked_ic01[0]["run_id"] == "u0p2_p6M_ic01"
     assert parked_ic01[0]["geo_id"] == "P_p100_h00"
     assert "restart_from_case_file" in parked_ic01[0]
+    parked_blend0 = batchcfg._SOLVER_SWEEP_CASES_P_P100_H00_BLEND0
+    assert len(parked_blend0) == 1
+    assert parked_blend0[0]["run_id"] == "u0p2_p6M_blend0"
+    assert parked_blend0[0]["geo_id"] == "P_p100_h00"
+    assert parked_blend0[0]["mesh_id"] == case["mesh_id"]
+    assert parked_blend0[0]["first_to_second_order_blending"] == pytest.approx(0.0)
+    assert parked_blend0[0]["max_iterations"] == 1000
+    assert parked_blend0[0]["enable_qoi_convergence_stop"] is False
+    assert "restart_from_case_file" not in parked_blend0[0]
     production_ids = {
         (entry["geo_id"], entry["mesh_id"], entry["run_id"])
         for entry in batchcfg.production_solver_sweep_cases
@@ -369,6 +388,11 @@ def test_exploratory_solver_is_the_p_p100_h00_blend0_warmup(batchcfg):
         "u0p2_p6M_blend0",
     ) not in production_ids
     assert (
+        "P_p100_h00",
+        PRODUCTION_MESH_ID_DEFAULT,
+        "u0p2_p6M_blend1",
+    ) not in production_ids
+    assert (
         "D0817_a30",
         PRODUCTION_MESH_ID_DEFAULT,
         "u0p3_p6M_src0",
@@ -385,6 +409,7 @@ def test_exploratory_solver_is_the_p_p100_h00_blend0_warmup(batchcfg):
     assert "p8M" not in case["run_id"]
     assert "src0" not in case["run_id"]
     assert "ic01" not in case["run_id"]
+    assert "blend0" not in case["run_id"]
 
 
 def test_geo_id_filter_keeps_case_set_order_and_refuses_unknown():

@@ -422,14 +422,15 @@ common_solver_settings = {
 }
 
 # ---------------------------------------------------------------------------
-# Solver: exploratory default is the isolated P_p100_h00 cpg5 blending-0
-# warm-up (u0p2_p6M_blend0). Fresh mesh_initialization; production membrane
-# sources stay on; no GTS scale-factor or PT verbosity override.
+# Solver: exploratory default is the isolated P_p100_h00 cpg5 blending-1
+# restore (u0p2_p6M_blend1) from the completed blend0 finals. Production
+# membrane sources stay on; no GTS scale-factor or PT verbosity override.
 # Parked GTS list: _SOLVER_SWEEP_CASES_GTS_PILOT.
 # Parked cpg7 solver list: _SOLVER_SWEEP_CASES_CPG7_PILOT.
 # Parked D0817 source-off list: _SOLVER_SWEEP_CASES_D0817_SRC0.
 # Parked Pillar source-off list: _SOLVER_SWEEP_CASES_P_P100_H00_SRC0.
 # Parked Pillar continuation list: _SOLVER_SWEEP_CASES_P_P100_H00_IC01.
+# Parked Pillar blending-0 list: _SOLVER_SWEEP_CASES_P_P100_H00_BLEND0.
 # Parked seven-case list: _SOLVER_SWEEP_CASES_EXPLORATORY_PILOTS.
 # Production 279 is production_solver_sweep_cases via --case-set production.
 # ---------------------------------------------------------------------------
@@ -558,7 +559,7 @@ _SOLVER_SWEEP_CASES_D0817_SRC0 = [
 
 # Parked P_p100_h00 cpg5 source-off diagnostic (completed). Restore
 # solver_sweep_cases = _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 after this
-# blending warm-up diagnostic.
+# blending restore diagnostic.
 _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 = [
     {
         "family": "pillar",
@@ -576,7 +577,7 @@ _SOLVER_SWEEP_CASES_P_P100_H00_SRC0 = [
 
 # Parked P_p100_h00 cpg5 u0p1→u0p2 continuation (completed). Restore
 # solver_sweep_cases = _SOLVER_SWEEP_CASES_P_P100_H00_IC01 after this
-# blending warm-up diagnostic.
+# blending restore diagnostic.
 _P_P100_H00_U0P1_LEAF = (
     f"C:/ro_data/runs/pillar/P_p100_h00/{_MESH_ID}/u0p1_p6M"
 )
@@ -599,9 +600,13 @@ _SOLVER_SWEEP_CASES_P_P100_H00_IC01 = [
     },
 ]
 
-# Isolated blending-0 warm-up. Distinct run_id so production u0p2_p6M,
-# completed src0, and parked ic01 stay untouched. Fresh mesh_initialization.
-solver_sweep_cases = [
+# Parked P_p100_h00 cpg5 blending-0 warm-up (completed; residual_converged
+# at iteration 397). Restore solver_sweep_cases =
+# _SOLVER_SWEEP_CASES_P_P100_H00_BLEND0 after this blending-1 restore.
+_P_P100_H00_BLEND0_LEAF = (
+    f"C:/ro_data/runs/pillar/P_p100_h00/{_MESH_ID}/u0p2_p6M_blend0"
+)
+_SOLVER_SWEEP_CASES_P_P100_H00_BLEND0 = [
     {
         "family": "pillar",
         "geo_id": "P_p100_h00",
@@ -617,10 +622,33 @@ solver_sweep_cases = [
     },
 ]
 
+# Isolated blending-1 restore from completed blend0 finals. Distinct run_id
+# so production u0p2_p6M, src0, ic01, and parked blend0 stay untouched.
+# Existing restart_continuation semantics: 2000 additional iterations.
+solver_sweep_cases = [
+    {
+        "family": "pillar",
+        "geo_id": "P_p100_h00",
+        "mesh_id": _MESH_ID,
+        "run_id": "u0p2_p6M_blend1",
+        "geo_name": "P_p100_h00",
+        "case_name": "u0p2_p6M_blend1",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+        "first_to_second_order_blending": 1.0,
+        "restart_from_case_file": (
+            f"{_P_P100_H00_BLEND0_LEAF}/P_p100_h00_u0p2_p6M_blend0_final.cas.h5"
+        ),
+        "restart_from_data_file": (
+            f"{_P_P100_H00_BLEND0_LEAF}/P_p100_h00_u0p2_p6M_blend0_final.dat.h5"
+        ),
+    },
+]
+
 # Production 31-mesh / 279-run matrix. Distinct names and a distinct
 # --case-set production entrypoint. Exploratory meshing remains the isolated
-# D0817_a30 cpg7 leaf; exploratory solver is the P_p100_h00 blending-0
-# warm-up (u0p2_p6M_blend0).
+# D0817_a30 cpg7 leaf; exploratory solver is the P_p100_h00 blending-1
+# restore (u0p2_p6M_blend1) from completed blend0 finals.
 # Layout knobs come from the registry, never from a _COMMON_MESH copy.
 production_mesh_batch_cases = build_production_mesh_batch_cases(_COMMON_MESH)
 production_solver_sweep_cases = build_production_solver_sweep_cases(

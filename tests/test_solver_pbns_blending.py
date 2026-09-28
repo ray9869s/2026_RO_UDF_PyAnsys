@@ -1,4 +1,4 @@
-"""Fail-closed PBNS blending-0 warm-up: apply point, readback, schemes."""
+"""Fail-closed PBNS blending write: apply point, 0.0/1.0 readback, schemes."""
 
 from __future__ import annotations
 
@@ -147,9 +147,11 @@ def test_apply_zero_readback_and_schemes_unchanged():
 
 def test_inactive_leaf_is_fail_closed():
     solver_code = load_solver_code("pbns_blend_inactive")
-    solution = FakeSolution(active=False)
+    solution = FakeSolution(blending=0.0, active=False)
     with pytest.raises(solver_code.PbnsBlendingError, match="inactive"):
         solver_code.apply_pbns_first_to_second_order_blending(solution, 0.0)
+    with pytest.raises(solver_code.PbnsBlendingError, match="inactive"):
+        solver_code.apply_pbns_first_to_second_order_blending(solution, 1.0)
 
 
 def test_missing_species_scheme_is_fail_closed():
@@ -177,11 +179,31 @@ def test_scheme_change_after_set_is_fail_closed():
         solver_code.apply_pbns_first_to_second_order_blending(solution, 0.0)
 
 
-def test_nonzero_requested_is_fail_closed():
-    solver_code = load_solver_code("pbns_blend_one")
-    solution = FakeSolution()
-    with pytest.raises(solver_code.PbnsBlendingError, match="must be 0.0"):
+def test_apply_one_from_zero_readback_and_schemes_unchanged():
+    solver_code = load_solver_code("pbns_blend_apply_one")
+    solution = FakeSolution(blending=0.0)
+    outcome = solver_code.apply_pbns_first_to_second_order_blending(solution, 1.0)
+    assert outcome["status"] == "APPLIED_CONFIRMED"
+    assert outcome["before"] == pytest.approx(0.0)
+    assert outcome["after"] == pytest.approx(1.0)
+    assert outcome["schemes"] == PRODUCTION_SCHEMES
+    assert solver_code.require_pbns_blending_pre_iteration(
+        solution, 1.0
+    ) == pytest.approx(1.0)
+
+
+def test_wrong_source_value_is_fail_closed():
+    solver_code = load_solver_code("pbns_blend_wrong_source")
+    solution = FakeSolution(blending=1.0)
+    with pytest.raises(solver_code.PbnsBlendingError, match="source"):
         solver_code.apply_pbns_first_to_second_order_blending(solution, 1.0)
+
+
+def test_pre_iteration_wrong_value_is_fail_closed():
+    solver_code = load_solver_code("pbns_blend_pre_wrong")
+    solution = FakeSolution(blending=0.0)
+    with pytest.raises(solver_code.PbnsBlendingError, match="pre-iterate"):
+        solver_code.require_pbns_blending_pre_iteration(solution, 1.0)
 
 
 @pytest.mark.parametrize("nonfinite", (float("nan"), float("inf"), float("-inf")))
@@ -207,7 +229,7 @@ def test_apply_is_after_source_hooks_init_and_gts_before_write_and_iterate():
     gts = text.find("gts_scale_result = apply_gts_time_step_size_scale_factor(")
     blend = text.find("blending_result = apply_pbns_first_to_second_order_blending(")
     write_case = text.find("solver.settings.file.write_case(")
-    pre_iter = text.find("require_pbns_blending_pre_iteration(solution, 0.0)")
+    pre_iter = text.find("solution, float(first_to_second_order_blending)")
     iterate = text.find("solution.run_calculation.iterate(")
     assert source_hook != -1
     assert hybrid != -1
@@ -237,6 +259,20 @@ def test_blend0_manifest_stamps_blending_value():
         created_utc="2026-09-28T00:00:00Z",
     )
     assert payload["solver_settings"]["first_to_second_order_blending"] == 0.0
+    assert "disable_membrane_source_terms" not in payload["solver_settings"]
+
+
+def test_blend1_manifest_stamps_blending_value():
+    solver_code = load_solver_code("pbns_blend_manifest_one")
+    cfg = load_run_config()
+    populate_valid_solver_config(cfg)
+    cfg.first_to_second_order_blending = 1.0
+    payload = solver_code.build_run_manifest_payload(
+        cfg,
+        {"mesh_sha256": "a" * 64},
+        created_utc="2026-09-28T00:00:00Z",
+    )
+    assert payload["solver_settings"]["first_to_second_order_blending"] == 1.0
     assert "disable_membrane_source_terms" not in payload["solver_settings"]
 
 

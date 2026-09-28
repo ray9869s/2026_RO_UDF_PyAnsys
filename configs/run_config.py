@@ -290,8 +290,8 @@ pseudo_time_verbosity = "preserve"
 # A positive number is the D0817_a30 u0p3_p6M_ptgts3 pilot only.
 pseudo_time_time_step_size_scale_factor = "preserve"
 # PBNS 1st-to-higher-order blending. "preserve" leaves Fluent unchanged.
-# 0.0 is the isolated P_p100_h00 u0p2_p6M_blend0 warm-up only. Do not set
-# 1.0 here; the final-stage restore is a separate restart, not this leaf.
+# 0.0 is the P_p100_h00 u0p2_p6M_blend0 warm-up. 1.0 is the blend1 restore
+# from that leaf. Production stays on "preserve".
 first_to_second_order_blending = "preserve"
 
 # Ramp/convergence safety.
@@ -533,19 +533,19 @@ def _require_preserve_or_positive_number(name, value):
     _require_positive_number(name, value)
 
 
-def _require_preserve_or_zero(name, value):
-    """Raise unless value is the literal 'preserve' or 0.0."""
+def _require_preserve_or_blending_write(name, value):
+    """Raise unless value is 'preserve', 0.0, or 1.0."""
     _require_set(name, value)
     if isinstance(value, str) and value.strip().lower() == "preserve":
         return
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(
-            "run_config.py value must be 'preserve' or 0.0: "
+            "run_config.py value must be 'preserve', 0.0, or 1.0: "
             f"{name}={value!r}"
         )
-    if float(value) != 0.0:
+    if float(value) not in (0.0, 1.0):
         raise ValueError(
-            "run_config.py value must be 'preserve' or 0.0: "
+            "run_config.py value must be 'preserve', 0.0, or 1.0: "
             f"{name}={value!r}"
         )
 
@@ -787,7 +787,7 @@ def validate_for_solver():
         "pseudo_time_time_step_size_scale_factor",
         pseudo_time_time_step_size_scale_factor,
     )
-    _require_preserve_or_zero(
+    _require_preserve_or_blending_write(
         "first_to_second_order_blending",
         first_to_second_order_blending,
     )
@@ -808,16 +808,25 @@ def validate_for_solver():
         and first_to_second_order_blending.strip().lower() == "preserve"
     )
     if not blending_is_preserve:
-        if enable_qoi_convergence_stop:
+        blending_requested = float(first_to_second_order_blending)
+        if disable_membrane_source_terms:
+            raise ValueError(
+                "first_to_second_order_blending write requires "
+                "disable_membrane_source_terms=False"
+            )
+        if blending_requested == 0.0 and enable_qoi_convergence_stop:
             raise ValueError(
                 "first_to_second_order_blending=0.0 requires "
                 "enable_qoi_convergence_stop=False"
             )
-        if disable_membrane_source_terms:
-            raise ValueError(
-                "first_to_second_order_blending=0.0 requires "
-                "disable_membrane_source_terms=False"
-            )
+        if blending_requested == 1.0:
+            restart_case = globals().get("restart_from_case_file")
+            restart_data = globals().get("restart_from_data_file")
+            if not restart_case or not restart_data:
+                raise ValueError(
+                    "first_to_second_order_blending=1.0 requires "
+                    "restart_from_case_file and restart_from_data_file"
+                )
     if enable_qoi_convergence_stop:
         if not enable_solve_time_qoi_reports:
             raise ValueError(

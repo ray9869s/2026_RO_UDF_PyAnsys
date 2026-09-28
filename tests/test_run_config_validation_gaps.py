@@ -218,10 +218,39 @@ class TestSolverValidation:
         ):
             cfg.validate_for_solver()
 
-    def test_blending_rejects_nonzero(self, cfg):
+    def test_blending_one_requires_restart_files(self, cfg):
+        cfg.first_to_second_order_blending = 1.0
+        with pytest.raises(ValueError, match="restart_from_case_file"):
+            cfg.validate_for_solver()
+
+    def test_blending_one_is_accepted_with_restart_files(self, cfg):
+        cfg.first_to_second_order_blending = 1.0
+        cfg.restart_from_case_file = (
+            "C:/ro_data/runs/pillar/P_p100_h00/"
+            "max085_min006_cpg5_bl4_peel2/u0p2_p6M_blend0/"
+            "P_p100_h00_u0p2_p6M_blend0_final.cas.h5"
+        )
+        cfg.restart_from_data_file = (
+            "C:/ro_data/runs/pillar/P_p100_h00/"
+            "max085_min006_cpg5_bl4_peel2/u0p2_p6M_blend0/"
+            "P_p100_h00_u0p2_p6M_blend0_final.dat.h5"
+        )
+        cfg.validate_for_solver()
+
+    def test_blending_one_requires_sources_on(self, cfg):
         cfg.first_to_second_order_blending = 1.0
         cfg.enable_qoi_convergence_stop = False
-        with pytest.raises(ValueError, match="first_to_second_order_blending"):
+        cfg.disable_membrane_source_terms = True
+        cfg.restart_from_case_file = "C:/ro_data/blend0.cas.h5"
+        cfg.restart_from_data_file = "C:/ro_data/blend0.dat.h5"
+        with pytest.raises(
+            ValueError, match="disable_membrane_source_terms=False"
+        ):
+            cfg.validate_for_solver()
+
+    def test_blending_rejects_half(self, cfg):
+        cfg.first_to_second_order_blending = 0.5
+        with pytest.raises(ValueError, match="preserve"):
             cfg.validate_for_solver()
 
 
@@ -409,7 +438,7 @@ class TestRunConfigOverrideAllowlist:
             "_require_positive_float": "private function",
             "_require_choice": "private function",
             "_require_preserve_or_positive_number": "private function",
-            "_require_preserve_or_zero": "private function",
+            "_require_preserve_or_blending_write": "private function",
             "_require_preserve_or_verbosity": "private function",
             "_require_bool": "private function",
             "_require_number": "private function",
