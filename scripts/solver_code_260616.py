@@ -110,6 +110,9 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
     if bool(getattr(cfg, "disable_membrane_source_terms", False)):
         base["solver_settings"]["disable_membrane_source_terms"] = True
         base["solver_settings"]["membrane_udm_lmh_cp"] = "nonphysical_source_off"
+    blending = getattr(cfg, "first_to_second_order_blending", "preserve")
+    if not (isinstance(blending, str) and blending.strip().lower() == "preserve"):
+        base["solver_settings"]["first_to_second_order_blending"] = float(blending)
     return merge_geometry_into_run_manifest(
         base,
         cfg.geo_id,
@@ -279,6 +282,10 @@ def resolve_solver_paths(cfg):
 
 class MembraneSourceOffError(RuntimeError):
     """Abort: membrane sources could not be proven disabled on a fluid zone."""
+
+
+class PbnsBlendingError(RuntimeError):
+    """Abort: PBNS first-to-second-order blending could not be applied."""
 
 
 # ==========================================================
@@ -454,6 +461,24 @@ if __name__ == "__main__":
         raise MembraneSourceOffError(
             "source-off diagnostic requires use_inlet_velocity_profile=True"
         )
+    first_to_second_order_blending = getattr(
+        cfg, "first_to_second_order_blending", "preserve"
+    )
+    blending_is_preserve = (
+        isinstance(first_to_second_order_blending, str)
+        and first_to_second_order_blending.strip().lower() == "preserve"
+    )
+    if not blending_is_preserve:
+        if enable_qoi_convergence_stop:
+            raise PbnsBlendingError(
+                "first_to_second_order_blending=0.0 requires "
+                "enable_qoi_convergence_stop=False"
+            )
+        if disable_membrane_source_terms:
+            raise PbnsBlendingError(
+                "first_to_second_order_blending=0.0 requires "
+                "disable_membrane_source_terms=False"
+            )
     qoi_convergence_report_name = cfg.qoi_convergence_report_name
     qoi_stop_criterion = cfg.qoi_stop_criterion
     qoi_previous_values_to_consider = cfg.qoi_previous_values_to_consider
@@ -3463,6 +3488,209 @@ def apply_gts_time_step_size_scale_factor(solution, requested_factor):
     return outcome
 
 
+PRODUCTION_PBNS_SCHEME_SNAPSHOT = {
+    "flow_scheme": "Coupled",
+    "coupled_solver": "global-time-step",
+    "gradient_scheme": "least-square-cell-based",
+    "mom": "second-order-upwind",
+    "pressure": "second-order",
+    "species-0": "second-order-upwind",
+}
+
+
+def _blending_get_state(obj, label):
+    try:
+        state = obj.get_state()
+    except Exception as exc:
+        raise PbnsBlendingError(
+            f"{label} get_state failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    return state
+
+
+def _require_blending_active_leaf(leaf, label):
+    checker = getattr(leaf, "is_active", None)
+    if not callable(checker):
+        raise PbnsBlendingError(f"{label} is_active() is unavailable")
+    try:
+        active = bool(checker())
+    except Exception as exc:
+        raise PbnsBlendingError(
+            f"{label} is_active() failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not active:
+        raise PbnsBlendingError(f"{label} is inactive")
+
+
+def read_pbns_scheme_snapshot(solution):
+    """Read Coupled GTS and production spatial scheme names."""
+    try:
+        methods = solution.methods
+        p_v_coupling = methods.p_v_coupling
+        pseudo_time_method = methods.pseudo_time_method
+        spatial = methods.spatial_discretization
+        discretization_scheme = spatial.discretization_scheme
+        gradient_scheme = spatial.gradient_scheme
+    except Exception as exc:
+        raise PbnsBlendingError(
+            f"solution.methods snapshot missing: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    p_v_state = _blending_get_state(p_v_coupling, "p_v_coupling")
+    if not isinstance(p_v_state, dict):
+        raise PbnsBlendingError(f"p_v_coupling get_state is not a dict: {p_v_state!r}")
+    pt_state = _blending_get_state(pseudo_time_method, "pseudo_time_method")
+    if not isinstance(pt_state, dict):
+        raise PbnsBlendingError(
+            f"pseudo_time_method get_state is not a dict: {pt_state!r}"
+        )
+    formulation = pt_state.get("formulation")
+    if not isinstance(formulation, dict):
+        raise PbnsBlendingError(
+            f"pseudo_time_method.formulation is not a dict: {formulation!r}"
+        )
+    gradient_state = _blending_get_state(gradient_scheme, "gradient_scheme")
+    disc_state = _blending_get_state(discretization_scheme, "discretization_scheme")
+    if isinstance(disc_state, dict) and isinstance(
+        disc_state.get("discretization_scheme"), dict
+    ):
+        disc_state = disc_state["discretization_scheme"]
+    if not isinstance(disc_state, dict):
+        raise PbnsBlendingError(
+            f"discretization_scheme get_state is not a dict: {disc_state!r}"
+        )
+    return {
+        "flow_scheme": p_v_state.get("flow_scheme"),
+        "coupled_solver": formulation.get("coupled_solver"),
+        "gradient_scheme": gradient_state,
+        "mom": disc_state.get("mom"),
+        "pressure": disc_state.get("pressure"),
+        "species-0": disc_state.get("species-0"),
+    }
+
+
+def require_production_pbns_scheme_snapshot(snapshot, label):
+    expected = PRODUCTION_PBNS_SCHEME_SNAPSHOT
+    mismatches = {
+        key: {"expected": expected[key], "actual": snapshot.get(key)}
+        for key in expected
+        if snapshot.get(key) != expected[key]
+    }
+    if mismatches:
+        raise PbnsBlendingError(
+            f"{label} production scheme snapshot mismatch: {mismatches}"
+        )
+    return snapshot
+
+
+def read_pbns_first_to_second_order_blending(solution):
+    label = "solution.methods.expert.numerics_pbns.first_to_second_order_blending"
+    try:
+        parent = solution.methods.expert.numerics_pbns
+        leaf = parent.first_to_second_order_blending
+    except Exception as exc:
+        raise PbnsBlendingError(
+            f"{label} missing: {type(exc).__name__}: {exc}"
+        ) from exc
+    _require_blending_active_leaf(leaf, label)
+    state = _blending_get_state(parent, "numerics_pbns")
+    if not isinstance(state, dict) or "first_to_second_order_blending" not in state:
+        raise PbnsBlendingError(
+            f"{label} absent from numerics_pbns state: {state!r}"
+        )
+    return parent, leaf, state["first_to_second_order_blending"]
+
+
+def _require_finite_blending_readback(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PbnsBlendingError(
+            f"{label} readback {value!r} is not a finite number"
+        )
+    if not math.isfinite(value):
+        raise PbnsBlendingError(f"{label} readback {value!r} is not finite")
+
+
+def require_pbns_blending_pre_iteration(solution, expected_value):
+    """Fail-closed readback of blending and production schemes before iterate."""
+    _parent, _leaf, value = read_pbns_first_to_second_order_blending(solution)
+    _require_finite_blending_readback(
+        value, "first_to_second_order_blending pre-iterate"
+    )
+    if abs(float(value) - float(expected_value)) >= 1.0e-9:
+        raise PbnsBlendingError(
+            f"first_to_second_order_blending pre-iterate readback {value!r} "
+            f"is not {expected_value}"
+        )
+    require_production_pbns_scheme_snapshot(
+        read_pbns_scheme_snapshot(solution),
+        "pre-iterate",
+    )
+    return value
+
+
+def apply_pbns_first_to_second_order_blending(solution, requested):
+    """Set PBNS first-to-second-order blending fail-closed.
+
+    Writes only numerics_pbns.first_to_second_order_blending. Requires the
+    production Coupled GTS spatial-scheme snapshot before and after. Raises
+    PbnsBlendingError if the leaf is inactive, the set fails, readback is
+    not 0.0, or flow/PT/spatial schemes change.
+    """
+    label = "solution.methods.expert.numerics_pbns.first_to_second_order_blending"
+    if _config_is_preserve(requested):
+        print(f"PBNS_BLEND preserve: leaving {label} unchanged.")
+        return {"label": label, "status": "PRESERVED"}
+
+    try:
+        requested_value = float(requested)
+    except (TypeError, ValueError) as exc:
+        raise PbnsBlendingError(
+            f"first_to_second_order_blending must be 0.0, got {requested!r}"
+        ) from exc
+    if requested_value != 0.0:
+        raise PbnsBlendingError(
+            f"first_to_second_order_blending must be 0.0, got {requested!r}"
+        )
+
+    snapshot_before = require_production_pbns_scheme_snapshot(
+        read_pbns_scheme_snapshot(solution),
+        "before blending set",
+    )
+    parent, _leaf, before = read_pbns_first_to_second_order_blending(solution)
+    print(f"PBNS_BLEND {label} before: {before!r}")
+    try:
+        setattr(parent, "first_to_second_order_blending", requested_value)
+    except Exception as exc:
+        raise PbnsBlendingError(
+            f"{label} set failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    _parent_after, _leaf_after, after = read_pbns_first_to_second_order_blending(
+        solution
+    )
+    print(f"PBNS_BLEND {label} after: {after!r}")
+    _require_finite_blending_readback(after, label)
+    if abs(float(after) - requested_value) >= 1.0e-9:
+        raise PbnsBlendingError(
+            f"{label} readback {after!r} is not {requested_value}"
+        )
+    snapshot_after = require_production_pbns_scheme_snapshot(
+        read_pbns_scheme_snapshot(solution),
+        "after blending set",
+    )
+    if snapshot_after != snapshot_before:
+        raise PbnsBlendingError(
+            "production scheme snapshot changed after blending set: "
+            f"before={snapshot_before!r} after={snapshot_after!r}"
+        )
+    return {
+        "label": label,
+        "status": "APPLIED_CONFIRMED",
+        "before": before,
+        "after": after,
+        "schemes": snapshot_after,
+    }
+
+
 def apply_pseudo_time_verbosity(solution, value):
     """Optionally raise run_calculation.pseudo_time_settings.verbosity.
 
@@ -4678,6 +4906,13 @@ if __name__ == "__main__":
                     f"{verbosity_result}"
                 )
 
+        blending_result = apply_pbns_first_to_second_order_blending(
+            solution,
+            first_to_second_order_blending,
+        )
+        print("PBNS first-to-second-order blending application result:")
+        print(blending_result)
+
 
         # ======================================================
         # ##### [16] Save Setup Case #####
@@ -4728,6 +4963,8 @@ if __name__ == "__main__":
                     inlet_profile_function_name,
                     qoi_convergence_object_names=qoi_convergence_object_names,
                 )
+            if not _config_is_preserve(first_to_second_order_blending):
+                require_pbns_blending_pre_iteration(solution, 0.0)
 
             if use_ramp_convergence_safety:
                 pre_convergence_iterations = minimum_full_source_iterations

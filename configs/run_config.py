@@ -289,6 +289,10 @@ pseudo_time_verbosity = "preserve"
 # Coupled GTS automatic scale factor. "preserve" leaves Fluent unchanged.
 # A positive number is the D0817_a30 u0p3_p6M_ptgts3 pilot only.
 pseudo_time_time_step_size_scale_factor = "preserve"
+# PBNS 1st-to-higher-order blending. "preserve" leaves Fluent unchanged.
+# 0.0 is the isolated P_p100_h00 u0p2_p6M_blend0 warm-up only. Do not set
+# 1.0 here; the final-stage restore is a separate restart, not this leaf.
+first_to_second_order_blending = "preserve"
 
 # Ramp/convergence safety.
 # 260612_RO_UDF.c uses a source ramp that reaches full strength after 150 iterations.
@@ -529,6 +533,23 @@ def _require_preserve_or_positive_number(name, value):
     _require_positive_number(name, value)
 
 
+def _require_preserve_or_zero(name, value):
+    """Raise unless value is the literal 'preserve' or 0.0."""
+    _require_set(name, value)
+    if isinstance(value, str) and value.strip().lower() == "preserve":
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            "run_config.py value must be 'preserve' or 0.0: "
+            f"{name}={value!r}"
+        )
+    if float(value) != 0.0:
+        raise ValueError(
+            "run_config.py value must be 'preserve' or 0.0: "
+            f"{name}={value!r}"
+        )
+
+
 def _require_preserve_or_verbosity(name, value):
     """Raise unless value is 'preserve' or an integer verbosity in {0, 1, 2}."""
     _require_set(name, value)
@@ -766,6 +787,10 @@ def validate_for_solver():
         "pseudo_time_time_step_size_scale_factor",
         pseudo_time_time_step_size_scale_factor,
     )
+    _require_preserve_or_zero(
+        "first_to_second_order_blending",
+        first_to_second_order_blending,
+    )
     _require_bool("use_ramp_convergence_safety", use_ramp_convergence_safety)
     _require_positive_number("ramp_full_iteration", ramp_full_iteration)
     _require_nonnegative_number(
@@ -778,6 +803,21 @@ def validate_for_solver():
         raise ValueError(
             "disable_membrane_source_terms requires enable_qoi_convergence_stop=False"
         )
+    blending_is_preserve = (
+        isinstance(first_to_second_order_blending, str)
+        and first_to_second_order_blending.strip().lower() == "preserve"
+    )
+    if not blending_is_preserve:
+        if enable_qoi_convergence_stop:
+            raise ValueError(
+                "first_to_second_order_blending=0.0 requires "
+                "enable_qoi_convergence_stop=False"
+            )
+        if disable_membrane_source_terms:
+            raise ValueError(
+                "first_to_second_order_blending=0.0 requires "
+                "disable_membrane_source_terms=False"
+            )
     if enable_qoi_convergence_stop:
         if not enable_solve_time_qoi_reports:
             raise ValueError(

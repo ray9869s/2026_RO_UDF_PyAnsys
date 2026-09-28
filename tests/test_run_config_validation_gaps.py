@@ -194,6 +194,36 @@ class TestSolverValidation:
         ):
             cfg.validate_for_solver()
 
+    def test_blending_preserve_and_zero_are_accepted(self, cfg):
+        cfg.first_to_second_order_blending = "preserve"
+        cfg.validate_for_solver()
+        cfg.first_to_second_order_blending = 0.0
+        cfg.enable_qoi_convergence_stop = False
+        cfg.validate_for_solver()
+
+    def test_blending_zero_requires_qoi_stop_off(self, cfg):
+        cfg.first_to_second_order_blending = 0.0
+        cfg.enable_qoi_convergence_stop = True
+        with pytest.raises(
+            ValueError, match="first_to_second_order_blending=0.0"
+        ):
+            cfg.validate_for_solver()
+
+    def test_blending_zero_requires_sources_on(self, cfg):
+        cfg.first_to_second_order_blending = 0.0
+        cfg.enable_qoi_convergence_stop = False
+        cfg.disable_membrane_source_terms = True
+        with pytest.raises(
+            ValueError, match="disable_membrane_source_terms=False"
+        ):
+            cfg.validate_for_solver()
+
+    def test_blending_rejects_nonzero(self, cfg):
+        cfg.first_to_second_order_blending = 1.0
+        cfg.enable_qoi_convergence_stop = False
+        with pytest.raises(ValueError, match="first_to_second_order_blending"):
+            cfg.validate_for_solver()
+
 
 def _load_batch_config_module(filename: str):
     path = (
@@ -339,6 +369,7 @@ class TestRunConfigOverrideAllowlist:
             "post_ramp_buffer_iterations",
             "enable_qoi_convergence_stop",
             "disable_membrane_source_terms",
+            "first_to_second_order_blending",
             "qoi_convergence_report_name",
             "qoi_stop_criterion",
             "qoi_previous_values_to_consider",
@@ -378,6 +409,7 @@ class TestRunConfigOverrideAllowlist:
             "_require_positive_float": "private function",
             "_require_choice": "private function",
             "_require_preserve_or_positive_number": "private function",
+            "_require_preserve_or_zero": "private function",
             "_require_preserve_or_verbosity": "private function",
             "_require_bool": "private function",
             "_require_number": "private function",
