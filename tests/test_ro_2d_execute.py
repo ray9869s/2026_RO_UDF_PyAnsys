@@ -15,12 +15,14 @@ from ro_2d_pilot.config import OperatingPoint, PilotConfig
 from ro_2d_pilot.execute import run_case
 from ro_2d_pilot.fluent_session import (
     MESH_READ_BACKEND,
+    SWITCH_BACKEND,
     FluentMeshReadError,
+    FluentSwitchToSolverError,
     FluentUnavailable,
     classify_transcript,
     first_report_number,
+    meshing_launch_kwargs,
     open_solver_session,
-    solver_launch_kwargs,
 )
 from ro_2d_pilot.geometry import describe_geometry
 from ro_2d_pilot.mesh_build import build_quad_mesh, write_fluent_msh
@@ -254,12 +256,12 @@ def test_missing_fluent_writes_an_invalid_result(tmp_path: Path) -> None:
 
     with pytest.raises(FluentUnavailable, match="AWP_ROOT251"):
         run_case(_config(), tmp_path / "ro2d", launcher=launcher)
-    assert seen["mode"] == "solver"
+    assert seen["mode"] == "meshing"
     assert seen["dimension"] == 2
     assert seen["precision"] == "double"
     assert seen["ui_mode"] == "gui"
     assert seen["graphics_driver"] == "dx11"
-    assert seen["mode"] != "meshing"
+    assert seen["mode"] != "solver"
     assert seen["mode"] != "pure_meshing"
     result = json.loads(
         next((tmp_path / "ro2d").rglob("result.json")).read_text(encoding="utf-8")
@@ -368,9 +370,67 @@ class _Solver:
         self.events.append("exit_solver")
 
 
-def test_launch_kwargs_are_2d_solver_with_gui(tmp_path: Path) -> None:
-    kwargs = solver_launch_kwargs(cwd=tmp_path)
-    assert kwargs["mode"] == "solver"
+class _Connection:
+    def __init__(self, events: list[str]) -> None:
+        self.finalizer_cbs = [lambda: events.append("meshing_finalizer")]
+
+
+class _MeshingScheme:
+    def __init__(
+        self,
+        events: list[str],
+        error: Exception | None = None,
+        result: object = True,
+    ) -> None:
+        self._events = events
+        self._error = error
+        self._result = result
+
+    def eval(self, expression: str, suppress_prompts: bool = True):
+        self._events.append(f"scheme:{expression}")
+        if self._error is not None:
+            raise self._error
+        if "/switch-to-solution-mode yes" not in expression:
+            raise AssertionError(expression)
+        return self._result
+
+
+class _Meshing:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        dimension: int = 2,
+        read_error: Exception | None = None,
+        switch_error: Exception | None = None,
+        switch_result: object = True,
+    ) -> None:
+        self.events = events
+        self.dimension = dimension
+        self.read_error = read_error
+        self._fluent_connection = _Connection(events)
+        self._file_transfer_service = None
+        self.scheme = _MeshingScheme(events, switch_error, switch_result)
+        self.exited = False
+        self.solver: _Solver | None = None
+
+    def build_solver(self, _connection) -> _Solver:
+        self.events.append("attach_solver")
+        self.solver = _Solver(
+            self.events,
+            dimension=self.dimension,
+            read_error=self.read_error,
+        )
+        return self.solver
+
+    def exit(self) -> None:
+        self.exited = True
+        self.events.append("exit_meshing")
+
+
+def test_launch_kwargs_are_2d_meshing_with_gui(tmp_path: Path) -> None:
+    kwargs = meshing_launch_kwargs(cwd=tmp_path)
+    assert kwargs["mode"] == "meshing"
     assert kwargs["dimension"] == 2
     assert kwargs["precision"] == "double"
     assert kwargs["processor_count"] == 1
@@ -378,21 +438,21 @@ def test_launch_kwargs_are_2d_solver_with_gui(tmp_path: Path) -> None:
     assert kwargs["graphics_driver"] == "dx11"
     assert kwargs["start_timeout"] == 300
     assert kwargs["mode"] != "pure_meshing"
-    assert kwargs["mode"] != "meshing"
+    assert kwargs["mode"] != "solver"
 
 
-def test_case_launch_reads_mesh_before_setup(
+def test_case_launch_switches_by_text_menu_then_reads_mesh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     events: list[str] = []
-    solver = _Solver(events)
+    meshing = _Meshing(events)
 
     def launcher(**kwargs):
         events.append(f"launch:{kwargs['mode']}:{kwargs['dimension']}")
         assert kwargs["ui_mode"] == "gui"
         assert kwargs["graphics_driver"] == "dx11"
-        return solver
+        return meshing
 
     def solve(solver, **_kwargs):
         events.append("solver_setup")
@@ -409,42 +469,62 @@ def test_case_launch_reads_mesh_before_setup(
 
     monkeypatch.setattr("ro_2d_pilot.execute.solve_case", solve)
     record = run_case(_config(), tmp_path / "ro2d", launcher=launcher)
+    mesh_read = "read_mesh:" + str(next((tmp_path / "ro2d").rglob("*.msh")))
     assert events == [
-        "launch:solver:2",
-        "read_mesh:" + str(next((tmp_path / "ro2d").rglob("*.msh"))),
+        "launch:meshing:2",
+        "meshing_finalizer",
+        'scheme:(ti-menu-load-string "/switch-to-solution-mode yes")',
+        "attach_solver",
+        mesh_read,
         "scheme:(rpgetvar 'dimension)",
         "mesh_size",
         "tui:/mesh/check",
         "solver_setup",
         "exit_solver",
     ]
-    assert "SwitchToSolution" not in events
+    assert meshing._fluent_connection is None
     assert record["validity"] == "valid"
     assert "exit_meshing" not in events
 
 
 def test_mesh_read_failure_stops_before_mesh_check(tmp_path: Path) -> None:
     events: list[str] = []
-    solver = _Solver(events, read_error=RuntimeError("bad msh"))
+    meshing = _Meshing(events, read_error=RuntimeError("bad msh"))
 
     def launcher(**_kwargs):
-        return solver
+        return meshing
 
     with pytest.raises(FluentMeshReadError, match="read_mesh"):
         run_case(_config(), tmp_path / "ro2d", launcher=launcher)
-    assert "SwitchToSolution" not in events
+    assert "attach_solver" in events
     assert "tui:/mesh/check" not in events
     assert "solver_setup" not in events
-    assert solver.exited is True
+    assert meshing.solver is not None and meshing.solver.exited is True
+    assert meshing.exited is False
     result = json.loads(
         next((tmp_path / "ro2d").rglob("result.json")).read_text(encoding="utf-8")
     )
     assert result["validity"] == "invalid"
 
 
+def test_text_menu_switch_failure_does_not_read_mesh(tmp_path: Path) -> None:
+    events: list[str] = []
+    meshing = _Meshing(events, switch_error=RuntimeError("menu not found"))
+
+    with pytest.raises(FluentSwitchToSolverError, match="menu not found") as caught:
+        run_case(_config(), tmp_path / "ro2d", launcher=lambda **_kwargs: meshing)
+    message = str(caught.value)
+    assert f"backend={SWITCH_BACKEND}" in message
+    assert "attach_solver" not in events
+    assert not any(event.startswith("read_mesh:") for event in events)
+    assert meshing.exited is True
+    assert meshing._fluent_connection is not None
+    assert SWITCH_BACKEND.startswith("scheme ti-menu-load-string")
+
+
 def test_non_2d_session_is_rejected_before_mesh_check(tmp_path: Path) -> None:
     events: list[str] = []
-    solver = _Solver(events, dimension=3)
+    meshing = _Meshing(events, dimension=3)
     mesh_path = tmp_path / "case.msh"
     mesh_path.write_text("(2 2)\n", encoding="ascii")
 
@@ -452,28 +532,31 @@ def test_non_2d_session_is_rejected_before_mesh_check(tmp_path: Path) -> None:
         open_solver_session(
             cwd=tmp_path,
             mesh_path=mesh_path,
-            launcher=lambda **_kwargs: solver,
+            launcher=lambda **_kwargs: meshing,
         )
-    assert "SwitchToSolution" not in events
     assert any(event.startswith("read_mesh:") for event in events)
     assert "tui:/mesh/check" not in events
-    assert solver.exited is True
+    assert meshing.solver is not None and meshing.solver.exited is True
 
 
 def test_mesh_read_failure_names_the_solver_backend(tmp_path: Path) -> None:
     events: list[str] = []
-    solver = _Solver(events, read_error=RuntimeError("Error: read mesh failed"))
+    meshing = _Meshing(events, read_error=RuntimeError("Error: read mesh failed"))
 
     with pytest.raises(FluentMeshReadError, match="read mesh failed") as caught:
-        run_case(_config(), tmp_path / "ro2d", launcher=lambda **_kwargs: solver)
+        run_case(_config(), tmp_path / "ro2d", launcher=lambda **_kwargs: meshing)
     message = str(caught.value)
     assert f"backend={MESH_READ_BACKEND}" in message
     assert "pyfluent=" in message
     assert "fluent=" in message
     assert "exists=True" in message
     assert "size_bytes=" in message
-    assert events[0].startswith("read_mesh:")
-    assert "SwitchToSolution" not in events
+    assert any(
+        "/switch-to-solution-mode yes" in event for event in events
+    )
+    assert events.index("attach_solver") < next(
+        index for index, event in enumerate(events) if event.startswith("read_mesh:")
+    )
     assert "tui:/mesh/check" not in events
     assert MESH_READ_BACKEND == "solver.settings.file.read_mesh"
 
@@ -490,8 +573,9 @@ def test_production_solver_launch_is_unchanged() -> None:
     pilot = (REPO_ROOT / "src" / "ro_2d_pilot" / "fluent_session.py").read_text(
         encoding="utf-8"
     )
-    assert "FluentMode.SOLVER" in pilot
-    assert "def _switch_to_solver" not in pilot
+    assert "ti-menu-load-string" in pilot
+    assert "tui.switch_to_solution_mode(" not in pilot
     assert "SwitchToSolution()" not in pilot
+    assert "hwtree" in pilot
 
 

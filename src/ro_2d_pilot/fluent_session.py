@@ -1,21 +1,20 @@
 """One 2D Fluent session for a single pilot case.
 
-The 3D workflow launches meshing mode and calls ``switch_to_solver()``.
-That path is not available for this 2D mesh. Fluent 2025 R1 2D meshing
-does not serve the TUI menu ``switch_to_solution_mode``, and the
-datamodel command ``SwitchToSolution`` fails in ``S_SwitchToSolution``
-because ``%tg-get-thread-of-class`` is NULL unless a meshing workflow
-created threads. Reading the ``.msh`` inside meshing mode also fails:
-``File.ReadMesh`` calls ``S_FileReadMesh`` and dereferences
-``%tg-size-func-bgrid``. This pilot therefore launches a 2D solver
-session directly. The earlier timeout on this host was ``fluent.exe
-2ddp`` with ``-driver null``. Solver launch here uses ``gui`` and
-``dx11``, which is the graphics setup that started the meshing process.
-The algebraic ``.msh`` is then read with ``settings.file.read_mesh``.
+Direct 2D solver launch reaches the welcome banner and then aborts
+with ``Failed to construct hwtree for collect command``. PyFluent
+keeps waiting on that dead process. This pilot therefore starts in
+meshing mode with ``gui`` and ``dx11``, which does start on this host.
+The gRPC attribute ``tui.switch_to_solution_mode`` is not a live 2D
+menu, and datamodel ``SwitchToSolution`` calls ``S_SwitchToSolution``,
+which needs the workflow binding ``%tg-get-thread-of-class``. The
+switch uses the console text command ``/switch-to-solution-mode yes``
+through scheme ``ti-menu-load-string``, then attaches a solver session
+to the same process. The algebraic ``.msh`` is read after that with
+``settings.file.read_mesh``. Meshing ``File.ReadMesh`` is not used.
 
-PyFluent is imported only while launching. Launch and mesh-read
-failures are separate exceptions. Species setup fails by step name
-when the live settings tree does not match this session.
+PyFluent is imported only while launching. Launch, switch, and
+mesh-read failures are separate exceptions. Species setup fails by
+step name when the live settings tree does not match this session.
 
 The solved inlet is the 2D Poiseuille profile in ``260929_RO_UDF.c``.
 A magnitude plug is written only so the boundary exists before the
@@ -24,6 +23,7 @@ library is loaded, and the profile replace is required before iterate.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -85,6 +85,9 @@ _DEFAULT_START_TIMEOUT_S = 300
 # and requires the size function %tg-size-func-bgrid, which this pilot
 # never creates.
 MESH_READ_BACKEND = "solver.settings.file.read_mesh"
+# Console text menu, not the gRPC TUI attribute and not S_SwitchToSolution.
+SWITCH_COMMAND = "/switch-to-solution-mode yes"
+SWITCH_BACKEND = "scheme ti-menu-load-string /switch-to-solution-mode yes"
 
 
 class FluentUnavailable(RuntimeError):
@@ -104,6 +107,13 @@ class FluentMeshReadError(FluentSetupError):
 
     def __init__(self, message: str) -> None:
         super().__init__("read_mesh", message)
+
+
+class FluentSwitchToSolverError(FluentSetupError):
+    """The text-menu switch out of 2D meshing mode failed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("switch_to_solver", message)
 
 
 def resolve_max_iterations(explicit: int | None = None) -> int:
@@ -147,19 +157,18 @@ def classify_transcript(text: str, *, max_iterations: int) -> dict[str, object]:
     }
 
 
-def solver_launch_kwargs(
+def meshing_launch_kwargs(
     *,
     cwd: Path,
     processor_count: int | None = None,
     product_version: str | None = None,
     start_timeout: int | None = None,
 ) -> dict[str, object]:
-    """Arguments for a 2D solver session.
+    """Arguments for a 2D meshing session that can switch by text TUI.
 
-    ``mode`` is ``"solver"``. Meshing mode is not used: Fluent 2025 R1
-    cannot switch a 2D meshing session to solution mode without a
-    meshing workflow. ``ui_mode`` is ``gui`` and ``graphics_driver`` is
-    ``dx11`` so PyFluent does not add ``-driver null``.
+    ``mode`` is ``"meshing"``. Direct ``"solver"`` launch aborts on this
+    host while constructing ``hwtree``. ``ui_mode`` is ``gui`` and
+    ``graphics_driver`` is ``dx11``.
     """
     version = product_version or os.environ.get(
         "RO_2D_FLUENT_PRODUCT_VERSION",
@@ -177,7 +186,7 @@ def solver_launch_kwargs(
     return {
         "product_version": version,
         "dimension": 2,
-        "mode": "solver",
+        "mode": "meshing",
         "precision": "double",
         "processor_count": processor_count,
         "ui_mode": "gui",
@@ -190,7 +199,7 @@ def solver_launch_kwargs(
     }
 
 
-def launch_solver_session(
+def launch_meshing_session(
     *,
     cwd: Path,
     processor_count: int | None = None,
@@ -198,16 +207,16 @@ def launch_solver_session(
     start_timeout: int | None = None,
     launcher=None,
 ):
-    """Launch Fluent in 2D solver mode. ``launcher`` is for tests."""
-    kwargs = solver_launch_kwargs(
+    """Launch Fluent in 2D meshing mode. ``launcher`` is for tests."""
+    kwargs = meshing_launch_kwargs(
         cwd=cwd,
         processor_count=processor_count,
         product_version=product_version,
         start_timeout=start_timeout,
     )
-    if kwargs["mode"] != "solver":
+    if kwargs["mode"] != "meshing":
         raise FluentUnavailable(
-            "2D pilot must launch FluentMode.SOLVER, "
+            "2D pilot must launch FluentMode.MESHING, "
             f"got {kwargs['mode']!r}."
         )
     start = _default_launcher if launcher is None else launcher
@@ -217,13 +226,11 @@ def launch_solver_session(
         raise
     except Exception as exc:
         raise FluentUnavailable(
-            "Fluent 2D solver launch failed. "
+            "Fluent 2D meshing launch failed. "
             f"mode={kwargs['mode']} dimension={kwargs['dimension']} "
             f"ui_mode={kwargs['ui_mode']} "
             f"graphics_driver={kwargs['graphics_driver']} "
             f"start_timeout={kwargs['start_timeout']}. "
-            "gui and dx11 are required on this host so the command "
-            "does not use -driver null. "
             f"Original error: {type(exc).__name__}: {exc}"
         ) from exc
 
@@ -237,28 +244,34 @@ def open_solver_session(
     start_timeout: int | None = None,
     launcher=None,
 ):
-    """Launch a 2D solver, read the ``.msh``, and mesh-check.
+    """Launch 2D meshing, switch with the text menu, read, and mesh-check.
 
-    No meshing session is started. Fluent 2025 R1 cannot move a 2D
-    meshing session into solution mode without a meshing workflow.
+    Direct solver launch is not used. On this host it aborts with
+    ``Failed to construct hwtree for collect command`` and the PyFluent
+    client waits until the health timeout.
     """
+    meshing = None
     solver = None
     handed_off = False
     try:
-        solver = launch_solver_session(
+        meshing = launch_meshing_session(
             cwd=cwd,
             processor_count=processor_count,
             product_version=product_version,
             start_timeout=start_timeout,
             launcher=launcher,
         )
+        solver = _switch_to_solver(meshing)
         _read_and_verify_mesh(solver, mesh_path)
         _solver_mesh_check(solver)
         handed_off = True
         return solver
     finally:
-        if not handed_off and solver is not None:
-            _exit_quietly(solver)
+        if not handed_off:
+            if solver is not None:
+                _exit_quietly(solver)
+            elif meshing is not None:
+                _exit_quietly(meshing)
 
 
 def solve_case(
@@ -386,24 +399,23 @@ def _default_launcher(**kwargs):
             "ansys-fluent-core is not importable in this interpreter."
         ) from exc
     mode = kwargs.get("mode")
-    if mode in {
-        "meshing",
-        "pure_meshing",
-        pyfluent.FluentMode.MESHING,
-        pyfluent.FluentMode.PURE_MESHING,
-    }:
+    if mode in {"solver", pyfluent.FluentMode.SOLVER}:
         raise FluentUnavailable(
-            "2D pilot must launch FluentMode.SOLVER. "
-            "Fluent 2025 R1 2D meshing cannot enter solution mode: "
-            "switch_to_solution_mode is not a TUI menu, and "
-            "SwitchToSolution requires %tg-get-thread-of-class."
+            "2D pilot must not launch FluentMode.SOLVER directly. "
+            "This host aborts with: Failed to construct hwtree for "
+            "collect command. Launch FluentMode.MESHING."
         )
-    if mode not in {"solver", pyfluent.FluentMode.SOLVER}:
+    if mode in {"pure_meshing", pyfluent.FluentMode.PURE_MESHING}:
         raise FluentUnavailable(
-            "2D pilot must launch FluentMode.SOLVER, "
+            "PURE_MESHING cannot enter solution mode. "
+            "Launch FluentMode.MESHING."
+        )
+    if mode not in {"meshing", pyfluent.FluentMode.MESHING}:
+        raise FluentUnavailable(
+            "2D pilot must launch FluentMode.MESHING, "
             f"got {mode!r}."
         )
-    kwargs["mode"] = pyfluent.FluentMode.SOLVER
+    kwargs["mode"] = pyfluent.FluentMode.MESHING
     kwargs["precision"] = pyfluent.Precision.DOUBLE
     pyfluent.config.check_health_timeout = int(kwargs["start_timeout"])
     return pyfluent.launch_fluent(**kwargs)
@@ -414,6 +426,77 @@ def _exit_quietly(session) -> None:
         session.exit()
     except Exception:
         return
+
+
+def _switch_context(session) -> str:
+    return (
+        f"backend={SWITCH_BACKEND} "
+        f"pyfluent={_pyfluent_version()} "
+        f"fluent={_fluent_version(session)}"
+    )
+
+
+def _scheme_result_is_error(value: object) -> bool:
+    text = str(value).lower()
+    return (
+        "error:" in text
+        or "menu not found" in text
+        or "null pointer" in text
+    )
+
+
+def _switch_to_solver(meshing):
+    """Enter solution mode with the console command, then wrap Solver.
+
+    ``tui.switch_to_solution_mode`` asks the gRPC menu tree and is
+    missing in 2D. ``SwitchToSolution`` is the workflow command and
+    needs ``%tg-get-thread-of-class``. ``ti-menu-load-string`` sends
+    the same text a console user would type. Test doubles may set
+    ``build_solver``.
+    """
+    context = _switch_context(meshing)
+    connection = getattr(meshing, "_fluent_connection", None)
+    if connection is None:
+        raise FluentSwitchToSolverError(
+            f"{context} meshing session has no Fluent connection."
+        )
+    expression = f"(ti-menu-load-string {json.dumps(SWITCH_COMMAND)})"
+    try:
+        for callback in list(getattr(connection, "finalizer_cbs", ())):
+            callback()
+        result = meshing.scheme.eval(expression)
+        if _scheme_result_is_error(result):
+            raise FluentSwitchToSolverError(
+                f"{context} scheme result={result!r}"
+            )
+        builder = getattr(meshing, "build_solver", None)
+        if builder is not None:
+            solver = builder(connection)
+        else:
+            solver = _make_solver_session(
+                connection,
+                meshing.scheme,
+                getattr(meshing, "_file_transfer_service", None),
+            )
+    except FluentSwitchToSolverError:
+        raise
+    except Exception as exc:
+        raise FluentSwitchToSolverError(
+            f"{context} {type(exc).__name__}: {exc}"
+        ) from exc
+    meshing._fluent_connection = None
+    print(f"2D switch to solver succeeded: {context}", flush=True)
+    return solver
+
+
+def _make_solver_session(connection, scheme_eval, file_transfer_service):
+    from ansys.fluent.core.session_solver import Solver
+
+    return Solver(
+        fluent_connection=connection,
+        scheme_eval=scheme_eval,
+        file_transfer_service=file_transfer_service,
+    )
 
 
 def _pyfluent_version() -> str:
