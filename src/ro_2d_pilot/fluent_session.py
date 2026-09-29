@@ -1,21 +1,21 @@
 """One 2D Fluent session for a single pilot case.
 
-The Windows host times out when Fluent is launched directly in solver
-mode. The production 3D workflow therefore launches meshing mode and
-calls ``switch_to_solver()``. This 2D pilot also launches meshing mode,
-but it does not call that method: PyFluent 0.38 implements it as the
-TUI menu ``switch_to_solution_mode``, and Fluent 2025 R1 2D meshing
-does not serve that menu. The switch uses the 25.1 datamodel command
-``meshing.SwitchToSolution`` and then attaches a solver session to the
-same Fluent process. The algebraic ``.msh`` is read only after that
-switch, with ``settings.file.read_mesh``. Meshing ``File.ReadMesh`` is
-not used: on Fluent 2025 R1 it calls ``S_FileReadMesh``, which
-dereferences the uninitialized size function ``%tg-size-func-bgrid``.
-``PURE_MESHING`` is not used: that session cannot switch to the solver.
+The 3D workflow launches meshing mode and calls ``switch_to_solver()``.
+That path is not available for this 2D mesh. Fluent 2025 R1 2D meshing
+does not serve the TUI menu ``switch_to_solution_mode``, and the
+datamodel command ``SwitchToSolution`` fails in ``S_SwitchToSolution``
+because ``%tg-get-thread-of-class`` is NULL unless a meshing workflow
+created threads. Reading the ``.msh`` inside meshing mode also fails:
+``File.ReadMesh`` calls ``S_FileReadMesh`` and dereferences
+``%tg-size-func-bgrid``. This pilot therefore launches a 2D solver
+session directly. The earlier timeout on this host was ``fluent.exe
+2ddp`` with ``-driver null``. Solver launch here uses ``gui`` and
+``dx11``, which is the graphics setup that started the meshing process.
+The algebraic ``.msh`` is then read with ``settings.file.read_mesh``.
 
-PyFluent is imported only while launching. Launch, mesh-read, and
-switch failures are separate exceptions. Species setup fails by step
-name when the live settings tree does not match this session.
+PyFluent is imported only while launching. Launch and mesh-read
+failures are separate exceptions. Species setup fails by step name
+when the live settings tree does not match this session.
 
 The solved inlet is the 2D Poiseuille profile in ``260929_RO_UDF.c``.
 A magnitude plug is written only so the boundary exists before the
@@ -81,17 +81,10 @@ _RESIDUAL_EQUATIONS = (
 _REQUIRED_RESIDUALS = ("continuity", "x-velocity", "y-velocity")
 _CELL_COUNT_RE = re.compile(r"(\d+)\s+cells\b", re.IGNORECASE)
 _DEFAULT_START_TIMEOUT_S = 300
-# Meshing File.ReadMesh is S_FileReadMesh. On Fluent 2025 R1 that
-# command requires the meshing size function %tg-size-func-bgrid, which
-# stays NULL when no meshing workflow was created. The reader for a
-# Python-written solver .msh is the solver settings command, used after
-# the datamodel switch below. It is the same file menu as the 3D
-# read_case/replace_mesh path.
+# Classic solver file/read-mesh. Meshing File.ReadMesh is S_FileReadMesh
+# and requires the size function %tg-size-func-bgrid, which this pilot
+# never creates.
 MESH_READ_BACKEND = "solver.settings.file.read_mesh"
-# Meshing.switch_to_solver() calls tui.switch_to_solution_mode. That TUI
-# menu is absent on a Fluent 2025 R1 2D meshing session. Root.SwitchToSolution
-# is the datamodel command in datamodel_251/meshing.py and takes no arguments.
-SWITCH_BACKEND = "meshing.SwitchToSolution"
 
 
 class FluentUnavailable(RuntimeError):
@@ -107,17 +100,10 @@ class FluentSetupError(RuntimeError):
 
 
 class FluentMeshReadError(FluentSetupError):
-    """The meshing session could not read or verify the 2D ``.msh``."""
+    """The solver session could not read or verify the 2D ``.msh``."""
 
     def __init__(self, message: str) -> None:
         super().__init__("read_mesh", message)
-
-
-class FluentSwitchToSolverError(FluentSetupError):
-    """``switch_to_solver()`` failed before the mesh was read."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__("switch_to_solver", message)
 
 
 def resolve_max_iterations(explicit: int | None = None) -> int:
@@ -161,18 +147,19 @@ def classify_transcript(text: str, *, max_iterations: int) -> dict[str, object]:
     }
 
 
-def meshing_launch_kwargs(
+def solver_launch_kwargs(
     *,
     cwd: Path,
     processor_count: int | None = None,
     product_version: str | None = None,
     start_timeout: int | None = None,
 ) -> dict[str, object]:
-    """Arguments for a regular 2D meshing session.
+    """Arguments for a 2D solver session.
 
-    ``mode`` is ``"meshing"``, which ``FluentMode.MESHING`` uses. It is
-    not ``"solver"`` and not ``"pure_meshing"``. The UI settings match
-    the production launcher on this Windows host: ``gui`` and ``dx11``.
+    ``mode`` is ``"solver"``. Meshing mode is not used: Fluent 2025 R1
+    cannot switch a 2D meshing session to solution mode without a
+    meshing workflow. ``ui_mode`` is ``gui`` and ``graphics_driver`` is
+    ``dx11`` so PyFluent does not add ``-driver null``.
     """
     version = product_version or os.environ.get(
         "RO_2D_FLUENT_PRODUCT_VERSION",
@@ -190,7 +177,7 @@ def meshing_launch_kwargs(
     return {
         "product_version": version,
         "dimension": 2,
-        "mode": "meshing",
+        "mode": "solver",
         "precision": "double",
         "processor_count": processor_count,
         "ui_mode": "gui",
@@ -203,7 +190,7 @@ def meshing_launch_kwargs(
     }
 
 
-def launch_meshing_session(
+def launch_solver_session(
     *,
     cwd: Path,
     processor_count: int | None = None,
@@ -211,16 +198,16 @@ def launch_meshing_session(
     start_timeout: int | None = None,
     launcher=None,
 ):
-    """Launch Fluent in regular meshing mode. ``launcher`` is for tests."""
-    kwargs = meshing_launch_kwargs(
+    """Launch Fluent in 2D solver mode. ``launcher`` is for tests."""
+    kwargs = solver_launch_kwargs(
         cwd=cwd,
         processor_count=processor_count,
         product_version=product_version,
         start_timeout=start_timeout,
     )
-    if kwargs["mode"] != "meshing":
+    if kwargs["mode"] != "solver":
         raise FluentUnavailable(
-            "2D pilot must launch FluentMode.MESHING, "
+            "2D pilot must launch FluentMode.SOLVER, "
             f"got {kwargs['mode']!r}."
         )
     start = _default_launcher if launcher is None else launcher
@@ -230,8 +217,13 @@ def launch_meshing_session(
         raise
     except Exception as exc:
         raise FluentUnavailable(
-            "Fluent meshing launch failed. On the Windows host, "
-            "AWP_ROOT251 must point at the Ansys 2025 R1 installation. "
+            "Fluent 2D solver launch failed. "
+            f"mode={kwargs['mode']} dimension={kwargs['dimension']} "
+            f"ui_mode={kwargs['ui_mode']} "
+            f"graphics_driver={kwargs['graphics_driver']} "
+            f"start_timeout={kwargs['start_timeout']}. "
+            "gui and dx11 are required on this host so the command "
+            "does not use -driver null. "
             f"Original error: {type(exc).__name__}: {exc}"
         ) from exc
 
@@ -245,35 +237,28 @@ def open_solver_session(
     start_timeout: int | None = None,
     launcher=None,
 ):
-    """Launch meshing, switch, read the ``.msh``, and mesh-check.
+    """Launch a 2D solver, read the ``.msh``, and mesh-check.
 
-    The returned object is a solver session. The meshing object is not
-    usable after a successful switch, and a second Fluent process is
-    not started. The mesh is read in the solver because meshing
-    ``File.ReadMesh`` is not a classic ``.msh`` reader on Fluent 2025 R1.
+    No meshing session is started. Fluent 2025 R1 cannot move a 2D
+    meshing session into solution mode without a meshing workflow.
     """
-    meshing = None
     solver = None
     handed_off = False
     try:
-        meshing = launch_meshing_session(
+        solver = launch_solver_session(
             cwd=cwd,
             processor_count=processor_count,
             product_version=product_version,
             start_timeout=start_timeout,
             launcher=launcher,
         )
-        solver = _switch_to_solver(meshing)
         _read_and_verify_mesh(solver, mesh_path)
         _solver_mesh_check(solver)
         handed_off = True
         return solver
     finally:
-        if not handed_off:
-            if solver is not None:
-                _exit_quietly(solver)
-            elif meshing is not None:
-                _exit_quietly(meshing)
+        if not handed_off and solver is not None:
+            _exit_quietly(solver)
 
 
 def solve_case(
@@ -401,17 +386,24 @@ def _default_launcher(**kwargs):
             "ansys-fluent-core is not importable in this interpreter."
         ) from exc
     mode = kwargs.get("mode")
-    if mode in {"pure_meshing", pyfluent.FluentMode.PURE_MESHING}:
+    if mode in {
+        "meshing",
+        "pure_meshing",
+        pyfluent.FluentMode.MESHING,
+        pyfluent.FluentMode.PURE_MESHING,
+    }:
         raise FluentUnavailable(
-            "PURE_MESHING cannot switch_to_solver(). "
-            "Launch FluentMode.MESHING."
+            "2D pilot must launch FluentMode.SOLVER. "
+            "Fluent 2025 R1 2D meshing cannot enter solution mode: "
+            "switch_to_solution_mode is not a TUI menu, and "
+            "SwitchToSolution requires %tg-get-thread-of-class."
         )
-    if mode not in {"meshing", pyfluent.FluentMode.MESHING}:
+    if mode not in {"solver", pyfluent.FluentMode.SOLVER}:
         raise FluentUnavailable(
-            "2D pilot must launch FluentMode.MESHING, "
+            "2D pilot must launch FluentMode.SOLVER, "
             f"got {mode!r}."
         )
-    kwargs["mode"] = pyfluent.FluentMode.MESHING
+    kwargs["mode"] = pyfluent.FluentMode.SOLVER
     kwargs["precision"] = pyfluent.Precision.DOUBLE
     pyfluent.config.check_health_timeout = int(kwargs["start_timeout"])
     return pyfluent.launch_fluent(**kwargs)
@@ -422,61 +414,6 @@ def _exit_quietly(session) -> None:
         session.exit()
     except Exception:
         return
-
-
-def _switch_context(meshing) -> str:
-    return (
-        f"backend={SWITCH_BACKEND} "
-        f"pyfluent={_pyfluent_version()} "
-        f"fluent={_fluent_version(meshing)}"
-    )
-
-
-def _switch_to_solver(meshing):
-    """Switch a 2D meshing session without the missing TUI menu.
-
-    The solver object keeps the meshing session's Fluent connection, so
-    this does not launch a second process. Test doubles may set
-    ``build_solver``; a live session does not have that attribute.
-    """
-    context = _switch_context(meshing)
-    connection = getattr(meshing, "_fluent_connection", None)
-    if connection is None:
-        raise FluentSwitchToSolverError(
-            f"{context} meshing session has no Fluent connection."
-        )
-    try:
-        for callback in list(getattr(connection, "finalizer_cbs", ())):
-            callback()
-        meshing.meshing.SwitchToSolution()
-        builder = getattr(meshing, "build_solver", None)
-        if builder is not None:
-            solver = builder(connection)
-        else:
-            solver = _make_solver_session(
-                connection,
-                meshing.scheme,
-                getattr(meshing, "_file_transfer_service", None),
-            )
-    except FluentSwitchToSolverError:
-        raise
-    except Exception as exc:
-        raise FluentSwitchToSolverError(
-            f"{context} {type(exc).__name__}: {exc}"
-        ) from exc
-    meshing._fluent_connection = None
-    print(f"2D switch to solver succeeded: {context}", flush=True)
-    return solver
-
-
-def _make_solver_session(connection, scheme_eval, file_transfer_service):
-    from ansys.fluent.core.session_solver import Solver
-
-    return Solver(
-        fluent_connection=connection,
-        scheme_eval=scheme_eval,
-        file_transfer_service=file_transfer_service,
-    )
 
 
 def _pyfluent_version() -> str:
