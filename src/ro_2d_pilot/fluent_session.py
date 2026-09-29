@@ -763,11 +763,32 @@ def _configure_mixture(setup) -> None:
         "mass_diffusivity",
     )
     mixture.mass_diffusivity.value.set_state(MASS_DIFFUSIVITY_M2_S)
+    _keep_nacl_water_mixture(mixture)
+    # molecular-weight is an option/value property. A bare number is
+    # rejected: "value" is not an allowed option, only "constant" is.
+    _set_constant(
+        mixture.species.volumetric_species[SPECIES_NAME].molecular_weight,
+        _NACL_MW_KG_KMOL,
+        "nacl_molecular_weight",
+    )
+    _set_mixture_density(mixture)
+    _disable_energy(setup)
+
+
+def _keep_nacl_water_mixture(mixture) -> None:
+    """Leave volumetric species as ``nacl``, then ``water``.
+
+    Fluent 2025 R1 mixture-template already contains ``h2o``, ``o2``,
+    and ``n2``. Setting the last species to water does not remove
+    them, so ``nacl`` is not index 0. ``SALT_YI_INDEX`` in the 2D UDF
+    is 0, so those default species are deleted after water is last.
+    """
     species = mixture.species.volumetric_species
     names = list(species.get_object_names())
-    for name in ("water", "nacl"):
+    for name in ("water", SPECIES_NAME):
         if name not in names:
             species.create(name)
+            names.append(name)
     try:
         mixture.species.last_species.set_state("water")
     except Exception as exc:
@@ -775,22 +796,31 @@ def _configure_mixture(setup) -> None:
             "last_species",
             f"{type(exc).__name__}: {exc}",
         ) from exc
-    # molecular-weight is an option/value property. A bare number is
-    # rejected: "value" is not an allowed option, only "constant" is.
-    _set_constant(
-        species["nacl"].molecular_weight,
-        _NACL_MW_KG_KMOL,
-        "nacl_molecular_weight",
-    )
+    for name in list(species.get_object_names()):
+        if name in {SPECIES_NAME, "water"}:
+            continue
+        try:
+            del species[name]
+        except Exception as exc:
+            raise FluentSetupError(
+                "species_order",
+                f"Could not remove default species {name}. "
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+    try:
+        mixture.species.last_species.set_state("water")
+    except Exception as exc:
+        raise FluentSetupError(
+            "last_species",
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
     names = list(species.get_object_names())
-    if not names or names[0] != SPECIES_NAME:
+    if names != [SPECIES_NAME, "water"]:
         raise FluentSetupError(
             "species_order",
-            "SALT_YI_INDEX is 0, so nacl must be the first volumetric "
-            f"species. Got {names}.",
+            "SALT_YI_INDEX is 0, so volumetric species must be "
+            f"[{SPECIES_NAME!r}, 'water']. Got {names}.",
         )
-    _set_mixture_density(mixture)
-    _disable_energy(setup)
 
 
 def _set_mixture_density(mixture) -> None:

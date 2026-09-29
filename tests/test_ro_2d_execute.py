@@ -22,6 +22,7 @@ from ro_2d_pilot.fluent_session import (
     FluentSwitchToSolverError,
     FluentUnavailable,
     _configure_mixture,
+    _keep_nacl_water_mixture,
     _set_constant,
     _set_mixture_density,
     classify_transcript,
@@ -702,6 +703,43 @@ def test_nacl_molecular_weight_uses_the_constant_property() -> None:
     assert group.option.state == "constant"
     assert group.value.state == 58.44
     assert "molecular_weight.set_state" not in inspect.getsource(_configure_mixture)
+
+
+def test_default_air_species_are_removed_so_nacl_is_first() -> None:
+    class _Species:
+        def __init__(self) -> None:
+            self.names = ["h2o", "o2", "n2"]
+
+        def get_object_names(self) -> list[str]:
+            return list(self.names)
+
+        def create(self, name: str) -> None:
+            self.names.append(name)
+
+        def __delitem__(self, name: str) -> None:
+            self.names.remove(name)
+
+    class _Last:
+        def __init__(self, species: _Species) -> None:
+            self._species = species
+
+        def set_state(self, name: str) -> None:
+            self._species.names.remove(name)
+            self._species.names.append(name)
+
+    species = _Species()
+
+    class _SpeciesMenu:
+        def __init__(self) -> None:
+            self.volumetric_species = species
+            self.last_species = _Last(species)
+
+    class _Mixture:
+        def __init__(self) -> None:
+            self.species = _SpeciesMenu()
+
+    _keep_nacl_water_mixture(_Mixture())
+    assert species.names == ["nacl", "water"]
 
 
 def test_production_solver_launch_is_unchanged() -> None:
