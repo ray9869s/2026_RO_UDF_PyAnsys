@@ -3,8 +3,11 @@
 The Windows host times out when Fluent is launched directly in solver
 mode. The production 3D workflow therefore launches meshing mode and
 calls ``switch_to_solver()``. This module does the same for one 2D
-case, then reads the algebraic ``.msh`` that Python already wrote.
-``PURE_MESHING`` is not used: that session cannot switch to the solver.
+case. The algebraic ``.msh`` is read only after that switch, with
+``settings.file.read_mesh``. Meshing ``File.ReadMesh`` is not used:
+on Fluent 2025 R1 it calls ``S_FileReadMesh``, which dereferences the
+uninitialized size function ``%tg-size-func-bgrid``. ``PURE_MESHING``
+is not used: that session cannot switch to the solver.
 
 PyFluent is imported only while launching. Launch, mesh-read, and
 switch failures are separate exceptions. Species setup fails by step
@@ -74,9 +77,12 @@ _RESIDUAL_EQUATIONS = (
 _REQUIRED_RESIDUALS = ("continuity", "x-velocity", "y-velocity")
 _CELL_COUNT_RE = re.compile(r"(\d+)\s+cells\b", re.IGNORECASE)
 _DEFAULT_START_TIMEOUT_S = 300
-# Fluent 2025 R1 meshing datamodel. The classic TUI file/read-mesh menu
-# is not served by this session (RuntimeError: menu not found).
-MESH_READ_BACKEND = "meshing.File.ReadMesh"
+# Meshing File.ReadMesh is S_FileReadMesh. On Fluent 2025 R1 that
+# command requires the meshing size function %tg-size-func-bgrid, which
+# stays NULL when no meshing workflow was created. The reader for a
+# Python-written solver .msh is the solver settings command, used after
+# switch_to_solver(), same file menu as the 3D read_case/replace_mesh.
+MESH_READ_BACKEND = "solver.settings.file.read_mesh"
 
 
 class FluentUnavailable(RuntimeError):
@@ -99,7 +105,7 @@ class FluentMeshReadError(FluentSetupError):
 
 
 class FluentSwitchToSolverError(FluentSetupError):
-    """``switch_to_solver()`` failed after the mesh was read."""
+    """``switch_to_solver()`` failed before the mesh was read."""
 
     def __init__(self, message: str) -> None:
         super().__init__("switch_to_solver", message)
@@ -230,11 +236,12 @@ def open_solver_session(
     start_timeout: int | None = None,
     launcher=None,
 ):
-    """Launch meshing, read the ``.msh``, switch, and mesh-check.
+    """Launch meshing, switch, read the ``.msh``, and mesh-check.
 
     The returned object is a solver session. The meshing object is not
     usable after a successful switch, and a second Fluent process is
-    not started.
+    not started. The mesh is read in the solver because meshing
+    ``File.ReadMesh`` is not a classic ``.msh`` reader on Fluent 2025 R1.
     """
     meshing = None
     solver = None
@@ -247,7 +254,6 @@ def open_solver_session(
             start_timeout=start_timeout,
             launcher=launcher,
         )
-        _read_and_verify_mesh(meshing, mesh_path)
         try:
             solver = meshing.switch_to_solver()
         except FluentSwitchToSolverError:
@@ -256,6 +262,7 @@ def open_solver_session(
             raise FluentSwitchToSolverError(
                 f"{type(exc).__name__}: {exc}"
             ) from exc
+        _read_and_verify_mesh(solver, mesh_path)
         _solver_mesh_check(solver)
         handed_off = True
         return solver
@@ -448,12 +455,12 @@ def _mesh_read_context(session, mesh_path: Path) -> str:
     )
 
 
-def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
-    """Read the Python-written ``.msh`` with the 25.1 meshing datamodel."""
+def _read_and_verify_mesh(solver, mesh_path: Path) -> None:
+    """Read the Python-written ``.msh`` with the 25.1 solver file menu."""
     fluent_path = path_to_fluent_str(mesh_path)
-    context = _mesh_read_context(meshing, mesh_path)
+    context = _mesh_read_context(solver, mesh_path)
     try:
-        meshing.meshing.File.ReadMesh(FileName=fluent_path)
+        solver.settings.file.read_mesh(file_name=fluent_path)
     except FluentMeshReadError:
         raise
     except Exception as exc:
@@ -461,8 +468,8 @@ def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
             f"{context} {type(exc).__name__}: {exc}"
         ) from exc
     try:
-        dimension = _as_int(meshing.scheme.eval("(rpgetvar 'dimension)"))
-        report = meshing.tui.report.mesh_size()
+        dimension = _as_int(solver.scheme.eval("(rpgetvar 'dimension)"))
+        report = solver.tui.report.mesh_size()
     except FluentMeshReadError:
         raise
     except Exception as exc:
@@ -476,7 +483,7 @@ def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
         )
     cells = _cell_count_from_report(report)
     if cells is None:
-        cells = _cell_count_from_scheme(meshing)
+        cells = _cell_count_from_scheme(solver)
     if cells is None or cells < 1:
         raise FluentMeshReadError(
             "Mesh size did not report a positive cell count. "
@@ -489,10 +496,10 @@ def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
     )
 
 
-def _cell_count_from_scheme(meshing) -> int | None:
+def _cell_count_from_scheme(session) -> int | None:
     for expression in ("(mesh-size)",):
         try:
-            value = meshing.scheme.eval(expression)
+            value = session.scheme.eval(expression)
         except Exception:
             continue
         cells = _cell_count_from_report(value)
