@@ -12,7 +12,7 @@ import math
 from typing import Mapping
 
 from ro_2d_pilot.config import MESH_LEVELS
-from ro_2d_pilot.source_schedule import full_source_gate_ok, source_ramp_factor
+from ro_2d_pilot.source_schedule import display_ramp, full_source_gate_ok
 
 GCI_NOT_APPLIED = (
     "Formal GCI and Richardson extrapolation are not applied. "
@@ -209,9 +209,7 @@ def _row(record: Mapping[str, object]) -> dict[str, object]:
     total_iterations = record.get("total_iterations")
     if total_iterations is None:
         total_iterations = record.get("solver_iterations")
-    final_ramp = record.get("source_ramp_final")
-    if final_ramp is None:
-        final_ramp = source_ramp_factor(total_iterations)
+    final_ramp = display_ramp(record.get("source_ramp_final"), total_iterations)
     row: dict[str, object] = {
         "mesh_level": _level_of(record),
         "convergence_status": _status_text(record.get("convergence_status")),

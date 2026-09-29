@@ -21,8 +21,8 @@ from ro_2d_pilot.fluent_session import (
 from ro_2d_pilot.membrane_diag import (
     flux_consistency,
     membrane_geometry_diagnostics,
-    source_ramp_factor,
 )
+from ro_2d_pilot.source_schedule import display_ramp, ramp_telemetry_warning
 from ro_2d_pilot.mesh_build import build_quad_mesh, write_fluent_msh
 from ro_2d_pilot.physics import RHO_KG_M3, UDF_FILE_NAME
 from ro_2d_pilot.plan import build_plan, materialize
@@ -176,12 +176,10 @@ def _with_membrane_diagnostics(
     payload = dict(metrics or {})
     solution = payload.pop("membrane_solution", None)
     diagnostics = dict(geometry)
-    recorded_ramp = payload.get("source_ramp_final")
-    if isinstance(recorded_ramp, bool) or not isinstance(recorded_ramp, (int, float)):
-        recorded_ramp = source_ramp_factor(
-            payload.get("total_iterations", payload.get("solver_iterations"))
-        )
-    diagnostics["source_ramp_factor"] = recorded_ramp
+    diagnostics["source_ramp_factor"] = display_ramp(
+        payload.get("source_ramp_final"),
+        payload.get("total_iterations", payload.get("solver_iterations")),
+    )
     diagnostics["full_source_iterations"] = payload.get("full_source_iterations")
     if isinstance(solution, dict):
         diagnostics.update(solution)
@@ -201,6 +199,13 @@ def _with_membrane_diagnostics(
                 density_kg_m3=RHO_KG_M3,
             )
         )
+        warning = ramp_telemetry_warning(
+            diagnostics.get("source_ramp_factor"),
+            diagnostics.get("inferred_ramp_from_flux_ratio"),
+        )
+        if warning is not None:
+            diagnostics["ramp_telemetry_warning"] = warning
+            print(warning, flush=True)
     payload["membrane_diagnostics"] = diagnostics
     return payload
 

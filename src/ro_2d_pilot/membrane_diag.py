@@ -11,7 +11,11 @@ from typing import Mapping
 
 from ro_2d_pilot.config import PilotConfig
 from ro_2d_pilot.mesh_build import QuadMesh
-from ro_2d_pilot.source_schedule import source_ramp_factor
+from ro_2d_pilot.source_schedule import (
+    display_ramp,
+    ramp_telemetry_warning,
+    source_ramp_factor,
+)
 
 _MEMBRANE_ZONES = ("wall_bottom_mem", "wall_top_mem")
 
@@ -117,6 +121,10 @@ def flux_consistency(
         "source_vs_balance_rel": _relative(source_integral_kg_s, balance),
         "surface_vs_balance_rel": _relative(surface, balance),
         "surface_vs_source_rel": _relative(surface, source_integral_kg_s),
+        "abs_source_vs_balance_rel": _abs_relative(source_integral_kg_s, balance),
+        "abs_surface_vs_balance_rel": _abs_relative(surface, balance),
+        "source_over_surface": _ratio(source_integral_kg_s, surface),
+        "inferred_ramp_from_flux_ratio": _ratio(source_integral_kg_s, surface),
     }
 
 
@@ -143,6 +151,18 @@ def _surface_mass_flow(
     ):
         return None
     return (density_kg_m3 * water_flux_m_s + salt_flux_kg_m2_s) * length_m
+
+
+def _abs_relative(value: float | None, reference: float | None) -> float | None:
+    if value is None or reference is None or reference == 0.0:
+        return None
+    return abs(abs(value) - abs(reference)) / abs(reference)
+
+
+def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator is None or denominator == 0.0:
+        return None
+    return numerator / denominator
 
 
 def _relative(value: float | None, reference: float | None) -> float | None:
@@ -248,6 +268,10 @@ def format_membrane_comparison(records: list[Mapping[str, object]]) -> str:
                 ("source_vs_balance", "source_vs_balance_rel", True),
                 ("surface_vs_balance", "surface_vs_balance_rel", True),
                 ("surface_vs_source", "surface_vs_source_rel", True),
+                ("abs_src_bal", "abs_source_vs_balance_rel", True),
+                ("abs_srf_bal", "abs_surface_vs_balance_rel", True),
+                ("src_over_srf", "source_over_surface", True),
+                ("inferred_ramp", "inferred_ramp_from_flux_ratio", True),
             ),
         ),
         "",
@@ -296,19 +320,29 @@ def format_membrane_comparison(records: list[Mapping[str, object]]) -> str:
             lines.append(
                 f"{_level_label(record)} divergence_phase={phase}"
             )
+        warning = ramp_telemetry_warning(
+            _shown_ramp(record),
+            _diag_value(record, "inferred_ramp_from_flux_ratio"),
+        )
+        if warning is not None:
+            lines.append(f"{_level_label(record)}: {warning}")
     return "\n".join(lines)
+
+
+def _shown_ramp(record: Mapping[str, object]) -> float | None:
+    recorded = record.get("source_ramp_final")
+    if recorded is None:
+        recorded = _diag_value(record, "source_ramp_factor")
+    iteration = record.get("total_iterations")
+    if iteration is None:
+        iteration = record.get("solver_iterations")
+    return display_ramp(recorded, iteration)
 
 
 def _full_source_lines(records: list[Mapping[str, object]]) -> str:
     lines = []
     for record in records:
-        ramp = record.get("source_ramp_final")
-        if ramp is None:
-            ramp = _diag_value(record, "source_ramp_factor")
-        if ramp is None:
-            ramp = source_ramp_factor(
-                record.get("total_iterations", record.get("solver_iterations"))
-            )
+        ramp = _shown_ramp(record)
         lines.append(
             f"{_level_label(record)}: final source ramp={_format_value(ramp)}; "
             "iterations at ramp 1.0="
@@ -328,11 +362,7 @@ def _section(
         for _name, key, nested in columns:
             value = _diag_value(record, key) if nested else record.get(key)
             if key == "source_ramp_factor" and value is None:
-                value = record.get("source_ramp_final")
-            if key == "source_ramp_factor" and value is None:
-                value = source_ramp_factor(
-                    record.get("total_iterations", record.get("solver_iterations"))
-                )
+                value = _shown_ramp(record)
             cells.append(_format_value(value).rjust(16))
         body.append("".join(cells))
     return "\n".join(body)

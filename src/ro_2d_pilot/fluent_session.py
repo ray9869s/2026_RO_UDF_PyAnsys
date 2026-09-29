@@ -44,6 +44,7 @@ from ro_2d_pilot.config import PilotConfig
 from ro_2d_pilot.membrane_diag import divergence_phase
 from ro_2d_pilot.source_schedule import (
     CONVERGED_BEFORE_FULL_SOURCE,
+    ITERATION_STATE_BACKEND,
     IterateRequest,
     ScheduleResult,
     observation_from_transcript,
@@ -492,6 +493,7 @@ def _schedule_fields(schedule: ScheduleResult) -> dict[str, object]:
             schedule.convergence_checked_after_full_source
         ),
         "total_iterations": schedule.completed_iterations,
+        "iteration_state_backend": ITERATION_STATE_BACKEND,
     }
 
 
@@ -501,12 +503,53 @@ def _transcript_diverged(text: str) -> bool:
 
 
 def _set_convergence_checks(solution, enabled: bool) -> None:
+    """Write residual check-convergence and require the read-back to match.
+
+    Every equation currently in the residual monitor is written. The
+    PyFluent 25.1 residual settings expose the criterion, not the
+    iteration counter, so the iteration itself stays on the transcript
+    backend.
+    """
     equations = solution.monitor.residual.equations
-    available = list(equations.get_state().keys())
-    for name in _RESIDUAL_EQUATIONS:
-        if name not in available:
-            continue
-        equations[name].check_convergence = enabled
+    names = list(equations.get_state().keys())
+    if not names:
+        raise FluentSetupError(
+            "convergence_checks",
+            "residual equations are empty; convergence checks were not changed.",
+        )
+    readback: dict[str, bool] = {}
+    for name in names:
+        node = equations[name].check_convergence
+        node.set_state(enabled)
+        readback[name] = _as_check_enabled(node.get_state())
+    print(f"convergence_check_enabled = {str(enabled).lower()}", flush=True)
+    mismatches = {
+        name: value for name, value in readback.items() if value is not enabled
+    }
+    if mismatches:
+        print(f"convergence_check_readback = {readback}", flush=True)
+        raise FluentSetupError(
+            "convergence_checks",
+            "convergence check read-back does not match "
+            f"requested {enabled}: {readback}",
+        )
+
+
+def _as_check_enabled(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "yes", "on", "1", "#t"}:
+            return True
+        if token in {"false", "no", "off", "0", "#f"}:
+            return False
+    raise FluentSetupError(
+        "convergence_checks",
+        f"convergence check read-back is not a boolean, got {value!r}.",
+    )
 
 
 def _with_divergence_note(

@@ -82,6 +82,7 @@ RESULT_FIELDS = (
     "convergence_iteration",
     "total_iterations",
     "validity_reason",
+    "iteration_state_backend",
 )
 
 
@@ -205,6 +206,17 @@ def judge_validity(
     ):
         return VALIDITY_INVALID
     return VALIDITY_VALID
+
+
+def _optional_backend(value: object) -> str | None:
+    if value is None:
+        return None
+    if value not in {"transcript", "direct"}:
+        raise ValueError(
+            "iteration_state_backend must be 'transcript', 'direct', or null, "
+            f"got {value!r}."
+        )
+    return value
 
 
 def _optional_bool(name: str, value: object) -> bool | None:
@@ -427,6 +439,9 @@ def build_result_record(
         "convergence_iteration": convergence_iteration,
         "total_iterations": total_iterations,
         "validity_reason": validity_reason,
+        "iteration_state_backend": _optional_backend(
+            supplied.get("iteration_state_backend")
+        ),
     }
     missing = [key for key in RESULT_FIELDS if key not in record]
     if missing:

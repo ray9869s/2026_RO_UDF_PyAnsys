@@ -151,6 +151,34 @@ def test_flux_ratios_keep_sign_and_reject_a_zero_reference() -> None:
     assert zero_balance["surface_vs_source_rel"] == pytest.approx((1.0 - 0.2) / 0.2)
 
 
+def test_signed_balance_keeps_magnitude_and_warns_on_ramp_mismatch() -> None:
+    row = flux_consistency(
+        mass_in_kg_s=0.0,
+        mass_out_kg_s=-0.8,
+        source_integral_kg_s=0.8,
+        water_flux_avg_m_s=1.0,
+        salt_flux_avg_kg_m2_s=0.0,
+        membrane_length_m=1.0,
+        density_kg_m3=1.0,
+    )
+    assert row["source_vs_balance_rel"] == pytest.approx(-2.0)
+    assert row["surface_vs_balance_rel"] == pytest.approx(-2.25)
+    assert row["abs_source_vs_balance_rel"] == pytest.approx(0.0)
+    assert row["abs_surface_vs_balance_rel"] == pytest.approx(0.25)
+    assert row["source_over_surface"] == pytest.approx(0.8)
+    assert row["inferred_ramp_from_flux_ratio"] == pytest.approx(0.8)
+    text = format_membrane_comparison(
+        [
+            {
+                "mesh_level": "medium",
+                "source_ramp_final": 0.2,
+                "membrane_diagnostics": row,
+            }
+        ]
+    )
+    assert "ramp telemetry inconsistent with source/surface flux ratio" in text
+
+
 def test_completed_runs_stopped_before_the_full_source_ramp() -> None:
     assert source_ramp_factor(95) == pytest.approx(0.5)
     assert source_ramp_factor(109) == pytest.approx(0.8)
