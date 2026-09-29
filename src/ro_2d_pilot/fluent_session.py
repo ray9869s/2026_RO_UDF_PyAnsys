@@ -775,13 +775,13 @@ def _configure_mixture(setup) -> None:
             "last_species",
             f"{type(exc).__name__}: {exc}",
         ) from exc
-    try:
-        species["nacl"].molecular_weight.set_state(_NACL_MW_KG_KMOL)
-    except Exception as exc:
-        raise FluentSetupError(
-            "nacl_molecular_weight",
-            f"{type(exc).__name__}: {exc}",
-        ) from exc
+    # molecular-weight is an option/value property. A bare number is
+    # rejected: "value" is not an allowed option, only "constant" is.
+    _set_constant(
+        species["nacl"].molecular_weight,
+        _NACL_MW_KG_KMOL,
+        "nacl_molecular_weight",
+    )
     names = list(species.get_object_names())
     if not names or names[0] != SPECIES_NAME:
         raise FluentSetupError(

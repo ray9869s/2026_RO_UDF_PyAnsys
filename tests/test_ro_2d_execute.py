@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from pathlib import Path
@@ -20,6 +21,8 @@ from ro_2d_pilot.fluent_session import (
     FluentSetupError,
     FluentSwitchToSolverError,
     FluentUnavailable,
+    _configure_mixture,
+    _set_constant,
     _set_mixture_density,
     classify_transcript,
     first_report_number,
@@ -679,6 +682,26 @@ def test_mixture_density_is_the_incompressible_mixing_law() -> None:
 
     with pytest.raises(FluentSetupError, match="mixture_density"):
         _set_mixture_density(_Mixture(_Density(_RejectingOption(), value)))
+
+
+def test_nacl_molecular_weight_uses_the_constant_property() -> None:
+    class _Child:
+        def __init__(self) -> None:
+            self.state = None
+
+        def set_state(self, value: object) -> None:
+            self.state = value
+
+    class _Group:
+        def __init__(self) -> None:
+            self.option = _Child()
+            self.value = _Child()
+
+    group = _Group()
+    _set_constant(group, 58.44, "nacl_molecular_weight")
+    assert group.option.state == "constant"
+    assert group.value.state == 58.44
+    assert "molecular_weight.set_state" not in inspect.getsource(_configure_mixture)
 
 
 def test_production_solver_launch_is_unchanged() -> None:
