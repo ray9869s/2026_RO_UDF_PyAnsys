@@ -16,7 +16,7 @@ import math
 from dataclasses import dataclass, field
 
 from ro_2d_pilot.config import PilotConfig
-from ro_2d_pilot.mesh import mesh_spec
+from ro_2d_pilot.mesh import resolution_layout
 
 _ZONE_NAMES = (
     "inlet",
@@ -42,27 +42,11 @@ _BC_BY_ZONE = {
 }
 
 
-def _intervals(length_m: float, max_size_m: float, minimum: int) -> int:
-    count = int(round(length_m / max_size_m))
-    return max(minimum, count)
-
-
 def _linspace(start: float, stop: float, intervals: int) -> list[float]:
     if intervals < 1:
         raise ValueError(f"intervals must be >= 1, got {intervals}.")
     step = (stop - start) / intervals
     return [start + step * index for index in range(intervals + 1)]
-
-
-def square_half_size_m(radius_m: float, half_height_m: float, half_pitch_m: float) -> float:
-    """Square half-size strictly between the circle and the channel limits."""
-    limit = min(half_height_m, half_pitch_m)
-    if not radius_m < limit:
-        raise ValueError(
-            "The filament does not fit inside one pitch of the channel "
-            f"(radius_m={radius_m!r}, limit_m={limit!r})."
-        )
-    return 0.5 * (radius_m + limit)
 
 
 class _Nodes:
@@ -285,16 +269,15 @@ def _edge_lengths(nodes: _Nodes, quads: list[tuple[int, int, int, int]]) -> tupl
 
 def build_quad_mesh(config: PilotConfig) -> QuadMesh:
     """Build the fluid quad mesh for ``config``. Raises if a quad is inverted."""
-    spec = mesh_spec(config)
-    max_size_m = float(spec["max_size_m"])
+    layout = resolution_layout(config)
+    max_size_m = float(layout["max_size_m"])
     radius_m = 0.5 * config.d_m
     half_height_m = 0.5 * config.channel_height_m
-    half_pitch_m = 0.5 * config.L_m
-    square_half = square_half_size_m(radius_m, half_height_m, half_pitch_m)
-    n_side = _intervals(2.0 * square_half, max_size_m, 4)
-    n_radial = _intervals(square_half - radius_m, max_size_m, 2)
-    n_gap = _intervals(half_height_m - square_half, max_size_m, 2)
-    n_stream = _intervals(half_pitch_m - square_half, max_size_m, 2)
+    square_half = float(layout["square_half_size_m"])
+    n_side = int(layout["n_side"])
+    n_radial = int(layout["n_radial"])
+    n_gap = int(layout["n_gap"])
+    n_stream = int(layout["n_stream"])
 
     nodes = _Nodes()
     quads: list[tuple[int, int, int, int]] = []

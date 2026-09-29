@@ -76,7 +76,12 @@ def test_low_and_high_share_physics_and_differ_in_mesh() -> None:
     assert low_mesh["max_size_m"] > high_mesh["max_size_m"]
     assert low_mesh["boundary_layers"] == 0
     assert high_mesh["boundary_layers"] == 0
+    assert low_mesh["boundary_layers_actual"] == 0
+    assert high_mesh["boundary_layers_actual"] == 0
     assert high_mesh["boundary_layers_requested"] == 4
+    assert high_mesh["mesh_role"] == (
+        "fine reference mesh for initial LF/HF qualification"
+    )
     assert low_mesh["cell_count"] is None
     assert plans["low"]["stages"]["generate_mesh"] == "ready"
     assert plans["low"]["stages"]["compile_udf"] == "fluent_only"
