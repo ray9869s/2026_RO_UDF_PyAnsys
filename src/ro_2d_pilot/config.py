@@ -18,6 +18,29 @@ FIDELITY_LOW = "low"
 FIDELITY_HIGH = "high"
 FIDELITIES = (FIDELITY_LOW, FIDELITY_HIGH)
 
+# Mesh-study labels. These are not LF/HF assignments.
+MESH_LEVEL_COARSE = "coarse"
+MESH_LEVEL_MEDIUM = "medium"
+MESH_LEVEL_FINE = "fine"
+MESH_LEVEL_VERY_FINE = "very_fine"
+MESH_LEVELS = (
+    MESH_LEVEL_COARSE,
+    MESH_LEVEL_MEDIUM,
+    MESH_LEVEL_FINE,
+    MESH_LEVEL_VERY_FINE,
+)
+# ``low`` and ``high`` remain directory labels. They select the same
+# uniform spacing target as ``coarse`` and ``fine``.
+LABEL_MESH_LEVEL = {
+    FIDELITY_LOW: MESH_LEVEL_COARSE,
+    FIDELITY_HIGH: MESH_LEVEL_FINE,
+    MESH_LEVEL_COARSE: MESH_LEVEL_COARSE,
+    MESH_LEVEL_MEDIUM: MESH_LEVEL_MEDIUM,
+    MESH_LEVEL_FINE: MESH_LEVEL_FINE,
+    MESH_LEVEL_VERY_FINE: MESH_LEVEL_VERY_FINE,
+}
+RUN_LABELS = FIDELITIES + MESH_LEVELS
+
 DEFAULT_INLET_VELOCITY_M_S = 0.2
 DEFAULT_OUTLET_GAUGE_PRESSURE_PA = 6.0e6
 DEFAULT_N_PITCHES = 1
@@ -92,9 +115,9 @@ class PilotConfig:
         L_m = _positive_finite("L_m", self.L_m)
         height = _positive_finite("channel_height_m", self.channel_height_m)
         depth = _positive_finite("unit_depth_m", self.unit_depth_m)
-        if self.fidelity not in FIDELITIES:
+        if self.fidelity not in RUN_LABELS:
             raise ValueError(
-                f"fidelity must be one of {FIDELITIES}, got {self.fidelity!r}."
+                f"fidelity must be one of {RUN_LABELS}, got {self.fidelity!r}."
             )
         if isinstance(self.n_pitches, bool) or not isinstance(self.n_pitches, int):
             raise ValueError(
@@ -121,6 +144,10 @@ class PilotConfig:
         if self.operating is None:
             object.__setattr__(self, "operating", OperatingPoint())
 
+    @property
+    def mesh_level(self) -> str:
+        return LABEL_MESH_LEVEL[self.fidelity]
+
     def to_dict(self) -> dict[str, object]:
         operating = self.operating
         assert operating is not None
@@ -128,6 +155,7 @@ class PilotConfig:
             "d_m": self.d_m,
             "L_m": self.L_m,
             "fidelity": self.fidelity,
+            "mesh_level": self.mesh_level,
             "channel_height_m": self.channel_height_m,
             "n_pitches": self.n_pitches,
             "unit_depth_m": self.unit_depth_m,

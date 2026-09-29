@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ro.paths import project_root
 from ro.solver_common import reject_windows_drive_paths_on_non_windows
+from ro_2d_pilot.config import RUN_LABELS
 
 DATA_ROOT_ENV = "RO_2D_DATA_ROOT"
 _CAMPAIGN_ROOT_ENV = "RO_DATA_ROOT"
@@ -28,7 +29,7 @@ _CAMPAIGN_TOP_LEVEL = frozenset(
 _GEO_ID_RE_TEXT = (
     r"^d\d+p\d{6}mm_L\d+p\d{6}mm_h\d+p\d{6}mm_n[1-9]\d*$"
 )
-_FIDELITY_NAMES = frozenset({"low", "high"})
+_FIDELITY_NAMES = frozenset(RUN_LABELS)
 
 
 def campaign_root_from_env() -> Path | None:

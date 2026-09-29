@@ -14,6 +14,7 @@ from ro_2d_pilot.config import (
     DEFAULT_INLET_VELOCITY_M_S,
     DEFAULT_OUTLET_GAUGE_PRESSURE_PA,
     FIDELITIES,
+    MESH_LEVELS,
     OperatingPoint,
     PilotConfig,
 )
@@ -33,7 +34,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_OUTLET_GAUGE_PRESSURE_PA,
     )
-    parser.add_argument("--fidelity", choices=FIDELITIES, default="low")
+    parser.add_argument(
+        "--fidelity",
+        choices=FIDELITIES,
+        default=None,
+        help="Existing low/high label. low uses the coarse spacing target; high uses fine.",
+    )
+    parser.add_argument(
+        "--mesh-level",
+        choices=MESH_LEVELS,
+        default=None,
+        help=(
+            "Mesh-study level. This is not an LF/HF assignment. "
+            "Do not combine with --fidelity."
+        ),
+    )
     parser.add_argument("--n-pitches", type=int, default=1)
     parser.add_argument("--max-iterations", type=int, default=None)
     parser.add_argument(
@@ -46,13 +61,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.fidelity is not None and args.mesh_level is not None:
+        print(
+            "ValueError: pass only one of --fidelity and --mesh-level.",
+            file=sys.stderr,
+        )
+        return 1
+    label = args.mesh_level or args.fidelity or "low"
     try:
         root = data_root()
         record = run_case(
             PilotConfig(
                 d_m=args.d_m,
                 L_m=args.l_m,
-                fidelity=args.fidelity,
+                fidelity=label,
                 operating=OperatingPoint(
                     inlet_velocity_m_s=args.u_ms,
                     outlet_gauge_pressure_pa=args.pressure_pa,

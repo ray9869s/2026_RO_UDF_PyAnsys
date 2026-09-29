@@ -19,14 +19,24 @@ is stored later as ``actual_min_edge_m``.
 
 from __future__ import annotations
 
-from ro_2d_pilot.config import FIDELITY_HIGH, FIDELITY_LOW, PilotConfig
+from ro_2d_pilot.config import (
+    FIDELITY_HIGH,
+    FIDELITY_LOW,
+    MESH_LEVEL_COARSE,
+    MESH_LEVEL_FINE,
+    MESH_LEVEL_MEDIUM,
+    MESH_LEVEL_VERY_FINE,
+    PilotConfig,
+)
 
-# Cells across the channel height. High is four times finer than low.
-# 24 divisions puts about 12 cells across a 0.40 mm filament in the
-# 0.77 mm campaign channel. 8 divisions did not.
+# One target edge length, H / divisions, sets every interval. There is
+# no separate aspect-ratio control. Integer rounding means a doubled
+# division count is not an exact refinement ratio.
 _HEIGHT_DIVISIONS = {
-    FIDELITY_LOW: 24,
-    FIDELITY_HIGH: 96,
+    MESH_LEVEL_COARSE: 24,
+    MESH_LEVEL_MEDIUM: 48,
+    MESH_LEVEL_FINE: 96,
+    MESH_LEVEL_VERY_FINE: 192,
 }
 # Requested prism layers. This mesher generates none.
 _BOUNDARY_LAYERS_REQUESTED = {
@@ -44,6 +54,12 @@ _OBSTACLE_CELLS_OK = 6.0
 MESH_ROLE = {
     FIDELITY_LOW: "coarse structured execution floor",
     FIDELITY_HIGH: "fine reference mesh for initial LF/HF qualification",
+}
+MESH_LEVEL_ROLE = {
+    MESH_LEVEL_COARSE: "mesh-study level; uniform spacing target shared with low",
+    MESH_LEVEL_MEDIUM: "mesh-study level",
+    MESH_LEVEL_FINE: "mesh-study level; uniform spacing target shared with high",
+    MESH_LEVEL_VERY_FINE: "mesh-study level; finest uniform spacing in the ladder",
 }
 BOUNDARY_LAYER_TREATMENT = "uniform_structured_no_prism_layers"
 
@@ -66,7 +82,7 @@ def interval_count(length_m: float, max_size_m: float, minimum: int) -> int:
 
 def resolution_layout(config: PilotConfig) -> dict[str, float | int]:
     """Interval counts the algebraic mesher will use for ``config``."""
-    divisions = _HEIGHT_DIVISIONS[config.fidelity]
+    divisions = _HEIGHT_DIVISIONS[config.mesh_level]
     max_size_m = config.channel_height_m / divisions
     radius_m = 0.5 * config.d_m
     half_height_m = 0.5 * config.channel_height_m
@@ -100,14 +116,23 @@ def resolution_layout(config: PilotConfig) -> dict[str, float | int]:
 
 def mesh_spec(config: PilotConfig) -> dict[str, object]:
     layout = resolution_layout(config)
+    level = config.mesh_level
     max_size_m = float(layout["max_size_m"])
-    min_size_m = max_size_m / _MIN_SIZE_FACTOR[config.fidelity]
+    min_size_factor = _MIN_SIZE_FACTOR.get(config.fidelity, 4.0)
+    min_size_m = max_size_m / min_size_factor
     cells_across_diameter = config.d_m / max_size_m
-    requested_layers = _BOUNDARY_LAYERS_REQUESTED[config.fidelity]
+    requested_layers = _BOUNDARY_LAYERS_REQUESTED.get(config.fidelity, 0)
     return {
         "fidelity": config.fidelity,
-        "mesh_role": MESH_ROLE[config.fidelity],
-        "height_divisions": _HEIGHT_DIVISIONS[config.fidelity],
+        "mesh_level": level,
+        "mesh_role": MESH_ROLE.get(config.fidelity, MESH_LEVEL_ROLE[level]),
+        "height_divisions": _HEIGHT_DIVISIONS[level],
+        "channel_height_divisions": _HEIGHT_DIVISIONS[level],
+        "streamwise_resolution": layout["streamwise_intervals_per_half_pitch"],
+        "obstacle_circumferential_resolution": layout["circumferential_segments"],
+        "obstacle_radial_resolution": layout["n_radial"],
+        "near_wall_spacing_m": layout["near_membrane_spacing_m"],
+        "estimated_cell_count": layout["topology_cell_count"],
         "cells_across_channel_height": layout["cells_across_channel_height"],
         "circumferential_segments": layout["circumferential_segments"],
         "streamwise_intervals_per_half_pitch": layout[

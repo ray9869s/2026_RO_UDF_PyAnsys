@@ -25,6 +25,44 @@ from ro_2d_pilot.record import build_result_record
 from ro_2d_pilot.udf_case import write_case_udf
 
 
+def phase_times(
+    *,
+    python_prep_s: float | None,
+    launch_time_s: float | None,
+    mesh_read_time_s: float | None,
+    setup_time_s: float | None,
+    solve_time_s: float | None,
+    extraction_time_s: float | None,
+    total_wall_time_s: float | None,
+) -> dict[str, float | None]:
+    """Split one 2D run. Startup is everything except iterate and reports."""
+    measured = (
+        python_prep_s,
+        launch_time_s,
+        mesh_read_time_s,
+        setup_time_s,
+    )
+    if all(part is not None for part in measured):
+        startup = float(sum(measured))
+    elif (
+        total_wall_time_s is not None
+        and solve_time_s is not None
+        and extraction_time_s is not None
+    ):
+        startup = float(total_wall_time_s - solve_time_s - extraction_time_s)
+    else:
+        startup = None
+    return {
+        "launch_time_s": launch_time_s,
+        "mesh_read_time_s": mesh_read_time_s,
+        "setup_time_s": setup_time_s,
+        "extraction_time_s": extraction_time_s,
+        "startup_overhead_s": startup,
+        "solver_wall_time_s": solve_time_s,
+        "total_wall_time_s": total_wall_time_s,
+    }
+
+
 def run_case(
     config: PilotConfig,
     root: Path,
@@ -58,8 +96,10 @@ def run_case(
     iterations = resolve_max_iterations(max_iterations)
     udf_path = written["result"].parent / UDF_FILE_NAME
     session = None
+    python_prep_s = None
     try:
         write_case_udf(config, udf_path)
+        python_prep_s = time.perf_counter() - started
         session = open_solver_session(
             cwd=udf_path.parent,
             mesh_path=mesh_path,
@@ -71,23 +111,37 @@ def run_case(
             udf_path=udf_path,
             max_iterations=iterations,
         )
+        total_wall_time_s = time.perf_counter() - started
+        session_timing = getattr(session, "ro2d_timing", {})
         metrics["cell_count"] = mesh.n_cells
-        metrics["total_wall_time_s"] = time.perf_counter() - started
+        metrics.update(
+            phase_times(
+                python_prep_s=python_prep_s,
+                launch_time_s=_optional_time(session_timing, "launch_time_s"),
+                mesh_read_time_s=_optional_time(session_timing, "mesh_read_time_s"),
+                setup_time_s=_optional_time(metrics, "setup_time_s"),
+                solve_time_s=_optional_time(metrics, "solver_wall_time_s"),
+                extraction_time_s=_optional_time(metrics, "extraction_time_s"),
+                total_wall_time_s=total_wall_time_s,
+            )
+        )
         record = build_result_record(plan, metrics)
         _write_result(written["result"], record)
         return record
     except Exception:
-        _write_result(
-            written["result"],
-            build_result_record(
-                plan,
-                {
-                    "cell_count": mesh.n_cells,
-                    "convergence_status": STOP_REASON_DETERMINATION_FAILED,
-                    "total_wall_time_s": time.perf_counter() - started,
-                },
-            ),
-        )
+        failed = {
+            "cell_count": mesh.n_cells,
+            "convergence_status": STOP_REASON_DETERMINATION_FAILED,
+            "total_wall_time_s": time.perf_counter() - started,
+        }
+        if session is not None:
+            session_timing = getattr(session, "ro2d_timing", {})
+            failed["launch_time_s"] = _optional_time(session_timing, "launch_time_s")
+            failed["mesh_read_time_s"] = _optional_time(
+                session_timing,
+                "mesh_read_time_s",
+            )
+        _write_result(written["result"], build_result_record(plan, failed))
         raise
     finally:
         if session is not None:
@@ -95,6 +149,15 @@ def run_case(
                 session.exit()
             except Exception:
                 pass
+
+
+def _optional_time(payload: object, key: str) -> float | None:
+    if not isinstance(payload, dict) or key not in payload:
+        return None
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _write_result(path: Path, record: dict[str, object]) -> None:

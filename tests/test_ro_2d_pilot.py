@@ -48,7 +48,7 @@ def test_geometry_rejects_impossible_sizes() -> None:
     with pytest.raises(ValueError, match="overlap"):
         PilotConfig(d_m=D_M, L_m=D_M, fidelity="high")
     with pytest.raises(ValueError, match="fidelity"):
-        PilotConfig(d_m=D_M, L_m=L_M, fidelity="medium")
+        PilotConfig(d_m=D_M, L_m=L_M, fidelity="ultra")
     with pytest.raises(ValueError, match="n_pitches"):
         PilotConfig(d_m=D_M, L_m=L_M, fidelity="low", n_pitches=True)  # type: ignore[arg-type]
 

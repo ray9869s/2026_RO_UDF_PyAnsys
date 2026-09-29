@@ -59,6 +59,14 @@ RESULT_FIELDS = (
     "mass_balance_rel",
     "validity",
     "udf_2d_status",
+    "mesh_level",
+    "height_divisions",
+    "cells_across_channel_height",
+    "launch_time_s",
+    "mesh_read_time_s",
+    "setup_time_s",
+    "extraction_time_s",
+    "startup_overhead_s",
 )
 
 
@@ -69,7 +77,12 @@ def _optional_finite(name: str, value: object) -> float | int | None:
         raise ValueError(f"{name} must be a number or null, got {value!r}.")
     if not math.isfinite(float(value)):
         raise ValueError(f"{name} must be finite, got {value!r}.")
-    if name in {"cell_count", "solver_iterations"}:
+    if name in {
+        "cell_count",
+        "solver_iterations",
+        "height_divisions",
+        "cells_across_channel_height",
+    }:
         if isinstance(value, float) and not value.is_integer():
             raise ValueError(f"{name} must be an integer, got {value!r}.")
         if int(value) < 0:
@@ -254,6 +267,35 @@ def build_result_record(
             ),
         ),
         "udf_2d_status": physics["udf_2d_status"],
+        "mesh_level": mesh.get("mesh_level"),
+        "height_divisions": _optional_finite(
+            "height_divisions",
+            mesh.get("height_divisions"),
+        ),
+        "cells_across_channel_height": _optional_finite(
+            "cells_across_channel_height",
+            mesh.get("cells_across_channel_height"),
+        ),
+        "launch_time_s": _optional_finite(
+            "launch_time_s",
+            supplied.get("launch_time_s"),
+        ),
+        "mesh_read_time_s": _optional_finite(
+            "mesh_read_time_s",
+            supplied.get("mesh_read_time_s"),
+        ),
+        "setup_time_s": _optional_finite(
+            "setup_time_s",
+            supplied.get("setup_time_s"),
+        ),
+        "extraction_time_s": _optional_finite(
+            "extraction_time_s",
+            supplied.get("extraction_time_s"),
+        ),
+        "startup_overhead_s": _optional_finite(
+            "startup_overhead_s",
+            supplied.get("startup_overhead_s"),
+        ),
     }
     missing = [key for key in RESULT_FIELDS if key not in record]
     if missing:

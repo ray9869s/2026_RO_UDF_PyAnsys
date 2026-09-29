@@ -262,6 +262,7 @@ def open_solver_session(
     solver = None
     handed_off = False
     try:
+        launch_started = time.perf_counter()
         meshing = launch_meshing_session(
             cwd=cwd,
             processor_count=processor_count,
@@ -269,9 +270,15 @@ def open_solver_session(
             start_timeout=start_timeout,
             launcher=launcher,
         )
+        launch_time_s = time.perf_counter() - launch_started
+        read_started = time.perf_counter()
         solver = _switch_to_solver(meshing)
         _read_and_verify_mesh(solver, mesh_path, transcript_dir=cwd)
         _solver_mesh_check(solver)
+        solver.ro2d_timing = {
+            "launch_time_s": launch_time_s,
+            "mesh_read_time_s": time.perf_counter() - read_started,
+        }
         handed_off = True
         return solver
     finally:
@@ -290,6 +297,7 @@ def solve_case(
     max_iterations: int,
 ) -> dict[str, object]:
     """Set up and solve a mesh already loaded by ``open_solver_session``."""
+    setup_started = time.perf_counter()
     setup = solver.settings.setup
     solution = solver.settings.solution
     _require_zones(setup)
@@ -362,12 +370,14 @@ def solve_case(
         "residuals",
         lambda: _set_residuals(solution, RESIDUAL_TARGET),
     )
+    setup_time_s = time.perf_counter() - setup_started
     started = time.perf_counter()
     _step(
         "iterate",
         lambda: solution.run_calculation.iterate(iter_count=max_iterations),
     )
     solver_wall_time_s = time.perf_counter() - started
+    extract_started = time.perf_counter()
     transcript = collect_transcript(udf_path.parent, solver)
     classified = classify_transcript(transcript, max_iterations=max_iterations)
     metrics = _step(
@@ -375,7 +385,9 @@ def solve_case(
         lambda: _extract_reports(solver, config),
     )
     metrics.update(classified)
+    metrics["setup_time_s"] = setup_time_s
     metrics["solver_wall_time_s"] = solver_wall_time_s
+    metrics["extraction_time_s"] = time.perf_counter() - extract_started
     return metrics
 
 
