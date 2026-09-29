@@ -354,18 +354,18 @@ class _TwoDimSpace:
 
 
 class _SizeInfo:
-    def __init__(self, events: list[str], text: str = "2868 cells") -> None:
+    def __init__(self, events: list[str], text: str | None = "2868 cells") -> None:
         self._events = events
         self._text = text
 
-    def __call__(self) -> str:
+    def __call__(self) -> str | None:
         self._events.append("size_info")
         return self._text
 
 
 class _MeshSettings:
-    def __init__(self, events: list[str]) -> None:
-        self.size_info = _SizeInfo(events)
+    def __init__(self, events: list[str], text: str | None) -> None:
+        self.size_info = _SizeInfo(events, text)
 
 
 class _GeneralSolver:
@@ -390,10 +390,11 @@ class _SolverSettings:
         error: Exception | None = None,
         *,
         space: str = "planar",
+        size_report: str | None = "2868 cells",
     ) -> None:
         self.file = _SolverFile(events, error)
         self.setup = _Setup(events, space)
-        self.mesh = _MeshSettings(events)
+        self.mesh = _MeshSettings(events, size_report)
 
 
 class _Solver:
@@ -403,12 +404,14 @@ class _Solver:
         *,
         dimension: int = 2,
         read_error: Exception | None = None,
+        size_report: str | None = "2868 cells",
     ) -> None:
         self.events = events
         self.settings = _SolverSettings(
             events,
             read_error,
             space="planar" if dimension == 2 else "3d",
+            size_report=size_report,
         )
         self.scheme = _Scheme(events, dimension)
         self.tui = _Tui(events)
@@ -456,10 +459,12 @@ class _Meshing:
         read_error: Exception | None = None,
         switch_error: Exception | None = None,
         switch_result: object = True,
+        size_report: str | None = "2868 cells",
     ) -> None:
         self.events = events
         self.dimension = dimension
         self.read_error = read_error
+        self.size_report = size_report
         self._fluent_connection = _Connection(events)
         self._file_transfer_service = None
         self.scheme = _MeshingScheme(events, switch_error, switch_result)
@@ -472,6 +477,7 @@ class _Meshing:
             self.events,
             dimension=self.dimension,
             read_error=self.read_error,
+            size_report=self.size_report,
         )
         return self.solver
 
@@ -611,6 +617,29 @@ def test_mesh_read_failure_names_the_solver_backend(tmp_path: Path) -> None:
     )
     assert "tui:/mesh/check" not in events
     assert MESH_READ_BACKEND == "solver.settings.file.read_mesh"
+
+
+def test_none_size_info_uses_the_mesh_size_table(tmp_path: Path) -> None:
+    events: list[str] = []
+    meshing = _Meshing(events, size_report=None)
+    mesh_path = tmp_path / "case.msh"
+    mesh_path.write_text("(2 2)\n", encoding="ascii")
+    (tmp_path / "fluent.trn").write_text(
+        "Mesh Size\n"
+        "\n"
+        "Level    Cells    Faces    Nodes   Partitions\n"
+        "    0     2868     5920     3052            1\n",
+        encoding="utf-8",
+    )
+
+    solver = open_solver_session(
+        cwd=tmp_path,
+        mesh_path=mesh_path,
+        launcher=lambda **_kwargs: meshing,
+    )
+    assert "size_info" in events
+    assert "tui:/mesh/check" in events
+    assert solver.exited is False
 
 
 def test_production_solver_launch_is_unchanged() -> None:

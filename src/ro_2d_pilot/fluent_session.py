@@ -80,6 +80,11 @@ _RESIDUAL_EQUATIONS = (
 )
 _REQUIRED_RESIDUALS = ("continuity", "x-velocity", "y-velocity")
 _CELL_COUNT_RES = (
+    re.compile(
+        r"Level\s+Cells\s+Faces\s+Nodes\s+Partitions\s+"
+        r"0\s+(\d[\d,]*)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"(\d[\d,]*)\s+cells\b", re.IGNORECASE),
     re.compile(r"\bcells\s*[:=]\s*(\d[\d,]*)", re.IGNORECASE),
 )
@@ -265,7 +270,7 @@ def open_solver_session(
             launcher=launcher,
         )
         solver = _switch_to_solver(meshing)
-        _read_and_verify_mesh(solver, mesh_path)
+        _read_and_verify_mesh(solver, mesh_path, transcript_dir=cwd)
         _solver_mesh_check(solver)
         handed_off = True
         return solver
@@ -535,7 +540,7 @@ def _mesh_read_context(session, mesh_path: Path) -> str:
     )
 
 
-def _read_and_verify_mesh(solver, mesh_path: Path) -> None:
+def _read_and_verify_mesh(solver, mesh_path: Path, transcript_dir: Path) -> None:
     """Read the Python-written ``.msh`` with the 25.1 solver file menu."""
     fluent_path = path_to_fluent_str(mesh_path)
     context = _mesh_read_context(solver, mesh_path)
@@ -552,7 +557,7 @@ def _read_and_verify_mesh(solver, mesh_path: Path) -> None:
     # count comes from mesh/size-info; report/mesh-size is not a solver
     # TUI command in this version.
     space = _planar_space(solver, context)
-    cells = _cell_count(solver, context)
+    cells = _cell_count(solver, context, transcript_dir)
     print(
         "2D mesh read succeeded: "
         f"{context} two_dim_space={space} cells={cells}",
@@ -578,7 +583,7 @@ def _planar_space(solver, context: str) -> str:
     return text
 
 
-def _cell_count(solver, context: str) -> int:
+def _cell_count(solver, context: str, transcript_dir: Path) -> int:
     try:
         report = solver.settings.mesh.size_info()
     except FluentMeshReadError:
@@ -589,12 +594,25 @@ def _cell_count(solver, context: str) -> int:
             f"{context} {type(exc).__name__}: {exc}"
         ) from exc
     cells = _cell_count_from_report(report)
+    transcript = ""
+    if cells is None:
+        # size_info prints the Mesh Size table and returns None.
+        transcript = collect_transcript(transcript_dir, solver)
+        cells = _cell_count_from_report(transcript)
     if cells is None or cells < 1:
+        excerpt = _mesh_size_excerpt(transcript)
         raise FluentMeshReadError(
             "mesh.size_info did not report a positive cell count. "
-            f"Report={report!r}. {context}"
+            f"Report={report!r}. transcript_excerpt={excerpt!r}. {context}"
         )
     return cells
+
+
+def _mesh_size_excerpt(transcript: str) -> str:
+    index = transcript.lower().rfind("mesh size")
+    if index < 0:
+        return ""
+    return transcript[index:index + 240]
 
 
 def _cell_count_from_report(payload: object) -> int | None:
