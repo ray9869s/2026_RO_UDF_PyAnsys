@@ -458,10 +458,18 @@ def _run_source_schedule(solution, solver, run_dir: Path, max_iterations: int):
 
     def observe():
         text = collect_transcript(run_dir, solver)
-        return observation_from_transcript(
+        observation = observation_from_transcript(
             text,
             diverged=_transcript_diverged(text),
         )
+        print(
+            "2D solver state "
+            f"backend={ITERATION_STATE_BACKEND} "
+            f"iteration={observation.iteration} "
+            f"ramp={observation.ramp_factor}",
+            flush=True,
+        )
+        return observation
 
     return run_source_schedule(iterate, observe, max_iterations)
 
@@ -578,23 +586,27 @@ def _session_metrics(
 
 
 def collect_transcript(run_dir: Path, solver) -> str:
-    parts: list[str] = []
-    seen: set[Path] = set()
+    """Read the current Fluent transcript, not earlier runs in the same folder."""
+    path = _current_transcript_path(run_dir, solver)
+    if path is None:
+        return ""
+    print(f"2D transcript file = {path}", flush=True)
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _current_transcript_path(run_dir: Path, solver) -> Path | None:
     transcript = getattr(solver, "transcript", None)
     for attribute in ("filepath", "path", "filename"):
         raw = getattr(transcript, attribute, None)
         if not raw:
             continue
         path = Path(str(raw))
-        if path.is_file() and path not in seen:
-            seen.add(path)
-            parts.append(path.read_text(encoding="utf-8", errors="replace"))
-    for path in sorted(run_dir.glob("*.trn")):
-        if path in seen or not path.is_file():
-            continue
-        seen.add(path)
-        parts.append(path.read_text(encoding="utf-8", errors="replace"))
-    return "\n".join(parts)
+        if path.is_file():
+            return path
+    files = [path for path in run_dir.glob("*.trn") if path.is_file()]
+    if not files:
+        return None
+    return max(files, key=lambda path: path.stat().st_mtime)
 
 
 def _default_launcher(**kwargs):

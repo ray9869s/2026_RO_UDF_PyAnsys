@@ -160,6 +160,7 @@ def observation_from_transcript(
     iteration among the 2D row, the 3D row, the convergence marker, and
     the latest UDF ramp line.
     """
+    text = current_session_text(text)
     parsed = parse_source_ramp(text)
     iteration = last_solver_iteration(text)
     ramp_factor = None if parsed is None else parsed[1]
@@ -174,6 +175,52 @@ def observation_from_transcript(
         diverged=diverged,
         first_full_ramp_iteration=first_full_ramp_iteration(text),
     )
+
+
+def current_session_text(text: str) -> str:
+    """Keep the latest solve if a transcript contains an earlier run.
+
+    A new session starts again near iteration 1. Rows and ramp lines from
+    the previous session must not set the current iteration.
+    """
+    lines = text.splitlines()
+    start = 0
+    previous: int | None = None
+    for index, raw in enumerate(lines):
+        iteration = _line_iteration(raw)
+        if iteration is None:
+            continue
+        if previous is not None and iteration < previous:
+            start = index
+        previous = iteration
+    selected = lines[start:]
+    if selected and not _residual_header(selected[0]):
+        selected = [
+            "iter continuity x-velocity y-velocity nacl time/iter",
+            *selected,
+        ]
+    return "\n".join(selected)
+
+
+def _line_iteration(raw: str) -> int | None:
+    match = _RAMP_LINE_RE.search(raw)
+    if match is not None:
+        return int(match.group(1))
+    tokens = raw.split()
+    if len(tokens) < 5:
+        return None
+    try:
+        iteration = int(tokens[0])
+        for index in range(1, 5):
+            float(tokens[index])
+    except ValueError:
+        return None
+    return iteration
+
+
+def _residual_header(raw: str) -> bool:
+    tokens = [token.lower() for token in raw.split()]
+    return bool(tokens) and tokens[0] == "iter" and "continuity" in tokens
 
 
 def last_solver_iteration(text: str) -> int | None:

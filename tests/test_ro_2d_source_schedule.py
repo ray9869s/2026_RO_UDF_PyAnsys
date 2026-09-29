@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from helpers import REPO_ROOT
 from ro.solver_common import classify_solver_stop_reason
-from ro_2d_pilot.fluent_session import classify_transcript
+from ro_2d_pilot.config import PilotConfig
+from ro_2d_pilot.fluent_session import (
+    FluentSetupError,
+    _set_convergence_checks,
+    classify_transcript,
+    collect_transcript,
+)
 from ro_2d_pilot.ladder import compare_ladder, format_ladder
 from ro_2d_pilot.plan import build_plan
 from ro_2d_pilot.record import build_result_record
-from ro_2d_pilot.config import PilotConfig
-from ro_2d_pilot.fluent_session import FluentSetupError, _set_convergence_checks
 from ro_2d_pilot.source_schedule import (
     CHUNK_ITERATIONS,
+    current_session_text,
     CONVERGED_BEFORE_FULL_SOURCE,
     FULL_RAMP_START_ITER,
     FULL_SOURCE_MIN_ITERATIONS,
@@ -270,6 +276,31 @@ def _transcript(*steps: tuple[int, float]) -> str:
         lines.append(f"{iteration} 1.0e-4 2.0e-4 3.0e-4 4.0e-4 0:00:01 10")
         lines.append(f"RO2D_SOURCE_RAMP iter={iteration} factor={factor}")
     return "\n".join(lines)
+
+
+def test_previous_run_in_the_same_transcript_is_ignored() -> None:
+    earlier = _transcript((10, 0.2), (116, 0.8))
+    current = _transcript((5, 0.2), (25, 0.2))
+    observed = observation_from_transcript(
+        earlier + "\n" + current,
+        diverged=False,
+    )
+    assert observed.iteration == 25
+    assert observed.ramp_factor == 0.2
+    assert "116" not in current_session_text(earlier + "\n" + current)
+
+
+def test_collect_transcript_reads_only_the_newest_file(tmp_path) -> None:
+    older = tmp_path / "fluent-old.trn"
+    newer = tmp_path / "fluent-new.trn"
+    older.write_text(_transcript((116, 0.8)), encoding="utf-8")
+    newer.write_text(_transcript((25, 0.2)), encoding="utf-8")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    text = collect_transcript(tmp_path, solver=None)
+    observed = observation_from_transcript(text, diverged=False)
+    assert observed.iteration == 25
+    assert observed.ramp_factor == 0.2
 
 
 def test_parser_returns_the_latest_ramp_not_the_first() -> None:
