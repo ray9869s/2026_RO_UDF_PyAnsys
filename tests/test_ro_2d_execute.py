@@ -538,8 +538,13 @@ def test_case_launch_switches_by_text_menu_then_reads_mesh(
             "pressure_drop_pa": 10.0,
             "mass_balance_rel": 0.0,
             "convergence_status": "residual_converged",
-            "solver_iterations": 3,
+            "solver_iterations": 210,
             "solver_wall_time_s": 1.0,
+            "source_ramp_final": 1.0,
+            "full_source_reached": True,
+            "full_source_iterations": 61,
+            "convergence_checked_after_full_source": True,
+            "total_iterations": 210,
         }
 
     monkeypatch.setattr("ro_2d_pilot.execute.solve_case", solve)

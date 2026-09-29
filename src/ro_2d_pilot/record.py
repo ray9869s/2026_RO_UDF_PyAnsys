@@ -4,9 +4,11 @@ Metrics stay null until a solve exists. Validity is ``not_run`` until the
 required numbers are present. A finished case is ``valid`` when those
 numbers are finite, the cell count is positive, and the mass-balance
 error is strictly inside the campaign limit. ``diverged`` is ``invalid``.
-``max_iter_reached`` can still be ``valid``. ``diverged`` and an
-unreadable stop are ``invalid``. Windowed CP and PyEnSight gates from
-the 3D campaign are not applied.
+``max_iter_reached`` can still be ``valid`` after the membrane source
+ramp is 1 and full-source settling has been checked. A residual stop
+at ramp 0.5 or 0.8 is ``invalid``. ``diverged`` and an unreadable stop
+are ``invalid``. Windowed CP and PyEnSight gates from the 3D campaign
+are not applied.
 """
 
 from __future__ import annotations
@@ -17,6 +19,10 @@ from typing import Mapping
 from ro.convergence_quality import MASS_BALANCE_REL_ABS_MAX
 from ro.lmh_metrics import lmh_from_mass_imbalance_kg_s
 from ro.solver_common import STOP_REASON_NOT_RUN, STOP_REASON_VALUES
+from ro_2d_pilot.source_schedule import (
+    CONVERGED_BEFORE_FULL_SOURCE,
+    full_source_gate_ok,
+)
 
 SCHEMA_VERSION = 1
 
@@ -67,6 +73,15 @@ RESULT_FIELDS = (
     "setup_time_s",
     "extraction_time_s",
     "startup_overhead_s",
+    "membrane_diagnostics",
+    "source_ramp_final",
+    "full_source_reached",
+    "full_source_start_iteration",
+    "full_source_iterations",
+    "convergence_checked_after_full_source",
+    "convergence_iteration",
+    "total_iterations",
+    "validity_reason",
 )
 
 
@@ -82,6 +97,10 @@ def _optional_finite(name: str, value: object) -> float | int | None:
         "solver_iterations",
         "height_divisions",
         "cells_across_channel_height",
+        "full_source_start_iteration",
+        "full_source_iterations",
+        "convergence_iteration",
+        "total_iterations",
     }:
         if isinstance(value, float) and not value.is_integer():
             raise ValueError(f"{name} must be an integer, got {value!r}.")
@@ -145,6 +164,10 @@ def judge_validity(
     lmh: float | None,
     pressure_drop_pa: float | None,
     mass_balance_rel: float | None,
+    source_ramp_final: object = None,
+    full_source_reached: object = None,
+    convergence_checked_after_full_source: object = None,
+    full_source_iterations: object = None,
 ) -> str:
     present = {
         "cell_count": cell_count,
@@ -172,7 +195,65 @@ def judge_validity(
         "max_iter_reached",
     }:
         return VALIDITY_INVALID
+    if not full_source_gate_ok(
+        source_ramp_final=source_ramp_final,
+        full_source_reached=full_source_reached,
+        convergence_checked_after_full_source=(
+            convergence_checked_after_full_source
+        ),
+        full_source_iterations=full_source_iterations,
+    ):
+        return VALIDITY_INVALID
     return VALIDITY_VALID
+
+
+def _optional_bool(name: str, value: object) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be true, false, or null, got {value!r}.")
+    return value
+
+
+def _validity_reason(
+    supplied: object,
+    *,
+    convergence_status: str,
+    source_ramp_final: object,
+    full_source_reached: object,
+    convergence_checked_after_full_source: object,
+    full_source_iterations: object,
+) -> str | None:
+    if supplied is not None:
+        if not isinstance(supplied, str) or not supplied:
+            raise ValueError(
+                "validity_reason must be a non-empty string or null, "
+                f"got {supplied!r}."
+            )
+        return supplied
+    if convergence_status not in {"residual_converged", "qoi_converged"}:
+        return None
+    if full_source_gate_ok(
+        source_ramp_final=source_ramp_final,
+        full_source_reached=full_source_reached,
+        convergence_checked_after_full_source=(
+            convergence_checked_after_full_source
+        ),
+        full_source_iterations=full_source_iterations,
+    ):
+        return None
+    return CONVERGED_BEFORE_FULL_SOURCE
+
+
+def _diagnostics(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            "membrane_diagnostics must be a mapping or null, "
+            f"got {value!r}."
+        )
+    return dict(value)
 
 
 def build_result_record(
@@ -212,11 +293,62 @@ def build_result_record(
         per_length = pressure_drop_per_length(pressure_drop, length_m)
 
     cell_count = _optional_finite("cell_count", supplied.get("cell_count"))
+    source_ramp_final = _optional_finite(
+        "source_ramp_final",
+        supplied.get("source_ramp_final"),
+    )
+    full_source_reached = _optional_bool(
+        "full_source_reached",
+        supplied.get("full_source_reached"),
+    )
+    full_source_start = _optional_finite(
+        "full_source_start_iteration",
+        supplied.get("full_source_start_iteration"),
+    )
+    full_source_iterations = _optional_finite(
+        "full_source_iterations",
+        supplied.get("full_source_iterations"),
+    )
+    convergence_checked = _optional_bool(
+        "convergence_checked_after_full_source",
+        supplied.get("convergence_checked_after_full_source"),
+    )
+    total_iterations = _optional_finite(
+        "total_iterations",
+        supplied.get("total_iterations"),
+    )
+    convergence_iteration = _optional_finite(
+        "convergence_iteration",
+        supplied.get("convergence_iteration"),
+    )
     lmh = _optional_finite("lmh", supplied.get("lmh"))
     cp_average = _optional_finite("cp_average", supplied.get("cp_average"))
     mass_balance = _optional_finite(
         "mass_balance_rel",
         supplied.get("mass_balance_rel"),
+    )
+    validity = judge_validity(
+        convergence_status=convergence_status,
+        cell_count=cell_count if isinstance(cell_count, int) else None,
+        lmh=lmh if isinstance(lmh, float) else None,
+        pressure_drop_pa=(
+            pressure_drop if isinstance(pressure_drop, float) else None
+        ),
+        mass_balance_rel=(
+            mass_balance if isinstance(mass_balance, float) else None
+        ),
+        source_ramp_final=source_ramp_final,
+        full_source_reached=full_source_reached,
+        convergence_checked_after_full_source=convergence_checked,
+        full_source_iterations=full_source_iterations,
+    )
+    validity_reason = _validity_reason(
+        supplied.get("validity_reason"),
+        convergence_status=convergence_status,
+        source_ramp_final=source_ramp_final,
+        full_source_reached=full_source_reached,
+        convergence_checked_after_full_source=convergence_checked,
+        full_source_iterations=full_source_iterations,
     )
     record: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
@@ -255,17 +387,7 @@ def build_result_record(
         ),
         "convergence_status": convergence_status,
         "mass_balance_rel": mass_balance,
-        "validity": judge_validity(
-            convergence_status=convergence_status,
-            cell_count=cell_count if isinstance(cell_count, int) else None,
-            lmh=lmh if isinstance(lmh, float) else None,
-            pressure_drop_pa=(
-                pressure_drop if isinstance(pressure_drop, float) else None
-            ),
-            mass_balance_rel=(
-                mass_balance if isinstance(mass_balance, float) else None
-            ),
-        ),
+        "validity": validity,
         "udf_2d_status": physics["udf_2d_status"],
         "mesh_level": mesh.get("mesh_level"),
         "height_divisions": _optional_finite(
@@ -296,6 +418,15 @@ def build_result_record(
             "startup_overhead_s",
             supplied.get("startup_overhead_s"),
         ),
+        "membrane_diagnostics": _diagnostics(supplied.get("membrane_diagnostics")),
+        "source_ramp_final": source_ramp_final,
+        "full_source_reached": full_source_reached,
+        "full_source_start_iteration": full_source_start,
+        "full_source_iterations": full_source_iterations,
+        "convergence_checked_after_full_source": convergence_checked,
+        "convergence_iteration": convergence_iteration,
+        "total_iterations": total_iterations,
+        "validity_reason": validity_reason,
     }
     missing = [key for key in RESULT_FIELDS if key not in record]
     if missing:

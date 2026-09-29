@@ -110,7 +110,7 @@ def test_result_record_schema_and_verdicts() -> None:
 
     from ro_2d_pilot.record import build_result_record
 
-    valid = build_result_record(
+    early = build_result_record(
         plan,
         {
             "cell_count": 1000,
@@ -124,9 +124,32 @@ def test_result_record_schema_and_verdicts() -> None:
             "mass_balance_rel": MASS_BALANCE_REL_ABS_MAX / 2,
         },
     )
+    assert early["validity"] == "invalid"
+    valid = build_result_record(
+        plan,
+        {
+            "cell_count": 1000,
+            "lmh": 20.0,
+            "cp_average": None,
+            "pressure_drop_pa": 1000.0,
+            "solver_iterations": 210,
+            "solver_wall_time_s": 1.5,
+            "total_wall_time_s": 2.0,
+            "convergence_status": "residual_converged",
+            "mass_balance_rel": MASS_BALANCE_REL_ABS_MAX / 2,
+            "source_ramp_final": 1.0,
+            "full_source_reached": True,
+            "full_source_start_iteration": 150,
+            "full_source_iterations": 61,
+            "convergence_checked_after_full_source": True,
+            "convergence_iteration": 210,
+            "total_iterations": 210,
+        },
+    )
     assert valid["validity"] == "valid"
     assert valid["cp_average"] is None
-    assert valid["convergence_status"] == "max_iter_reached"
+    assert valid["convergence_status"] == "residual_converged"
+    assert valid["source_ramp_final"] == 1.0
     assert valid["pressure_drop_per_length_pa_per_m"] == pytest.approx(
         1000.0 / L_M
     )

@@ -12,6 +12,7 @@ import math
 from typing import Mapping
 
 from ro_2d_pilot.config import MESH_LEVELS
+from ro_2d_pilot.source_schedule import full_source_gate_ok, source_ramp_factor
 
 GCI_NOT_APPLIED = (
     "Formal GCI and Richardson extrapolation are not applied. "
@@ -70,7 +71,12 @@ def compare_ladder(records: list[Mapping[str, object]]) -> dict[str, object]:
     for coarser, finer in zip(rows, rows[1:]):
         pairs.append(_adjacent(coarser, finer))
     trends = {
-        name: _trend([row[name] for row in rows])
+        name: _trend(
+            [
+                row[name] if row["mesh_comparison"] == "full_source" else None
+                for row in rows
+            ]
+        )
         for name in _QOIS
     }
     return {
@@ -106,6 +112,10 @@ def format_ladder(report: Mapping[str, object]) -> str:
         lines.append(_format_row(row))
     lines.append("")
     lines.append(
+        "A row marked unsuitable is not at full source ramp 1.0 "
+        "and is omitted from QoI discrepancies."
+    )
+    lines.append(
         "Adjacent relative discrepancy with respect to the finer mesh, "
         "(coarser - finer) / finer:"
     )
@@ -115,6 +125,11 @@ def format_ladder(report: Mapping[str, object]) -> str:
         lines.append(
             f"{pair['coarser']} -> {pair['finer']}"
         )
+        if not pair["qoi_compared"]:
+            lines.append(
+                "  QoI discrepancy not compared; "
+                "full source ramp was not 1.0."
+            )
         for name in _QOIS:
             lines.append(
                 f"  {name}: {_format_number(pair['relative_discrepancy'][name])}"
@@ -191,10 +206,22 @@ def _level_of(record: Mapping[str, object]) -> str:
 
 def _row(record: Mapping[str, object]) -> dict[str, object]:
     cp_average = _number(record, "cp_average")
+    total_iterations = record.get("total_iterations")
+    if total_iterations is None:
+        total_iterations = record.get("solver_iterations")
+    final_ramp = record.get("source_ramp_final")
+    if final_ramp is None:
+        final_ramp = source_ramp_factor(total_iterations)
     row: dict[str, object] = {
         "mesh_level": _level_of(record),
         "convergence_status": _status_text(record.get("convergence_status")),
         "cp_excess": None if cp_average is None else cp_average - 1.0,
+        "total_iterations": _number({"total_iterations": total_iterations}, "total_iterations"),
+        "full_source_iterations": _number(record, "full_source_iterations"),
+        "final_ramp": _number({"final_ramp": final_ramp}, "final_ramp"),
+        "mesh_comparison": (
+            "full_source" if _comparable(record) else "unsuitable"
+        ),
     }
     for name in _TABLE_FIELDS:
         if name == "cp_excess":
@@ -203,17 +230,33 @@ def _row(record: Mapping[str, object]) -> dict[str, object]:
     return row
 
 
+def _comparable(record: Mapping[str, object]) -> bool:
+    return full_source_gate_ok(
+        source_ramp_final=record.get("source_ramp_final"),
+        full_source_reached=record.get("full_source_reached"),
+        convergence_checked_after_full_source=record.get(
+            "convergence_checked_after_full_source"
+        ),
+        full_source_iterations=record.get("full_source_iterations"),
+    )
+
+
 def _adjacent(
     coarser: Mapping[str, object],
     finer: Mapping[str, object],
 ) -> dict[str, object]:
+    compared = (
+        coarser["mesh_comparison"] == "full_source"
+        and finer["mesh_comparison"] == "full_source"
+    )
     relative = {
-        name: _relative(coarser[name], finer[name])
+        name: _relative(coarser[name], finer[name]) if compared else None
         for name in _QOIS
     }
     return {
         "coarser": coarser["mesh_level"],
         "finer": finer["mesh_level"],
+        "qoi_compared": compared,
         "relative_discrepancy": relative,
         "solver_time_ratio": _ratio(
             coarser["solver_wall_time_s"],
@@ -276,10 +319,10 @@ def _same(left: object, right: object) -> bool:
 
 def _header() -> str:
     return (
-        f"{'mesh_level':<12}{'cells':>10}{'height':>8}{'lmh':>12}"
+        f"{'mesh_level':<12}{'cells':>10}{'total_iter':>12}"
+        f"{'full_iter':>11}{'final_ramp':>12}{'lmh':>12}"
         f"{'cp':>12}{'cp_excess':>12}{'dp_per_L':>12}{'mass_bal':>12}"
-        f"{'status':>14}{'iters':>12}{'solve_s':>10}{'total_s':>10}"
-        f"{'startup_s':>10}{'extract_s':>10}"
+        f"{'status':>20}{'solve_s':>10}{'total_s':>10}{'compare':>12}"
     )
 
 
@@ -287,18 +330,18 @@ def _format_row(row: Mapping[str, object]) -> str:
     return (
         f"{row['mesh_level']:<12}"
         f"{_format_number(row['cell_count']):>10}"
-        f"{_format_number(row['cells_across_channel_height']):>8}"
+        f"{_format_number(row['total_iterations']):>12}"
+        f"{_format_number(row['full_source_iterations']):>11}"
+        f"{_format_number(row['final_ramp']):>12}"
         f"{_format_number(row['lmh']):>12}"
         f"{_format_number(row['cp_average']):>12}"
         f"{_format_number(row['cp_excess']):>12}"
         f"{_format_number(row['pressure_drop_per_length_pa_per_m']):>12}"
         f"{_format_number(row['mass_balance_rel']):>12}"
-        f"{row['convergence_status']:>14}"
-        f"{_format_number(row['solver_iterations']):>12}"
+        f"{row['convergence_status']:>20}"
         f"{_format_number(row['solver_wall_time_s']):>10}"
         f"{_format_number(row['total_wall_time_s']):>10}"
-        f"{_format_number(row['startup_overhead_s']):>10}"
-        f"{_format_number(row['extraction_time_s']):>10}"
+        f"{row['mesh_comparison']:>12}"
     )
 
 

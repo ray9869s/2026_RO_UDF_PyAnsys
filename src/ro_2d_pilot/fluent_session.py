@@ -41,6 +41,14 @@ from ro.solver_common import (
     path_to_fluent_str,
 )
 from ro_2d_pilot.config import PilotConfig
+from ro_2d_pilot.membrane_diag import divergence_phase
+from ro_2d_pilot.source_schedule import (
+    CONVERGED_BEFORE_FULL_SOURCE,
+    IterateRequest,
+    ScheduleResult,
+    observation_from_transcript,
+    run_source_schedule,
+)
 from ro_2d_pilot.geometry import membrane_area_m2
 from ro_2d_pilot.physics import (
     ADJUST_UDF,
@@ -144,11 +152,24 @@ def first_report_number(payload: object) -> float:
     return found
 
 
-def classify_transcript(text: str, *, max_iterations: int) -> dict[str, object]:
-    """Map a Fluent transcript to the campaign stop-reason vocabulary."""
+def classify_transcript(
+    text: str,
+    *,
+    max_iterations: int,
+    accept_convergence_after: int | None = None,
+) -> dict[str, object]:
+    """Map a Fluent transcript to the campaign stop-reason vocabulary.
+
+    ``accept_convergence_after`` drops residual and QoI stop lines at or
+    before that iteration. The 2D ramp schedule sets it to the last
+    settling iteration so an early residual stop cannot classify the case.
+    """
     lowered = text.lower()
     diverged = any(marker in lowered for marker in _DIVERGENCE_MARKERS)
-    marker_reason, marker_iteration = parse_fluent_convergence_marker(text)
+    marker_reason, marker_iteration = parse_fluent_convergence_marker(
+        text,
+        after_iteration=accept_convergence_after,
+    )
     iteration = parse_last_residual_iteration_from_transcript_text(text)
     if iteration is None:
         iteration = marker_iteration
@@ -163,6 +184,9 @@ def classify_transcript(text: str, *, max_iterations: int) -> dict[str, object]:
     return {
         "convergence_status": status,
         "solver_iterations": iteration,
+        "convergence_iteration": (
+            marker_iteration if marker_reason is not None else None
+        ),
     }
 
 
@@ -373,17 +397,26 @@ def solve_case(
     )
     setup_time_s = time.perf_counter() - setup_started
     started = time.perf_counter()
-    _step(
+    schedule = _step(
         "iterate",
-        lambda: solution.run_calculation.iterate(iter_count=max_iterations),
+        lambda: _run_source_schedule(
+            solution,
+            solver,
+            udf_path.parent,
+            max_iterations,
+        ),
     )
     solver_wall_time_s = time.perf_counter() - started
     extract_started = time.perf_counter()
     transcript = collect_transcript(udf_path.parent, solver)
-    classified = classify_transcript(transcript, max_iterations=max_iterations)
+    classified = _classify_scheduled(
+        transcript,
+        max_iterations=max_iterations,
+        schedule=schedule,
+    )
     if classified["convergence_status"] == STOP_REASON_DIVERGED:
         return _session_metrics(
-            classified,
+            _with_divergence_note(classified, transcript),
             setup_time_s=setup_time_s,
             solver_wall_time_s=solver_wall_time_s,
             extraction_time_s=None,
@@ -395,10 +428,14 @@ def solve_case(
         )
     except Exception:
         transcript = collect_transcript(udf_path.parent, solver)
-        classified = classify_transcript(transcript, max_iterations=max_iterations)
+        classified = _classify_scheduled(
+            transcript,
+            max_iterations=max_iterations,
+            schedule=schedule,
+        )
         if classified["convergence_status"] == STOP_REASON_DIVERGED:
             return _session_metrics(
-                classified,
+                _with_divergence_note(classified, transcript),
                 setup_time_s=setup_time_s,
                 solver_wall_time_s=solver_wall_time_s,
                 extraction_time_s=time.perf_counter() - extract_started,
@@ -411,6 +448,76 @@ def solve_case(
         solver_wall_time_s=solver_wall_time_s,
         extraction_time_s=time.perf_counter() - extract_started,
     )
+
+
+def _run_source_schedule(solution, solver, run_dir: Path, max_iterations: int):
+    def iterate(request: IterateRequest) -> None:
+        _set_convergence_checks(solution, request.check_convergence)
+        solution.run_calculation.iterate(iter_count=request.count)
+
+    def observe():
+        text = collect_transcript(run_dir, solver)
+        return observation_from_transcript(
+            text,
+            diverged=_transcript_diverged(text),
+        )
+
+    return run_source_schedule(iterate, observe, max_iterations)
+
+
+def _classify_scheduled(
+    transcript: str,
+    *,
+    max_iterations: int,
+    schedule: ScheduleResult,
+) -> dict[str, object]:
+    classified = classify_transcript(
+        transcript,
+        max_iterations=max_iterations,
+        accept_convergence_after=schedule.accept_convergence_after,
+    )
+    classified.update(_schedule_fields(schedule))
+    if schedule.stalled and not schedule.convergence_checked_after_full_source:
+        classified["validity_reason"] = CONVERGED_BEFORE_FULL_SOURCE
+    return classified
+
+
+def _schedule_fields(schedule: ScheduleResult) -> dict[str, object]:
+    return {
+        "source_ramp_final": schedule.source_ramp_final,
+        "full_source_reached": schedule.full_source_reached,
+        "full_source_start_iteration": schedule.full_source_start_iteration,
+        "full_source_iterations": schedule.full_source_iterations,
+        "convergence_checked_after_full_source": (
+            schedule.convergence_checked_after_full_source
+        ),
+        "total_iterations": schedule.completed_iterations,
+    }
+
+
+def _transcript_diverged(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _DIVERGENCE_MARKERS)
+
+
+def _set_convergence_checks(solution, enabled: bool) -> None:
+    equations = solution.monitor.residual.equations
+    available = list(equations.get_state().keys())
+    for name in _RESIDUAL_EQUATIONS:
+        if name not in available:
+            continue
+        equations[name].check_convergence = enabled
+
+
+def _with_divergence_note(
+    classified: dict[str, object],
+    transcript: str,
+) -> dict[str, object]:
+    payload = dict(classified)
+    payload["membrane_solution"] = {
+        "divergence_phase": divergence_phase(transcript),
+    }
+    return payload
 
 
 def _session_metrics(
@@ -1044,6 +1151,7 @@ def _extract_reports(solver, config: PilotConfig) -> dict[str, object]:
         "pressure_drop_pa": p_inlet - p_outlet,
         "mass_balance_rel": mass_balance_relative_error(permeate, sink),
         "cp_average": _optional_cp(reports),
+        "membrane_solution": _membrane_solution(reports, mass_in, mass_out, sink),
     }
 
 
@@ -1081,6 +1189,81 @@ def _compute(reports, name: str) -> float:
         return first_report_number(payload)
     except ValueError as exc:
         raise FluentSetupError(name, str(exc)) from exc
+
+
+_BOTH_MEMBRANES = ["wall_top_mem", "wall_bottom_mem"]
+_AVERAGE_TYPES = ("surface-areaavg", "area-weighted-avg")
+_MIN_TYPES = ("surface-facetmin", "facet-min")
+_MAX_TYPES = ("surface-facetmax", "facet-max")
+
+
+def _membrane_solution(
+    reports,
+    mass_in: float,
+    mass_out: float,
+    sink: float,
+) -> dict[str, float | None]:
+    """Fail-soft membrane state. A rejected report type stays null."""
+    both = _BOTH_MEMBRANES
+    return {
+        "mass_in_kg_s": mass_in,
+        "mass_out_kg_s": mass_out,
+        "source_integral_kg_s": sink,
+        "jw_avg_m_s": _try_surface(reports, "jw_avg", "udm-6", both, _AVERAGE_TYPES),
+        "jw_min_m_s": _try_surface(reports, "jw_min", "udm-6", both, _MIN_TYPES),
+        "jw_max_m_s": _try_surface(reports, "jw_max", "udm-6", both, _MAX_TYPES),
+        "jw_top_avg_m_s": _try_surface(
+            reports, "jw_top", "udm-6", ["wall_top_mem"], _AVERAGE_TYPES
+        ),
+        "jw_bottom_avg_m_s": _try_surface(
+            reports, "jw_bot", "udm-6", ["wall_bottom_mem"], _AVERAGE_TYPES
+        ),
+        "salt_flux_avg_kg_m2_s": _try_surface(
+            reports, "js_avg", "udm-10", both, _AVERAGE_TYPES
+        ),
+        "membrane_pressure_avg_pa": _try_surface(
+            reports, "p_mem", "pressure", both, _AVERAGE_TYPES
+        ),
+        "membrane_pressure_top_avg_pa": _try_surface(
+            reports, "p_top", "pressure", ["wall_top_mem"], _AVERAGE_TYPES
+        ),
+        "membrane_pressure_bottom_avg_pa": _try_surface(
+            reports, "p_bot", "pressure", ["wall_bottom_mem"], _AVERAGE_TYPES
+        ),
+        "membrane_concentration_avg_mol_m3": _try_surface(
+            reports, "cm_avg", "udm-7", both, _AVERAGE_TYPES
+        ),
+        "membrane_concentration_top_avg_mol_m3": _try_surface(
+            reports, "cm_top", "udm-7", ["wall_top_mem"], _AVERAGE_TYPES
+        ),
+        "membrane_concentration_bottom_avg_mol_m3": _try_surface(
+            reports, "cm_bot", "udm-7", ["wall_bottom_mem"], _AVERAGE_TYPES
+        ),
+        "cp_min": _try_surface(reports, "cp_min", "udm-9", both, _MIN_TYPES),
+        "cp_max": _try_surface(reports, "cp_max", "udm-9", both, _MAX_TYPES),
+        "udm_y1_avg_m": _try_surface(reports, "y1_avg", "udm-12", both, _AVERAGE_TYPES),
+        "udm_y1_min_m": _try_surface(reports, "y1_min", "udm-12", both, _MIN_TYPES),
+        "udm_y1_max_m": _try_surface(reports, "y1_max", "udm-12", both, _MAX_TYPES),
+        "divergence_phase": None,
+    }
+
+
+def _try_surface(
+    reports,
+    name: str,
+    field: str,
+    surfaces: list[str],
+    kinds: tuple[str, ...],
+) -> float | None:
+    try:
+        reports.surface.create(name)
+        item = reports.surface[name]
+        _set_first(item.report_type, kinds, f"{name}_type")
+        item.field.set_state(field)
+        item.surface_names.set_state(surfaces)
+        return _compute(reports, name)
+    except Exception:
+        return None
 
 
 def _optional_cp(reports) -> float | None:

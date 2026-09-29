@@ -343,6 +343,7 @@ DEFINE_ADJUST(RO_membrane_adjust, domain)
     }
 
     ramp = source_ramp();
+    Message0("RO2D_SOURCE_RAMP iter=%d factor=%.6g\n", N_ITER, ramp);
     p_operating = RP_Get_Real("operating-pressure");
 
     thread_loop_c(cell_thread, domain) {

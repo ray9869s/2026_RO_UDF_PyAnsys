@@ -18,8 +18,13 @@ from ro_2d_pilot.fluent_session import (
     resolve_max_iterations,
     solve_case,
 )
+from ro_2d_pilot.membrane_diag import (
+    flux_consistency,
+    membrane_geometry_diagnostics,
+    source_ramp_factor,
+)
 from ro_2d_pilot.mesh_build import build_quad_mesh, write_fluent_msh
-from ro_2d_pilot.physics import UDF_FILE_NAME
+from ro_2d_pilot.physics import RHO_KG_M3, UDF_FILE_NAME
 from ro_2d_pilot.plan import build_plan, materialize
 from ro_2d_pilot.record import build_result_record
 from ro_2d_pilot.udf_case import write_case_udf
@@ -84,7 +89,11 @@ def run_case(
     plan_mesh["n_side"] = mesh.n_side
     plan_mesh["n_radial"] = mesh.n_radial
     plan_mesh["boundary_edge_counts"] = dict(mesh.counts)
-    plan["result"] = build_result_record(plan)
+    geometry_diagnostics = membrane_geometry_diagnostics(mesh, config)
+    plan["result"] = build_result_record(
+        plan,
+        _with_membrane_diagnostics(geometry_diagnostics, None),
+    )
     written = materialize(plan, root)
     mesh_path = written["mesh"].with_name(
         f"{plan['geo_id']}_{plan['fidelity']}.msh"
@@ -125,7 +134,10 @@ def run_case(
                 total_wall_time_s=total_wall_time_s,
             )
         )
-        record = build_result_record(plan, metrics)
+        record = build_result_record(
+            plan,
+            _with_membrane_diagnostics(geometry_diagnostics, metrics),
+        )
         _write_result(written["result"], record)
         return record
     except Exception:
@@ -141,7 +153,13 @@ def run_case(
                 session_timing,
                 "mesh_read_time_s",
             )
-        _write_result(written["result"], build_result_record(plan, failed))
+        _write_result(
+            written["result"],
+            build_result_record(
+                plan,
+                _with_membrane_diagnostics(geometry_diagnostics, failed),
+            ),
+        )
         raise
     finally:
         if session is not None:
@@ -149,6 +167,48 @@ def run_case(
                 session.exit()
             except Exception:
                 pass
+
+
+def _with_membrane_diagnostics(
+    geometry: dict[str, object],
+    metrics: dict[str, object] | None,
+) -> dict[str, object]:
+    payload = dict(metrics or {})
+    solution = payload.pop("membrane_solution", None)
+    diagnostics = dict(geometry)
+    recorded_ramp = payload.get("source_ramp_final")
+    if isinstance(recorded_ramp, bool) or not isinstance(recorded_ramp, (int, float)):
+        recorded_ramp = source_ramp_factor(
+            payload.get("total_iterations", payload.get("solver_iterations"))
+        )
+    diagnostics["source_ramp_factor"] = recorded_ramp
+    diagnostics["full_source_iterations"] = payload.get("full_source_iterations")
+    if isinstance(solution, dict):
+        diagnostics.update(solution)
+        length = geometry.get("membrane_length_total_m")
+        diagnostics.update(
+            flux_consistency(
+                mass_in_kg_s=_optional_float(solution.get("mass_in_kg_s")),
+                mass_out_kg_s=_optional_float(solution.get("mass_out_kg_s")),
+                source_integral_kg_s=_optional_float(
+                    solution.get("source_integral_kg_s")
+                ),
+                water_flux_avg_m_s=_optional_float(solution.get("jw_avg_m_s")),
+                salt_flux_avg_kg_m2_s=_optional_float(
+                    solution.get("salt_flux_avg_kg_m2_s")
+                ),
+                membrane_length_m=_optional_float(length),
+                density_kg_m3=RHO_KG_M3,
+            )
+        )
+    payload["membrane_diagnostics"] = diagnostics
+    return payload
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _optional_time(payload: object, key: str) -> float | None:

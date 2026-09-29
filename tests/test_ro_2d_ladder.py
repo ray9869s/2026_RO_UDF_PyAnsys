@@ -119,17 +119,33 @@ def _record(level: str, **overrides: object) -> dict[str, object]:
     return record
 
 
+def _full_source(**overrides):
+    payload = {
+        "source_ramp_final": 1.0,
+        "full_source_reached": True,
+        "convergence_checked_after_full_source": True,
+        "full_source_iterations": 51,
+        "total_iterations": 210,
+        "solver_iterations": 210,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_ladder_reports_refinement_change_and_skips_gci() -> None:
     report = compare_ladder(
         [
             _record("fine", cell_count=139734, lmh=21.0, cp_average=1.04,
                     pressure_drop_per_length_pa_per_m=25000.0,
-                    solver_wall_time_s=40.0, total_wall_time_s=160.0),
+                    solver_wall_time_s=40.0, total_wall_time_s=160.0,
+                    **_full_source()),
             _record("coarse", cell_count=8604, lmh=26.0, cp_average=1.10,
-                    pressure_drop_per_length_pa_per_m=23000.0),
+                    pressure_drop_per_length_pa_per_m=23000.0,
+                    **_full_source()),
             _record("medium", cell_count=34416, lmh=23.0, cp_average=1.06,
                     pressure_drop_per_length_pa_per_m=24000.0,
-                    solver_wall_time_s=20.0, total_wall_time_s=120.0),
+                    solver_wall_time_s=20.0, total_wall_time_s=120.0,
+                    **_full_source()),
         ]
     )
     assert report["levels"] == ["coarse", "medium", "fine"]
@@ -147,6 +163,7 @@ def test_ladder_reports_refinement_change_and_skips_gci() -> None:
     text = format_ladder(report)
     assert "relative discrepancy with respect to the finer mesh" in text
     assert "No acceptance threshold is applied." in text
+    assert "full_source" in text
     assert "LF" in text
     assert "GCI" in text
     assert "error" not in text.lower()
