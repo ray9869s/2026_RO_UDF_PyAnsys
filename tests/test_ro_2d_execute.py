@@ -222,6 +222,16 @@ def test_transcript_classification_reuses_campaign_stop_reasons() -> None:
         max_iterations=2000,
     )
     assert diverged["convergence_status"] == "diverged"
+    floating_point = classify_transcript(
+        "\n".join(
+            [
+                "Divergence detected in AMG solver: species-0",
+                "Error: floating point exception",
+            ]
+        ),
+        max_iterations=2000,
+    )
+    assert floating_point["convergence_status"] == "diverged"
     unknown = classify_transcript("", max_iterations=2000)
     assert unknown["convergence_status"] == "iteration_unknown"
     assert first_report_number({"mass_in": ["name", 3.5]}) == pytest.approx(3.5)

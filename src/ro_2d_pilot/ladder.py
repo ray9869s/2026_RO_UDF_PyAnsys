@@ -193,6 +193,7 @@ def _row(record: Mapping[str, object]) -> dict[str, object]:
     cp_average = _number(record, "cp_average")
     row: dict[str, object] = {
         "mesh_level": _level_of(record),
+        "convergence_status": _status_text(record.get("convergence_status")),
         "cp_excess": None if cp_average is None else cp_average - 1.0,
     }
     for name in _TABLE_FIELDS:
@@ -277,7 +278,7 @@ def _header() -> str:
     return (
         f"{'mesh_level':<12}{'cells':>10}{'height':>8}{'lmh':>12}"
         f"{'cp':>12}{'cp_excess':>12}{'dp_per_L':>12}{'mass_bal':>12}"
-        f"{'iters':>8}{'solve_s':>10}{'total_s':>10}"
+        f"{'status':>14}{'iters':>12}{'solve_s':>10}{'total_s':>10}"
         f"{'startup_s':>10}{'extract_s':>10}"
     )
 
@@ -292,12 +293,19 @@ def _format_row(row: Mapping[str, object]) -> str:
         f"{_format_number(row['cp_excess']):>12}"
         f"{_format_number(row['pressure_drop_per_length_pa_per_m']):>12}"
         f"{_format_number(row['mass_balance_rel']):>12}"
-        f"{_format_number(row['solver_iterations']):>8}"
+        f"{row['convergence_status']:>14}"
+        f"{_format_number(row['solver_iterations']):>12}"
         f"{_format_number(row['solver_wall_time_s']):>10}"
         f"{_format_number(row['total_wall_time_s']):>10}"
         f"{_format_number(row['startup_overhead_s']):>10}"
         f"{_format_number(row['extraction_time_s']):>10}"
     )
+
+
+def _status_text(value: object) -> str:
+    if value is None or value == "":
+        return "undefined"
+    return str(value)
 
 
 def _format_number(value: object) -> str:

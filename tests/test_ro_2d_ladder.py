@@ -152,6 +152,19 @@ def test_ladder_reports_refinement_change_and_skips_gci() -> None:
     assert "error" not in text.lower()
 
 
+def test_ladder_shows_a_diverged_level_without_inventing_qois() -> None:
+    report = compare_ladder(
+        [
+            _record("coarse", lmh=None, cp_average=None, convergence_status="diverged",
+                    solver_iterations=None, solver_wall_time_s=12.0),
+            _record("medium"),
+        ]
+    )
+    text = format_ladder(report)
+    assert "diverged" in text
+    assert report["adjacent"][0]["relative_discrepancy"]["lmh"] is None
+
+
 def test_ladder_rejects_a_different_case_or_a_repeated_level() -> None:
     with pytest.raises(LadderMismatch, match="d_m"):
         compare_ladder(

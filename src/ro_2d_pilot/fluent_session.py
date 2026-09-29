@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Mapping
 
 from ro.solver_common import (
+    STOP_REASON_DIVERGED,
     STOP_REASON_QOI_CONVERGED,
     STOP_REASON_RESIDUAL_CONVERGED,
     classify_solver_stop_reason,
@@ -380,15 +381,50 @@ def solve_case(
     extract_started = time.perf_counter()
     transcript = collect_transcript(udf_path.parent, solver)
     classified = classify_transcript(transcript, max_iterations=max_iterations)
-    metrics = _step(
-        "extract_reports",
-        lambda: _extract_reports(solver, config),
-    )
+    if classified["convergence_status"] == STOP_REASON_DIVERGED:
+        return _session_metrics(
+            classified,
+            setup_time_s=setup_time_s,
+            solver_wall_time_s=solver_wall_time_s,
+            extraction_time_s=None,
+        )
+    try:
+        metrics = _step(
+            "extract_reports",
+            lambda: _extract_reports(solver, config),
+        )
+    except Exception:
+        transcript = collect_transcript(udf_path.parent, solver)
+        classified = classify_transcript(transcript, max_iterations=max_iterations)
+        if classified["convergence_status"] == STOP_REASON_DIVERGED:
+            return _session_metrics(
+                classified,
+                setup_time_s=setup_time_s,
+                solver_wall_time_s=solver_wall_time_s,
+                extraction_time_s=time.perf_counter() - extract_started,
+            )
+        raise
     metrics.update(classified)
-    metrics["setup_time_s"] = setup_time_s
-    metrics["solver_wall_time_s"] = solver_wall_time_s
-    metrics["extraction_time_s"] = time.perf_counter() - extract_started
-    return metrics
+    return _session_metrics(
+        metrics,
+        setup_time_s=setup_time_s,
+        solver_wall_time_s=solver_wall_time_s,
+        extraction_time_s=time.perf_counter() - extract_started,
+    )
+
+
+def _session_metrics(
+    metrics: dict[str, object],
+    *,
+    setup_time_s: float,
+    solver_wall_time_s: float,
+    extraction_time_s: float | None,
+) -> dict[str, object]:
+    finished = dict(metrics)
+    finished["setup_time_s"] = setup_time_s
+    finished["solver_wall_time_s"] = solver_wall_time_s
+    finished["extraction_time_s"] = extraction_time_s
+    return finished
 
 
 def collect_transcript(run_dir: Path, solver) -> str:
