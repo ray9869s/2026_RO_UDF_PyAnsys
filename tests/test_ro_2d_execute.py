@@ -14,6 +14,7 @@ from ro.udm_layout import parse_udm_enum_from_c
 from ro_2d_pilot.config import OperatingPoint, PilotConfig
 from ro_2d_pilot.execute import run_case
 from ro_2d_pilot.fluent_session import (
+    MESH_READ_BACKEND,
     FluentMeshReadError,
     FluentSwitchToSolverError,
     FluentUnavailable,
@@ -313,17 +314,6 @@ class _Scheme:
         raise AssertionError(expression)
 
 
-class _MeshReader:
-    def __init__(self, events: list[str], error: Exception | None = None) -> None:
-        self._events = events
-        self._error = error
-
-    def read_mesh(self, path: str) -> None:
-        self._events.append(f"read_mesh:{path}")
-        if self._error is not None:
-            raise self._error
-
-
 class _Report:
     def __init__(self, events: list[str], text: str = "2868 cells") -> None:
         self._events = events
@@ -335,10 +325,29 @@ class _Report:
 
 
 class _Tui:
-    def __init__(self, events: list[str], read_error: Exception | None = None) -> None:
-        self.file = type("File", (), {})()
-        self.file.read_mesh = _MeshReader(events, read_error).read_mesh
+    def __init__(self, events: list[str]) -> None:
         self.report = _Report(events)
+
+
+class _ReadMesh:
+    def __init__(self, events: list[str], error: Exception | None = None) -> None:
+        self._events = events
+        self._error = error
+
+    def __call__(self, *, FileName: str) -> None:
+        self._events.append(f"ReadMesh:{FileName}")
+        if self._error is not None:
+            raise self._error
+
+
+class _FileMenu:
+    def __init__(self, events: list[str], error: Exception | None = None) -> None:
+        self.ReadMesh = _ReadMesh(events, error)
+
+
+class _Datamodel:
+    def __init__(self, events: list[str], error: Exception | None = None) -> None:
+        self.File = _FileMenu(events, error)
 
 
 class _Meshing:
@@ -351,7 +360,8 @@ class _Meshing:
         switch_error: Exception | None = None,
     ) -> None:
         self.events = events
-        self.tui = _Tui(events, read_error)
+        self.tui = _Tui(events)
+        self.meshing = _Datamodel(events, read_error)
         self.scheme = _Scheme(events, dimension)
         self.switch_error = switch_error
         self.exited = False
@@ -421,7 +431,7 @@ def test_case_launch_reads_mesh_then_switches_before_setup(
     record = run_case(_config(), tmp_path / "ro2d", launcher=launcher)
     assert events == [
         "launch:meshing:2",
-        "read_mesh:" + str(next((tmp_path / "ro2d").rglob("*.msh"))),
+        "ReadMesh:" + str(next((tmp_path / "ro2d").rglob("*.msh"))),
         "scheme:(rpgetvar 'dimension)",
         "mesh_size",
         "switch_to_solver",
@@ -460,7 +470,7 @@ def test_switch_failure_is_distinct_from_mesh_read(tmp_path: Path) -> None:
 
     with pytest.raises(FluentSwitchToSolverError, match="switch_to_solver"):
         run_case(_config(), tmp_path / "ro2d", launcher=launcher)
-    assert events[0].startswith("read_mesh:")
+    assert events[0].startswith("ReadMesh:")
     assert "switch_to_solver" in events
     assert "tui:/mesh/check" not in events
     assert meshing.exited is True
@@ -478,4 +488,31 @@ def test_non_2d_session_is_rejected_before_switch(tmp_path: Path) -> None:
         )
     assert "switch_to_solver" not in events
     assert meshing.exited is True
+
+
+def test_mesh_read_failure_names_the_datamodel_backend(tmp_path: Path) -> None:
+    events: list[str] = []
+    meshing = _Meshing(events, read_error=RuntimeError("menu not found"))
+
+    with pytest.raises(FluentMeshReadError, match="menu not found") as caught:
+        run_case(_config(), tmp_path / "ro2d", launcher=lambda **_kwargs: meshing)
+    message = str(caught.value)
+    assert f"backend={MESH_READ_BACKEND}" in message
+    assert "pyfluent=" in message
+    assert "fluent=" in message
+    assert "exists=True" in message
+    assert "size_bytes=" in message
+    assert "switch_to_solver" not in events
+    assert MESH_READ_BACKEND == "meshing.File.ReadMesh"
+
+
+def test_production_solver_launch_is_unchanged() -> None:
+    source = (REPO_ROOT / "scripts" / "solver_code_260616.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'mode="meshing"' in source
+    assert "switch_to_solver()" in source
+    assert "ro_2d_pilot" not in source
+    assert "File.ReadMesh" not in source
+
 

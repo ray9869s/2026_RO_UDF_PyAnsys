@@ -74,6 +74,9 @@ _RESIDUAL_EQUATIONS = (
 _REQUIRED_RESIDUALS = ("continuity", "x-velocity", "y-velocity")
 _CELL_COUNT_RE = re.compile(r"(\d+)\s+cells\b", re.IGNORECASE)
 _DEFAULT_START_TIMEOUT_S = 300
+# Fluent 2025 R1 meshing datamodel. The classic TUI file/read-mesh menu
+# is not served by this session (RuntimeError: menu not found).
+MESH_READ_BACKEND = "meshing.File.ReadMesh"
 
 
 class FluentUnavailable(RuntimeError):
@@ -412,15 +415,50 @@ def _exit_quietly(session) -> None:
         return
 
 
-def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
-    fluent_path = path_to_fluent_str(mesh_path)
+def _pyfluent_version() -> str:
     try:
-        meshing.tui.file.read_mesh(fluent_path)
+        from importlib.metadata import version
+
+        return version("ansys-fluent-core")
+    except Exception as exc:
+        return f"unavailable ({type(exc).__name__}: {exc})"
+
+
+def _fluent_version(session) -> str:
+    try:
+        return str(session.get_fluent_version())
+    except Exception as exc:
+        return f"unavailable ({type(exc).__name__}: {exc})"
+
+
+def _mesh_file_facts(mesh_path: Path) -> str:
+    path = Path(mesh_path)
+    if path.is_file():
+        return f"exists=True size_bytes={path.stat().st_size}"
+    return "exists=False size_bytes=None"
+
+
+def _mesh_read_context(session, mesh_path: Path) -> str:
+    return (
+        f"backend={MESH_READ_BACKEND} "
+        f"pyfluent={_pyfluent_version()} "
+        f"fluent={_fluent_version(session)} "
+        f"path={path_to_fluent_str(mesh_path)} "
+        f"{_mesh_file_facts(mesh_path)}"
+    )
+
+
+def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
+    """Read the Python-written ``.msh`` with the 25.1 meshing datamodel."""
+    fluent_path = path_to_fluent_str(mesh_path)
+    context = _mesh_read_context(meshing, mesh_path)
+    try:
+        meshing.meshing.File.ReadMesh(FileName=fluent_path)
     except FluentMeshReadError:
         raise
     except Exception as exc:
         raise FluentMeshReadError(
-            f"Could not read {fluent_path}. {type(exc).__name__}: {exc}"
+            f"{context} {type(exc).__name__}: {exc}"
         ) from exc
     try:
         dimension = _as_int(meshing.scheme.eval("(rpgetvar 'dimension)"))
@@ -429,12 +467,12 @@ def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
         raise
     except Exception as exc:
         raise FluentMeshReadError(
-            "Mesh read returned, but dimension or mesh size could not "
-            f"be read. {type(exc).__name__}: {exc}"
+            "Mesh read succeeded, but dimension or mesh size could not "
+            f"be read. {context} {type(exc).__name__}: {exc}"
         ) from exc
     if dimension != 2:
         raise FluentMeshReadError(
-            f"Fluent dimension is {dimension}, expected 2."
+            f"Fluent dimension is {dimension}, expected 2. {context}"
         )
     cells = _cell_count_from_report(report)
     if cells is None:
@@ -442,8 +480,13 @@ def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
     if cells is None or cells < 1:
         raise FluentMeshReadError(
             "Mesh size did not report a positive cell count. "
-            f"Report={report!r}."
+            f"Report={report!r}. {context}"
         )
+    print(
+        "2D mesh read succeeded: "
+        f"{context} dimension={dimension} cells={cells}",
+        flush=True,
+    )
 
 
 def _cell_count_from_scheme(meshing) -> int | None:
