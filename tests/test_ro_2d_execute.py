@@ -15,6 +15,7 @@ from ro_2d_pilot.config import OperatingPoint, PilotConfig
 from ro_2d_pilot.execute import run_case
 from ro_2d_pilot.fluent_session import (
     MESH_READ_BACKEND,
+    SWITCH_BACKEND,
     FluentMeshReadError,
     FluentSwitchToSolverError,
     FluentUnavailable,
@@ -367,6 +368,31 @@ class _Solver:
         self.events.append("exit_solver")
 
 
+class _Connection:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.finalizer_cbs = [self._finalize]
+
+    def _finalize(self) -> None:
+        self.events.append("meshing_finalizer")
+
+
+class _SwitchToSolution:
+    def __init__(self, events: list[str], error: Exception | None = None) -> None:
+        self._events = events
+        self._error = error
+
+    def __call__(self) -> None:
+        self._events.append("SwitchToSolution")
+        if self._error is not None:
+            raise self._error
+
+
+class _MeshingRoot:
+    def __init__(self, events: list[str], error: Exception | None = None) -> None:
+        self.SwitchToSolution = _SwitchToSolution(events, error)
+
+
 class _Meshing:
     def __init__(
         self,
@@ -377,16 +403,16 @@ class _Meshing:
         switch_error: Exception | None = None,
     ) -> None:
         self.events = events
-        self.switch_error = switch_error
         self.dimension = dimension
         self.read_error = read_error
+        self._fluent_connection = _Connection(events)
+        self._file_transfer_service = None
+        self.meshing = _MeshingRoot(events, switch_error)
         self.exited = False
         self.solver: _Solver | None = None
 
-    def switch_to_solver(self):
-        self.events.append("switch_to_solver")
-        if self.switch_error is not None:
-            raise self.switch_error
+    def build_solver(self, _connection) -> _Solver:
+        self.events.append("attach_solver")
         self.solver = _Solver(
             self.events,
             dimension=self.dimension,
@@ -440,7 +466,9 @@ def test_case_launch_switches_then_reads_mesh_before_setup(
     record = run_case(_config(), tmp_path / "ro2d", launcher=launcher)
     assert events == [
         "launch:meshing:2",
-        "switch_to_solver",
+        "meshing_finalizer",
+        "SwitchToSolution",
+        "attach_solver",
         "read_mesh:" + str(next((tmp_path / "ro2d").rglob("*.msh"))),
         "scheme:(rpgetvar 'dimension)",
         "mesh_size",
@@ -448,6 +476,7 @@ def test_case_launch_switches_then_reads_mesh_before_setup(
         "solver_setup",
         "exit_solver",
     ]
+    assert meshing._fluent_connection is None
     assert record["validity"] == "valid"
     assert "exit_meshing" not in events
 
@@ -461,7 +490,7 @@ def test_mesh_read_failure_stops_before_mesh_check(tmp_path: Path) -> None:
 
     with pytest.raises(FluentMeshReadError, match="read_mesh"):
         run_case(_config(), tmp_path / "ro2d", launcher=launcher)
-    assert "switch_to_solver" in events
+    assert "SwitchToSolution" in events
     assert "tui:/mesh/check" not in events
     assert "solver_setup" not in events
     assert meshing.solver is not None and meshing.solver.exited is True
@@ -474,17 +503,24 @@ def test_mesh_read_failure_stops_before_mesh_check(tmp_path: Path) -> None:
 
 def test_switch_failure_is_distinct_from_mesh_read(tmp_path: Path) -> None:
     events: list[str] = []
-    meshing = _Meshing(events, switch_error=RuntimeError("switch failed"))
+    meshing = _Meshing(events, switch_error=RuntimeError("menu not found"))
 
     def launcher(**_kwargs):
         return meshing
 
-    with pytest.raises(FluentSwitchToSolverError, match="switch_to_solver"):
+    with pytest.raises(FluentSwitchToSolverError, match="menu not found") as caught:
         run_case(_config(), tmp_path / "ro2d", launcher=launcher)
-    assert events[0] == "switch_to_solver"
+    message = str(caught.value)
+    assert f"backend={SWITCH_BACKEND}" in message
+    assert "pyfluent=" in message
+    assert "fluent=" in message
+    assert events[:2] == ["meshing_finalizer", "SwitchToSolution"]
+    assert "attach_solver" not in events
     assert not any(event.startswith("read_mesh:") for event in events)
     assert "tui:/mesh/check" not in events
     assert meshing.exited is True
+    assert meshing._fluent_connection is not None
+    assert SWITCH_BACKEND == "meshing.SwitchToSolution"
 
 
 def test_non_2d_session_is_rejected_before_mesh_check(tmp_path: Path) -> None:
@@ -499,7 +535,7 @@ def test_non_2d_session_is_rejected_before_mesh_check(tmp_path: Path) -> None:
             mesh_path=mesh_path,
             launcher=lambda **_kwargs: meshing,
         )
-    assert "switch_to_solver" in events
+    assert "SwitchToSolution" in events
     assert any(event.startswith("read_mesh:") for event in events)
     assert "tui:/mesh/check" not in events
     assert meshing.solver is not None and meshing.solver.exited is True
@@ -520,7 +556,7 @@ def test_mesh_read_failure_names_the_solver_backend(tmp_path: Path) -> None:
     assert "fluent=" in message
     assert "exists=True" in message
     assert "size_bytes=" in message
-    assert events.index("switch_to_solver") < next(
+    assert events.index("SwitchToSolution") < next(
         index for index, event in enumerate(events) if event.startswith("read_mesh:")
     )
     assert "tui:/mesh/check" not in events
@@ -535,5 +571,6 @@ def test_production_solver_launch_is_unchanged() -> None:
     assert "switch_to_solver()" in source
     assert "ro_2d_pilot" not in source
     assert "File.ReadMesh" not in source
+    assert "SwitchToSolution" not in source
 
 

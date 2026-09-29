@@ -2,12 +2,16 @@
 
 The Windows host times out when Fluent is launched directly in solver
 mode. The production 3D workflow therefore launches meshing mode and
-calls ``switch_to_solver()``. This module does the same for one 2D
-case. The algebraic ``.msh`` is read only after that switch, with
-``settings.file.read_mesh``. Meshing ``File.ReadMesh`` is not used:
-on Fluent 2025 R1 it calls ``S_FileReadMesh``, which dereferences the
-uninitialized size function ``%tg-size-func-bgrid``. ``PURE_MESHING``
-is not used: that session cannot switch to the solver.
+calls ``switch_to_solver()``. This 2D pilot also launches meshing mode,
+but it does not call that method: PyFluent 0.38 implements it as the
+TUI menu ``switch_to_solution_mode``, and Fluent 2025 R1 2D meshing
+does not serve that menu. The switch uses the 25.1 datamodel command
+``meshing.SwitchToSolution`` and then attaches a solver session to the
+same Fluent process. The algebraic ``.msh`` is read only after that
+switch, with ``settings.file.read_mesh``. Meshing ``File.ReadMesh`` is
+not used: on Fluent 2025 R1 it calls ``S_FileReadMesh``, which
+dereferences the uninitialized size function ``%tg-size-func-bgrid``.
+``PURE_MESHING`` is not used: that session cannot switch to the solver.
 
 PyFluent is imported only while launching. Launch, mesh-read, and
 switch failures are separate exceptions. Species setup fails by step
@@ -81,8 +85,13 @@ _DEFAULT_START_TIMEOUT_S = 300
 # command requires the meshing size function %tg-size-func-bgrid, which
 # stays NULL when no meshing workflow was created. The reader for a
 # Python-written solver .msh is the solver settings command, used after
-# switch_to_solver(), same file menu as the 3D read_case/replace_mesh.
+# the datamodel switch below. It is the same file menu as the 3D
+# read_case/replace_mesh path.
 MESH_READ_BACKEND = "solver.settings.file.read_mesh"
+# Meshing.switch_to_solver() calls tui.switch_to_solution_mode. That TUI
+# menu is absent on a Fluent 2025 R1 2D meshing session. Root.SwitchToSolution
+# is the datamodel command in datamodel_251/meshing.py and takes no arguments.
+SWITCH_BACKEND = "meshing.SwitchToSolution"
 
 
 class FluentUnavailable(RuntimeError):
@@ -254,14 +263,7 @@ def open_solver_session(
             start_timeout=start_timeout,
             launcher=launcher,
         )
-        try:
-            solver = meshing.switch_to_solver()
-        except FluentSwitchToSolverError:
-            raise
-        except Exception as exc:
-            raise FluentSwitchToSolverError(
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+        solver = _switch_to_solver(meshing)
         _read_and_verify_mesh(solver, mesh_path)
         _solver_mesh_check(solver)
         handed_off = True
@@ -420,6 +422,61 @@ def _exit_quietly(session) -> None:
         session.exit()
     except Exception:
         return
+
+
+def _switch_context(meshing) -> str:
+    return (
+        f"backend={SWITCH_BACKEND} "
+        f"pyfluent={_pyfluent_version()} "
+        f"fluent={_fluent_version(meshing)}"
+    )
+
+
+def _switch_to_solver(meshing):
+    """Switch a 2D meshing session without the missing TUI menu.
+
+    The solver object keeps the meshing session's Fluent connection, so
+    this does not launch a second process. Test doubles may set
+    ``build_solver``; a live session does not have that attribute.
+    """
+    context = _switch_context(meshing)
+    connection = getattr(meshing, "_fluent_connection", None)
+    if connection is None:
+        raise FluentSwitchToSolverError(
+            f"{context} meshing session has no Fluent connection."
+        )
+    try:
+        for callback in list(getattr(connection, "finalizer_cbs", ())):
+            callback()
+        meshing.meshing.SwitchToSolution()
+        builder = getattr(meshing, "build_solver", None)
+        if builder is not None:
+            solver = builder(connection)
+        else:
+            solver = _make_solver_session(
+                connection,
+                meshing.scheme,
+                getattr(meshing, "_file_transfer_service", None),
+            )
+    except FluentSwitchToSolverError:
+        raise
+    except Exception as exc:
+        raise FluentSwitchToSolverError(
+            f"{context} {type(exc).__name__}: {exc}"
+        ) from exc
+    meshing._fluent_connection = None
+    print(f"2D switch to solver succeeded: {context}", flush=True)
+    return solver
+
+
+def _make_solver_session(connection, scheme_eval, file_transfer_service):
+    from ansys.fluent.core.session_solver import Solver
+
+    return Solver(
+        fluent_connection=connection,
+        scheme_eval=scheme_eval,
+        file_transfer_service=file_transfer_service,
+    )
 
 
 def _pyfluent_version() -> str:
