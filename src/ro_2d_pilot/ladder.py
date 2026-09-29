@@ -268,10 +268,24 @@ def _adjacent(
 
 
 def _trend(values: list[object]) -> str:
-    numbers = [value for value in values if isinstance(value, (int, float))]
-    if len(numbers) < len(values) or len(numbers) < 3:
+    """Trend across finite values only.
+
+    Unsuitable mesh levels are passed as ``None``. ``undefined`` and NaN
+    are dropped the same way. Remaining numbers stay in refinement order.
+    """
+    numbers: list[float] = []
+    for value in values:
+        if value is None or value == "undefined":
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        number = float(value)
+        if not math.isfinite(number):
+            continue
+        numbers.append(number)
+    if len(numbers) < 3:
         return "fewer than three finite values"
-    deltas = [float(right) - float(left) for left, right in zip(numbers, numbers[1:])]
+    deltas = [right - left for left, right in zip(numbers, numbers[1:])]
     if all(delta <= 0.0 for delta in deltas):
         return "non-increasing with refinement"
     if all(delta >= 0.0 for delta in deltas):

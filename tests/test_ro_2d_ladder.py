@@ -169,6 +169,56 @@ def test_ladder_reports_refinement_change_and_skips_gci() -> None:
     assert "error" not in text.lower()
 
 
+def test_ladder_trend_ignores_an_unsuitable_level() -> None:
+    report = compare_ladder(
+        [
+            _record(
+                "coarse",
+                lmh=99.0,
+                cp_average=1.9,
+                pressure_drop_per_length_pa_per_m=1.0,
+                convergence_status="diverged",
+            ),
+            _record(
+                "medium",
+                lmh=26.0,
+                cp_average=1.08,
+                pressure_drop_per_length_pa_per_m=23000.0,
+                **_full_source(),
+            ),
+            _record(
+                "fine",
+                lmh=24.0,
+                cp_average=1.06,
+                pressure_drop_per_length_pa_per_m=24000.0,
+                **_full_source(),
+            ),
+            _record(
+                "very_fine",
+                lmh=22.0,
+                cp_average=1.04,
+                pressure_drop_per_length_pa_per_m=25000.0,
+                **_full_source(),
+            ),
+        ]
+    )
+    assert report["trend_with_refinement"]["lmh"] == "non-increasing with refinement"
+    assert report["trend_with_refinement"]["cp_excess"] == "non-increasing with refinement"
+    assert (
+        report["trend_with_refinement"]["pressure_drop_per_length_pa_per_m"]
+        == "non-decreasing with refinement"
+    )
+
+
+def test_ladder_trend_drops_undefined_and_nan() -> None:
+    from ro_2d_pilot.ladder import _trend
+
+    assert _trend([None, "undefined", float("nan"), 3.0, 2.0, 1.0]) == (
+        "non-increasing with refinement"
+    )
+    assert _trend([None, 1.0, float("nan")]) == "fewer than three finite values"
+
+
 def test_ladder_shows_a_diverged_level_without_inventing_qois() -> None:
     report = compare_ladder(
         [
