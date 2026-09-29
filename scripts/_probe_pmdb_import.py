@@ -82,11 +82,34 @@ def load_run_config():
     return cfg
 
 
+def _string_sequence(value, source):
+    """Require a sequence of str, including a protobuf repeated container.
+
+    None and str/bytes are rejected. Any other value is converted with
+    list(); an iteration error propagates unchanged.
+    """
+    if value is None:
+        raise RuntimeError(f"{source} returned None.")
+    if isinstance(value, (str, bytes)):
+        raise TypeError(
+            f"{source} must return a sequence of strings, "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    items = list(value)
+    for item in items:
+        if not isinstance(item, str):
+            raise TypeError(
+                f"{source} contains a non-string element: {item!r}"
+            )
+    return items
+
+
 def read_imported_face_labels(meshing):
     """Read face-zone labels with meshing_utilities.get_labels(object_name=...).
 
     PyFluent 0.38.0 datamodel_251: get_labels(object_name, filter=None,
-    label_name_pattern=None) -> list[str]. Called once per object from
+    label_name_pattern=None). The runtime value may be a list or a protobuf
+    repeated container of strings. Called once per object from
     get_all_objects(), with object_name only.
     """
     utilities = meshing.meshing_utilities
@@ -106,25 +129,12 @@ def read_imported_face_labels(meshing):
         raw_labels = utilities.get_labels(object_name=name)
         print(f"RAW labels type: {type(raw_labels).__name__} object={name!r}")
         print(f"RAW labels repr: {raw_labels!r}")
-        if raw_labels is None:
-            raise RuntimeError(
-                f"meshing_utilities.get_labels(object_name={name!r}) returned None."
+        labels.extend(
+            _string_sequence(
+                raw_labels,
+                f"meshing_utilities.get_labels(object_name={name!r})",
             )
-        if isinstance(raw_labels, (str, bytes)) or not isinstance(
-            raw_labels, (list, tuple)
-        ):
-            raise TypeError(
-                f"meshing_utilities.get_labels(object_name={name!r}) "
-                "must return a list of strings, "
-                f"got {type(raw_labels).__name__}: {raw_labels!r}"
-            )
-        for label in raw_labels:
-            if not isinstance(label, str):
-                raise TypeError(
-                    f"meshing_utilities.get_labels(object_name={name!r}) "
-                    f"contains a non-string label: {label!r}"
-                )
-            labels.append(label)
+        )
     return labels
 
 
@@ -190,13 +200,9 @@ def bbox_corners_mm(raw):
             f"Raw result: {raw!r}"
         )
 
-    try:
-        items = list(raw)
-    except TypeError as exc:
-        raise RuntimeError(
-            "Bounding box result is not a mapping or sequence. "
-            f"Raw result: {raw!r}"
-        ) from exc
+    # A protobuf repeated container is not a list. list() accepts it;
+    # an iteration error propagates.
+    items = list(raw)
 
     if len(items) == 2:
         try:
@@ -283,13 +289,14 @@ def check_length_scale(meshing):
     """Require imported extents to match EXPECTED_EXTENT_MM."""
     zone_ids = imported_face_zone_ids(meshing)
     print(f"Face zone ids for bounding box: {zone_ids}")
-    zone_names = meshing.meshing_utilities.convert_zone_ids_to_name_strings(
+    raw_zone_names = meshing.meshing_utilities.convert_zone_ids_to_name_strings(
         zone_id_list=zone_ids
     )
-    if isinstance(zone_names, (list, tuple)):
-        print(f"Face zone names: {list(zone_names)}")
-    else:
-        print(f"Face zone names: {zone_names!r}")
+    zone_names = _string_sequence(
+        raw_zone_names,
+        "meshing_utilities.convert_zone_ids_to_name_strings",
+    )
+    print(f"Face zone names: {zone_names}")
     raw_bbox = meshing.meshing_utilities.get_bounding_box_of_zone_list(
         zone_id_list=zone_ids
     )
