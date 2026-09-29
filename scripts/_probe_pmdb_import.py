@@ -38,11 +38,6 @@ EXPECTED_EXTENT_MM = (1.0, 1.0, 0.5)  # x, y, z
 EXTENT_RTOL = 1e-6
 
 TRANSCRIPT_NAME = "probe_pmdb_import_transcript.txt"
-# Add Local Sizing exposes imported face labels before that task runs.
-# Same task and key as meshing_code_260616.validate_requested_labels
-# after Import Geometry.
-LABEL_TASK_NAME = "Add Local Sizing"
-LABEL_STATE_KEY = "CompleteFaceLabelList"
 # Flat 6-real bounding boxes are min point then max point, each (x, y, z).
 # Same (x y z) order as get_average_bounding_box_center and as Fluent's
 # join-region bounding box "(min x y z) (max x y z)".
@@ -87,38 +82,55 @@ def load_run_config():
     return cfg
 
 
-def read_imported_face_labels(workflow):
-    """Read face labels the way the meshing worker does after import.
+def read_imported_face_labels(meshing):
+    """Read face-zone labels with meshing_utilities.get_labels(object_name=...).
 
-    meshing_code_260616.get_available_labels reads
-    task.Arguments.get_state()[CompleteFaceLabelList] from Add Local Sizing.
-    That helper catches failures and returns []. This probe does not.
+    PyFluent 0.38.0 datamodel_251: get_labels(object_name, filter=None,
+    label_name_pattern=None) -> list[str]. Called once per object from
+    get_all_objects(), with object_name only.
     """
-    state = workflow.TaskObject[LABEL_TASK_NAME].Arguments.get_state()
-    if LABEL_STATE_KEY not in state:
-        raise KeyError(
-            f"{LABEL_TASK_NAME} arguments have no {LABEL_STATE_KEY!r}. "
-            f"Keys: {sorted(state)}"
-        )
-    raw_labels = state[LABEL_STATE_KEY]
-    if isinstance(raw_labels, (str, bytes)) or not isinstance(raw_labels, (list, tuple)):
-        raise TypeError(
-            f"{LABEL_STATE_KEY} must be a list of strings, "
-            f"got {type(raw_labels).__name__}: {raw_labels!r}"
-        )
+    utilities = meshing.meshing_utilities
+    object_names = utilities.get_all_objects()
+    if object_names is None:
+        raise RuntimeError("meshing_utilities.get_all_objects() returned None.")
+    try:
+        names = [str(name) for name in object_names]
+    except TypeError as exc:
+        raise RuntimeError(
+            "meshing_utilities.get_all_objects() did not return a name list: "
+            f"{object_names!r}"
+        ) from exc
+
     labels = []
-    for label in raw_labels:
-        if not isinstance(label, str):
-            raise TypeError(
-                f"{LABEL_STATE_KEY} contains a non-string label: {label!r}"
+    for name in names:
+        raw_labels = utilities.get_labels(object_name=name)
+        print(f"RAW labels type: {type(raw_labels).__name__} object={name!r}")
+        print(f"RAW labels repr: {raw_labels!r}")
+        if raw_labels is None:
+            raise RuntimeError(
+                f"meshing_utilities.get_labels(object_name={name!r}) returned None."
             )
-        labels.append(label)
+        if isinstance(raw_labels, (str, bytes)) or not isinstance(
+            raw_labels, (list, tuple)
+        ):
+            raise TypeError(
+                f"meshing_utilities.get_labels(object_name={name!r}) "
+                "must return a list of strings, "
+                f"got {type(raw_labels).__name__}: {raw_labels!r}"
+            )
+        for label in raw_labels:
+            if not isinstance(label, str):
+                raise TypeError(
+                    f"meshing_utilities.get_labels(object_name={name!r}) "
+                    f"contains a non-string label: {label!r}"
+                )
+            labels.append(label)
     return labels
 
 
-def check_face_labels(workflow):
+def check_face_labels(meshing):
     """Print labels, require EXPECTED_LABELS, and report extras."""
-    labels = read_imported_face_labels(workflow)
+    labels = read_imported_face_labels(meshing)
     found = sorted(labels)
     print(f"Face labels: {found}")
     found_set = set(labels)
@@ -271,6 +283,13 @@ def check_length_scale(meshing):
     """Require imported extents to match EXPECTED_EXTENT_MM."""
     zone_ids = imported_face_zone_ids(meshing)
     print(f"Face zone ids for bounding box: {zone_ids}")
+    zone_names = meshing.meshing_utilities.convert_zone_ids_to_name_strings(
+        zone_id_list=zone_ids
+    )
+    if isinstance(zone_names, (list, tuple)):
+        print(f"Face zone names: {list(zone_names)}")
+    else:
+        print(f"Face zone names: {zone_names!r}")
     raw_bbox = meshing.meshing_utilities.get_bounding_box_of_zone_list(
         zone_id_list=zone_ids
     )
@@ -358,7 +377,7 @@ def main():
         workflow.TaskObject["Import Geometry"].Execute()
         print("Import Geometry executed.")
 
-        check_face_labels(workflow)
+        check_face_labels(meshing)
         check_length_scale(meshing)
         print(
             "Probe finished after Import Geometry. "
