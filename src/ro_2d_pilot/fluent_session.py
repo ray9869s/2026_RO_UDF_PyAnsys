@@ -1,9 +1,14 @@
 """One 2D Fluent session for a single pilot case.
 
-PyFluent is imported only while launching. A missing Fluent installation
-raises ``FluentUnavailable`` instead of continuing with a uniform inlet.
-Species setup fails by step name when the live settings tree does not
-match this session: it does not fall through to air.
+The Windows host times out when Fluent is launched directly in solver
+mode. The production 3D workflow therefore launches meshing mode and
+calls ``switch_to_solver()``. This module does the same for one 2D
+case, then reads the algebraic ``.msh`` that Python already wrote.
+``PURE_MESHING`` is not used: that session cannot switch to the solver.
+
+PyFluent is imported only while launching. Launch, mesh-read, and
+switch failures are separate exceptions. Species setup fails by step
+name when the live settings tree does not match this session.
 
 The solved inlet is the 2D Poiseuille profile in ``260929_RO_UDF.c``.
 A magnitude plug is written only so the boundary exists before the
@@ -14,6 +19,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from pathlib import Path
 from typing import Mapping
@@ -66,6 +72,8 @@ _RESIDUAL_EQUATIONS = (
     SPECIES_NAME,
 )
 _REQUIRED_RESIDUALS = ("continuity", "x-velocity", "y-velocity")
+_CELL_COUNT_RE = re.compile(r"(\d+)\s+cells\b", re.IGNORECASE)
+_DEFAULT_START_TIMEOUT_S = 300
 
 
 class FluentUnavailable(RuntimeError):
@@ -78,6 +86,20 @@ class FluentSetupError(RuntimeError):
     def __init__(self, step: str, message: str) -> None:
         self.step = step
         super().__init__(f"{step}: {message}")
+
+
+class FluentMeshReadError(FluentSetupError):
+    """The meshing session could not read or verify the 2D ``.msh``."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("read_mesh", message)
+
+
+class FluentSwitchToSolverError(FluentSetupError):
+    """``switch_to_solver()`` failed after the mesh was read."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("switch_to_solver", message)
 
 
 def resolve_max_iterations(explicit: int | None = None) -> int:
@@ -121,29 +143,68 @@ def classify_transcript(text: str, *, max_iterations: int) -> dict[str, object]:
     }
 
 
-def launch_solver_session(
+def meshing_launch_kwargs(
     *,
     cwd: Path,
     processor_count: int | None = None,
     product_version: str | None = None,
-    launcher=None,
-):
-    """Launch a double-precision 2D solver. ``launcher`` is for tests."""
+    start_timeout: int | None = None,
+) -> dict[str, object]:
+    """Arguments for a regular 2D meshing session.
+
+    ``mode`` is ``"meshing"``, which ``FluentMode.MESHING`` uses. It is
+    not ``"solver"`` and not ``"pure_meshing"``. The UI settings match
+    the production launcher on this Windows host: ``gui`` and ``dx11``.
+    """
     version = product_version or os.environ.get(
         "RO_2D_FLUENT_PRODUCT_VERSION",
         "25.1.0",
     )
     if processor_count is None:
         processor_count = int(os.environ.get("RO_2D_PROCESSOR_COUNT", "1"))
-    kwargs = {
+    if start_timeout is None:
+        raw_timeout = os.environ.get("RO_2D_FLUENT_START_TIMEOUT")
+        start_timeout = (
+            int(raw_timeout) if raw_timeout else _DEFAULT_START_TIMEOUT_S
+        )
+    if start_timeout < 1:
+        raise ValueError(f"start_timeout must be >= 1, got {start_timeout!r}.")
+    return {
         "product_version": version,
         "dimension": 2,
-        "mode": "solver",
+        "mode": "meshing",
         "precision": "double",
         "processor_count": processor_count,
-        "ui_mode": "no_gui",
+        "ui_mode": "gui",
+        "graphics_driver": os.environ.get(
+            "RO_2D_FLUENT_GRAPHICS_DRIVER",
+            "dx11",
+        ),
+        "start_timeout": start_timeout,
         "cwd": str(cwd),
     }
+
+
+def launch_meshing_session(
+    *,
+    cwd: Path,
+    processor_count: int | None = None,
+    product_version: str | None = None,
+    start_timeout: int | None = None,
+    launcher=None,
+):
+    """Launch Fluent in regular meshing mode. ``launcher`` is for tests."""
+    kwargs = meshing_launch_kwargs(
+        cwd=cwd,
+        processor_count=processor_count,
+        product_version=product_version,
+        start_timeout=start_timeout,
+    )
+    if kwargs["mode"] != "meshing":
+        raise FluentUnavailable(
+            "2D pilot must launch FluentMode.MESHING, "
+            f"got {kwargs['mode']!r}."
+        )
     start = _default_launcher if launcher is None else launcher
     try:
         return start(**kwargs)
@@ -151,26 +212,68 @@ def launch_solver_session(
         raise
     except Exception as exc:
         raise FluentUnavailable(
-            "Fluent did not start. On the Windows host, AWP_ROOT251 must "
-            "point at the Ansys 2025 R1 installation. "
+            "Fluent meshing launch failed. On the Windows host, "
+            "AWP_ROOT251 must point at the Ansys 2025 R1 installation. "
             f"Original error: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+def open_solver_session(
+    *,
+    cwd: Path,
+    mesh_path: Path,
+    processor_count: int | None = None,
+    product_version: str | None = None,
+    start_timeout: int | None = None,
+    launcher=None,
+):
+    """Launch meshing, read the ``.msh``, switch, and mesh-check.
+
+    The returned object is a solver session. The meshing object is not
+    usable after a successful switch, and a second Fluent process is
+    not started.
+    """
+    meshing = None
+    solver = None
+    handed_off = False
+    try:
+        meshing = launch_meshing_session(
+            cwd=cwd,
+            processor_count=processor_count,
+            product_version=product_version,
+            start_timeout=start_timeout,
+            launcher=launcher,
+        )
+        _read_and_verify_mesh(meshing, mesh_path)
+        try:
+            solver = meshing.switch_to_solver()
+        except FluentSwitchToSolverError:
+            raise
+        except Exception as exc:
+            raise FluentSwitchToSolverError(
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        _solver_mesh_check(solver)
+        handed_off = True
+        return solver
+    finally:
+        if not handed_off:
+            if solver is not None:
+                _exit_quietly(solver)
+            elif meshing is not None:
+                _exit_quietly(meshing)
 
 
 def solve_case(
     solver,
     *,
     config: PilotConfig,
-    mesh_path: Path,
     udf_path: Path,
     max_iterations: int,
 ) -> dict[str, object]:
-    """Read one mesh, solve it, and return metrics. Does not write result.json."""
+    """Set up and solve a mesh already loaded by ``open_solver_session``."""
     setup = solver.settings.setup
     solution = solver.settings.solution
-    _step("read_mesh", lambda: solver.settings.file.read_mesh(
-        file_name=path_to_fluent_str(mesh_path)
-    ))
     _require_zones(setup)
     _step("steady", lambda: _set(setup.general.solver.time, "steady"))
     _step("laminar", lambda: _set(setup.models.viscous.model, "laminar"))
@@ -285,7 +388,109 @@ def _default_launcher(**kwargs):
         raise FluentUnavailable(
             "ansys-fluent-core is not importable in this interpreter."
         ) from exc
+    mode = kwargs.get("mode")
+    if mode in {"pure_meshing", pyfluent.FluentMode.PURE_MESHING}:
+        raise FluentUnavailable(
+            "PURE_MESHING cannot switch_to_solver(). "
+            "Launch FluentMode.MESHING."
+        )
+    if mode not in {"meshing", pyfluent.FluentMode.MESHING}:
+        raise FluentUnavailable(
+            "2D pilot must launch FluentMode.MESHING, "
+            f"got {mode!r}."
+        )
+    kwargs["mode"] = pyfluent.FluentMode.MESHING
+    kwargs["precision"] = pyfluent.Precision.DOUBLE
+    pyfluent.config.check_health_timeout = int(kwargs["start_timeout"])
     return pyfluent.launch_fluent(**kwargs)
+
+
+def _exit_quietly(session) -> None:
+    try:
+        session.exit()
+    except Exception:
+        return
+
+
+def _read_and_verify_mesh(meshing, mesh_path: Path) -> None:
+    fluent_path = path_to_fluent_str(mesh_path)
+    try:
+        meshing.tui.file.read_mesh(fluent_path)
+    except FluentMeshReadError:
+        raise
+    except Exception as exc:
+        raise FluentMeshReadError(
+            f"Could not read {fluent_path}. {type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        dimension = _as_int(meshing.scheme.eval("(rpgetvar 'dimension)"))
+        report = meshing.tui.report.mesh_size()
+    except FluentMeshReadError:
+        raise
+    except Exception as exc:
+        raise FluentMeshReadError(
+            "Mesh read returned, but dimension or mesh size could not "
+            f"be read. {type(exc).__name__}: {exc}"
+        ) from exc
+    if dimension != 2:
+        raise FluentMeshReadError(
+            f"Fluent dimension is {dimension}, expected 2."
+        )
+    cells = _cell_count_from_report(report)
+    if cells is None:
+        cells = _cell_count_from_scheme(meshing)
+    if cells is None or cells < 1:
+        raise FluentMeshReadError(
+            "Mesh size did not report a positive cell count. "
+            f"Report={report!r}."
+        )
+
+
+def _cell_count_from_scheme(meshing) -> int | None:
+    for expression in ("(mesh-size)",):
+        try:
+            value = meshing.scheme.eval(expression)
+        except Exception:
+            continue
+        cells = _cell_count_from_report(value)
+        if cells is not None and cells > 0:
+            return cells
+    return None
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"Expected an integer, got {value!r}.")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"Expected an integer, got {value!r}.")
+        return int(value)
+    return int(float(str(value).strip()))
+
+
+def _cell_count_from_report(payload: object) -> int | None:
+    if isinstance(payload, bool) or payload is None:
+        return None
+    if isinstance(payload, int):
+        return payload
+    if isinstance(payload, float) and payload.is_integer():
+        return int(payload)
+    match = _CELL_COUNT_RE.search(str(payload))
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _solver_mesh_check(solver) -> None:
+    try:
+        solver.execute_tui("/mesh/check")
+    except Exception as exc:
+        raise FluentSetupError(
+            "mesh_check",
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
 
 
 def _step(name: str, action):

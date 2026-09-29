@@ -14,7 +14,7 @@ from pathlib import Path
 from ro.solver_common import STOP_REASON_DETERMINATION_FAILED
 from ro_2d_pilot.config import PilotConfig
 from ro_2d_pilot.fluent_session import (
-    launch_solver_session,
+    open_solver_session,
     resolve_max_iterations,
     solve_case,
 )
@@ -60,14 +60,14 @@ def run_case(
     session = None
     try:
         write_case_udf(config, udf_path)
-        session = launch_solver_session(
+        session = open_solver_session(
             cwd=udf_path.parent,
+            mesh_path=mesh_path,
             launcher=launcher,
         )
         metrics = solve_case(
             session,
             config=config,
-            mesh_path=mesh_path,
             udf_path=udf_path,
             max_iterations=iterations,
         )
