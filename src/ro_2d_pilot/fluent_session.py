@@ -756,7 +756,6 @@ def _configure_mixture(setup) -> None:
     _ensure_fluid(materials, "water", RHO_KG_M3, MU_KG_M_S)
     _ensure_fluid(materials, "nacl", RHO_KG_M3, MU_KG_M_S)
     mixture = materials.mixture["mixture-template"]
-    _set_constant(mixture.density, RHO_KG_M3, "mixture_density")
     _set_constant(mixture.viscosity, MU_KG_M_S, "mixture_viscosity")
     _set_first(
         mixture.mass_diffusivity.option,
@@ -790,6 +789,26 @@ def _configure_mixture(setup) -> None:
             "SALT_YI_INDEX is 0, so nacl must be the first volumetric "
             f"species. Got {names}.",
         )
+    _set_mixture_density(mixture)
+    _disable_energy(setup)
+
+
+def _set_mixture_density(mixture) -> None:
+    """Use the incompressible mixing law. ``constant`` is not allowed.
+
+    Fluent 2025 R1 rejects mixture density option ``constant``. The
+    allowed value that does not require the energy equation is
+    ``volume-weighted-mixing-law``. Water and nacl are both given the
+    same constant density, so the mixture density stays at that value
+    for every mass fraction.
+    """
+    try:
+        mixture.density.option.set_state("volume-weighted-mixing-law")
+    except Exception as exc:
+        raise FluentSetupError(
+            "mixture_density",
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
 
 
 def _set_boundaries(

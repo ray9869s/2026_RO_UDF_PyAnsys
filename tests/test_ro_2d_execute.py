@@ -17,8 +17,10 @@ from ro_2d_pilot.fluent_session import (
     MESH_READ_BACKEND,
     SWITCH_BACKEND,
     FluentMeshReadError,
+    FluentSetupError,
     FluentSwitchToSolverError,
     FluentUnavailable,
+    _set_mixture_density,
     classify_transcript,
     first_report_number,
     meshing_launch_kwargs,
@@ -640,6 +642,43 @@ def test_none_size_info_uses_the_mesh_size_table(tmp_path: Path) -> None:
     assert "size_info" in events
     assert "tui:/mesh/check" in events
     assert solver.exited is False
+
+
+def test_mixture_density_is_the_incompressible_mixing_law() -> None:
+    class _State:
+        def __init__(self) -> None:
+            self.state = None
+
+        def set_state(self, value: str) -> None:
+            if value == "constant":
+                raise RuntimeError(
+                    "constant is_not_in "
+                    "(volume-weighted-mixing-law ideal-gas)"
+                )
+            self.state = value
+
+    option = _State()
+    value = _State()
+
+    class _Density:
+        def __init__(self, option: _State, value: _State) -> None:
+            self.option = option
+            self.value = value
+
+    class _Mixture:
+        def __init__(self, density: _Density) -> None:
+            self.density = density
+
+    _set_mixture_density(_Mixture(_Density(option, value)))
+    assert option.state == "volume-weighted-mixing-law"
+    assert value.state is None
+
+    class _RejectingOption:
+        def set_state(self, _value: str) -> None:
+            raise RuntimeError("rejected")
+
+    with pytest.raises(FluentSetupError, match="mixture_density"):
+        _set_mixture_density(_Mixture(_Density(_RejectingOption(), value)))
 
 
 def test_production_solver_launch_is_unchanged() -> None:
