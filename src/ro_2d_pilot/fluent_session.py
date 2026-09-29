@@ -79,7 +79,10 @@ _RESIDUAL_EQUATIONS = (
     SPECIES_NAME,
 )
 _REQUIRED_RESIDUALS = ("continuity", "x-velocity", "y-velocity")
-_CELL_COUNT_RE = re.compile(r"(\d+)\s+cells\b", re.IGNORECASE)
+_CELL_COUNT_RES = (
+    re.compile(r"(\d[\d,]*)\s+cells\b", re.IGNORECASE),
+    re.compile(r"\bcells\s*[:=]\s*(\d[\d,]*)", re.IGNORECASE),
+)
 _DEFAULT_START_TIMEOUT_S = 300
 # Classic solver file/read-mesh. Meshing File.ReadMesh is S_FileReadMesh
 # and requires the size function %tg-size-func-bgrid, which this pilot
@@ -544,57 +547,54 @@ def _read_and_verify_mesh(solver, mesh_path: Path) -> None:
         raise FluentMeshReadError(
             f"{context} {type(exc).__name__}: {exc}"
         ) from exc
-    try:
-        dimension = _as_int(solver.scheme.eval("(rpgetvar 'dimension)"))
-        report = solver.tui.report.mesh_size()
-    except FluentMeshReadError:
-        raise
-    except Exception as exc:
-        raise FluentMeshReadError(
-            "Mesh read succeeded, but dimension or mesh size could not "
-            f"be read. {context} {type(exc).__name__}: {exc}"
-        ) from exc
-    if dimension != 2:
-        raise FluentMeshReadError(
-            f"Fluent dimension is {dimension}, expected 2. {context}"
-        )
-    cells = _cell_count_from_report(report)
-    if cells is None:
-        cells = _cell_count_from_scheme(solver)
-    if cells is None or cells < 1:
-        raise FluentMeshReadError(
-            "Mesh size did not report a positive cell count. "
-            f"Report={report!r}. {context}"
-        )
+    # (rpgetvar 'dimension) is undefined in Fluent 2025 R1. The solver
+    # settings value two-dim-space is 'planar' for this channel. Cell
+    # count comes from mesh/size-info; report/mesh-size is not a solver
+    # TUI command in this version.
+    space = _planar_space(solver, context)
+    cells = _cell_count(solver, context)
     print(
         "2D mesh read succeeded: "
-        f"{context} dimension={dimension} cells={cells}",
+        f"{context} two_dim_space={space} cells={cells}",
         flush=True,
     )
 
 
-def _cell_count_from_scheme(session) -> int | None:
-    for expression in ("(mesh-size)",):
-        try:
-            value = session.scheme.eval(expression)
-        except Exception:
-            continue
-        cells = _cell_count_from_report(value)
-        if cells is not None and cells > 0:
-            return cells
-    return None
+def _planar_space(solver, context: str) -> str:
+    try:
+        space = solver.settings.setup.general.solver.two_dim_space.get_state()
+    except FluentMeshReadError:
+        raise
+    except Exception as exc:
+        raise FluentMeshReadError(
+            "Mesh read succeeded, but two_dim_space could not be read. "
+            f"{context} {type(exc).__name__}: {exc}"
+        ) from exc
+    text = str(space).strip().lower()
+    if text != "planar":
+        raise FluentMeshReadError(
+            f"Fluent two_dim_space is {space!r}, expected 'planar'. {context}"
+        )
+    return text
 
 
-def _as_int(value: object) -> int:
-    if isinstance(value, bool) or value is None:
-        raise ValueError(f"Expected an integer, got {value!r}.")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not value.is_integer():
-            raise ValueError(f"Expected an integer, got {value!r}.")
-        return int(value)
-    return int(float(str(value).strip()))
+def _cell_count(solver, context: str) -> int:
+    try:
+        report = solver.settings.mesh.size_info()
+    except FluentMeshReadError:
+        raise
+    except Exception as exc:
+        raise FluentMeshReadError(
+            "Mesh read succeeded, but mesh.size_info could not be read. "
+            f"{context} {type(exc).__name__}: {exc}"
+        ) from exc
+    cells = _cell_count_from_report(report)
+    if cells is None or cells < 1:
+        raise FluentMeshReadError(
+            "mesh.size_info did not report a positive cell count. "
+            f"Report={report!r}. {context}"
+        )
+    return cells
 
 
 def _cell_count_from_report(payload: object) -> int | None:
@@ -604,10 +604,17 @@ def _cell_count_from_report(payload: object) -> int | None:
         return payload
     if isinstance(payload, float) and payload.is_integer():
         return int(payload)
-    match = _CELL_COUNT_RE.search(str(payload))
-    if match is None:
+    if isinstance(payload, Mapping):
+        for key in ("cells", "cell_count", "ncells"):
+            if key in payload:
+                return _cell_count_from_report(payload[key])
         return None
-    return int(match.group(1))
+    text = str(payload)
+    for pattern in _CELL_COUNT_RES:
+        match = pattern.search(text)
+        if match is not None:
+            return int(match.group(1).replace(",", ""))
+    return None
 
 
 def _solver_mesh_check(solver) -> None:

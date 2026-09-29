@@ -343,9 +343,57 @@ class _SolverFile:
             raise self._error
 
 
+class _TwoDimSpace:
+    def __init__(self, events: list[str], space: str) -> None:
+        self._events = events
+        self._space = space
+
+    def get_state(self) -> str:
+        self._events.append(f"two_dim_space:{self._space}")
+        return self._space
+
+
+class _SizeInfo:
+    def __init__(self, events: list[str], text: str = "2868 cells") -> None:
+        self._events = events
+        self._text = text
+
+    def __call__(self) -> str:
+        self._events.append("size_info")
+        return self._text
+
+
+class _MeshSettings:
+    def __init__(self, events: list[str]) -> None:
+        self.size_info = _SizeInfo(events)
+
+
+class _GeneralSolver:
+    def __init__(self, events: list[str], space: str) -> None:
+        self.two_dim_space = _TwoDimSpace(events, space)
+
+
+class _General:
+    def __init__(self, events: list[str], space: str) -> None:
+        self.solver = _GeneralSolver(events, space)
+
+
+class _Setup:
+    def __init__(self, events: list[str], space: str) -> None:
+        self.general = _General(events, space)
+
+
 class _SolverSettings:
-    def __init__(self, events: list[str], error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        error: Exception | None = None,
+        *,
+        space: str = "planar",
+    ) -> None:
         self.file = _SolverFile(events, error)
+        self.setup = _Setup(events, space)
+        self.mesh = _MeshSettings(events)
 
 
 class _Solver:
@@ -357,7 +405,11 @@ class _Solver:
         read_error: Exception | None = None,
     ) -> None:
         self.events = events
-        self.settings = _SolverSettings(events, read_error)
+        self.settings = _SolverSettings(
+            events,
+            read_error,
+            space="planar" if dimension == 2 else "3d",
+        )
         self.scheme = _Scheme(events, dimension)
         self.tui = _Tui(events)
         self.exited = False
@@ -476,8 +528,8 @@ def test_case_launch_switches_by_text_menu_then_reads_mesh(
         'scheme:(ti-menu-load-string "/switch-to-solution-mode yes")',
         "attach_solver",
         mesh_read,
-        "scheme:(rpgetvar 'dimension)",
-        "mesh_size",
+        "two_dim_space:planar",
+        "size_info",
         "tui:/mesh/check",
         "solver_setup",
         "exit_solver",
@@ -528,7 +580,7 @@ def test_non_2d_session_is_rejected_before_mesh_check(tmp_path: Path) -> None:
     mesh_path = tmp_path / "case.msh"
     mesh_path.write_text("(2 2)\n", encoding="ascii")
 
-    with pytest.raises(FluentMeshReadError, match="dimension"):
+    with pytest.raises(FluentMeshReadError, match="planar"):
         open_solver_session(
             cwd=tmp_path,
             mesh_path=mesh_path,
