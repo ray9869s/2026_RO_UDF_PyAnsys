@@ -23,6 +23,7 @@ from ro_2d_pilot.fluent_session import (
     FluentUnavailable,
     _configure_mixture,
     _keep_nacl_water_mixture,
+    _make_flux,
     _set_constant,
     _set_mixture_density,
     classify_transcript,
@@ -703,6 +704,50 @@ def test_nacl_molecular_weight_uses_the_constant_property() -> None:
     assert group.option.state == "constant"
     assert group.value.state == 58.44
     assert "molecular_weight.set_state" not in inspect.getsource(_configure_mixture)
+
+
+def test_flux_report_uses_flux_massflow() -> None:
+    class _Type:
+        def __init__(self) -> None:
+            self.state = None
+
+        def set_state(self, value: str) -> None:
+            if value == "mass-flow-rate":
+                raise RuntimeError(
+                    'Value is not allowed: "mass-flow-rate" is_not_in ("flux-massflow")'
+                )
+            self.state = value
+
+    class _Boundaries:
+        def __init__(self) -> None:
+            self.state = None
+
+        def set_state(self, value: list[str]) -> None:
+            self.state = value
+
+    class _Item:
+        def __init__(self) -> None:
+            self.report_type = _Type()
+            self.boundaries = _Boundaries()
+
+    class _Flux:
+        def __init__(self) -> None:
+            self.item = _Item()
+
+        def create(self, _name: str) -> None:
+            return None
+
+        def __getitem__(self, _name: str) -> _Item:
+            return self.item
+
+    class _Reports:
+        def __init__(self) -> None:
+            self.flux = _Flux()
+
+    reports = _Reports()
+    _make_flux(reports, "m_inlet", ["inlet"])
+    assert reports.flux.item.report_type.state == "flux-massflow"
+    assert reports.flux.item.boundaries.state == ["inlet"]
 
 
 def test_default_air_species_are_removed_so_nacl_is_first() -> None:

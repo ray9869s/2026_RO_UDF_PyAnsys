@@ -1014,7 +1014,8 @@ def _make_surface(reports, name: str, field: str, surfaces: list[str]) -> None:
 def _make_flux(reports, name: str, boundaries: list[str]) -> None:
     reports.flux.create(name)
     item = reports.flux[name]
-    _set_first(item.report_type, ("mass-flow-rate",), f"{name}_type")
+    # Fluent 2025 R1 flux reports allow only flux-massflow.
+    _set_first(item.report_type, ("flux-massflow",), f"{name}_type")
     item.boundaries.set_state(boundaries)
 
 
