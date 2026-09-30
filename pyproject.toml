@@ -7,8 +7,9 @@ name = "ro"
 version = "0.1.0"
 description = "RO-membrane CFD automation helpers"
 requires-python = ">=3.10"
+dependencies = ["numpy>=1.26"]
 # Runtime Ansys stack stays in requirements.txt (Windows server).
-# The library itself is stdlib-only plus what scripts already import.
+# Optimization uses NumPy. BoTorch/PyTorch are not required.
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
