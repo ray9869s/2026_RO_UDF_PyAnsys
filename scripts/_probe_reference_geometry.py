@@ -23,6 +23,7 @@ from ro.paths import geometry_dir, project_root
 
 FAMILY = "pillar"
 GEO_ID = "P_p100_h30"
+DEFAULT_D_H_MM = 0.30
 WORK_DIR = "C:/ro_data/geom_smoke/probe_ref_P_p100_h30"
 SUMMARY_NAME = "reference_geometry.json"
 TRANSCRIPT_NAME = "probe_reference_geometry_transcript.txt"
@@ -109,7 +110,7 @@ def _bbox_pair_mm(raw, source):
     return pair
 
 
-def expected_config_labels(batch):
+def expected_config_labels(batch, d_h_mm):
     """Labels this pillar case declares. Strings come from the config module."""
     active_membrane_wall_labels = list(
         batch._COMMON_MESH["active_membrane_wall_labels"]
@@ -118,8 +119,21 @@ def expected_config_labels(batch):
     return (
         active_membrane_wall_labels
         + buffer_wall_labels
-        + list(batch._pillar_spacer_labels(0.30))
+        + list(batch._pillar_spacer_labels(d_h_mm))
     )
+
+
+def resolve_d_h_mm(cad_path, d_h_mm):
+    """No-arg runs use 0.30. ``--cad-path`` requires ``--d-h-mm``."""
+    if cad_path is not None and d_h_mm is None:
+        raise ValueError("--d-h-mm is required when --cad-path is given.")
+    if d_h_mm is None:
+        d_h_mm = DEFAULT_D_H_MM
+    if isinstance(d_h_mm, bool) or not isinstance(d_h_mm, (int, float)):
+        raise ValueError(f"--d-h-mm must be a number, got {d_h_mm!r}.")
+    if not math.isfinite(d_h_mm) or d_h_mm < 0.0:
+        raise ValueError(f"--d-h-mm must be finite and >= 0, got {d_h_mm!r}.")
+    return float(d_h_mm)
 
 
 def _unique(items):
@@ -534,6 +548,12 @@ def build_parser():
         help="Import this file instead of the geometry_dir() .dsco.",
     )
     parser.add_argument(
+        "--d-h-mm",
+        type=float,
+        default=None,
+        help="Bore diameter in mm. Required with --cad-path. No-arg default is 0.30.",
+    )
+    parser.add_argument(
         "--work-dir",
         default=None,
         help="Override WORK_DIR. Must not be under C:/ro_data/geometries.",
@@ -568,6 +588,7 @@ def main(argv=None):
         raise ValueError(f"--area-rtol must be finite, got {args.area_rtol!r}.")
     if args.area_rtol < 0.0:
         raise ValueError(f"--area-rtol must be >= 0, got {args.area_rtol}.")
+    d_h_mm = resolve_d_h_mm(args.cad_path, args.d_h_mm)
 
     if args.cad_path is None:
         geometry_file = geometry_dir(FAMILY, GEO_ID) / f"{GEO_ID}.dsco"
@@ -587,7 +608,7 @@ def main(argv=None):
         reference = _load_comparison_reference(args.compare_to)
 
     batch = load_batch_config()
-    expected = expected_config_labels(batch)
+    expected = expected_config_labels(batch, d_h_mm)
     cfg = load_run_config()
     product_version = cfg.product_version
     graphics_driver = cfg.graphics_driver

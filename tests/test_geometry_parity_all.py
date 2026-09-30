@@ -141,6 +141,52 @@ def _cad_payload(wall_area):
     }
 
 
+def test_d_h_mm_is_required_with_cad_path_and_defaults_without_it():
+    probe = load_probe()
+    no_args = probe.build_parser().parse_args([])
+    assert no_args.cad_path is None
+    assert no_args.d_h_mm is None
+    assert probe.resolve_d_h_mm(no_args.cad_path, no_args.d_h_mm) == 0.30
+
+    with_cad = probe.build_parser().parse_args(["--cad-path", "C:/tmp/part.pmdb"])
+    assert with_cad.d_h_mm is None
+    with pytest.raises(ValueError, match="--d-h-mm is required"):
+        probe.resolve_d_h_mm(with_cad.cad_path, with_cad.d_h_mm)
+
+    explicit = probe.build_parser().parse_args(
+        ["--cad-path", "C:/tmp/part.pmdb", "--d-h-mm", "0"]
+    )
+    assert probe.resolve_d_h_mm(explicit.cad_path, explicit.d_h_mm) == 0.0
+
+    batch = probe.load_batch_config()
+    h00 = probe.expected_config_labels(batch, 0.0)
+    h30 = probe.expected_config_labels(batch, 0.30)
+    assert "wall_spacer_hole" not in h00
+    assert "wall_spacer_hole" in h30
+    assert h30 == probe.expected_config_labels(batch, probe.DEFAULT_D_H_MM)
+
+
+def test_only_rejects_ids_outside_the_nine_design_points():
+    driver = load_driver()
+    points = driver.design_points(driver.load_batch_config())
+    chosen = points[0]["geo_id"]
+    assert driver.select_points(points, None) == points
+    assert driver.select_points(points, [chosen]) == [points[0]]
+    with pytest.raises(ValueError, match="not-a-pillar"):
+        driver.select_points(points, [chosen, "not-a-pillar"])
+
+    reference = driver._probe_cmd("C:/cad.dsco", "C:/work/ref", 0.0)
+    compare = driver._probe_cmd(
+        "C:/cad.pmdb",
+        "C:/work/cmp",
+        0.15,
+        compare_to="C:/work/ref/reference_geometry.json",
+    )
+    assert reference[reference.index("--d-h-mm") + 1] == "0.0"
+    assert compare[compare.index("--d-h-mm") + 1] == "0.15"
+    assert "--compare-to" in compare
+
+
 def test_probe_area_comparison_uses_rtol_and_skips_old_json():
     probe = load_probe()
     reference = _cad_payload(10.0)

@@ -234,7 +234,24 @@ def _read_json_object(path):
     return payload
 
 
-def _probe_cmd(cad_path, work_dir, compare_to=None):
+def select_points(points, only):
+    """Restrict design points to ``--only`` ids. Unknown ids raise."""
+    if only is None:
+        return list(points)
+    known = {point["geo_id"]: point for point in points}
+    unknown = [geo_id for geo_id in only if geo_id not in known]
+    if unknown:
+        raise ValueError(
+            "Unknown geo_id(s) for --only: "
+            + ", ".join(repr(geo_id) for geo_id in unknown)
+            + ". Expected one of "
+            + ", ".join(repr(geo_id) for geo_id in known)
+            + "."
+        )
+    return [known[geo_id] for geo_id in only]
+
+
+def _probe_cmd(cad_path, work_dir, d_h_mm, compare_to=None):
     cmd = [
         sys.executable,
         str(PROBE_PATH),
@@ -242,6 +259,8 @@ def _probe_cmd(cad_path, work_dir, compare_to=None):
         str(cad_path),
         "--work-dir",
         str(work_dir),
+        "--d-h-mm",
+        str(d_h_mm),
     ]
     if compare_to is not None:
         cmd.extend(
@@ -263,7 +282,7 @@ def run_case(point, *, d_f_mm, out_root):
 
     ref_log = log_dir / "reference.log"
     ref_code = run_subprocess_step(
-        _probe_cmd(reference_cad_path(geo_id), dirs["ref"]),
+        _probe_cmd(reference_cad_path(geo_id), dirs["ref"], point["d_h_mm"]),
         ref_log,
     )
     steps["reference"] = {"return_code": ref_code, "log": str(ref_log)}
@@ -292,7 +311,7 @@ def run_case(point, *, d_f_mm, out_root):
         cmp_code = 1
     else:
         cmp_code = run_subprocess_step(
-            _probe_cmd(pmdb, dirs["cmp"], compare_to=ref_json),
+            _probe_cmd(pmdb, dirs["cmp"], point["d_h_mm"], compare_to=ref_json),
             cmp_log,
         )
     steps["compare"] = {"return_code": cmp_code, "log": str(cmp_log)}
@@ -370,6 +389,13 @@ def build_parser():
         required=True,
         help="Absolute output root. Not C:/ro_data. Case subfolders must not exist.",
     )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        metavar="GEO_ID",
+        help="Run only these design-point geo_ids.",
+    )
     return parser
 
 
@@ -385,6 +411,7 @@ def main(argv=None):
         raise RuntimeError(
             f"Expected 9 pillar design points, found {len(points)}."
         )
+    points = select_points(points, args.only)
     refuse_existing_case_dirs(out_root, [point["geo_id"] for point in points])
     out_root.mkdir(parents=True, exist_ok=True)
 
