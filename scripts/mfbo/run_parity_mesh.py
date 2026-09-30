@@ -25,7 +25,6 @@ import batch_meshing
 
 SOURCE_GEO_ID = "P_p100_h30"
 SOURCE_MESH_ID = "max085_min006_cpg5_bl4_peel2"
-GENERATED_GEO_ID = "P_p100_h30_gen"
 SOURCE_FAMILY = "pillar"
 
 REFERENCE_MANIFEST = Path(
@@ -147,15 +146,10 @@ def _values_equal(left, right):
     return left == right
 
 
-def compare_mesh_settings(manifest, overrides, *, allowed_manifest_keys=()):
-    """Compare mapped manifest settings with the overrides that will be sent.
-
-    ``allowed_manifest_keys`` are printed and do not raise. That set is
-    ``geo_id`` for ``--stage geometry`` only.
-    """
+def compare_mesh_settings(manifest, overrides):
+    """Compare mapped manifest settings with the overrides that will be sent."""
     if not isinstance(manifest, dict):
         raise TypeError(f"manifest must be a dict, got {type(manifest).__name__}.")
-    allowed = set(allowed_manifest_keys)
     rows = []
     mismatches = []
     for manifest_key in MESH_SETTING_MAP:
@@ -165,8 +159,6 @@ def compare_mesh_settings(manifest, overrides, *, allowed_manifest_keys=()):
         manifest_value = manifest[manifest_key]
         match = _values_equal(manifest_value, projected)
         status = "ok" if match else "mismatch"
-        if not match and manifest_key in allowed:
-            status = "stage override"
         row = {
             "manifest_key": manifest_key,
             "override_key": override_key,
@@ -286,15 +278,40 @@ def load_source_case():
     return case, overrides, retries
 
 
+def assert_geometry_override_delta(source_overrides, overrides):
+    """Geometry stage may change only geometry_suffix, and only to .pmdb."""
+    if overrides.get("geometry_suffix") != ".pmdb":
+        raise ValueError("geometry stage must set geometry_suffix='.pmdb'.")
+    source = dict(source_overrides)
+    sent = dict(overrides)
+    source.pop("geometry_suffix", None)
+    sent.pop("geometry_suffix", None)
+    if source != sent:
+        raise ValueError(
+            "Geometry stage may only change geometry_suffix. "
+            f"source={source!r} sent={sent!r}."
+        )
+
+
+def refuse_code_stage_dsco(geometry_dir):
+    """Refuse a geometry-stage root that already holds the code-stage .dsco."""
+    dsco = Path(geometry_dir) / f"{SOURCE_GEO_ID}.dsco"
+    if dsco.exists():
+        raise FileExistsError(
+            f"Refusing geometry stage because {dsco} already exists. "
+            "Use a data root that is not the code-stage root."
+        )
+
+
 def overrides_for_stage(source_overrides, stage):
-    """Copy source overrides. Geometry stage changes geo_id and suffix only."""
+    """Copy source overrides. Geometry stage sets geometry_suffix only."""
     overrides = dict(source_overrides)
     if stage == "code":
-        return overrides, set()
+        return overrides
     if stage == "geometry":
-        overrides["geo_id"] = GENERATED_GEO_ID
         overrides["geometry_suffix"] = ".pmdb"
-        return overrides, {"geo_id"}
+        assert_geometry_override_delta(source_overrides, overrides)
+        return overrides
     raise ValueError(f"Unknown stage {stage!r}.")
 
 
@@ -394,10 +411,14 @@ def main(argv=None):
 
     data_root = resolve_data_root(args.data_root)
     _case, source_overrides, max_retries = load_source_case()
-    overrides, allowed = overrides_for_stage(source_overrides, args.stage)
+    overrides = overrides_for_stage(source_overrides, args.stage)
     geo_id = overrides["geo_id"]
+    if geo_id != SOURCE_GEO_ID:
+        raise RuntimeError(
+            f"Parity mesh geo_id must stay {SOURCE_GEO_ID!r}, got {geo_id!r}."
+        )
     reference = _read_manifest(REFERENCE_MANIFEST)
-    compare_mesh_settings(reference, overrides, allowed_manifest_keys=allowed)
+    compare_mesh_settings(reference, overrides)
 
     if args.stage == "code":
         source = REFERENCE_DSCO
@@ -406,6 +427,8 @@ def main(argv=None):
         source = Path(args.pmdb)
         suffix = ".pmdb"
     destination = _geometry_destination(data_root, geo_id, suffix)
+    if args.stage == "geometry":
+        refuse_code_stage_dsco(destination.parent)
     digest = copy_geometry_file(source, destination)
     print(f"Copied {source} -> {destination} sha256={digest}")
 
