@@ -23,7 +23,17 @@ def build_parser():
         type=float,
         help="Bore diameter, mm. Zero omits the bore.",
     )
-    parser.add_argument("--geo-id", required=True, help="Pillar case id, also the design name.")
+    parser.add_argument(
+        "--d-f-mm",
+        required=True,
+        type=float,
+        help="Filament diameter, mm.",
+    )
+    parser.add_argument(
+        "--geo-id",
+        required=True,
+        help="Design name written into the output filenames. Not looked up in batch_config.",
+    )
     parser.add_argument(
         "--out-dir",
         required=True,
@@ -37,6 +47,7 @@ def main(argv=None):
     written = generate_pillar_cad(
         d_p_mm=args.d_p_mm,
         d_h_mm=args.d_h_mm,
+        d_f_mm=args.d_f_mm,
         geo_id=args.geo_id,
         out_dir=args.out_dir,
     )

@@ -68,22 +68,25 @@ _BASE_LABELS = (
 _HOLE_LABEL = "wall_spacer_hole"
 
 
-def generate_pillar_cad(*, d_p_mm, d_h_mm, geo_id, out_dir):
+def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
     """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``."""
     d_p_mm = _require_real("d_p_mm", d_p_mm)
     d_h_mm = _require_real("d_h_mm", d_h_mm)
+    d_f_mm = _require_real("d_f_mm", d_f_mm)
     geo_id = _require_geo_id(geo_id)
     out_dir = _require_out_dir(out_dir)
     if d_p_mm <= 0.0:
         raise ValueError(f"d_p_mm must be positive, got {d_p_mm}.")
     if d_h_mm < 0.0:
         raise ValueError(f"d_h_mm must be >= 0, got {d_h_mm}.")
+    if d_f_mm <= 0.0:
+        raise ValueError(f"d_f_mm must be positive, got {d_f_mm}.")
     if d_h_mm >= d_p_mm:
         raise ValueError(
             f"d_h_mm must be smaller than d_p_mm, got d_h_mm={d_h_mm}, d_p_mm={d_p_mm}."
         )
 
-    layout = _layout_from_config(geo_id)
+    layout = _layout_from_config(d_f_mm * MM_TO_M)
     d_p_m = d_p_mm * MM_TO_M
     d_h_m = d_h_mm * MM_TO_M
     paths = _output_paths(out_dir, geo_id)
@@ -115,6 +118,7 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, geo_id, out_dir):
             geo_id=geo_id,
             d_p_mm=d_p_mm,
             d_h_mm=d_h_mm,
+            d_f_mm=d_f_mm,
             layout=layout,
             d_p_m=d_p_m,
             d_h_m=d_h_m,
@@ -150,25 +154,15 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, geo_id, out_dir):
     return {"paths": {key: str(path) for key, path in paths.items()}, "face_counts": counts}
 
 
-def _layout_from_config(geo_id):
-    batch = _load_batch_config()
-    matches = [
-        case
-        for case in batch.mesh_batch_cases
-        if case.get("family") == "pillar" and case.get("geo_id") == geo_id
-    ]
-    if len(matches) != 1:
-        raise ValueError(
-            f"geo_id {geo_id!r} is not exactly one pillar case in "
-            "configs/batch_config.py."
-        )
-    case = matches[0]
-    a_m = _require_real("cell_length_x_m", case["cell_length_x_m"])
-    n_active = _require_count("n_active_cells", case["n_active_cells"])
-    n_buffer_in = _require_count("n_buffer_in", case["n_buffer_in"])
-    n_buffer_out = _require_count("n_buffer_out", case["n_buffer_out"])
-    filament_d_m = _require_real("filament_d_m", case["filament_d_m"])
-    periodic_shift_y = _require_real("periodic_shift_y", case["periodic_shift_y"])
+def _layout_from_config(filament_d_m):
+    """Campaign layout from ``_COMMON_MESH``. ``geo_id`` is not a case key."""
+    common = _load_batch_config()._COMMON_MESH
+    a_m = _require_real("cell_length_x_m", common["cell_length_x_m"])
+    n_active = _require_count("n_active_cells", common["n_active_cells"])
+    n_buffer_in = _require_count("n_buffer_in", common["n_buffer_in"])
+    n_buffer_out = _require_count("n_buffer_out", common["n_buffer_out"])
+    filament_d_m = _require_real("filament_d_m", filament_d_m)
+    periodic_shift_y = _require_real("periodic_shift_y", common["periodic_shift_y"])
     if a_m <= 0.0 or filament_d_m <= 0.0:
         raise ValueError(
             f"cell_length_x_m and filament_d_m must be positive, got "
@@ -660,10 +654,15 @@ def _required_labels(d_h_m):
     return labels
 
 
-def _meta_payload(*, geo_id, d_p_mm, d_h_mm, layout, d_p_m, d_h_m, nodes, line_count, counts, backend_version):
+def _meta_payload(*, geo_id, d_p_mm, d_h_mm, d_f_mm, layout, d_p_m, d_h_m, nodes, line_count, counts, backend_version):
     return {
         "geo_id": geo_id,
-        "inputs": {"d_p_mm": d_p_mm, "d_h_mm": d_h_mm, "geo_id": geo_id},
+        "inputs": {
+            "d_p_mm": d_p_mm,
+            "d_h_mm": d_h_mm,
+            "d_f_mm": d_f_mm,
+            "geo_id": geo_id,
+        },
         "derived": {
             "a_m": layout["a_m"],
             "channel_height_m": layout["h_m"],
