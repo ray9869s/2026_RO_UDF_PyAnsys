@@ -215,10 +215,15 @@ def extract_reference(meshing):
             utilities.get_bounding_box_of_zone_list(zone_id_list=zone_ids),
             f"meshing_utilities.get_bounding_box_of_zone_list label={label!r}",
         )
+        area = _face_zone_area(
+            utilities.get_face_zone_area(face_zone_id_list=zone_ids),
+            f"meshing_utilities.get_face_zone_area label={label!r}",
+        )
         labels_report[label] = {
             "face_zone_ids": zone_ids,
             "zone_names": zone_names,
             "bounding_box_mm": bbox,
+            "face_zone_area": area,
         }
 
     print(f"Overall zone_id_list: {all_face_zone_ids}")
@@ -343,11 +348,41 @@ def _bbox_status(max_abs_diff_mm, tolerance_mm):
     return "FAIL"
 
 
-def compare_reference(current, reference, tolerance_mm):
+def _face_zone_area(raw, source):
+    """Require the float returned by get_face_zone_area."""
+    _print_raw(source, raw)
+    if raw is None:
+        raise RuntimeError(f"{source} returned None.")
+    if isinstance(raw, (str, bytes, bool)) or not isinstance(raw, (int, float)):
+        raise TypeError(f"{source} must return a float, got {raw!r}.")
+    area = float(raw)
+    if not math.isfinite(area):
+        raise RuntimeError(f"{source} area is not finite: {raw!r}.")
+    print(f"{source} area: {area}")
+    return area
+
+
+def _stored_area(record, source):
+    if "face_zone_area" not in record:
+        return None
+    return _face_zone_area(record["face_zone_area"], source)
+
+
+def _area_rel_diff(current, reference):
+    if reference == 0.0:
+        if current == 0.0:
+            return 0.0
+        return None
+    return abs(current - reference) / abs(reference)
+
+
+def compare_reference(current, reference, tolerance_mm, area_rtol=None):
     """Compare label sets, per-label boxes, and the overall box.
 
     The body label (face zones equal to all face zones) is printed and then
-    excluded from the label-set comparison.
+    excluded from the label-set comparison. When ``area_rtol`` is set, labels
+    that record ``face_zone_area`` are compared too. Older reference JSON
+    without that field is still accepted.
     """
     current_body = _body_label(current, "current")
     reference_body = _body_label(reference, "reference")
@@ -379,16 +414,33 @@ def compare_reference(current, reference, tolerance_mm):
         )
         max_abs_diff_mm = _max_abs_corner_diff_mm(current_bbox, reference_bbox)
         zone_status = "PASS" if len(current_ids) == len(reference_ids) else "FAIL"
-        rows.append(
-            {
-                "label": label,
-                "max_abs_diff_mm": max_abs_diff_mm,
-                "bbox": _bbox_status(max_abs_diff_mm, tolerance_mm),
-                "face_zone_count_current": len(current_ids),
-                "face_zone_count_reference": len(reference_ids),
-                "zone_count": zone_status,
-            }
-        )
+        row = {
+            "label": label,
+            "max_abs_diff_mm": max_abs_diff_mm,
+            "bbox": _bbox_status(max_abs_diff_mm, tolerance_mm),
+            "face_zone_count_current": len(current_ids),
+            "face_zone_count_reference": len(reference_ids),
+            "zone_count": zone_status,
+        }
+        if area_rtol is not None:
+            current_area = _stored_area(current_record, f"current {label} area")
+            reference_area = _stored_area(reference_record, f"reference {label} area")
+            if current_area is not None or reference_area is not None:
+                if current_area is None or reference_area is None:
+                    rel_diff = None
+                    area_status = "FAIL"
+                else:
+                    rel_diff = _area_rel_diff(current_area, reference_area)
+                    area_status = (
+                        "PASS"
+                        if rel_diff is not None and rel_diff <= area_rtol
+                        else "FAIL"
+                    )
+                row["area_current"] = current_area
+                row["area_reference"] = reference_area
+                row["area_rel_diff"] = rel_diff
+                row["area"] = area_status
+        rows.append(row)
 
     overall_diff = _max_abs_corner_diff_mm(
         _require_bbox_mm(current.get("overall_bounding_box_mm"), "current overall"),
@@ -402,20 +454,37 @@ def compare_reference(current, reference, tolerance_mm):
     label_sets_differ = bool(only_current or only_reference)
     bbox_failed = any(row["bbox"] == "FAIL" for row in rows) or overall["bbox"] == "FAIL"
     zones_failed = any(row["zone_count"] == "FAIL" for row in rows)
+    area_rows = [row for row in rows if "area" in row]
+    area_failed = any(row["area"] == "FAIL" for row in area_rows)
+    area_rel_diffs = [
+        row["area_rel_diff"]
+        for row in area_rows
+        if isinstance(row.get("area_rel_diff"), (int, float))
+        and not isinstance(row.get("area_rel_diff"), bool)
+    ]
+    area_max_rel_diff = max(area_rel_diffs) if area_rel_diffs else None
+    area_header = ""
+    if area_rows:
+        area_header = f" {'area_rel':>12} {'area':>6}"
     print(
         f"{'label':<32} {'max_|diff|_mm':>14} {'bbox':>6} "
         f"{'zones_current':>14} {'zones_reference':>16} {'zones':>6}"
+        f"{area_header}"
     )
     for row in rows:
-        print(
+        line = (
             f"{row['label']:<32} {row['max_abs_diff_mm']:14.6g} {row['bbox']:>6} "
             f"{row['face_zone_count_current']:14d} {row['face_zone_count_reference']:16d} "
             f"{row['zone_count']:>6}"
         )
+        if "area" in row:
+            rel = "" if row["area_rel_diff"] is None else f"{row['area_rel_diff']:.6g}"
+            line += f" {rel:>12} {row['area']:>6}"
+        print(line)
     print(
         f"{overall['label']:<32} {overall['max_abs_diff_mm']:14.6g} {overall['bbox']:>6}"
     )
-    return {
+    result = {
         "bbox_tol_mm": tolerance_mm,
         "body_label_current": current_body,
         "body_label_reference": reference_body,
@@ -423,8 +492,12 @@ def compare_reference(current, reference, tolerance_mm):
         "labels_only_in_reference": only_reference,
         "labels": rows,
         "overall": overall,
-        "passed": not (label_sets_differ or bbox_failed or zones_failed),
+        "passed": not (label_sets_differ or bbox_failed or zones_failed or area_failed),
     }
+    if area_rtol is not None:
+        result["area_rtol"] = area_rtol
+        result["area_max_rel_diff"] = area_max_rel_diff
+    return result
 
 
 def _load_comparison_reference(path):
@@ -476,6 +549,12 @@ def build_parser():
         default=DEFAULT_BBOX_TOL_MM,
         help="Maximum absolute bounding-box corner difference, in mm.",
     )
+    parser.add_argument(
+        "--area-rtol",
+        type=float,
+        default=1e-3,
+        help="Maximum relative per-label face-zone area difference.",
+    )
     return parser
 
 
@@ -485,6 +564,10 @@ def main(argv=None):
         raise ValueError(f"--bbox-tol-mm must be finite, got {args.bbox_tol_mm!r}.")
     if args.bbox_tol_mm < 0.0:
         raise ValueError(f"--bbox-tol-mm must be >= 0, got {args.bbox_tol_mm}.")
+    if isinstance(args.area_rtol, bool) or not math.isfinite(args.area_rtol):
+        raise ValueError(f"--area-rtol must be finite, got {args.area_rtol!r}.")
+    if args.area_rtol < 0.0:
+        raise ValueError(f"--area-rtol must be >= 0, got {args.area_rtol}.")
 
     if args.cad_path is None:
         geometry_file = geometry_dir(FAMILY, GEO_ID) / f"{GEO_ID}.dsco"
@@ -567,6 +650,7 @@ def main(argv=None):
                 extracted,
                 reference,
                 args.bbox_tol_mm,
+                area_rtol=args.area_rtol,
             )
         payload = {
             "family": FAMILY,
