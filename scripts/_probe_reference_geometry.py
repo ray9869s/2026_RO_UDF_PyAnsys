@@ -9,8 +9,10 @@ Windows Fluent server only. Do not run from WSL.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
+import math
 import os
 import sys
 import traceback
@@ -24,6 +26,8 @@ GEO_ID = "P_p100_h30"
 WORK_DIR = "C:/ro_data/geom_smoke/probe_ref_P_p100_h30"
 SUMMARY_NAME = "reference_geometry.json"
 TRANSCRIPT_NAME = "probe_reference_geometry_transcript.txt"
+_MANUAL_CAD_ROOT = "c:/ro_data/geometries"
+DEFAULT_BBOX_TOL_MM = 1e-3
 
 
 def _load_module(module_name, path):
@@ -241,8 +245,202 @@ def reconcile_labels(expected, cad_labels):
     return missing, extra
 
 
-def write_summary(payload):
-    output_path = os.path.join(WORK_DIR, SUMMARY_NAME)
+def _under_manual_cad(path):
+    candidates = [str(path).replace("\\", "/"), os.path.abspath(path).replace("\\", "/")]
+    for text in candidates:
+        folded = text.lower()
+        if folded == _MANUAL_CAD_ROOT or folded.startswith(_MANUAL_CAD_ROOT + "/"):
+            return True
+    return False
+
+
+def _require_bbox_mm(value, source):
+    """Require [[xmin, ymin, zmin], [xmax, ymax, zmax]] in millimetres."""
+    if value is None:
+        raise RuntimeError(f"{source} bounding box is None.")
+    if isinstance(value, (str, bytes)):
+        raise TypeError(f"{source} bounding box is text: {value!r}")
+    corners = list(value)
+    if len(corners) != 2:
+        raise RuntimeError(
+            f"{source} bounding box needs 2 corners, got {len(corners)}: {value!r}"
+        )
+    points = []
+    for index, corner in enumerate(corners):
+        if isinstance(corner, (str, bytes)):
+            raise TypeError(f"{source} corner {index} is text: {corner!r}")
+        coords = list(corner)
+        if len(coords) != 3:
+            raise RuntimeError(
+                f"{source} corner {index} needs 3 coordinates, got {coords!r}"
+            )
+        numbers = []
+        for coord in coords:
+            if isinstance(coord, bool) or not isinstance(coord, (int, float)):
+                raise TypeError(f"{source} coordinate is not a number: {coord!r}")
+            number = float(coord)
+            if not math.isfinite(number):
+                raise RuntimeError(f"{source} coordinate is not finite: {coord!r}")
+            numbers.append(number)
+        points.append(numbers)
+    return points
+
+
+def _require_zone_ids(value, source):
+    if value is None:
+        raise RuntimeError(f"{source} face zone ids are None.")
+    if isinstance(value, (str, bytes)):
+        raise TypeError(f"{source} face zone ids are text: {value!r}")
+    ids = list(value)
+    for zone_id in ids:
+        if isinstance(zone_id, bool) or not isinstance(zone_id, int):
+            raise TypeError(f"{source} face zone id is not an int: {zone_id!r}")
+    return ids
+
+
+def _label_record(payload, label, source):
+    labels = payload.get("labels")
+    if not isinstance(labels, dict):
+        raise TypeError(f"{source} 'labels' must be an object, got {type(labels).__name__}.")
+    record = labels.get(label)
+    if not isinstance(record, dict):
+        raise TypeError(f"{source} label {label!r} is not an object.")
+    return record
+
+
+def _body_label(payload, source):
+    """Label whose face zones are exactly every face zone. Exactly one is required."""
+    all_ids = set(_require_zone_ids(payload.get("all_face_zone_ids"), f"{source} all zones"))
+    labels = payload.get("labels")
+    if not isinstance(labels, dict) or not labels:
+        raise RuntimeError(f"{source} has no labels to identify a body label.")
+    matches = []
+    for label in labels:
+        record = _label_record(payload, label, source)
+        zone_ids = set(_require_zone_ids(record.get("face_zone_ids"), f"{source} {label}"))
+        if zone_ids == all_ids:
+            matches.append(label)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"{source} body label must be the one label covering every face zone, "
+            f"found {matches}."
+        )
+    return matches[0]
+
+
+def _max_abs_corner_diff_mm(current, reference):
+    diffs = [
+        abs(current[corner][axis] - reference[corner][axis])
+        for corner in range(2)
+        for axis in range(3)
+    ]
+    return max(diffs)
+
+
+def _bbox_status(max_abs_diff_mm, tolerance_mm):
+    if max_abs_diff_mm <= tolerance_mm:
+        return "PASS"
+    return "FAIL"
+
+
+def compare_reference(current, reference, tolerance_mm):
+    """Compare label sets, per-label boxes, and the overall box.
+
+    The body label (face zones equal to all face zones) is printed and then
+    excluded from the label-set comparison.
+    """
+    current_body = _body_label(current, "current")
+    reference_body = _body_label(reference, "reference")
+    print(f"Body label current: {current_body}")
+    print(f"Body label reference: {reference_body}")
+
+    current_labels = set(current["labels"]) - {current_body}
+    reference_labels = set(reference["labels"]) - {reference_body}
+    only_current = sorted(current_labels - reference_labels)
+    only_reference = sorted(reference_labels - current_labels)
+    print(f"Labels only in current CAD: {only_current}")
+    print(f"Labels only in reference: {only_reference}")
+
+    rows = []
+    for label in sorted(current_labels & reference_labels):
+        current_record = _label_record(current, label, "current")
+        reference_record = _label_record(reference, label, "reference")
+        current_ids = _require_zone_ids(
+            current_record.get("face_zone_ids"), f"current {label}"
+        )
+        reference_ids = _require_zone_ids(
+            reference_record.get("face_zone_ids"), f"reference {label}"
+        )
+        current_bbox = _require_bbox_mm(
+            current_record.get("bounding_box_mm"), f"current {label}"
+        )
+        reference_bbox = _require_bbox_mm(
+            reference_record.get("bounding_box_mm"), f"reference {label}"
+        )
+        max_abs_diff_mm = _max_abs_corner_diff_mm(current_bbox, reference_bbox)
+        zone_status = "PASS" if len(current_ids) == len(reference_ids) else "FAIL"
+        rows.append(
+            {
+                "label": label,
+                "max_abs_diff_mm": max_abs_diff_mm,
+                "bbox": _bbox_status(max_abs_diff_mm, tolerance_mm),
+                "face_zone_count_current": len(current_ids),
+                "face_zone_count_reference": len(reference_ids),
+                "zone_count": zone_status,
+            }
+        )
+
+    overall_diff = _max_abs_corner_diff_mm(
+        _require_bbox_mm(current.get("overall_bounding_box_mm"), "current overall"),
+        _require_bbox_mm(reference.get("overall_bounding_box_mm"), "reference overall"),
+    )
+    overall = {
+        "label": "overall",
+        "max_abs_diff_mm": overall_diff,
+        "bbox": _bbox_status(overall_diff, tolerance_mm),
+    }
+    label_sets_differ = bool(only_current or only_reference)
+    bbox_failed = any(row["bbox"] == "FAIL" for row in rows) or overall["bbox"] == "FAIL"
+    zones_failed = any(row["zone_count"] == "FAIL" for row in rows)
+    print(
+        f"{'label':<32} {'max_|diff|_mm':>14} {'bbox':>6} "
+        f"{'zones_current':>14} {'zones_reference':>16} {'zones':>6}"
+    )
+    for row in rows:
+        print(
+            f"{row['label']:<32} {row['max_abs_diff_mm']:14.6g} {row['bbox']:>6} "
+            f"{row['face_zone_count_current']:14d} {row['face_zone_count_reference']:16d} "
+            f"{row['zone_count']:>6}"
+        )
+    print(
+        f"{overall['label']:<32} {overall['max_abs_diff_mm']:14.6g} {overall['bbox']:>6}"
+    )
+    return {
+        "bbox_tol_mm": tolerance_mm,
+        "body_label_current": current_body,
+        "body_label_reference": reference_body,
+        "labels_only_in_current": only_current,
+        "labels_only_in_reference": only_reference,
+        "labels": rows,
+        "overall": overall,
+        "passed": not (label_sets_differ or bbox_failed or zones_failed),
+    }
+
+
+def _load_comparison_reference(path):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Comparison reference not found: {path}")
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise TypeError(
+            f"Comparison reference must be a JSON object, got {type(payload).__name__}."
+        )
+    return payload
+
+
+def write_summary(payload, work_dir=WORK_DIR):
+    output_path = os.path.join(work_dir, SUMMARY_NAME)
     with open(output_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
@@ -250,10 +448,60 @@ def write_summary(payload):
     return output_path
 
 
-def main():
-    geometry_file = geometry_dir(FAMILY, GEO_ID) / f"{GEO_ID}.dsco"
-    if not geometry_file.is_file():
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Import one CAD file and record face labels and bounding boxes. "
+            "With no arguments, import the pillar reference .dsco into WORK_DIR."
+        ),
+    )
+    parser.add_argument(
+        "--cad-path",
+        default=None,
+        help="Import this file instead of the geometry_dir() .dsco.",
+    )
+    parser.add_argument(
+        "--work-dir",
+        default=None,
+        help="Override WORK_DIR. Must not be under C:/ro_data/geometries.",
+    )
+    parser.add_argument(
+        "--compare-to",
+        default=None,
+        help="Previously written reference_geometry.json to compare against.",
+    )
+    parser.add_argument(
+        "--bbox-tol-mm",
+        type=float,
+        default=DEFAULT_BBOX_TOL_MM,
+        help="Maximum absolute bounding-box corner difference, in mm.",
+    )
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if isinstance(args.bbox_tol_mm, bool) or not math.isfinite(args.bbox_tol_mm):
+        raise ValueError(f"--bbox-tol-mm must be finite, got {args.bbox_tol_mm!r}.")
+    if args.bbox_tol_mm < 0.0:
+        raise ValueError(f"--bbox-tol-mm must be >= 0, got {args.bbox_tol_mm}.")
+
+    if args.cad_path is None:
+        geometry_file = geometry_dir(FAMILY, GEO_ID) / f"{GEO_ID}.dsco"
+    else:
+        geometry_file = args.cad_path
+    if not os.path.isfile(geometry_file):
         raise FileNotFoundError(f"Geometry file not found: {geometry_file}")
+
+    work_dir = WORK_DIR if args.work_dir is None else args.work_dir
+    if _under_manual_cad(work_dir):
+        raise ValueError(
+            f"work dir {work_dir} is under C:/ro_data/geometries. "
+            "That tree is reserved for the manual CAD."
+        )
+    reference = None
+    if args.compare_to is not None:
+        reference = _load_comparison_reference(args.compare_to)
 
     batch = load_batch_config()
     expected = expected_config_labels(batch)
@@ -266,7 +514,7 @@ def main():
     print(f"Family: {FAMILY}")
     print(f"Geo id: {GEO_ID}")
     print(f"DSCO: {geometry_file}")
-    print(f"Work dir: {WORK_DIR}")
+    print(f"Work dir: {work_dir}")
     print(f"Config labels: {expected}")
     print(
         "launch_fluent args: "
@@ -280,11 +528,11 @@ def main():
     changed_directory = False
     original_working_directory = os.getcwd()
     try:
-        os.makedirs(WORK_DIR, exist_ok=True)
-        os.chdir(WORK_DIR)
+        os.makedirs(work_dir, exist_ok=True)
+        os.chdir(work_dir)
         changed_directory = True
 
-        transcript_path = os.path.join(WORK_DIR, TRANSCRIPT_NAME)
+        transcript_path = os.path.join(work_dir, TRANSCRIPT_NAME)
         meshing = pyfluent.launch_fluent(
             product_version=product_version,
             mode="meshing",
@@ -313,24 +561,46 @@ def main():
 
         extracted = extract_reference(meshing)
         missing, extra = reconcile_labels(expected, extracted["cad_labels"])
-        write_summary(
-            {
-                "family": FAMILY,
-                "geo_id": GEO_ID,
-                "geometry_file": str(geometry_file),
-                "objects": extracted["objects"],
-                "labels": extracted["labels"],
-                "all_face_zone_ids": extracted["all_face_zone_ids"],
-                "overall_bounding_box_mm": extracted["overall_bounding_box_mm"],
-                "expected_config_labels": expected,
-                "config_labels_missing_from_cad": missing,
-                "cad_labels_not_in_config": extra,
-            }
-        )
+        comparison = None
+        if reference is not None:
+            comparison = compare_reference(
+                extracted,
+                reference,
+                args.bbox_tol_mm,
+            )
+        payload = {
+            "family": FAMILY,
+            "geo_id": GEO_ID,
+            "geometry_file": str(geometry_file),
+            "objects": extracted["objects"],
+            "labels": extracted["labels"],
+            "all_face_zone_ids": extracted["all_face_zone_ids"],
+            "overall_bounding_box_mm": extracted["overall_bounding_box_mm"],
+            "expected_config_labels": expected,
+            "config_labels_missing_from_cad": missing,
+            "cad_labels_not_in_config": extra,
+        }
+        if comparison is not None:
+            payload["comparison"] = comparison
+        write_summary(payload, work_dir)
+        if comparison is not None and (
+            comparison["labels_only_in_current"] or comparison["labels_only_in_reference"]
+        ):
+            raise RuntimeError(
+                "Reference label sets differ. "
+                f"Only in current: {comparison['labels_only_in_current']}. "
+                f"Only in reference: {comparison['labels_only_in_reference']}."
+            )
         if missing:
             print(
                 "Probe finished after Import Geometry. "
                 "Config labels are missing from the CAD."
+            )
+            return 1
+        if comparison is not None and not comparison["passed"]:
+            print(
+                "Probe finished after Import Geometry. "
+                "Reference comparison failed."
             )
             return 1
         print(
