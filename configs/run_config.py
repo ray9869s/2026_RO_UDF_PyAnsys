@@ -61,6 +61,8 @@ project_root = str(ro_paths.project_root())
 
 family = REQUIRED
 geo_id = REQUIRED
+# CAD filename under geometry_dir(family, geo_id). Existing batches stay ".dsco".
+geometry_suffix = ".dsco"
 mesh_id = REQUIRED
 run_id = REQUIRED
 geo_name = REQUIRED
@@ -623,6 +625,11 @@ def validate_common():
 def validate_for_meshing():
     """Validate settings required by meshing automation."""
     validate_common()
+    if geometry_suffix not in (".dsco", ".pmdb"):
+        raise ValueError(
+            "run_config.py geometry_suffix must be '.dsco' or '.pmdb': "
+            f"{geometry_suffix!r}"
+        )
     _require_set("mesh_id", mesh_id)
     if not isinstance(mesh_id, str) or ro_paths.MESH_ID_RE.fullmatch(mesh_id) is None:
         raise ValueError(f"run_config.py mesh_id is invalid: {mesh_id!r}")

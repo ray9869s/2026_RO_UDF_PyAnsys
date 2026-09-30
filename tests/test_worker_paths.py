@@ -46,6 +46,7 @@ def test_meshing_worker_paths_use_canonical_ids(monkeypatch, tmp_path):
         geo_name="D2450_a45_7c_brg110",
         case_name="mesh_max085_min006_cpg5_bl4",
         project_root=str(tmp_path / "legacy-project-root"),
+        geometry_suffix=".dsco",
     )
 
     resolved = meshing.resolve_meshing_paths(cfg)

@@ -9,8 +9,6 @@ import argparse
 import sys
 import traceback
 
-from ro.pillar_cad import generate_pillar_cad
-
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -43,6 +41,8 @@ def build_parser():
 
 
 def main(argv=None):
+    from ro.pillar_cad import generate_pillar_cad
+
     args = build_parser().parse_args(argv)
     written = generate_pillar_cad(
         d_p_mm=args.d_p_mm,

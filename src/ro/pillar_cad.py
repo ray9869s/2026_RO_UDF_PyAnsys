@@ -11,18 +11,6 @@ import math
 import sys
 from pathlib import Path
 
-import ansys.geometry.core as pyansys_geometry
-from ansys.geometry.core.connection.backend import ApiVersions
-from ansys.geometry.core.connection.launcher import launch_modeler_with_discovery
-from ansys.geometry.core.designer.body import CollisionType
-from ansys.geometry.core.designer.face import SurfaceType
-from ansys.geometry.core.math.plane import Plane
-from ansys.geometry.core.math.point import Point2D, Point3D
-from ansys.geometry.core.math.vector import UnitVector3D
-from ansys.geometry.core.shapes.surfaces.cylinder import Cylinder
-from ansys.geometry.core.shapes.surfaces.plane import PlaneSurface
-from ansys.geometry.core.sketch.sketch import Sketch
-
 from ro.paths import project_root
 
 # Channel height is not stored in configs/batch_config.py.
@@ -68,6 +56,39 @@ _BASE_LABELS = (
 _HOLE_LABEL = "wall_spacer_hole"
 
 
+def _bind_geometry_symbols():
+    """Import PyAnsys Geometry when a body is built, not at module import."""
+    global pyansys_geometry, ApiVersions, launch_modeler_with_discovery
+    global CollisionType, SurfaceType, Plane, Point2D, Point3D, UnitVector3D
+    global Cylinder, PlaneSurface, Sketch
+    import ansys.geometry.core as _pyansys_geometry
+    from ansys.geometry.core.connection.backend import ApiVersions as _ApiVersions
+    from ansys.geometry.core.connection.launcher import (
+        launch_modeler_with_discovery as _launch_modeler_with_discovery,
+    )
+    from ansys.geometry.core.designer.body import CollisionType as _CollisionType
+    from ansys.geometry.core.designer.face import SurfaceType as _SurfaceType
+    from ansys.geometry.core.math.plane import Plane as _Plane
+    from ansys.geometry.core.math.point import Point2D as _Point2D, Point3D as _Point3D
+    from ansys.geometry.core.math.vector import UnitVector3D as _UnitVector3D
+    from ansys.geometry.core.shapes.surfaces.cylinder import Cylinder as _Cylinder
+    from ansys.geometry.core.shapes.surfaces.plane import PlaneSurface as _PlaneSurface
+    from ansys.geometry.core.sketch.sketch import Sketch as _Sketch
+
+    pyansys_geometry = _pyansys_geometry
+    ApiVersions = _ApiVersions
+    launch_modeler_with_discovery = _launch_modeler_with_discovery
+    CollisionType = _CollisionType
+    SurfaceType = _SurfaceType
+    Plane = _Plane
+    Point2D = _Point2D
+    Point3D = _Point3D
+    UnitVector3D = _UnitVector3D
+    Cylinder = _Cylinder
+    PlaneSurface = _PlaneSurface
+    Sketch = _Sketch
+
+
 def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
     """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``."""
     d_p_mm = _require_real("d_p_mm", d_p_mm)
@@ -95,6 +116,7 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
 
     modeler = None
     try:
+        _bind_geometry_symbols()
         modeler = launch_modeler_with_discovery(
             version=251,
             api_version=ApiVersions.V_251,
