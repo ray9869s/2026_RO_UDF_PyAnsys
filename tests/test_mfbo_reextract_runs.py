@@ -90,3 +90,89 @@ def test_reextract_uses_leaf_data_root_and_does_not_keep_parent_env(
     archives = list((leaf / "post").glob("reports_prev_*"))
     assert len(archives) == 1
     assert (archives[0] / "summary_metrics_wide.csv").is_file()
+
+
+def _production_identity(tmp_path):
+    source_run = tmp_path / "src_run"
+    source_mesh = tmp_path / "src_mesh"
+    source_run.mkdir()
+    source_mesh.mkdir()
+    (source_run / "P_p100_h30_u0p2_p6M_final.cas.h5").write_bytes(b"case")
+    (source_run / "P_p100_h30_u0p2_p6M_final.dat.h5").write_bytes(b"data")
+    (source_mesh / "mesh.msh").write_bytes(b"mesh")
+    return {
+        "run_leaf": source_run,
+        "mesh_leaf": source_mesh,
+        "family": "pillar",
+        "geo_id": "P_p100_h30",
+        "mesh_id": "mesh",
+        "run_id": "u0p2_p6M",
+    }
+
+
+def test_copy_from_production_reextracts_the_copy(monkeypatch, tmp_path):
+    import mfbo.diagnose_cp_max_hotspots as hotspots
+
+    identity = _production_identity(tmp_path)
+    monkeypatch.setattr(hotspots, "parse_production_run_leaf", lambda value: identity)
+    seen = []
+
+    def fake_reextract(leaf):
+        seen.append(leaf)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(reextract_runs, "reextract_leaf", fake_reextract)
+    data = tmp_path / "root"
+    code = reextract_runs.main(
+        [
+            "--copy-from-production",
+            "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M",
+            "--data-root",
+            str(data),
+        ]
+    )
+    dest = data / "runs" / "pillar" / "P_p100_h30" / "mesh" / "u0p2_p6M"
+    assert code == 0
+    assert seen == [dest]
+    assert "ro_data" not in str(seen[0]).casefold()
+    mesh_copy = data / "meshes" / "pillar" / "P_p100_h30" / "mesh" / "mesh.msh"
+    assert mesh_copy.read_bytes() == b"mesh"
+    assert (dest / "P_p100_h30_u0p2_p6M_final.cas.h5").read_bytes() == b"case"
+
+
+def test_copy_reuses_identical_tree_and_refuses_a_different_one(monkeypatch, tmp_path):
+    import mfbo.diagnose_cp_max_hotspots as hotspots
+
+    identity = _production_identity(tmp_path)
+    monkeypatch.setattr(hotspots, "parse_production_run_leaf", lambda value: identity)
+    data = tmp_path / "root"
+    prod = "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M"
+    first = reextract_runs.copy_production_for_reextract(prod, str(data))
+    mesh_copy = data / "meshes" / "pillar" / "P_p100_h30" / "mesh" / "mesh.msh"
+    mesh_copy.chmod(0o444)
+    second = reextract_runs.copy_production_for_reextract(prod, str(data))
+    assert second == first
+    mesh_copy.chmod(0o644)
+    mesh_copy.write_bytes(b"changed")
+    with pytest.raises(RuntimeError, match="not identical"):
+        reextract_runs.copy_production_for_reextract(prod, str(data))
+    assert mesh_copy.read_bytes() == b"changed"
+
+
+def test_copy_from_production_does_not_launch_on_production_root(monkeypatch, tmp_path):
+    launched = []
+    monkeypatch.setattr(
+        reextract_runs.mfbo_common,
+        "launch_extract",
+        lambda *args, **kwargs: launched.append(args) or SimpleNamespace(returncode=0),
+    )
+    with pytest.raises(ValueError, match="production"):
+        reextract_runs.main(
+            [
+                "--copy-from-production",
+                "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M",
+                "--data-root",
+                "C:/ro_data",
+            ]
+        )
+    assert launched == []

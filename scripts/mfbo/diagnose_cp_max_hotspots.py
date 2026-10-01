@@ -29,6 +29,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import mfbo._common as mfbo_common
 import mfbo.run_parity_mesh as parity_mesh
+from ro.cp_concentration_stats import B_PERM_M_PER_S
 from ro.cp_metrics import CP_SPREAD_AREA_QUANTILE_HI
 from ro.domain_layout import (
     CURRENT_EVALUATION_WINDOW,
@@ -49,9 +50,8 @@ MEMBRANE_WALLS = ("wall_top_mem", "wall_bottom_mem")
 NACL_CELL_FIELD = "concentration-nacl"
 TOP_FACE_COUNT = 20
 CM_AREA_QUANTILE = CP_SPREAD_AREA_QUANTILE_HI
-# udfs/260822_RO_UDF.c:194 is ``static real B_perm``, not a #define.
+# B_perm is parsed from udfs/260822_RO_UDF.c:194 (static real, not a #define).
 # udfs/260822_RO_UDF.c:48 is ``#define C_INLET_REF 597.8268309``.
-B_PERM_M_PER_S = 2.50e-8
 C_INLET_REF_MOL_PER_M3 = 597.8268309
 NEAR_DENOMINATOR_FRACTION = 0.1
 ROBUST_CM_QUANTILES = (0.99, 0.999)

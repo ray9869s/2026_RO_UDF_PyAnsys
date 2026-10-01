@@ -5,6 +5,11 @@ Keeps the previous ``post/reports/`` by renaming it to
 ``mfbo._common.launch_extract``, which is the production worker launcher.
 ``RO_DATA_ROOT`` on the child is the leaf's data root (the directory that
 contains ``runs/``).
+
+``--copy-from-production`` copies a production run leaf and its mesh leaf
+into ``--data-root`` (sha256 every file, reuse an identical copy, refuse a
+different one) and re-extracts the copy. Fluent is not pointed at
+``C:/ro_data``.
 """
 
 from __future__ import annotations
@@ -113,6 +118,24 @@ def operating_point_case(data_root, run_leaf):
     return mfbo_common.call_with_data_root(data_root, _read)
 
 
+def copy_production_for_reextract(prod_leaf, data_root):
+    """Copy the production run and mesh leaves. Return the copy's run leaf.
+
+    Does not open Fluent. The caller re-extracts the returned copy only.
+    """
+    import mfbo.diagnose_cp_max_hotspots as hotspots
+
+    root = hotspots.resolve_data_root(data_root)
+    identity = hotspots.parse_production_run_leaf(prod_leaf)
+    copied = hotspots.copy_source_leaves(root, identity)
+    run_leaf = copied["run_leaf"]
+    case_file, data_file = hotspots.final_case_data(
+        run_leaf, identity["geo_id"], identity["run_id"]
+    )
+    hotspots.assert_fluent_opens_copies(root, run_leaf, case_file, data_file)
+    return run_leaf
+
+
 def reextract_leaf(run_leaf_value):
     """Archive reports, then run the production extract launcher."""
     leaf, data_root, _family, geo_id, mesh_id, run_id = parse_run_leaf(
@@ -138,11 +161,38 @@ def main(argv=None) -> int:
         )
     )
     parser.add_argument(
+        "--copy-from-production",
+        default=None,
+        help=(
+            "Production run leaf under C:/ro_data. Copied with its mesh leaf "
+            "into --data-root; Fluent opens only the copy."
+        ),
+    )
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        help="Destination data root for --copy-from-production. Not C:/ro_data.",
+    )
+    parser.add_argument(
         "run_leaves",
-        nargs="+",
+        nargs="*",
         help="Absolute run leaf paths (.../runs/<family>/<geo>/<mesh>/<run_id>).",
     )
     args = parser.parse_args(argv)
+    if args.copy_from_production:
+        if args.run_leaves:
+            parser.error(
+                "pass either --copy-from-production or run leaf paths, not both."
+            )
+        if not args.data_root:
+            parser.error("--copy-from-production requires --data-root.")
+        copied = copy_production_for_reextract(
+            args.copy_from_production, args.data_root
+        )
+        result = reextract_leaf(copied)
+        return result.returncode
+    if not args.run_leaves:
+        parser.error("a run leaf path is required.")
     code = 0
     for raw in args.run_leaves:
         result = reextract_leaf(raw)

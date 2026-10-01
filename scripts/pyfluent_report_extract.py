@@ -62,6 +62,8 @@ from ro.fluent_report_helpers import (  # noqa: E402
     apply_surface_report_definition,
     create_channel_midplane_plane,
     create_x_normal_plane as _create_x_normal_plane,
+    create_x_range_iso_clip,
+    delete_iso_clip,
     derive_periodic_spacer_pressure_metrics_for_layout,
     derive_spacer_cell_metrics_for_layout,
     evaluation_window_midplane_bulk_concentrations,
@@ -99,6 +101,14 @@ from ro.fluent_report_helpers import (  # noqa: E402
     unit_cell_plane_area_report_name,
     unit_cell_pressure_report_name,
     udm_area_sum_report_spec,
+)
+from ro.cp_concentration_stats import (  # noqa: E402
+    B_PERM_M_PER_S,
+    cell_x_bounds,
+    concentration_cp_report,
+    concentration_cp_summary_rows,
+    polygon_area,
+    window_x_bounds,
 )
 from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_CELL_STRAIN_RATE,
@@ -636,6 +646,123 @@ def mass_diffusivity_m2_s():
             f"run_config.mass_diffusivity must be finite and non-zero, got {value!r}."
         )
     return float(value)
+
+
+def _as_vectors(array):
+    return [[float(item[0]), float(item[1]), float(item[2])] for item in array]
+
+
+def _as_floats(array):
+    return [float(value) for value in array]
+
+
+def _surface_block(payload, data_type):
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError("Surface data payload is empty.")
+    surface_id = sorted(payload, key=str)[0]
+    block = payload[surface_id]
+    if isinstance(block, dict):
+        if data_type not in block:
+            raise RuntimeError(f"Surface data has no {data_type!r}.")
+        return block[data_type]
+    return block
+
+
+def _scalar_values(payload):
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError("Scalar field payload is empty.")
+    surface_id = sorted(payload, key=str)[0]
+    return _as_floats(payload[surface_id])
+
+
+def read_membrane_clip_faces(solver, surface_names, x_min_m, x_max_m, clip_name):
+    """Per-face cm, Jw, and area on one x-range clip of the membrane walls.
+
+    ``boundary_value=False`` reads the adjacent cell UDM. Face UDM slots are
+    not written in production (``RO_UDM_FACE_DIAGNOSTICS`` is off); surface
+    reports of udm-6 and udm-7 use the cell values.
+    """
+    from ansys.fluent.core.field_data_interfaces import SurfaceDataType
+
+    create_x_range_iso_clip(
+        solver,
+        clip_name,
+        list(surface_names),
+        x_min_m,
+        x_max_m,
+    )
+    try:
+        surface_data = solver.fields.field_data.get_surface_data(
+            data_types=[
+                SurfaceDataType.Vertices,
+                SurfaceDataType.FacesConnectivity,
+            ],
+            surfaces=[clip_name],
+        )
+        vertices = _as_vectors(_surface_block(surface_data, SurfaceDataType.Vertices))
+        connectivity = _surface_block(
+            surface_data, SurfaceDataType.FacesConnectivity
+        )
+        areas = []
+        for face in connectivity:
+            points = [vertices[int(node)] for node in face]
+            areas.append(polygon_area(points))
+        columns = {}
+        for field_name in (FIELD_UDM_CM, FIELD_UDM_JW):
+            scalar = solver.fields.field_data.get_scalar_field_data(
+                field_name=field_name,
+                surfaces=[clip_name],
+                node_value=False,
+                boundary_value=False,
+            )
+            values = _scalar_values(scalar)
+            if len(values) != len(areas):
+                raise RuntimeError(
+                    f"{clip_name} field {field_name}: {len(values)} values "
+                    f"for {len(areas)} faces."
+                )
+            columns[field_name] = values
+        return [
+            {
+                "cm": columns[FIELD_UDM_CM][index],
+                "jw": columns[FIELD_UDM_JW][index],
+                "area": areas[index],
+            }
+            for index in range(len(areas))
+        ]
+    finally:
+        delete_iso_clip(solver, clip_name)
+
+
+def collect_concentration_cp_faces(
+    solver,
+    wall_surface_names,
+    unit_cell_boundary_x_m,
+    evaluation_cell_numbers,
+):
+    """Window clip of both walls, plus one clip per evaluation cell."""
+    cell_faces = {}
+    for cell_number in evaluation_cell_numbers:
+        x_min_m, x_max_m = cell_x_bounds(unit_cell_boundary_x_m, cell_number)
+        cell_faces[int(cell_number)] = read_membrane_clip_faces(
+            solver,
+            wall_surface_names,
+            x_min_m,
+            x_max_m,
+            f"pp_cpc_cell_{int(cell_number)}",
+        )
+    x_min_m, x_max_m = window_x_bounds(
+        unit_cell_boundary_x_m,
+        evaluation_cell_numbers,
+    )
+    window_faces = read_membrane_clip_faces(
+        solver,
+        wall_surface_names,
+        x_min_m,
+        x_max_m,
+        "pp_cpc_window",
+    )
+    return window_faces, cell_faces
 
 
 def compute_rans_volume_reductions(solution, fluid_zones):
@@ -1761,6 +1888,27 @@ if __name__ == "__main__":
         print("\nSegmented membrane CP diagnostics:")
         pprint(segmented_cp_values)
 
+        window_faces, cell_faces = collect_concentration_cp_faces(
+            solver,
+            active_membrane_zones,
+            unit_cell_boundary_x_m,
+            evaluation_cells,
+        )
+        concentration_cp_metrics = concentration_cp_report(
+            window_faces,
+            cell_faces,
+            c_b_window_mol_per_m3,
+            c_b_by_cell_mol_per_m3,
+            b_perm=B_PERM_M_PER_S,
+        )
+        print(
+            "Concentration-statistics CP: "
+            f"cpc_window_avg_area="
+            f"{concentration_cp_metrics['window']['cpc_avg_area']}, "
+            f"cpc_window_avg_flux="
+            f"{concentration_cp_metrics['window']['cpc_avg_flux']}"
+        )
+
         _end_extract_phase()
         # ==========================================================
         # Cell 8.5. Whole-domain center-plane bulk (inventory only)
@@ -2267,6 +2415,7 @@ if __name__ == "__main__":
         ]
         summary_rows.extend(unit_cell_summary_rows)
         summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
+        summary_rows.extend(concentration_cp_summary_rows(concentration_cp_metrics))
 
         # ----------------------------------------------------------
         # Mass balance table
@@ -2494,6 +2643,7 @@ if __name__ == "__main__":
                 "segmented_cp_diagnostic_error_type": segmented_cp_diagnostic_error_type,
                 "segmented_cp_diagnostic_error_message": segmented_cp_diagnostic_error_message,
                 "turbulence_metrics": turbulence_metrics,
+                "concentration_cp": concentration_cp_metrics,
             },
             "raw_results": raw_results,
         }
