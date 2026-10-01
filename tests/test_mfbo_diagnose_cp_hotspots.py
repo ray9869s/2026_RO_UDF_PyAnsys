@@ -135,6 +135,132 @@ def test_area_quantile_top_faces_and_film_terms():
     assert areas_out == pytest.approx([1.0])
 
 
+def test_cp_definition_metrics_exclude_singular_and_negative_faces():
+    b_perm = diagnose.B_PERM_M_PER_S
+    c_inlet = diagnose.C_INLET_REF_MOL_PER_M3
+    singular = {
+        "x": 0.01,
+        "y": 0.0,
+        "z": 0.0,
+        "area": 0.01,
+        "cm": 3.0 * c_inlet,
+        "jw": 2.0 * b_perm,
+        "udm9": 100.0,
+    }
+    bulk = {
+        "x": 0.02,
+        "y": 0.0,
+        "z": 0.0,
+        "area": 1.0,
+        "cm": 650.0,
+        "jw": 1.0e-5,
+        "udm9": 1.05,
+    }
+    negative = {
+        "x": 0.03,
+        "y": 0.0,
+        "z": 0.0,
+        "area": 1.0,
+        "cm": 400.0,
+        "jw": 1.0e-5,
+        "udm9": -2.0,
+    }
+    zero_area_spike = {
+        "x": 0.04,
+        "y": 0.0,
+        "z": 0.0,
+        "area": 0.0,
+        "cm": 100.0,
+        "jw": 1.0e-5,
+        "udm9": 9000.0,
+    }
+    faces = [bulk, singular, negative, zero_area_spike]
+    perm = diagnose.cp_perm_mol_per_m3(singular["cm"], singular["jw"])
+    assert perm == pytest.approx(c_inlet)
+    metrics = diagnose.cp_definition_metrics(faces, c_b=610.0)
+    assert metrics["udm9_facet_max"] == 9000.0
+    assert metrics["near_singular_count"] == 1
+    assert metrics["near_singular_area"] == pytest.approx(0.01)
+    assert metrics["negative_udm9_count"] == 1
+    assert metrics["negative_udm9_area"] == pytest.approx(1.0)
+    assert metrics["udm9_area_avg_excluding"] == pytest.approx(1.05)
+    assert metrics["udm9_area_avg_change"] == pytest.approx(
+        metrics["udm9_area_avg_excluding"] - metrics["udm9_area_avg"]
+    )
+    assert metrics["robust_q99"] is not None
+    assert metrics["robust_q999"] is not None
+    ranked = diagnose.top_faces_by_udm9(metrics["annotated_faces"], count=2)
+    assert ranked[0]["udm9"] == 9000.0
+    assert ranked[0]["cm"] == 100.0
+    singular_face = next(
+        face for face in metrics["annotated_faces"] if face["udm9"] == 100.0
+    )
+    assert singular_face["jw_over_b_perm"] == pytest.approx(2.0)
+    assert singular_face["denominator"] == pytest.approx(0.0)
+    text = diagnose.format_definition_summary(
+        [
+            {
+                "cell": 5,
+                "surface": "combined",
+                **{
+                    key: metrics[key]
+                    for key in (
+                        "udm9_area_avg",
+                        "udm9_facet_max",
+                        "near_singular_count",
+                        "near_singular_area",
+                        "negative_udm9_count",
+                        "udm9_area_avg_excluding",
+                        "udm9_area_avg_change",
+                        "robust_q99",
+                        "robust_q999",
+                        "c_b_midplane_mol_m3",
+                    )
+                },
+            }
+        ]
+    )
+    assert "cell 5 combined" in text
+    assert "udm9_max=9000" in text
+
+
+def test_definition_check_uses_existing_copy_only(monkeypatch, tmp_path):
+    identity = diagnose.parse_production_run_leaf(
+        "C:/ro_data/runs/sinusoidal/Sin_h10/meshA/u0p2_p6M"
+    )
+    data_root = tmp_path / "data"
+    run_leaf, mesh_leaf = diagnose.destination_leaves(data_root, identity)
+    mesh_leaf.mkdir(parents=True)
+    (mesh_leaf / "mesh.msh.h5").write_bytes(b"mesh")
+    run_leaf.mkdir(parents=True)
+    (run_leaf / "Sin_h10_u0p2_p6M_final.cas.h5").write_bytes(b"cas")
+    (run_leaf / "Sin_h10_u0p2_p6M_final.dat.h5").write_bytes(b"dat")
+
+    def fail_copy(*_args, **_kwargs):
+        raise AssertionError("definition check must not copy C:/ro_data")
+
+    monkeypatch.setattr(diagnose, "copy_source_leaves", fail_copy)
+    monkeypatch.setattr(
+        diagnose,
+        "launch_definition_check",
+        lambda *args, **kwargs: "checked",
+    )
+    assert (
+        diagnose.main(
+            [
+                "--source-run",
+                "C:/ro_data/runs/sinusoidal/Sin_h10/meshA/u0p2_p6M",
+                "--data-root",
+                str(data_root),
+                "--cp-definition-check",
+            ]
+        )
+        == 0
+    )
+    with pytest.raises(FileNotFoundError, match="does not copy"):
+        diagnose.require_existing_copies(tmp_path / "empty", identity)
+
+
 def test_report_records_facetmax_path_and_null_quantile(tmp_path):
     payload = {
         "cp_canon_max_path": diagnose.CP_CANON_MAX_PATH,

@@ -35,8 +35,10 @@ from ro.domain_layout import (
     layout_from_run_directory,
 )
 from ro.fluent_report_helpers import (
+    create_channel_midplane_plane,
     create_x_range_iso_clip,
     delete_iso_clip,
+    evaluation_window_midplane_bulk_concentrations,
     list_named_object_names,
     scoring_geometry_from_layout,
 )
@@ -47,6 +49,20 @@ MEMBRANE_WALLS = ("wall_top_mem", "wall_bottom_mem")
 NACL_CELL_FIELD = "concentration-nacl"
 TOP_FACE_COUNT = 20
 CM_AREA_QUANTILE = CP_SPREAD_AREA_QUANTILE_HI
+# udfs/260822_RO_UDF.c:194 is ``static real B_perm``, not a #define.
+# udfs/260822_RO_UDF.c:48 is ``#define C_INLET_REF 597.8268309``.
+B_PERM_M_PER_S = 2.50e-8
+C_INLET_REF_MOL_PER_M3 = 597.8268309
+NEAR_DENOMINATOR_FRACTION = 0.1
+ROBUST_CM_QUANTILES = (0.99, 0.999)
+# Same salt-field order as scripts/pyfluent_report_extract.py cell 8.4.
+MIDPLANE_SALT_FIELDS = (
+    "nacl",
+    "mass-fraction-of-nacl",
+    "yi-0",
+    "species-0",
+    "udm-7",
+)
 _PRODUCTION_ROOTS = ("c:/ro_data", "/mnt/c/ro_data")
 
 # Matched production path. Line numbers are the current source.
@@ -236,6 +252,26 @@ def destination_leaves(data_root, identity):
     return run_leaf, mesh_leaf
 
 
+def require_existing_copies(data_root, identity):
+    """Locate the already-copied run and mesh. Does not read ``C:/ro_data``."""
+    run_leaf, mesh_leaf = destination_leaves(data_root, identity)
+    if not run_leaf.is_dir():
+        raise FileNotFoundError(
+            "Copied run leaf was not found. --cp-definition-check does not "
+            f"copy from C:/ro_data: {run_leaf}"
+        )
+    if not mesh_leaf.is_dir():
+        raise FileNotFoundError(
+            "Copied mesh leaf was not found. --cp-definition-check does not "
+            f"copy from C:/ro_data: {mesh_leaf}"
+        )
+    case_file, data_file = final_case_data(
+        run_leaf, identity["geo_id"], identity["run_id"]
+    )
+    assert_fluent_opens_copies(data_root, run_leaf, case_file, data_file)
+    return {"run_leaf": run_leaf, "mesh_leaf": mesh_leaf}
+
+
 def copy_source_leaves(data_root, identity):
     """Copy the production run leaf and its mesh leaf under ``data_root``."""
     run_dest, mesh_dest = destination_leaves(data_root, identity)
@@ -280,6 +316,19 @@ def assert_fluent_opens_copies(data_root, run_leaf, case_file, data_file):
         raise FileNotFoundError(f"Copied final case not found: {case_file}")
     if not data_file.is_file():
         raise FileNotFoundError(f"Copied final data not found: {data_file}")
+
+
+def load_post_config():
+    path = project_root() / "configs" / "post_config.py"
+    spec = importlib.util.spec_from_file_location(
+        "diagnose_cp_post_config",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load post config: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_run_config():
@@ -362,11 +411,15 @@ def face_areas(vertices, connectivity):
 
 def area_quantile(values, areas, quantile):
     """Lowest value whose cumulative positive area fraction reaches ``quantile``."""
-    pairs = [
-        (float(value), float(area))
-        for value, area in zip(values, areas)
-        if float(area) > 0.0 and math.isfinite(float(value)) and math.isfinite(float(area))
-    ]
+    pairs = []
+    for value, area in zip(values, areas):
+        if value is None or area is None:
+            continue
+        if not math.isfinite(float(value)) or not math.isfinite(float(area)):
+            continue
+        if float(area) <= 0.0:
+            continue
+        pairs.append((float(value), float(area)))
     if not pairs:
         raise ValueError("Area quantile needs at least one face with positive area.")
     pairs.sort(key=lambda item: item[0])
@@ -404,6 +457,227 @@ def top_faces_by_cm(faces, count=TOP_FACE_COUNT):
         reverse=True,
     )
     return ranked[: int(count)]
+
+
+def top_faces_by_udm9(faces, count=TOP_FACE_COUNT):
+    """Highest stored ``udm-9`` faces, not highest ``cm``."""
+    ranked = sorted(
+        faces,
+        key=lambda face: (
+            float("-inf") if face.get("udm9") is None else float(face["udm9"])
+        ),
+        reverse=True,
+    )
+    return ranked[: int(count)]
+
+
+def cp_perm_mol_per_m3(cm, jw, b_perm=B_PERM_M_PER_S):
+    """``B*cm/(Jw+B)``. None when the flux denominator is zero or non-finite."""
+    if cm is None or jw is None:
+        return None
+    if not math.isfinite(float(cm)) or not math.isfinite(float(jw)):
+        return None
+    if not math.isfinite(float(b_perm)) or float(b_perm) == 0.0:
+        raise ValueError(f"B_perm must be finite and non-zero, got {b_perm!r}.")
+    denominator = float(jw) + float(b_perm)
+    if denominator == 0.0 or not math.isfinite(denominator):
+        return None
+    return float(b_perm) * float(cm) / denominator
+
+
+def _positive_area_average(values, areas):
+    total = 0.0
+    weight = 0.0
+    for value, area in zip(values, areas):
+        if value is None or area is None:
+            continue
+        if not math.isfinite(float(value)) or not math.isfinite(float(area)):
+            continue
+        if float(area) <= 0.0:
+            continue
+        total += float(value) * float(area)
+        weight += float(area)
+    if weight <= 0.0:
+        return None
+    return total / weight
+
+
+def _facet_max(values):
+    finite = [
+        float(value)
+        for value in values
+        if value is not None and math.isfinite(float(value))
+    ]
+    if not finite:
+        return None
+    return max(finite)
+
+
+def annotate_cp_definition_faces(
+    faces,
+    *,
+    b_perm=B_PERM_M_PER_S,
+    c_inlet_ref=C_INLET_REF_MOL_PER_M3,
+    near_fraction=NEAR_DENOMINATOR_FRACTION,
+):
+    """Add cp_perm, denominator, and the two exclusion flags to each face."""
+    threshold = float(near_fraction) * float(c_inlet_ref)
+    annotated = []
+    for index, face in enumerate(faces):
+        perm = cp_perm_mol_per_m3(face.get("cm"), face.get("jw"), b_perm)
+        if perm is None:
+            denominator = None
+            near = True
+        else:
+            denominator = float(c_inlet_ref) - perm
+            near = abs(denominator) < threshold
+        udm9 = face.get("udm9")
+        negative = (
+            udm9 is not None
+            and math.isfinite(float(udm9))
+            and float(udm9) < 0.0
+        )
+        jw = face.get("jw")
+        jw_over_b = None
+        if jw is not None and math.isfinite(float(jw)):
+            jw_over_b = float(jw) / float(b_perm)
+        item = dict(face)
+        item["_index"] = index
+        item.update(
+            {
+                "cp_perm": perm,
+                "denominator": denominator,
+                "jw_over_b_perm": jw_over_b,
+                "near_singular": near,
+                "negative_udm9": negative,
+                "excluded": bool(near or negative),
+            }
+        )
+        annotated.append(item)
+    return annotated
+
+
+def _count_and_area(faces, key):
+    selected = [face for face in faces if face.get(key)]
+    area = 0.0
+    for face in selected:
+        face_area = face.get("area")
+        if face_area is not None and math.isfinite(float(face_area)):
+            area += float(face_area)
+    return len(selected), area
+
+
+def robust_cp_from_quantile(quantile_cm, cp_ref, c_b):
+    """``(q(cm) - cp_ref) / (c_b - cp_ref)``. None when the denominator is 0."""
+    if (
+        quantile_cm is None
+        or cp_ref is None
+        or c_b is None
+        or not math.isfinite(float(quantile_cm))
+        or not math.isfinite(float(cp_ref))
+        or not math.isfinite(float(c_b))
+    ):
+        return None
+    denominator = float(c_b) - float(cp_ref)
+    if denominator == 0.0 or not math.isfinite(denominator):
+        return None
+    return (float(quantile_cm) - float(cp_ref)) / denominator
+
+
+def cp_definition_metrics(faces, c_b, *, b_perm=B_PERM_M_PER_S, c_inlet_ref=C_INLET_REF_MOL_PER_M3):
+    """Current udm-9 reductions, exclusion, and robust quantile candidates.
+
+    ``c_b`` is the mid-plane bulk for this evaluation cell from
+    ``evaluation_window_midplane_bulk_concentrations``. Area average uses
+    positive-area faces. Facet max includes non-positive area, matching
+    surface-facetmax. Exclusion is the union of near-zero
+    ``C_INLET_REF - cp_perm`` and ``udm-9 < 0``.
+    """
+    annotated = annotate_cp_definition_faces(
+        faces,
+        b_perm=b_perm,
+        c_inlet_ref=c_inlet_ref,
+    )
+    udm9_values = [face.get("udm9") for face in annotated]
+    areas = [face.get("area") for face in annotated]
+    udm9_avg = _positive_area_average(udm9_values, areas)
+    udm9_max = _facet_max(udm9_values)
+    near_count, near_area = _count_and_area(annotated, "near_singular")
+    negative_count, negative_area = _count_and_area(annotated, "negative_udm9")
+    kept = [face for face in annotated if not face["excluded"]]
+    udm9_avg_excluding = _positive_area_average(
+        [face.get("udm9") for face in kept],
+        [face.get("area") for face in kept],
+    )
+    if udm9_avg is None or udm9_avg_excluding is None:
+        change = None
+    else:
+        change = udm9_avg_excluding - udm9_avg
+    cp_ref = _positive_area_average(
+        [face.get("cp_perm") for face in annotated],
+        areas,
+    )
+    cm_q99 = area_quantile(
+        [face.get("cm") for face in annotated],
+        areas,
+        ROBUST_CM_QUANTILES[0],
+    )
+    cm_q999 = area_quantile(
+        [face.get("cm") for face in annotated],
+        areas,
+        ROBUST_CM_QUANTILES[1],
+    )
+    return {
+        "face_count": len(annotated),
+        "udm9_area_avg": udm9_avg,
+        "udm9_facet_max": udm9_max,
+        "near_singular_count": near_count,
+        "near_singular_area": near_area,
+        "negative_udm9_count": negative_count,
+        "negative_udm9_area": negative_area,
+        "excluded_count": sum(1 for face in annotated if face["excluded"]),
+        "udm9_area_avg_excluding": udm9_avg_excluding,
+        "udm9_area_avg_change": change,
+        "cm_area_quantile_99": cm_q99,
+        "cm_area_quantile_999": cm_q999,
+        "cp_ref_area_avg": cp_ref,
+        "c_b_midplane_mol_m3": None if c_b is None else float(c_b),
+        "robust_q99": robust_cp_from_quantile(cm_q99, cp_ref, c_b),
+        "robust_q999": robust_cp_from_quantile(cm_q999, cp_ref, c_b),
+        "annotated_faces": annotated,
+    }
+
+
+def format_definition_summary(rows):
+    """One compact stdout line per surface and cell."""
+
+    def _num(value):
+        if value is None:
+            return "null"
+        return f"{float(value):.6g}"
+
+    lines = []
+    for row in rows:
+        lines.append(
+            "cell {cell} {surface}: udm9_avg={avg} udm9_max={max} "
+            "near_n={near_n} near_area={near_area} neg_n={neg_n} "
+            "avg_ex={avg_ex} delta={delta} robust99={r99} robust999={r999} "
+            "c_b={cb}".format(
+                cell=row["cell"],
+                surface=row["surface"],
+                avg=_num(row.get("udm9_area_avg")),
+                max=_num(row.get("udm9_facet_max")),
+                near_n=row.get("near_singular_count"),
+                near_area=_num(row.get("near_singular_area")),
+                neg_n=row.get("negative_udm9_count"),
+                avg_ex=_num(row.get("udm9_area_avg_excluding")),
+                delta=_num(row.get("udm9_area_avg_change")),
+                r99=_num(row.get("robust_q99")),
+                r999=_num(row.get("robust_q999")),
+                cb=_num(row.get("c_b_midplane_mol_m3")),
+            )
+        )
+    return "\n".join(lines)
 
 
 def nearest_spacer_distances(face_xyz, spacer_xyz):
@@ -561,20 +835,24 @@ def fetch_face_table(solver, surface_name, field_names):
                 f"for {len(centroids)} faces."
             )
         columns[field_name] = values
+    field_keys = {
+        FIELD_UDM_CM: "cm",
+        FIELD_UDM_JW: "jw",
+        FIELD_UDM_Y1: "y1",
+        FIELD_UDM_CP: "udm9",
+        NACL_CELL_FIELD: "concentration_nacl",
+    }
     faces = []
     for index, centroid in enumerate(centroids):
-        faces.append(
-            {
-                "x": centroid[0],
-                "y": centroid[1],
-                "z": centroid[2],
-                "area": areas[index],
-                "cm": columns[FIELD_UDM_CM][index],
-                "concentration_nacl": columns[NACL_CELL_FIELD][index],
-                "jw": columns[FIELD_UDM_JW][index],
-                "y1": columns[FIELD_UDM_Y1][index],
-            }
-        )
+        face = {
+            "x": centroid[0],
+            "y": centroid[1],
+            "z": centroid[2],
+            "area": areas[index],
+        }
+        for field_name, column in columns.items():
+            face[field_keys[field_name]] = column[index]
+        faces.append(face)
     return faces
 
 
@@ -628,7 +906,7 @@ def _quantiles(faces):
     }
 
 
-def _require_scalar_fields(solver):
+def _require_scalar_fields(solver, required=None):
     info = solver.fields.field_info.get_scalar_fields_info()
     names = set()
 
@@ -645,12 +923,13 @@ def _require_scalar_fields(solver):
                 walk(item)
 
     walk(info)
-    required = (
-        FIELD_UDM_CM,
-        FIELD_UDM_JW,
-        FIELD_UDM_Y1,
-        NACL_CELL_FIELD,
-    )
+    if required is None:
+        required = (
+            FIELD_UDM_CM,
+            FIELD_UDM_JW,
+            FIELD_UDM_Y1,
+            NACL_CELL_FIELD,
+        )
     missing = [name for name in required if name not in names]
     if missing:
         raise RuntimeError(
@@ -792,8 +1071,305 @@ def diagnose_session(solver, setup, layout, window, domain_x_min_m, d_salt):
     }, face_rows
 
 
-def launch_and_diagnose(data_root, copied, identity, run_config):
-    """Launch Fluent on the copied case and write the hotspot report."""
+DEFINITION_SUMMARY_FIELDS = (
+    "surface",
+    "cell",
+    "face_count",
+    "udm9_area_avg",
+    "udm9_facet_max",
+    "near_singular_count",
+    "near_singular_area",
+    "negative_udm9_count",
+    "negative_udm9_area",
+    "excluded_count",
+    "udm9_area_avg_excluding",
+    "udm9_area_avg_change",
+    "cm_area_quantile_99",
+    "cm_area_quantile_999",
+    "cp_ref_area_avg",
+    "c_b_midplane_mol_m3",
+    "robust_q99",
+    "robust_q999",
+)
+DEFINITION_FACE_FIELDS = (
+    "surface",
+    "cell",
+    "rank",
+    "x",
+    "y",
+    "z",
+    "area",
+    "udm9",
+    "cm",
+    "jw",
+    "jw_over_b_perm",
+    "cp_perm",
+    "denominator",
+    "spacer_distance_m",
+    "spacer_distance_note",
+)
+
+
+def collect_fluid_zone_names(setup):
+    try:
+        group = setup.cell_zone_conditions.fluid
+    except Exception:
+        return []
+    return list_named_object_names(group, "cell_zone_conditions.fluid")
+
+
+def midplane_bulk_for_window(
+    solver,
+    solution,
+    setup,
+    layout,
+    window,
+    domain_x_min_m,
+    post_config,
+):
+    """Per-cell and window mid-plane c_b via the extraction function."""
+    cell_numbers = evaluation_window_cells(layout, window)
+    geometry = scoring_geometry_from_layout(layout, domain_x_min_m)
+    plane_name, z_mid, diag = create_channel_midplane_plane(
+        solver,
+        setup=setup,
+        fluid_zone_names=collect_fluid_zone_names(setup),
+    )
+    last_error = None
+    for salt_field in MIDPLANE_SALT_FIELDS:
+        try:
+            by_cell, areas, c_b_window = (
+                evaluation_window_midplane_bulk_concentrations(
+                    solver=solver,
+                    solution=solution,
+                    midplane_surface_names=[plane_name],
+                    unit_cell_boundary_x_m=geometry.unit_cell_boundary_x_m,
+                    evaluation_cell_numbers=cell_numbers,
+                    salt_field=salt_field,
+                    density_kg_per_m3=post_config.rho,
+                    molecular_weight_kg_per_mol=(
+                        post_config.salt_molecular_weight_kg_per_mol
+                    ),
+                    salt_is_mass_fraction=True,
+                )
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+        return {
+            "c_b_by_cell": by_cell,
+            "midplane_area_by_cell": areas,
+            "c_b_window_mol_m3": c_b_window,
+            "salt_field": salt_field,
+            "plane_name": plane_name,
+            "z_mid_m": z_mid,
+            "plane_diag": diag,
+        }
+    raise RuntimeError(
+        "Mid-plane c_b failed for every salt field "
+        f"{MIDPLANE_SALT_FIELDS}: {last_error}"
+    ) from last_error
+
+
+def _definition_face_rows(surface, cell_number, metrics, distances, distance_note):
+    annotated = metrics["annotated_faces"]
+    rows = []
+    for rank, face in enumerate(top_faces_by_udm9(annotated), start=1):
+        distance = None
+        if distances is not None:
+            distance = distances[face["_index"]]
+        rows.append(
+            {
+                "surface": surface,
+                "cell": cell_number,
+                "rank": rank,
+                "x": face.get("x"),
+                "y": face.get("y"),
+                "z": face.get("z"),
+                "area": face.get("area"),
+                "udm9": face.get("udm9"),
+                "cm": face.get("cm"),
+                "jw": face.get("jw"),
+                "jw_over_b_perm": face.get("jw_over_b_perm"),
+                "cp_perm": face.get("cp_perm"),
+                "denominator": face.get("denominator"),
+                "spacer_distance_m": distance,
+                "spacer_distance_note": distance_note,
+            }
+        )
+    return rows
+
+
+def _summary_from_metrics(surface, cell_number, metrics):
+    row = {
+        key: metrics.get(key)
+        for key in DEFINITION_SUMMARY_FIELDS
+        if key not in ("surface", "cell")
+    }
+    row["surface"] = surface
+    row["cell"] = cell_number
+    return row
+
+
+def definition_check_session(solver, setup, layout, window, domain_x_min_m, post_config):
+    """udm-9 definition check on the evaluation-window membrane clips."""
+    cell_numbers = evaluation_window_cells(layout, window)
+    spans = cell_x_bounds(layout, cell_numbers, domain_x_min_m)
+    bulk = midplane_bulk_for_window(
+        solver,
+        solver.settings.solution,
+        setup,
+        layout,
+        window,
+        domain_x_min_m,
+        post_config,
+    )
+    boundary_names = collect_boundary_names(setup)
+    walls = {}
+    for base_name in MEMBRANE_WALLS:
+        matched = zones_for_base_name(boundary_names, base_name)
+        if not matched:
+            raise RuntimeError(f"Membrane wall {base_name!r} was not found.")
+        walls[base_name] = matched
+    spacer_names = sorted(
+        name for name in boundary_names if name.startswith("wall_spacer")
+    )
+    _require_scalar_fields(
+        solver,
+        (FIELD_UDM_CM, FIELD_UDM_JW, FIELD_UDM_CP),
+    )
+    spacer_xyz = []
+    spacer_note = "nearest spacer-wall face centroid"
+    try:
+        if not spacer_names:
+            raise RuntimeError("no wall_spacer zones")
+        for spacer_name in spacer_names:
+            spacer_xyz.extend(fetch_centroids(solver, spacer_name))
+    except Exception as exc:
+        spacer_xyz = []
+        spacer_note = f"not_computable: {exc}"
+
+    field_requests = (
+        (FIELD_UDM_CM, True),
+        (FIELD_UDM_JW, True),
+        (FIELD_UDM_CP, True),
+    )
+    summary_rows = []
+    face_rows = []
+    cell_reports = []
+    for cell_number in cell_numbers:
+        if cell_number not in bulk["c_b_by_cell"]:
+            raise RuntimeError(
+                f"Mid-plane c_b missing for evaluation cell {cell_number}."
+            )
+        c_b = bulk["c_b_by_cell"][cell_number]
+        x_min, x_max = spans[cell_number]
+        per_wall = {}
+        combined = []
+        for base_name, zone_names in walls.items():
+            clip_name = f"cp_def_{base_name}_{cell_number}"
+            create_x_range_iso_clip(
+                solver, clip_name, zone_names, x_min, x_max
+            )
+            try:
+                faces = fetch_face_table(solver, clip_name, field_requests)
+            finally:
+                delete_iso_clip(solver, clip_name)
+            metrics = cp_definition_metrics(faces, c_b)
+            distances, distance_note = nearest_spacer_distances(
+                [[face["x"], face["y"], face["z"]] for face in faces],
+                spacer_xyz,
+            )
+            if spacer_note.startswith("not_computable"):
+                distance_note = spacer_note
+                distances = None
+            summary = _summary_from_metrics(base_name, cell_number, metrics)
+            summary_rows.append(summary)
+            face_rows.extend(
+                _definition_face_rows(
+                    base_name, cell_number, metrics, distances, distance_note
+                )
+            )
+            per_wall[base_name] = summary
+            combined.extend(faces)
+        combined_metrics = cp_definition_metrics(combined, c_b)
+        combined_distances, combined_note = nearest_spacer_distances(
+            [[face["x"], face["y"], face["z"]] for face in combined],
+            spacer_xyz,
+        )
+        if spacer_note.startswith("not_computable"):
+            combined_note = spacer_note
+            combined_distances = None
+        combined_summary = _summary_from_metrics(
+            "combined", cell_number, combined_metrics
+        )
+        summary_rows.append(combined_summary)
+        face_rows.extend(
+            _definition_face_rows(
+                "combined",
+                cell_number,
+                combined_metrics,
+                combined_distances,
+                combined_note,
+            )
+        )
+        cell_reports.append(
+            {
+                "cell": cell_number,
+                "x_min_m": x_min,
+                "x_max_m": x_max,
+                "c_b_midplane_mol_m3": c_b,
+                "walls": per_wall,
+                "combined": combined_summary,
+            }
+        )
+    return {
+        "evaluation_cells": cell_numbers,
+        "c_b_window_mol_m3": bulk["c_b_window_mol_m3"],
+        "midplane_salt_field": bulk["salt_field"],
+        "midplane_z_m": bulk["z_mid_m"],
+        "b_perm_m_per_s": B_PERM_M_PER_S,
+        "c_inlet_ref_mol_per_m3": C_INLET_REF_MOL_PER_M3,
+        "near_denominator_fraction": NEAR_DENOMINATOR_FRACTION,
+        "exclusion": (
+            "union of |C_INLET_REF - cp_perm| < 0.1*C_INLET_REF and udm-9 < 0"
+        ),
+        "c_b_source": (
+            "evaluation_window_midplane_bulk_concentrations; "
+            "robust candidates use the per-cell mid-plane c_b"
+        ),
+        "cells": cell_reports,
+        "spacer_distance_note": spacer_note,
+    }, summary_rows, face_rows
+
+
+def write_definition_report(directory, payload, summary_rows, face_rows):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    json_path = directory / "cp_definition_check.json"
+    summary_path = directory / "cp_definition_check.csv"
+    faces_path = directory / "cp_definition_check_faces.csv"
+    json_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _write_csv(summary_path, DEFINITION_SUMMARY_FIELDS, summary_rows)
+    _write_csv(faces_path, DEFINITION_FACE_FIELDS, face_rows)
+    return json_path, summary_path, faces_path
+
+
+def _write_csv(path, fieldnames, rows):
+    with Path(path).open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {key: _csv_cell(row.get(key)) for key in fieldnames}
+            )
+
+
+def _open_copied_solver(data_root, copied, identity, run_config):
+    """Launch Fluent on the copied case. Caller must exit the solver."""
     import ansys.fluent.core as pyfluent
 
     run_leaf = copied["run_leaf"]
@@ -816,6 +1392,22 @@ def launch_and_diagnose(data_root, copied, identity, run_config):
         solver.settings.file.read_case_data(
             file_name=os.path.abspath(case_file).replace("\\", "/")
         )
+    except Exception:
+        if meshing is not None:
+            meshing.exit()
+        if solver is not None:
+            solver.exit()
+        raise
+    return solver, record, case_file
+
+
+def launch_and_diagnose(data_root, copied, identity, run_config):
+    """Launch Fluent on the copied case and write the hotspot report."""
+    solver = None
+    try:
+        solver, record, case_file = _open_copied_solver(
+            data_root, copied, identity, run_config
+        )
         report, face_rows = diagnose_session(
             solver,
             solver.settings.setup,
@@ -825,8 +1417,6 @@ def launch_and_diagnose(data_root, copied, identity, run_config):
             run_config.mass_diffusivity,
         )
     finally:
-        if meshing is not None:
-            meshing.exit()
         if solver is not None:
             solver.exit()
     payload = {
@@ -836,7 +1426,7 @@ def launch_and_diagnose(data_root, copied, identity, run_config):
         "run_id": identity["run_id"],
         "mesh_id": identity["mesh_id"],
         "family": identity["family"],
-        "copied_run_leaf": str(run_leaf),
+        "copied_run_leaf": str(copied["run_leaf"]),
         "copied_case_file": str(case_file),
         "fields": {
             "cm": FIELD_UDM_CM,
@@ -852,6 +1442,57 @@ def launch_and_diagnose(data_root, copied, identity, run_config):
     print(f"Wrote {json_path}")
     print(f"Wrote {csv_path}")
     return json_path, csv_path
+
+
+def launch_definition_check(data_root, copied, identity, run_config, post_config):
+    """Definition check on the already-copied leaf. Does not copy."""
+    solver = None
+    try:
+        solver, record, case_file = _open_copied_solver(
+            data_root, copied, identity, run_config
+        )
+        report, summary_rows, face_rows = definition_check_session(
+            solver,
+            solver.settings.setup,
+            record.layout,
+            record.evaluation_window,
+            run_config.domain_x_min_m,
+            post_config,
+        )
+    finally:
+        if solver is not None:
+            solver.exit()
+    payload = {
+        "geo_id": identity["geo_id"],
+        "run_id": identity["run_id"],
+        "mesh_id": identity["mesh_id"],
+        "family": identity["family"],
+        "copied_run_leaf": str(copied["run_leaf"]),
+        "copied_case_file": str(case_file),
+        "top_faces": face_rows,
+        "udf": {
+            "b_perm_m_per_s": B_PERM_M_PER_S,
+            "b_perm_source": "udfs/260822_RO_UDF.c:194",
+            "c_inlet_ref_mol_per_m3": C_INLET_REF_MOL_PER_M3,
+            "c_inlet_ref_source": "udfs/260822_RO_UDF.c:48",
+            "udm9": "(cm - cp_perm) / (C_INLET_REF - cp_perm)",
+            "cp_perm": "B_perm * cm / (Jw + B_perm)",
+        },
+        **report,
+    }
+    directory = output_directory(data_root, identity["geo_id"], identity["run_id"])
+    json_path, summary_path, faces_path = write_definition_report(
+        directory, payload, summary_rows, face_rows
+    )
+    print(format_definition_summary(summary_rows))
+    print(
+        "c_b_window_mol_m3="
+        f"{report['c_b_window_mol_m3']} salt_field={report['midplane_salt_field']}"
+    )
+    print(f"Wrote {json_path}")
+    print(f"Wrote {summary_path}")
+    print(f"Wrote {faces_path}")
+    return json_path, summary_path, faces_path
 
 
 def main(argv=None) -> int:
@@ -871,12 +1512,30 @@ def main(argv=None) -> int:
         required=True,
         help="Destination data root. Refuses C:/ro_data.",
     )
+    parser.add_argument(
+        "--cp-definition-check",
+        action="store_true",
+        help=(
+            "Run the udm-9 definition check on the already-copied leaf. "
+            "Does not read or copy C:/ro_data."
+        ),
+    )
     args = parser.parse_args(argv)
     data_root = resolve_data_root(args.data_root)
     identity = parse_production_run_leaf(args.source_run)
-    copied = copy_source_leaves(data_root, identity)
     run_config = load_run_config()
-    launch_and_diagnose(data_root, copied, identity, run_config)
+    if args.cp_definition_check:
+        copied = require_existing_copies(data_root, identity)
+        launch_definition_check(
+            data_root,
+            copied,
+            identity,
+            run_config,
+            load_post_config(),
+        )
+    else:
+        copied = copy_source_leaves(data_root, identity)
+        launch_and_diagnose(data_root, copied, identity, run_config)
     return 0
 
 
