@@ -143,7 +143,7 @@ class TestPositionalParse:
             clock="0:13:30",
             remaining=199,
         )
-        row = residual_mod.parse_residual_data_row(line)
+        row = residual_mod.parse_residual_data_row(line, HEADER_12)
         assert row is not None
         assert row["iter"] == 1
         assert row["continuity"] == pytest.approx(1.0)
@@ -152,16 +152,16 @@ class TestPositionalParse:
         assert row["remaining_iters"] == 199
 
     def test_reject_wrong_field_count(self, residual_mod):
-        assert residual_mod.parse_residual_data_row("1 1.0 2.0") is None
+        assert residual_mod.parse_residual_data_row("1 1.0 2.0", HEADER_12) is None
 
     def test_reject_non_clock_token(self, residual_mod):
         bad = make_row(1, 1e-6).replace("0:00:01", "not_a_clock")
-        assert residual_mod.parse_residual_data_row(bad) is None
+        assert residual_mod.parse_residual_data_row(bad, HEADER_12) is None
 
     def test_fourteen_token_row_locates_clock_from_the_right(self, residual_mod):
         line = FOURTEEN_TOKEN_2000
         assert len(line.split()) == 14
-        row = residual_mod.parse_residual_data_row(line)
+        row = residual_mod.parse_residual_data_row(line, HEADER_14)
         assert row is not None
         assert row["iter"] == 2000
         assert row["continuity"] == pytest.approx(1.5732e-02)
@@ -170,7 +170,7 @@ class TestPositionalParse:
         assert row["remaining_iters"] == 0
 
     def test_mesh_node_count_is_not_a_residual_row(self, residual_mod):
-        assert residual_mod.parse_residual_data_row(NODES_LINE) is None
+        assert residual_mod.parse_residual_data_row(NODES_LINE, HEADER_12) is None
         assert residual_mod.looks_like_residual_table_row(NODES_LINE) is False
         assert residual_mod.is_residual_header_line(
             "iteration 300:  continuity 3.5793e-02"
@@ -188,6 +188,32 @@ class TestTwoPhasePilotResidualLog:
         assert rows[-1]["continuity"] == pytest.approx(1.5732e-02)
         assert rows[0]["iter"] == 300
         assert rows[0]["continuity"] == pytest.approx(3.5793e-02)
+        laminar_keys = {
+            "iter",
+            "continuity",
+            "x-velocity",
+            "y-velocity",
+            "z-velocity",
+            "nacl",
+            "lmh",
+            "m_out",
+            "m_in",
+            "area_mem",
+            "clock",
+            "remaining_iters",
+        }
+        assert set(rows[0]) == laminar_keys
+        assert set(rows[-1]) == laminar_keys
+        assert rows[0]["nacl"] == pytest.approx(4.0e-03)
+        assert rows[0]["lmh"] == pytest.approx(100.0)
+        assert rows[0]["area_mem"] == pytest.approx(6.2423e-05)
+        assert rows[0]["clock"] == "0:13:30"
+        assert rows[0]["remaining_iters"] == 1700
+        assert rows[-1]["nacl"] == pytest.approx(4.0e-03)
+        assert rows[-1]["area_mem"] == pytest.approx(6.2423e-05)
+        assert rows[-1]["clock"] == "0:13:30"
+        assert rows[-1]["remaining_iters"] == 0
+        assert "k" not in rows[0] and "omega" not in rows[-1]
 
     def test_continuity_final_uses_iter_2000_not_300(self, tmp_path):
         from ro.convergence_quality import continuity_final_from_case_dir
@@ -239,6 +265,41 @@ class TestTwoPhasePilotResidualLog:
         )
         assert measured0["nacl_target_met"] is False
         assert measured0["nacl_shortfall_factor"] == pytest.approx(0.0)
+
+
+SST_HEADER = (
+    "iter  continuity  x-velocity  y-velocity  z-velocity  k  omega  nacl  "
+    "lmh  m_out  m_in  area_mem  time/iter"
+)
+SST_ROW = (
+    "10  1.0  2.0  3.0  4.0  5.0  6.0  7.0  "
+    "8.0  9.0  10.0  11.0  0:00:01  4"
+)
+
+
+class TestHeaderNamedResiduals:
+    def test_synthetic_sst_transcript_maps_columns_by_name(self, residual_mod):
+        text = SST_HEADER + "\n" + SST_ROW + "\n"
+        rows, detail = residual_mod.parse_residual_table(text)
+        assert "parsed_iters=1" in detail
+        row = rows[0]
+        assert row["iter"] == 10
+        assert row["continuity"] == pytest.approx(1.0)
+        assert row["x-velocity"] == pytest.approx(2.0)
+        assert row["y-velocity"] == pytest.approx(3.0)
+        assert row["z-velocity"] == pytest.approx(4.0)
+        assert row["k"] == pytest.approx(5.0)
+        assert row["omega"] == pytest.approx(6.0)
+        assert row["nacl"] == pytest.approx(7.0)
+        assert row["lmh"] == pytest.approx(8.0)
+        assert row["area_mem"] == pytest.approx(11.0)
+        assert row["clock"] == "0:00:01"
+        assert row["remaining_iters"] == 4
+
+    def test_unrecognised_header_layout_raises(self, residual_mod):
+        text = "iter continuity x-velocity time/iter\n1 1.0 2.0 0:00:01\n"
+        with pytest.raises(ValueError, match="unrecognised residual header"):
+            residual_mod.parse_residual_table(text)
 
 
 class TestHeaderPagingAndMalformed:

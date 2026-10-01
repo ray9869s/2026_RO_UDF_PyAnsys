@@ -48,6 +48,7 @@ RUN_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
     "run_label",
     "restart_from_case_file",
     "restart_from_data_file",
+    "turbulence_residual_target",
 })
 
 
@@ -278,6 +279,12 @@ mass_diffusivity = 2.0e-9
 udm_count = 13
 
 # Solver run settings
+# "laminar" leaves the template viscous model untouched.
+# "k-omega-sst" and "k-epsilon-realizable-ewt" are set after the mesh replace.
+# turbulence_residual_target has no module default: validate_for_solver
+# requires it only when viscous_model is not laminar, and rejects it when set
+# for laminar.
+viscous_model = "laminar"
 residual_target = 1e-7
 max_iterations = 2000
 run_calculation_enabled = True
@@ -730,6 +737,56 @@ def validate_for_meshing():
         )
 
 
+_VISCOUS_MODELS = frozenset({
+    "laminar",
+    "k-omega-sst",
+    "k-epsilon-realizable-ewt",
+})
+_VISCOUS_RUN_SUFFIX = {
+    "k-omega-sst": "_sst",
+    "k-epsilon-realizable-ewt": "_rke",
+}
+_LAMINAR_FORBIDDEN_RUN_SUFFIXES = ("_sst", "_rke")
+
+
+def _validate_viscous_model(run_id_value):
+    """Require a known viscous model and the matching run_id suffix."""
+    if viscous_model not in _VISCOUS_MODELS:
+        raise ValueError(
+            "run_config.py viscous_model must be one of "
+            f"{sorted(_VISCOUS_MODELS)}, got {viscous_model!r}."
+        )
+    target_is_set = "turbulence_residual_target" in globals()
+    if viscous_model == "laminar":
+        for suffix in _LAMINAR_FORBIDDEN_RUN_SUFFIXES:
+            if str(run_id_value).endswith(suffix):
+                raise ValueError(
+                    "laminar viscous_model forbids run_id suffix "
+                    f"{suffix!r}: {run_id_value!r}."
+                )
+        if target_is_set:
+            raise ValueError(
+                "turbulence_residual_target must not be set when "
+                "viscous_model is laminar."
+            )
+        return
+    suffix = _VISCOUS_RUN_SUFFIX[viscous_model]
+    if not str(run_id_value).endswith(suffix):
+        raise ValueError(
+            f"viscous_model {viscous_model!r} requires run_id to end with "
+            f"{suffix!r}, got {run_id_value!r}."
+        )
+    if not target_is_set:
+        raise ValueError(
+            "turbulence_residual_target is required when viscous_model "
+            f"is {viscous_model!r}."
+        )
+    _require_positive_number(
+        "turbulence_residual_target",
+        turbulence_residual_target,
+    )
+
+
 def validate_for_solver():
     """Validate settings required by solver automation."""
     validate_common()
@@ -749,6 +806,7 @@ def validate_for_solver():
         inlet_velocity_value,
         outlet_gauge_pressure,
     )
+    _validate_viscous_model(run_id)
 
     _require_set("template_case_file_name", template_case_file_name)
     _require_set("udf_source_file_name", udf_source_file_name)

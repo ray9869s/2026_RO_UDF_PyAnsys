@@ -466,6 +466,7 @@ class TestRunConfigOverrideAllowlist:
             "run_label",
             "restart_from_case_file",
             "restart_from_data_file",
+            "turbulence_residual_target",
         }
         assert admitted_config_fields <= allowed
         assert extensions <= allowed

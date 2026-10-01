@@ -191,6 +191,19 @@ _SOLVER_SETTING_FIELDS = (
     "operating_pressure",
 )
 
+# Filled after the solver session exists. Absent on manifests written before
+# that, and on manifests from before the viscous-model field existed.
+_SOLVER_SETTINGS_FILL_KEYS = (
+    "viscous_state",
+    "discretization_schemes",
+)
+
+_VISCOUS_MODEL_VALUES = frozenset({
+    "laminar",
+    "k-omega-sst",
+    "k-epsilon-realizable-ewt",
+})
+
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -538,6 +551,44 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _solver_settings_parameter_changed(existing: Any, incoming: Any) -> bool:
+    """True when solver_settings changed beyond a one-time viscous fill.
+
+    ``viscous_state`` and ``discretization_schemes`` may be added after the
+    RUNNING manifest is written. Every other solver_settings entry, including
+    ``viscous_model``, is a parameter and must stay equal.
+    """
+    if existing == incoming:
+        return False
+    if not isinstance(existing, Mapping) or not isinstance(incoming, Mapping):
+        return True
+    left = dict(existing)
+    right = dict(incoming)
+    for key in _SOLVER_SETTINGS_FILL_KEYS:
+        if key not in left:
+            right.pop(key, None)
+    return left != right
+
+
+def require_viscous_model(manifest: Mapping[str, Any]) -> str:
+    """Return solver_settings.viscous_model, or raise if it is missing.
+
+    Does not treat a missing field as laminar.
+    """
+    solver_settings = manifest.get("solver_settings") if isinstance(manifest, Mapping) else None
+    if not isinstance(solver_settings, Mapping) or "viscous_model" not in solver_settings:
+        raise ManifestError(
+            "Run manifest solver_settings is missing viscous_model."
+        )
+    value = solver_settings["viscous_model"]
+    if value not in _VISCOUS_MODEL_VALUES:
+        raise ManifestError(
+            "Run manifest solver_settings.viscous_model must be one of "
+            f"{sorted(_VISCOUS_MODEL_VALUES)}, got {value!r}."
+        )
+    return value
+
+
 def _changed_fields(
     existing: Mapping[str, Any],
     incoming: Mapping[str, Any],
@@ -768,9 +819,17 @@ def write_run_manifest(
     manifest_path = directory / "manifest.json"
     if manifest_path.exists():
         existing = read_run_manifest(directory)
-        changed = (
-            _changed_fields(existing, payload, _RUN_PARAMETER_FIELDS)
-            + _changed_after_fill(existing, payload, "u_mean_ms")
+        changed_list = []
+        for field in _RUN_PARAMETER_FIELDS:
+            if field == "solver_settings":
+                if _solver_settings_parameter_changed(
+                    existing[field], payload[field]
+                ):
+                    changed_list.append(field)
+            elif existing[field] != payload[field]:
+                changed_list.append(field)
+        changed = tuple(changed_list) + _changed_after_fill(
+            existing, payload, "u_mean_ms"
         )
         if changed:
             raise ManifestError(

@@ -29,6 +29,16 @@ SOURCE_GEO_ID = "P_p100_h30"
 SOURCE_MESH_ID = "max085_min006_cpg5_bl4_peel2"
 SOURCE_RUN_ID = "u0p2_p6M"
 SOURCE_FAMILY = "pillar"
+VISCOUS_MODELS = (
+    "laminar",
+    "k-omega-sst",
+    "k-epsilon-realizable-ewt",
+)
+_VISCOUS_RUN_SUFFIX = {
+    "laminar": "",
+    "k-omega-sst": "_sst",
+    "k-epsilon-realizable-ewt": "_rke",
+}
 
 REFERENCE_RUN_MANIFEST = Path(
     "C:/ro_data/runs/pillar/P_p100_h30/"
@@ -78,14 +88,68 @@ def mesh_leaf(data_root):
     )
 
 
-def run_leaf(data_root):
+def run_id_for_viscous_model(viscous_model):
+    """Laminar keeps u0p2_p6M. SST and realizable k-epsilon add _sst / _rke."""
+    try:
+        suffix = _VISCOUS_RUN_SUFFIX[viscous_model]
+    except KeyError as exc:
+        raise ValueError(
+            f"viscous_model must be one of {VISCOUS_MODELS}, got {viscous_model!r}."
+        ) from exc
+    return f"{SOURCE_RUN_ID}{suffix}"
+
+
+def apply_viscous_model_overrides(
+    overrides,
+    viscous_model,
+    turbulence_residual_target,
+):
+    """Return solver overrides. Laminar leaves the production case unchanged."""
+    if viscous_model == "laminar":
+        if turbulence_residual_target is not None:
+            raise ValueError(
+                "turbulence_residual_target is only allowed when "
+                "viscous_model is not laminar."
+            )
+        return overrides
+    if viscous_model not in _VISCOUS_RUN_SUFFIX:
+        raise ValueError(
+            f"viscous_model must be one of {VISCOUS_MODELS}, got {viscous_model!r}."
+        )
+    if turbulence_residual_target is None:
+        raise ValueError(
+            "turbulence_residual_target is required when viscous_model "
+            f"is {viscous_model!r}."
+        )
+    if isinstance(turbulence_residual_target, bool) or not isinstance(
+        turbulence_residual_target, (int, float)
+    ):
+        raise TypeError(
+            "turbulence_residual_target must be a positive number, "
+            f"got {turbulence_residual_target!r}."
+        )
+    if turbulence_residual_target <= 0:
+        raise ValueError(
+            "turbulence_residual_target must be positive, "
+            f"got {turbulence_residual_target!r}."
+        )
+    updated = dict(overrides)
+    run_id = run_id_for_viscous_model(viscous_model)
+    updated["run_id"] = run_id
+    updated["case_name"] = run_id
+    updated["viscous_model"] = viscous_model
+    updated["turbulence_residual_target"] = float(turbulence_residual_target)
+    return updated
+
+
+def run_leaf(data_root, run_id=SOURCE_RUN_ID):
     return (
         Path(data_root)
         / "runs"
         / SOURCE_FAMILY
         / SOURCE_GEO_ID
         / SOURCE_MESH_ID
-        / SOURCE_RUN_ID
+        / run_id
     )
 
 
@@ -333,7 +397,7 @@ def launch_solver(overrides, data_root, run_directory, *, max_retries, settle_s)
         run_directory=run_directory,
         geo_id=SOURCE_GEO_ID,
         mesh_id=SOURCE_MESH_ID,
-        run_id=SOURCE_RUN_ID,
+        run_id=overrides.get("run_id", SOURCE_RUN_ID),
         case_name=overrides["case_name"],
         max_retries=max_retries,
         settle_s=settle_s,
@@ -366,7 +430,7 @@ def extract_child_env(data_root, overrides, base_config):
     return mfbo_common.extract_child_env(data_root, overrides, base_config)
 
 
-def launch_extract(data_root, run_directory, case):
+def launch_extract(data_root, run_directory, case, *, run_id=None):
     """Run pyfluent_report_extract.py the way batch_report_extract.py does."""
     return mfbo_common.launch_extract(
         data_root,
@@ -374,7 +438,7 @@ def launch_extract(data_root, run_directory, case):
         case,
         geo_id=SOURCE_GEO_ID,
         mesh_id=SOURCE_MESH_ID,
-        run_id=SOURCE_RUN_ID,
+        run_id=SOURCE_RUN_ID if run_id is None else run_id,
     )
 
 
@@ -390,6 +454,18 @@ def build_parser():
         required=True,
         help="Absolute RO_DATA_ROOT for the child processes. Not C:/ro_data.",
     )
+    parser.add_argument(
+        "--viscous-model",
+        default="laminar",
+        choices=VISCOUS_MODELS,
+        help="Viscous model. Default laminar keeps run_id u0p2_p6M.",
+    )
+    parser.add_argument(
+        "--turbulence-residual-target",
+        type=float,
+        default=None,
+        help="Required when --viscous-model is not laminar.",
+    )
     return parser
 
 
@@ -397,8 +473,13 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     data_root = resolve_data_root(args.data_root)
     case, overrides, max_retries, settle_s = load_source_case()
+    overrides = apply_viscous_model_overrides(
+        overrides,
+        args.viscous_model,
+        args.turbulence_residual_target,
+    )
     mesh_directory = mesh_leaf(data_root)
-    run_directory = run_leaf(data_root)
+    run_directory = run_leaf(data_root, overrides.get("run_id", SOURCE_RUN_ID))
     require_mesh_leaf(mesh_directory)
     refuse_existing_run(run_directory)
 
@@ -419,7 +500,12 @@ def main(argv=None):
     if not batch_solver_sweep.solver_worker_succeeded(result.returncode):
         return int(result.returncode) if result.returncode else 1
 
-    extract_result = launch_extract(data_root, run_directory, case)
+    extract_result = launch_extract(
+        data_root,
+        run_directory,
+        case,
+        run_id=overrides.get("run_id", SOURCE_RUN_ID),
+    )
     if extract_result.returncode != 0:
         return int(extract_result.returncode) if extract_result.returncode else 1
 

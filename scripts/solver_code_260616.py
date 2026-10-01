@@ -19,6 +19,7 @@ from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
     read_mesh_manifest,
     read_run_manifest,
+    require_viscous_model,
     write_mesh_manifest,
     write_run_manifest,
 )
@@ -67,6 +68,174 @@ def _utc_now_string():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+VISCOUS_MODEL_LAMINAR = "laminar"
+VISCOUS_MODEL_SST = "k-omega-sst"
+VISCOUS_MODEL_RKE = "k-epsilon-realizable-ewt"
+TURBULENCE_EQUATIONS = {
+    VISCOUS_MODEL_LAMINAR: (),
+    VISCOUS_MODEL_SST: ("k", "omega"),
+    VISCOUS_MODEL_RKE: ("k", "epsilon"),
+}
+# solution.methods.spatial_discretization.discretization_scheme
+# settings_251.py: solution :67253, methods_1 :58542,
+# spatial_discretization :56357, discretization_scheme :56339.
+# Allowed scheme strings are not in the stub; the worker reads them at runtime.
+SECOND_ORDER_UPWIND = "second-order-upwind"
+TURBULENT_SCHMIDT_NUMBER_UNREADABLE = {
+    "value": None,
+    "reason": "not readable via Fluent 25.1 settings API",
+}
+
+
+def turbulence_residual_equations(viscous_model):
+    try:
+        return TURBULENCE_EQUATIONS[viscous_model]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown viscous_model {viscous_model!r}."
+        ) from exc
+
+
+def turbulent_schmidt_number_record(viscous_model):
+    if viscous_model == VISCOUS_MODEL_LAMINAR:
+        return None
+    return dict(TURBULENT_SCHMIDT_NUMBER_UNREADABLE)
+
+
+def _viscous_group_state(setup):
+    state = setup.models.viscous.get_state()
+    if not isinstance(state, dict) or "model" not in state:
+        raise RuntimeError(
+            "setup.models.viscous.get_state() did not return a model: "
+            f"{state!r}."
+        )
+    return state
+
+
+def assert_viscous_state(state, viscous_model):
+    """Raise unless the Fluent viscous state matches viscous_model."""
+    model = state.get("model")
+    if viscous_model == VISCOUS_MODEL_LAMINAR:
+        if model != "laminar":
+            raise RuntimeError(
+                "viscous model is "
+                f"{model!r}; cfg.viscous_model requires 'laminar'."
+            )
+        return
+    if viscous_model == VISCOUS_MODEL_SST:
+        if model != "k-omega" or state.get("k_omega_model") != "sst":
+            raise RuntimeError(
+                "viscous state does not match k-omega-sst: "
+                f"model={model!r}, k_omega_model={state.get('k_omega_model')!r}."
+            )
+        return
+    if viscous_model == VISCOUS_MODEL_RKE:
+        wall = state.get("near_wall_treatment")
+        wall_treatment = wall.get("wall_treatment") if isinstance(wall, dict) else None
+        if (
+            model != "k-epsilon"
+            or state.get("k_epsilon_model") != "realizable"
+            or wall_treatment != "enhanced-wall-treatment"
+        ):
+            raise RuntimeError(
+                "viscous state does not match k-epsilon-realizable-ewt: "
+                f"model={model!r}, "
+                f"k_epsilon_model={state.get('k_epsilon_model')!r}, "
+                f"wall_treatment={wall_treatment!r}."
+            )
+        return
+    raise ValueError(f"Unknown viscous_model {viscous_model!r}.")
+
+
+def configure_viscous_model(setup, viscous_model):
+    """Set a non-laminar model, or assert laminar and set nothing.
+
+    Returns the viscous state read back after the assert.
+    """
+    viscous = setup.models.viscous
+    if viscous_model == VISCOUS_MODEL_LAMINAR:
+        assert_viscous_state(_viscous_group_state(setup), viscous_model)
+        return viscous.get_state()
+    if viscous_model == VISCOUS_MODEL_SST:
+        viscous.model = "k-omega"
+        viscous.k_omega_model = "sst"
+    elif viscous_model == VISCOUS_MODEL_RKE:
+        viscous.model = "k-epsilon"
+        viscous.k_epsilon_model = "realizable"
+        viscous.near_wall_treatment.wall_treatment = "enhanced-wall-treatment"
+    else:
+        raise ValueError(f"Unknown viscous_model {viscous_model!r}.")
+    state = viscous.get_state()
+    assert_viscous_state(state, viscous_model)
+    return state
+
+
+def _discretization_schemes(solution):
+    return solution.methods.spatial_discretization.discretization_scheme
+
+
+def read_discretization_schemes(solution):
+    state = _discretization_schemes(solution).get_state()
+    if not isinstance(state, dict):
+        raise RuntimeError(
+            "discretization_scheme.get_state() did not return a dict: "
+            f"{state!r}."
+        )
+    return dict(state)
+
+
+def set_turbulence_schemes_second_order(solution, equation_names):
+    """Set turbulence equations to second-order upwind after an allowed-value assert."""
+    schemes = _discretization_schemes(solution)
+    current = read_discretization_schemes(solution)
+    for name in equation_names:
+        if name not in current:
+            raise RuntimeError(
+                f"Discretization scheme has no equation {name!r}. "
+                f"Available: {sorted(current)!r}."
+            )
+        child = schemes[name]
+        allowed = list(child.allowed_values())
+        assert SECOND_ORDER_UPWIND in allowed, (
+            f"{name} allowed discretization schemes {allowed!r} "
+            f"do not include {SECOND_ORDER_UPWIND!r}."
+        )
+        child.set_state(SECOND_ORDER_UPWIND)
+    return read_discretization_schemes(solution)
+
+
+def apply_viscous_setup(setup, solution, viscous_model, *, set_model):
+    """Fresh runs set the model. Restarts only assert it.
+
+    Non-laminar fresh runs then force turbulence discretisation to
+    second-order upwind. Every path reads all equation schemes back.
+    """
+    if set_model:
+        state = configure_viscous_model(setup, viscous_model)
+        if viscous_model != VISCOUS_MODEL_LAMINAR:
+            set_turbulence_schemes_second_order(
+                solution,
+                turbulence_residual_equations(viscous_model),
+            )
+    else:
+        state = _viscous_group_state(setup)
+        assert_viscous_state(state, viscous_model)
+    return state, read_discretization_schemes(solution)
+
+
+def stamp_viscous_setup_on_run_manifest(
+    run_directory,
+    viscous_state,
+    discretization_schemes,
+):
+    payload = read_run_manifest(run_directory)
+    settings = dict(payload["solver_settings"])
+    settings["viscous_state"] = viscous_state
+    settings["discretization_schemes"] = discretization_schemes
+    payload["solver_settings"] = settings
+    return write_run_manifest(run_directory, payload)
+
+
 def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_attempt_id=None):
     inlet_bc_type = (
         "parabolic" if bool(cfg.use_inlet_velocity_profile) else "plug"
@@ -92,6 +261,10 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
             "max_iterations": cfg.max_iterations,
             "residual_target": cfg.residual_target,
             "operating_pressure": cfg.operating_pressure,
+            "viscous_model": cfg.viscous_model,
+            "turbulent_schmidt_number": turbulent_schmidt_number_record(
+                cfg.viscous_model
+            ),
         },
         "stop_reason": "RUNNING",
         "created_utc": created_utc or _utc_now_string(),
@@ -134,6 +307,7 @@ def write_worker_run_manifest(
         mesh_manifest,
         created_utc=created_utc,
     )
+    require_viscous_model(payload)
     require_campaign_membrane_blocked_area_frac(payload, kind="Run")
     require_mesh_run_blocked_frac_agree(mesh_manifest, payload)
     require_run_id_matches_operating_point(
@@ -434,6 +608,13 @@ if __name__ == "__main__":
     }
 
     # Solver run settings
+    viscous_model = cfg.viscous_model
+    turbulence_equations = turbulence_residual_equations(viscous_model)
+    turbulence_residual_target = (
+        None
+        if viscous_model == VISCOUS_MODEL_LAMINAR
+        else cfg.turbulence_residual_target
+    )
     residual_target = cfg.residual_target
     max_iterations = cfg.max_iterations
     run_calculation_enabled = cfg.run_calculation_enabled
@@ -2683,12 +2864,8 @@ def update_transport_report_definitions_for_current_zones(
     )
 
 
-def set_residual_convergence_check(solution, species_name, enable):
-    """Enable or disable residual convergence checks while keeping residual monitors on."""
-    residual_equations_state = solution.monitor.residual.equations.get_state()
-    available_residual_equations = list(residual_equations_state.keys())
-
-    target_residual_equations = [
+def laminar_residual_equations(species_name):
+    return [
         "continuity",
         "x-velocity",
         "y-velocity",
@@ -2696,8 +2873,27 @@ def set_residual_convergence_check(solution, species_name, enable):
         species_name,
     ]
 
+
+def set_residual_convergence_check(
+    solution,
+    species_name,
+    enable,
+    turbulence_equations=(),
+):
+    """Enable or disable residual convergence checks while keeping residual monitors on."""
+    residual_equations_state = solution.monitor.residual.equations.get_state()
+    available_residual_equations = list(residual_equations_state.keys())
+
+    target_residual_equations = laminar_residual_equations(species_name)
+    target_residual_equations.extend(turbulence_equations)
+
     for eq in target_residual_equations:
         if eq not in available_residual_equations:
+            if eq in turbulence_equations:
+                raise RuntimeError(
+                    f"Turbulence residual equation not found: {eq}. "
+                    f"Available: {available_residual_equations!r}."
+                )
             print(f"Residual equation not found. Skipping convergence-check update: {eq}")
             continue
 
@@ -2706,6 +2902,73 @@ def set_residual_convergence_check(solution, species_name, enable):
         res_eq.check_convergence = enable
 
     print(f"Residual convergence check set to: {enable}")
+
+
+def apply_residual_criteria(
+    solution,
+    species_name,
+    residual_target,
+    turbulence_equations=(),
+    turbulence_residual_target=None,
+):
+    """Set residual monitors. Laminar keeps the five flow/species equations.
+
+    Non-laminar appends turbulence equations at turbulence_residual_target
+    with check_convergence on.
+    """
+    residual_equations_state = solution.monitor.residual.equations.get_state()
+    available_residual_equations = list(residual_equations_state.keys())
+
+    print("Available residual equations:")
+    print(available_residual_equations)
+
+    target_residual_equations = laminar_residual_equations(species_name)
+    if turbulence_equations:
+        target_residual_equations.extend(turbulence_equations)
+
+    print("Target residual equations:")
+    print(target_residual_equations)
+
+    for eq in target_residual_equations:
+        if eq in available_residual_equations:
+            res_eq = solution.monitor.residual.equations[eq]
+
+            print(f"\nSetting residual equation: {eq}")
+            print("Before:")
+            print(res_eq.get_state())
+
+            res_eq.monitor = True
+            res_eq.check_convergence = True
+
+            current_state = res_eq.get_state()
+            criterion = residual_target
+            if eq in turbulence_equations:
+                criterion = turbulence_residual_target
+
+            if "absolute_criteria" in current_state:
+                res_eq.absolute_criteria = criterion
+            elif "relative_criteria" in current_state:
+                res_eq.relative_criteria = criterion
+            else:
+                raise AttributeError(
+                    f"No residual criteria field found for equation '{eq}'. "
+                    f"Current state: {current_state}"
+                )
+
+            print("After:")
+            print(res_eq.get_state())
+            print(f"Residual criterion set: {eq} = {criterion}")
+
+        elif eq in turbulence_equations:
+            raise RuntimeError(
+                f"Turbulence residual equation not found: {eq}. "
+                f"Available: {available_residual_equations!r}."
+            )
+        else:
+            print(f"Residual equation not found. Skipping: {eq}")
+
+    print("\nResidual equations state after setting:")
+    print(solution.monitor.residual.equations.get_state())
 
 
 def _list_named_object_names_best_effort(named_object):
@@ -4055,6 +4318,18 @@ if __name__ == "__main__":
 
             print("Mesh replaced successfully.", flush=True)
 
+            viscous_state, discretization_schemes = apply_viscous_setup(
+                setup,
+                solution,
+                viscous_model,
+                set_model=True,
+            )
+            stamp_viscous_setup_on_run_manifest(
+                case_path,
+                viscous_state,
+                discretization_schemes,
+            )
+
             solver.execute_tui(r"/mesh/check")
             print("Solver-side mesh check completed.")
 
@@ -4109,6 +4384,18 @@ if __name__ == "__main__":
                 file_name=as_fluent_path(staged_restart_case_file)
             )
             print("Restart case loaded successfully.", flush=True)
+
+            viscous_state, discretization_schemes = apply_viscous_setup(
+                setup,
+                solution,
+                viscous_model,
+                set_model=False,
+            )
+            stamp_viscous_setup_on_run_manifest(
+                case_path,
+                viscous_state,
+                discretization_schemes,
+            )
 
             print("Reading restart data...", flush=True)
             solver.settings.file.read_data(
@@ -4786,55 +5073,13 @@ if __name__ == "__main__":
         # ##### [15] Residual Settings #####
         # ======================================================
 
-        residual_equations_state = solution.monitor.residual.equations.get_state()
-        available_residual_equations = list(residual_equations_state.keys())
-
-        print("Available residual equations:")
-        print(available_residual_equations)
-
-        target_residual_equations = [
-            "continuity",
-            "x-velocity",
-            "y-velocity",
-            "z-velocity",
+        apply_residual_criteria(
+            solution,
             species_name,
-        ]
-
-        print("Target residual equations:")
-        print(target_residual_equations)
-
-        for eq in target_residual_equations:
-            if eq in available_residual_equations:
-                res_eq = solution.monitor.residual.equations[eq]
-
-                print(f"\nSetting residual equation: {eq}")
-                print("Before:")
-                print(res_eq.get_state())
-
-                res_eq.monitor = True
-                res_eq.check_convergence = True
-
-                current_state = res_eq.get_state()
-
-                if "absolute_criteria" in current_state:
-                    res_eq.absolute_criteria = residual_target
-                elif "relative_criteria" in current_state:
-                    res_eq.relative_criteria = residual_target
-                else:
-                    raise AttributeError(
-                        f"No residual criteria field found for equation '{eq}'. "
-                        f"Current state: {current_state}"
-                    )
-
-                print("After:")
-                print(res_eq.get_state())
-                print(f"Residual criterion set: {eq} = {residual_target}")
-
-            else:
-                print(f"Residual equation not found. Skipping: {eq}")
-
-        print("\nResidual equations state after setting:")
-        print(solution.monitor.residual.equations.get_state())
+            residual_target,
+            turbulence_equations,
+            turbulence_residual_target,
+        )
 
         qoi_convergence_object_names = []
         qoi_stop_report_file_paths = []
@@ -5007,6 +5252,7 @@ if __name__ == "__main__":
                         solution=solution,
                         species_name=species_name,
                         enable=False,
+                        turbulence_equations=turbulence_equations,
                     )
                     for object_name in qoi_convergence_object_names:
                         set_qoi_convergence_condition_active(
@@ -5034,6 +5280,7 @@ if __name__ == "__main__":
                         solution=solution,
                         species_name=species_name,
                         enable=True,
+                        turbulence_equations=turbulence_equations,
                     )
                     for object_name in qoi_convergence_object_names:
                         set_qoi_convergence_condition_active(
@@ -5055,6 +5302,7 @@ if __name__ == "__main__":
                         solution=solution,
                         species_name=species_name,
                         enable=True,
+                        turbulence_equations=turbulence_equations,
                     )
                     for object_name in qoi_convergence_object_names:
                         set_qoi_convergence_condition_active(

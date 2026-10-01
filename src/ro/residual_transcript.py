@@ -77,6 +77,12 @@ def read_text_replace(path: Path) -> tuple[Optional[str], Optional[str]]:
         return None, f"{type(exc).__name__}: {exc}"
 
 
+REQUIRED_RESIDUAL_COLUMNS = RESIDUAL_EQS
+REQUIRED_MONITOR_COLUMNS = ("lmh", "m_out", "m_in", "area_mem")
+TURBULENCE_RESIDUAL_COLUMNS = ("k", "omega", "epsilon")
+_RESIDUAL_HEADER_CLOCK = "time/iter"
+
+
 def is_residual_header_line(line: str) -> bool:
     """True only for a Fluent residual table header, not 'iteration N:' lines."""
     tokens = line.split()
@@ -86,6 +92,28 @@ def is_residual_header_line(line: str) -> bool:
     if lowered[0] != "iter":
         return False
     return "continuity" in lowered
+
+
+def require_residual_header_layout(line: str) -> list[str]:
+    """Return header column names, or raise if the layout is not recognised.
+
+    A recognised layout starts with ``iter``, ends with ``time/iter``, and
+    names the laminar residual and monitor columns. Extra named columns
+    (turbulence residuals, extra monitors) are kept in header order.
+    """
+    if not is_residual_header_line(line):
+        raise ValueError(f"unrecognised residual header layout: {line!r}")
+    names = [token.lower() for token in line.split()]
+    if names[-1] != _RESIDUAL_HEADER_CLOCK or len(names) != len(set(names)):
+        raise ValueError(f"unrecognised residual header layout: {line!r}")
+    required = REQUIRED_RESIDUAL_COLUMNS + REQUIRED_MONITOR_COLUMNS
+    missing = [name for name in required if name not in names]
+    if missing:
+        raise ValueError(
+            "unrecognised residual header layout: "
+            f"missing {missing!r} in {line!r}"
+        )
+    return names
 
 
 def residual_iteration_and_equations(tokens: list[str]) -> Optional[int]:
@@ -133,43 +161,51 @@ def _clock_and_remaining_from_right(
     return None, None
 
 
-def parse_residual_data_row(line: str) -> Optional[dict[str, Any]]:
-    """Parse a Fluent residual/monitor row with a trailing time/iter clock.
+def parse_residual_data_row(
+    line: str,
+    header: str | list[str],
+) -> Optional[dict[str, Any]]:
+    """Parse a Fluent residual/monitor row using header column names.
 
-    Layout: iter, 5 residuals, >=4 numeric monitors, clock, optional remaining
-    int. Extra monitors are accepted; clock and remaining are found from the
-    right. Rejects short rows, mesh counts, and naive zip layouts.
+    Clock and optional remaining-iters are still found from the right.
+    Columns are read by the header names, not by fixed positions. Extra
+    monitor columns are accepted and not stored. Turbulence residual
+    columns (k, omega, epsilon) are stored when the header names them.
     """
+    if isinstance(header, str):
+        names = require_residual_header_layout(header)
+    else:
+        names = [str(name).lower() for name in header]
     tokens = line.split()
-    iteration = residual_iteration_and_equations(tokens)
-    if iteration is None:
+    try:
+        iteration = int(tokens[0])
+    except (ValueError, IndexError):
         return None
     clock_idx, remaining = _clock_and_remaining_from_right(tokens)
     if clock_idx is None:
         return None
-    if clock_idx < 10:
+    value_names = names[:-1]
+    if tokens[:clock_idx] and len(tokens[:clock_idx]) != len(value_names):
         return None
+    if len(value_names) != len(tokens[:clock_idx]):
+        return None
+    parsed: dict[str, float] = {}
     try:
-        residuals = [float(tokens[i]) for i in range(1, 6)]
-        monitors = [float(tokens[i]) for i in range(6, clock_idx)]
+        for name, token in zip(value_names[1:], tokens[1:clock_idx]):
+            parsed[name] = float(token)
     except ValueError:
         return None
-    if len(monitors) < 4:
-        return None
-    return {
-        "iter": iteration,
-        "continuity": residuals[0],
-        "x-velocity": residuals[1],
-        "y-velocity": residuals[2],
-        "z-velocity": residuals[3],
-        "nacl": residuals[4],
-        "lmh": monitors[0],
-        "m_out": monitors[1],
-        "m_in": monitors[2],
-        "area_mem": monitors[3],
-        "clock": tokens[clock_idx],
-        "remaining_iters": remaining,
-    }
+    row: dict[str, Any] = {"iter": iteration}
+    for name in REQUIRED_RESIDUAL_COLUMNS + REQUIRED_MONITOR_COLUMNS:
+        if name not in parsed:
+            return None
+        row[name] = parsed[name]
+    for name in TURBULENCE_RESIDUAL_COLUMNS:
+        if name in parsed:
+            row[name] = parsed[name]
+    row["clock"] = tokens[clock_idx]
+    row["remaining_iters"] = remaining
+    return row
 
 
 def parse_residual_table(text: str) -> tuple[list[dict[str, Any]], str]:
@@ -181,6 +217,7 @@ def parse_residual_table(text: str) -> tuple[list[dict[str, Any]], str]:
     """
     by_iter: dict[int, dict[str, Any]] = {}
     saw_header = False
+    header_names: list[str] = []
     skipped_malformed = 0
     max_unparsed_residual_iter: Optional[int] = None
     for raw in text.splitlines():
@@ -188,13 +225,14 @@ def parse_residual_table(text: str) -> tuple[list[dict[str, Any]], str]:
         if not line:
             continue
         if is_residual_header_line(line):
+            header_names = require_residual_header_layout(line)
             saw_header = True
             continue
         if not saw_header:
             continue
         if not line[0].isdigit():
             continue
-        row = parse_residual_data_row(line)
+        row = parse_residual_data_row(line, header_names)
         if row is None:
             skipped_malformed += 1
             unparsed_iter = residual_iteration_and_equations(line.split())
