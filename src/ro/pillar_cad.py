@@ -11,7 +11,9 @@ import math
 import sys
 from pathlib import Path
 
+from ro.geometry_registry import pillar_registry_entry, require_pillar_cad_geo_id
 from ro.paths import project_root
+from ro.solver_common import sha256_file
 
 # Channel height is not stored in configs/batch_config.py.
 CHANNEL_HEIGHT_M = 0.770e-3
@@ -106,6 +108,7 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
         raise ValueError(
             f"d_h_mm must be smaller than d_p_mm, got d_h_mm={d_h_mm}, d_p_mm={d_p_mm}."
         )
+    require_pillar_cad_geo_id(geo_id, d_p_mm, d_h_mm, d_f_mm)
 
     layout = _layout_from_config(d_f_mm * MM_TO_M)
     d_p_m = d_p_mm * MM_TO_M
@@ -148,6 +151,10 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
             line_count=line_count,
             counts=counts,
             backend_version=str(modeler.client.backend_version),
+            registry=pillar_registry_entry(
+                geo_id, d_p_m, d_h_m, d_f_mm * MM_TO_M
+            ),
+            pmdb_sha256=sha256_file(paths["pmdb"]),
         )
         paths["meta"].write_text(
             json.dumps(meta, indent=2) + "\n",
@@ -676,7 +683,7 @@ def _required_labels(d_h_m):
     return labels
 
 
-def _meta_payload(*, geo_id, d_p_mm, d_h_mm, d_f_mm, layout, d_p_m, d_h_m, nodes, line_count, counts, backend_version):
+def _meta_payload(*, geo_id, d_p_mm, d_h_mm, d_f_mm, layout, d_p_m, d_h_m, nodes, line_count, counts, backend_version, registry, pmdb_sha256):
     return {
         "geo_id": geo_id,
         "inputs": {
@@ -706,6 +713,8 @@ def _meta_payload(*, geo_id, d_p_mm, d_h_mm, d_f_mm, layout, d_p_m, d_h_m, nodes
         "face_counts": counts,
         "ansys_geometry_core_version": pyansys_geometry.__version__,
         "backend_version": backend_version,
+        "registry": registry,
+        "pmdb_sha256": pmdb_sha256,
     }
 
 

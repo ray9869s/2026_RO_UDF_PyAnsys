@@ -45,7 +45,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from ro.campaign_geo_ids import family_for_geo_id, validate_campaign_geo_id
+from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
 from ro.manifest_validation import (
     validate_mesh_geometry_fields,
     validate_run_geometry_fields,
@@ -410,8 +410,8 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
             raise ManifestError("Mesh manifest inlet_profile_G must be positive.")
 
     geo_id = payload["geo_id"]
-    validate_campaign_geo_id(geo_id)
-    expected_family = family_for_geo_id(geo_id)
+    validate_known_geo_id(geo_id)
+    expected_family = family_for_known_geo_id(geo_id)
     if payload["family"] != expected_family:
         raise ManifestError(
             f"Mesh manifest family={payload['family']!r} does not match "
@@ -472,8 +472,8 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
         )
 
     geo_id = payload["geo_id"]
-    validate_campaign_geo_id(geo_id)
-    expected_family = family_for_geo_id(geo_id)
+    validate_known_geo_id(geo_id)
+    expected_family = family_for_known_geo_id(geo_id)
     if payload["family"] != expected_family:
         raise ManifestError(
             f"Run manifest family={payload['family']!r} does not match "

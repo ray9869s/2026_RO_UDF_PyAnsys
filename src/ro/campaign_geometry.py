@@ -352,42 +352,31 @@ def _ml_geometry_entry(geo_id: str) -> dict[str, Any]:
     }
 
 
+def _campaign_pillar_dp_dh_m(geo_id: str) -> tuple[float, float]:
+    """P_p80_h15 -> (0.0008 m, 0.00015 m). Tokens are hundredths of a millimetre."""
+    _family, dp_token, dh_token = geo_id.split("_")
+    d_p_mm = int(dp_token[1:]) / 100.0
+    d_h_mm = int(dh_token[1:]) / 100.0
+    return d_p_mm * 1.0e-3, d_h_mm * 1.0e-3
+
+
 def _pillar_geometry_entry(geo_id: str) -> dict[str, Any]:
+    """Campaign pillar entry. Blocked fraction and hole flag stay on the tables."""
+    from ro.geometry_registry import pillar_registry_entry
+
     has_hole = _PILLAR_HAS_HOLE[geo_id]
     blocked_geometric = _PILLAR_BLOCKED_GEOMETRIC[_pillar_dp_token(geo_id)]
+    d_p_m, d_h_m = _campaign_pillar_dp_dh_m(geo_id)
+    if not has_hole:
+        d_h_m = 0.0
+    entry = pillar_registry_entry(geo_id, d_p_m, d_h_m, _FILAMENT_D_M)
+    entry["membrane_blocked_area_frac_geometric"] = blocked_geometric
     zones = list(_PILLAR_SPACER_WALL_ZONES_BASE)
     if has_hole:
         zones.append("wall_spacer_hole")
     zones.append(_PILLAR_SPACER_WALL_BUFFER)
-    return {
-        "spacing_code": geo_id,
-        "attack_angle_deg": 0.0,
-        "filament_d_m": _FILAMENT_D_M,
-        "bridge_radius_m": 0.0,
-        "overlap_m": 0.0,
-        "n_active_cells": 7,
-        "cell_length_x_m": _PILLAR_UNIT_CELL_M,
-        "Sigma_d_nominal_m": None,
-        "membrane_trim_m": 0.0,
-        # Flat-ended pillars: cylindrical contact-band width is not applicable.
-        "membrane_contact_width_m": None,
-        "membrane_blocked_area_frac": _MEMBRANE_BLOCKED_AREA_FRAC_CONSUMED,
-        "membrane_blocked_area_frac_geometric": blocked_geometric,
-        "porosity_eps": None,
-        "periodic_shift_y_m": _PILLAR_UNIT_CELL_M,
-        "periodic_shift_y_source": "explicit",
-        "layer_angles_deg": None,
-        "layer_diameters_m": None,
-        "layer_axis_z_m": None,
-        "joint_sphere_z_m": None,
-        "joint_sphere_R_m": None,
-        "joint_sphere_R_ratio": None,
-        "joint_sphere_r_min_m": None,
-        "joint_sphere_count": 0,
-        "curvature_margin": None,
-        "spacer_wall_zones": zones,
-        "needs_lead_recheck": True,
-    }
+    entry["spacer_wall_zones"] = zones
+    return entry
 
 
 def _sinusoidal_geometry_entry(geo_id: str) -> dict[str, Any]:
@@ -463,8 +452,8 @@ def _reference_geometry_entry() -> dict[str, Any]:
     }
 
 
-def geometry_parameters_for_geo_id(geo_id: str) -> dict[str, Any]:
-    """Return a deep-copyable geometry parameter dict for manifest migration."""
+def _campaign_geometry_parameters(geo_id: str) -> dict[str, Any]:
+    """Campaign-whitelist geometry. MFBO ids are resolved elsewhere."""
     if geo_id not in CAMPAIGN_GEO_IDS:
         raise ValueError(f"Unknown campaign geo_id: {geo_id!r}.")
     if geo_id in _DIAMOND_LAYOUTS:
@@ -478,6 +467,13 @@ def geometry_parameters_for_geo_id(geo_id: str) -> dict[str, Any]:
     if geo_id == "REF_empty":
         return _reference_geometry_entry()
     raise ValueError(f"No geometry registry entry for geo_id {geo_id!r}.")
+
+
+def geometry_parameters_for_geo_id(geo_id: str) -> dict[str, Any]:
+    """Return a deep-copyable geometry parameter dict for manifest migration."""
+    from ro.geometry_registry import resolve_geometry_parameters
+
+    return resolve_geometry_parameters(geo_id)
 
 
 def merge_geometry_into_mesh_manifest(

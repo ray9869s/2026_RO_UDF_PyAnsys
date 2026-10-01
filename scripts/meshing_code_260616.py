@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from ro.domain_layout import DomainLayout, require_layout_matches_measured_x_extent
+from ro.geometry_registry import require_mfp_geometry_sha256
 from ro.manifest import (
     assert_mesh_file_overwrite_allowed,
     write_mesh_manifest,
@@ -428,6 +429,7 @@ if __name__ == "__main__":
 
     if not os.path.isfile(geo_full_path):
         raise FileNotFoundError(f"Geometry file not found: {geo_full_path}")
+    require_mfp_geometry_sha256(cfg.geo_id, geo_full_path)
 
     if not os.path.exists(case_path):
         os.makedirs(case_path)

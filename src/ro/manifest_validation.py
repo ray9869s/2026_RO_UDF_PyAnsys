@@ -404,7 +404,28 @@ def validate_spacer_wall_zones(
         )
 
     # Pillar hole-zone boolean guards (h00 has no bore; h15/h30 do).
+    # MFP ids take bore presence from the resolved registry entry.
     has_hole_declared = "wall_spacer_hole" in declared_set
+    from ro.geometry_registry import is_mfbo_pillar_geo_id, resolve_geometry_parameters
+
+    if is_mfbo_pillar_geo_id(geo_id):
+        expects_hole = (
+            "wall_spacer_hole"
+            in resolve_geometry_parameters(geo_id)["spacer_wall_zones"]
+        )
+        if expects_hole and not has_hole_declared:
+            raise ManifestValidationError(
+                f"{kind} manifest {geo_id!r} registry includes wall_spacer_hole "
+                "but the declaration lacks wall_spacer_hole "
+                "(bore cut silently failed)."
+            )
+        if has_hole_declared and not expects_hole:
+            raise ManifestValidationError(
+                f"{kind} manifest {geo_id!r} registry has no bore but declares "
+                "wall_spacer_hole (boolean misapplied)."
+            )
+        return
+
     is_h00 = "_h00" in geo_id and geo_id.startswith("P_")
     is_bored = (
         geo_id.startswith("P_")
