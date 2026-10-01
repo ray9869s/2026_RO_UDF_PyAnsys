@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, MutableMapping, Optional
 
+from ro.manifest import require_viscous_model
 from ro.cp_metrics import (
     CP_SCALAR_RESCALE_GUARD_THRESHOLD,
     CP_SPREAD_AREA_QUANTILE_HI,
@@ -2630,6 +2631,190 @@ def summary_rows_to_wide_record(summary_rows):
             raise ValueError(f"Duplicate summary metric: {metric!r}.")
         record[metric] = row.get("value")
     return record
+
+
+# RANS diagnostics. Laminar and legacy extracts write these columns as null
+# and do not query Fluent. They are not load-bearing.
+TURBULENCE_SCALAR_FIELDS = (
+    "viscosity-ratio",
+    "diff-nacl",
+    "diffl-nacl",
+)
+RANS_VOLUME_REDUCTIONS = (
+    ("viscosity_ratio_max", "volume-max", "viscosity-ratio"),
+    ("viscosity_ratio_volavg", "volume-average", "viscosity-ratio"),
+    ("diff_nacl_max", "volume-max", "diff-nacl"),
+    ("diff_nacl_volavg", "volume-average", "diff-nacl"),
+    ("diffl_nacl_min", "volume-min", "diffl-nacl"),
+    ("diffl_nacl_max", "volume-max", "diffl-nacl"),
+)
+TURBULENCE_METRIC_NAMES = (
+    "turbulence_metrics_status",
+    "viscosity_ratio_max",
+    "viscosity_ratio_volavg",
+    "diff_nacl_max",
+    "diff_nacl_volavg",
+    "diffl_nacl_min",
+    "diffl_nacl_max",
+    "diff_ratio_max",
+    "diff_ratio_volavg",
+)
+_DIFFL_RELATIVE_TOLERANCE = 1e-9
+_TURBULENCE_METRIC_UNITS = {
+    "turbulence_metrics_status": "-",
+    "viscosity_ratio_max": "-",
+    "viscosity_ratio_volavg": "-",
+    "diff_nacl_max": "m2/s",
+    "diff_nacl_volavg": "m2/s",
+    "diffl_nacl_min": "m2/s",
+    "diffl_nacl_max": "m2/s",
+    "diff_ratio_max": "-",
+    "diff_ratio_volavg": "-",
+}
+
+
+def turbulence_extract_plan(manifest: Mapping[str, Any]) -> str:
+    """Return how extraction should fill the RANS columns.
+
+    ``legacy_manifest_no_viscous_model`` and ``laminar`` write null metrics.
+    ``compute`` is the non-laminar path. ``require_viscous_model`` is used
+    only when ``solver_settings.viscous_model`` is present.
+    """
+    solver_settings = manifest.get("solver_settings") if isinstance(manifest, Mapping) else None
+    if not isinstance(solver_settings, Mapping) or "viscous_model" not in solver_settings:
+        return "legacy_manifest_no_viscous_model"
+    model = require_viscous_model(manifest)
+    if model == "laminar":
+        return "laminar"
+    return "compute"
+
+
+def null_turbulence_metrics(status: str) -> dict[str, Any]:
+    """Status string plus null reductions. Does not query Fluent."""
+    if status not in ("legacy_manifest_no_viscous_model", "laminar"):
+        raise ValueError(
+            "null turbulence metrics are only for laminar or legacy manifests, "
+            f"got {status!r}."
+        )
+    metrics: dict[str, Any] = {name: None for name in TURBULENCE_METRIC_NAMES}
+    metrics["turbulence_metrics_status"] = status
+    return metrics
+
+
+def scalar_field_names(info: Any) -> set[str]:
+    """Collect scalar field names from ``get_scalar_fields_info()``."""
+    names: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            names.add(value)
+            return
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    names.add(key)
+                walk(item)
+            return
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                walk(item)
+
+    walk(info)
+    return names
+
+
+def require_turbulence_scalar_fields(names: Iterable[str]) -> None:
+    """Raise if a RANS field is absent from the session scalar field list."""
+    present = set(names)
+    missing = [name for name in TURBULENCE_SCALAR_FIELDS if name not in present]
+    if missing:
+        raise RuntimeError(
+            "RANS scalar fields missing from the session scalar field list: "
+            + ", ".join(missing)
+            + "."
+        )
+
+
+def _finite_number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"{label} must be a finite number, got {value!r}.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise RuntimeError(f"{label} must be a finite number, got {value!r}.")
+    return number
+
+
+def assert_diffl_matches_mass_diffusivity(
+    diffl_nacl_min: Any,
+    diffl_nacl_max: Any,
+    mass_diffusivity: Any,
+    *,
+    relative_tolerance: float = _DIFFL_RELATIVE_TOLERANCE,
+) -> None:
+    """Raise unless both laminar-diffusivity reductions match run_config."""
+    target = _finite_number(mass_diffusivity, "mass_diffusivity")
+    if target == 0.0:
+        raise RuntimeError("mass_diffusivity must be non-zero.")
+    for label, value in (
+        ("diffl_nacl_min", diffl_nacl_min),
+        ("diffl_nacl_max", diffl_nacl_max),
+    ):
+        number = _finite_number(value, label)
+        relative = abs(number - target) / abs(target)
+        if relative > relative_tolerance:
+            raise RuntimeError(
+                f"{label}={number!r} differs from run_config.mass_diffusivity "
+                f"{target!r} by relative {relative!r} "
+                f"(tolerance {relative_tolerance})."
+            )
+
+
+def turbulence_metrics_from_reductions(
+    *,
+    viscosity_ratio_max: Any,
+    viscosity_ratio_volavg: Any,
+    diff_nacl_max: Any,
+    diff_nacl_volavg: Any,
+    diffl_nacl_min: Any,
+    diffl_nacl_max: Any,
+    mass_diffusivity: Any,
+) -> dict[str, Any]:
+    """Build the computed RANS row after the laminar-diffusivity check."""
+    assert_diffl_matches_mass_diffusivity(
+        diffl_nacl_min,
+        diffl_nacl_max,
+        mass_diffusivity,
+    )
+    target = float(mass_diffusivity)
+    diff_max = _finite_number(diff_nacl_max, "diff_nacl_max")
+    diff_avg = _finite_number(diff_nacl_volavg, "diff_nacl_volavg")
+    return {
+        "turbulence_metrics_status": "computed",
+        "viscosity_ratio_max": _finite_number(
+            viscosity_ratio_max, "viscosity_ratio_max"
+        ),
+        "viscosity_ratio_volavg": _finite_number(
+            viscosity_ratio_volavg, "viscosity_ratio_volavg"
+        ),
+        "diff_nacl_max": diff_max,
+        "diff_nacl_volavg": diff_avg,
+        "diffl_nacl_min": _finite_number(diffl_nacl_min, "diffl_nacl_min"),
+        "diffl_nacl_max": _finite_number(diffl_nacl_max, "diffl_nacl_max"),
+        "diff_ratio_max": diff_max / target,
+        "diff_ratio_volavg": diff_avg / target,
+    }
+
+
+def turbulence_summary_rows(metrics: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Long-format rows appended to the summary. Missing keys stay null."""
+    return [
+        {
+            "metric": name,
+            "value": metrics.get(name),
+            "unit": _TURBULENCE_METRIC_UNITS[name],
+        }
+        for name in TURBULENCE_METRIC_NAMES
+    ]
 
 
 def concentration_range_diagnostics(

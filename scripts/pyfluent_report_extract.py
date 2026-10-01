@@ -83,6 +83,13 @@ from ro.fluent_report_helpers import (  # noqa: E402
     resolve_evaluation_window_from_config,
     resolve_scoring_layout_from_config,
     summary_rows_to_wide_record,
+    null_turbulence_metrics,
+    require_turbulence_scalar_fields,
+    scalar_field_names,
+    turbulence_extract_plan,
+    turbulence_metrics_from_reductions,
+    turbulence_summary_rows,
+    RANS_VOLUME_REDUCTIONS,
     unit_cell_areaavg_molar_concentration_name,
     unit_cell_concentration_report_name,
     unit_cell_mixing_cup_report_name,
@@ -606,6 +613,56 @@ def create_or_update_surface_report(solution, report_name, report_type, field_na
 
     apply_surface_report_definition(rd, report_type, field_name, surface_names)
     return report_name
+
+
+def mass_diffusivity_m2_s():
+    """``configs/run_config.py`` mass_diffusivity. Loaded only for RANS extracts."""
+    path = project_root() / "configs" / "run_config.py"
+    spec = importlib.util.spec_from_file_location(
+        "pyfluent_extract_run_config",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load run config: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    value = getattr(module, "mass_diffusivity", None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(
+            f"run_config.mass_diffusivity must be a number, got {value!r}."
+        )
+    if not math.isfinite(float(value)) or float(value) == 0.0:
+        raise RuntimeError(
+            f"run_config.mass_diffusivity must be finite and non-zero, got {value!r}."
+        )
+    return float(value)
+
+
+def compute_rans_volume_reductions(solution, fluid_zones):
+    """Max / volume-average over every fluid cell zone. Raises on failure."""
+    reductions = {}
+    raw = {}
+    for metric_name, report_type, field_name in RANS_VOLUME_REDUCTIONS:
+        report_name = f"rans_{metric_name}"
+        create_or_update_volume_report(
+            solution,
+            report_name,
+            report_type,
+            field_name,
+            fluid_zones,
+        )
+        value, report_raw = compute_one_report(
+            solution=solution,
+            report_name=report_name,
+            verbose=False,
+        )
+        raw[report_name] = report_raw
+        if value is None:
+            raise RuntimeError(
+                f"Volume report {report_name} returned no numeric value."
+            )
+        reductions[metric_name] = value
+    return reductions, raw
 
 
 def create_or_update_volume_report(solution, report_name, report_type, field_name, cell_zones):
@@ -1315,6 +1372,25 @@ if __name__ == "__main__":
             raw_results,
             report_names=report_names,
         )
+
+        turbulence_plan = turbulence_extract_plan(run_manifest)
+        if turbulence_plan == "compute":
+            require_turbulence_scalar_fields(
+                scalar_field_names(
+                    solver.fields.field_info.get_scalar_fields_info()
+                )
+            )
+            rans_reductions, rans_raw = compute_rans_volume_reductions(
+                solution,
+                fluid_zones,
+            )
+            raw_results.update(rans_raw)
+            turbulence_metrics = turbulence_metrics_from_reductions(
+                mass_diffusivity=mass_diffusivity_m2_s(),
+                **rans_reductions,
+            )
+        else:
+            turbulence_metrics = null_turbulence_metrics(turbulence_plan)
 
         print("\nComputed values:")
         pprint(computed_values)
@@ -2190,6 +2266,7 @@ if __name__ == "__main__":
             {"metric": "segmented_cp_diagnostic_error_message", "value": segmented_cp_diagnostic_error_message, "unit": "-"},
         ]
         summary_rows.extend(unit_cell_summary_rows)
+        summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
 
         # ----------------------------------------------------------
         # Mass balance table
@@ -2416,6 +2493,7 @@ if __name__ == "__main__":
                 "segmented_cp_diagnostic_error": segmented_cp_diagnostic_error,
                 "segmented_cp_diagnostic_error_type": segmented_cp_diagnostic_error_type,
                 "segmented_cp_diagnostic_error_message": segmented_cp_diagnostic_error_message,
+                "turbulence_metrics": turbulence_metrics,
             },
             "raw_results": raw_results,
         }
