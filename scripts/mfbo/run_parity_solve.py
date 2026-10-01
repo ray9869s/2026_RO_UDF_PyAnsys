@@ -23,6 +23,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import batch_report_extract
 import batch_solver_sweep
+import mfbo._common as mfbo_common
 
 SOURCE_GEO_ID = "P_p100_h30"
 SOURCE_MESH_ID = "max085_min006_cpg5_bl4_peel2"
@@ -357,70 +358,24 @@ def launch_solver(overrides, data_root, run_directory, *, max_retries, settle_s)
 
 def extract_launcher_paths():
     """Worker script and base post config, as batch_report_extract.main loads them."""
-    bcfg = batch_report_extract.load_python_config(
-        batch_solver_sweep.project_root() / "configs" / "batch_post_config.py",
-        "batch_post_config_parity_solve",
-    )
-    base_config = Path(bcfg.base_post_config)
-    if not base_config.is_file():
-        base_config = (
-            batch_solver_sweep.project_root() / "configs" / base_config.name
-        )
-    return Path(bcfg.single_case_worker), base_config
+    return mfbo_common.extract_launcher_paths()
 
 
 def extract_child_env(data_root, overrides, base_config):
     """Child env for report extraction. Does not mutate the parent env."""
-    env = os.environ.copy()
-    env["RO_DATA_ROOT"] = str(data_root)
-    env["PYFLUENT_POST_CONFIG"] = str(base_config)
-    env["PYFLUENT_POST_OVERRIDES"] = json.dumps(overrides)
-    return env
+    return mfbo_common.extract_child_env(data_root, overrides, base_config)
 
 
 def launch_extract(data_root, run_directory, case):
     """Run pyfluent_report_extract.py the way batch_report_extract.py does."""
-    worker, base_config = extract_launcher_paths()
-    final_case = run_directory / f"{SOURCE_GEO_ID}_{SOURCE_RUN_ID}_final.cas.h5"
-    final_data = run_directory / f"{SOURCE_GEO_ID}_{SOURCE_RUN_ID}_final.dat.h5"
-
-    def _build():
-        overrides, error = batch_report_extract.build_post_case_overrides(
-            geo_name=SOURCE_GEO_ID,
-            case_name=SOURCE_RUN_ID,
-            final_case_file=final_case,
-            final_data_file=final_data,
-            inlet_velocity_value=case["inlet_velocity_value"],
-            outlet_gauge_pressure=case["outlet_gauge_pressure"],
-            case_dir=run_directory,
-        )
-        if error is not None:
-            raise RuntimeError(f"Could not build post overrides: {error}")
-        return overrides
-
-    overrides = call_with_data_root(data_root, _build)
-    env = extract_child_env(data_root, overrides, base_config)
-    cmd = [sys.executable, str(worker)]
-    print(f"Extract command: {' '.join(cmd)}")
-    print(f"RO_DATA_ROOT (child only): {data_root}")
-    print(f"Extract overrides: {json.dumps(overrides)}")
-    result, attempts, retry_kinds, _attempt_logs = (
-        batch_report_extract.run_extract_attempts(
-            cmd=cmd,
-            env=env,
-            run_directory=run_directory,
-            geo_id=SOURCE_GEO_ID,
-            mesh_id=SOURCE_MESH_ID,
-            run_id=SOURCE_RUN_ID,
-        )
+    return mfbo_common.launch_extract(
+        data_root,
+        run_directory,
+        case,
+        geo_id=SOURCE_GEO_ID,
+        mesh_id=SOURCE_MESH_ID,
+        run_id=SOURCE_RUN_ID,
     )
-    if result is None:
-        raise RuntimeError("Extract worker did not return a process result.")
-    print(
-        f"Extract return code {result.returncode}, attempts={attempts}, "
-        f"retry_kinds={retry_kinds}"
-    )
-    return result
 
 
 def build_parser():
