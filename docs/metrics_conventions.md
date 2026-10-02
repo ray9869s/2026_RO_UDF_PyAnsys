@@ -240,6 +240,68 @@ D2450_a45 u0p1 (p = 6 MPa) it moved \(2.73751 \rightarrow 125.245\)
 maximum is set by the single lowest-\(J_w\) face and keeps decreasing with
 iteration count; treat it as a diagnostic extremum, not a campaign metric.
 
+The facet maximum is not only iteration-sensitive. UDM-9 stores
+\((c_m - c_p)/(c_0 - c_p)\) with \(c_p = B c_m/(J_w+B)\). Near spacer
+contact lines \(J_w\) falls to about \(2B\) (\(B = 2.50\times10^{-8}\,\mathrm{m/s}\),
+`udfs/260822_RO_UDF.c:194`), \(c_p\) crosses \(c_0\), and the stored value
+diverges. That slot does not feed a source, flux, or boundary condition.
+The local `cp_perm` inside `ro_cwall_from_film` does feed the solve when
+`RO_ANALYTIC_CWALL` is 1, but it is recomputed from \(c_1\), \(J_w\), and
+\(B\); it is not a read of stored UDM-9. `scripts/mfbo/diagnose_cp_max_hotspots.py`
+(`--cp-definition-check`) records the faces on a copy of the run. Fluent
+never opens `C:/ro_data`.
+
+## Concentration-statistics CP (diagnostic columns)
+
+Extract also writes a second family that does not read UDM-9.
+`cp_canon_window_avg` and `cp_canon_window_max` are unchanged. These
+columns are not the spacer-ranking metric.
+
+On the evaluation-window x-clip of both membranes together, each face
+contributes cell-stored `udm-7` (\(c_m\)), `udm-6` (\(J_w\)), and its
+area. Face UDM is off in production, so `boundary_value=False` returns
+the adjacent cell value: faces of one cell share \(c_m\) and \(J_w\).
+This is not the original per-face flux.
+
+\[
+c_{p,\mathrm{face}} = \frac{B\,c_m}{J_w+B}
+\]
+
+Two references, both stored:
+
+- `cp_ref_area`: area-weighted mean of \(c_{p,\mathrm{face}}\)
+- `cp_ref_flux`: \(\sum(J_w c_{p,\mathrm{face}} A)/\sum(J_w A)\) over faces with \(J_w>0\)
+
+Extract raises if the flux weight is not positive, or if
+\(c_b - c_{p,\mathrm{ref}}\le 0\) for either reference. \(c_b\) is the
+existing window mid-plane value (`c_b_window_mol_m3`), not a new sample.
+Faces with \(J_w\le 0\) are counted (`n_faces_jw_nonpositive`,
+`area_jw_nonpositive`) and stay in the area reference.
+
+\(Q_p(c_m)\) is the smallest \(c_m\) whose cumulative area fraction is at
+least \(p\) after sorting the **whole window** by \(c_m\). It is not an
+average of per-cell quantiles. For each reference \(r\in\{\mathrm{area},\mathrm{flux}\}\):
+
+\[
+\begin{align*}
+\mathrm{cpc\_window\_avg}_r &= ( \overline{c_m} - c_{p,\mathrm{ref},r} ) / ( c_b - c_{p,\mathrm{ref},r} ) \\
+\mathrm{cp\_q999\_window}_r &= ( Q_{0.999}(c_m) - c_{p,\mathrm{ref},r} ) / ( c_b - c_{p,\mathrm{ref},r} ) \\
+\mathrm{cp\_q99\_window}_r &= ( Q_{0.99}(c_m) - c_{p,\mathrm{ref},r} ) / ( c_b - c_{p,\mathrm{ref},r} )
+\end{align*}
+\]
+
+\(\overline{c_m}\) is the area mean. The same three formulas are also
+stored per evaluation cell (production window: cells 5–8), using that
+cell's mid-plane \(c_b\). Those per-cell columns are diagnostics. Laminar
+and legacy runs are included; there is no viscous-model gate. Column
+names and the JSON block `derived_values.concentration_cp` are listed in
+`docs/EXTRACT_OUTPUTS.md`.
+
+The average form above is a ratio of window aggregates with one
+\(c_{p,\mathrm{ref}}\). It is not the per-face-then-area-weight order
+required for `cp_canon_window_avg`. Do not substitute it for that column
+until a campaign comparison says so.
+
 ## Why \(c_b\) and not \(c_0\)
 
 Bulk concentration rises along the channel by roughly \(2 J_w L_{\mathrm{active}}

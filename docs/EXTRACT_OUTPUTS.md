@@ -346,6 +346,19 @@ UDM-9가 저장하는 것은 이 식이 아니라 inlet 분모 L2:
 | `c_inlet_ref_mol_m3` | mol/m3 | — | 상수 | 597.8268309. |
 | `compute_cp_spread` | — | — | 설정 | |
 | `cm_min_*` / `jw_min_*` / `cm_q_*` / `jw_q_*` / `cp_facet_min_rejected_cell_{N}` | 혼재 | cell | diagnostic | |
+| `cpc_window_avg_area` / `_flux` | — | window | **no** | 농도통계. canonical 대체 아님. §6. |
+| `cp_q999_window_area` / `_flux` | — | window | **no** | \(Q_{0.999}(c_m)\). canonical max 대체 아님. |
+| `cp_q99_window_area` / `_flux` | — | window | **no** | \(Q_{0.99}(c_m)\). |
+| `cm_area_mean_window` / `cm_q999_window` / `cm_q99_window` | mol/m3 | window | diagnostic | §6 입력. |
+| `cp_ref_area` / `cp_ref_flux` | mol/m3 | window | diagnostic | 면적 평균 / \(J_w>0\) 유량 가중 \(c_p\). |
+| `n_faces_jw_nonpositive` / `area_jw_nonpositive` | —, m2 | window | diagnostic | \(J_w\le 0\). |
+| `cpc_cell_{N}_avg_*` / `cp_q999_cell_{N}_*` / `cp_q99_cell_{N}_*` | — | cell | diagnostic | 같은 식, cell \(c_b\). window 분위의 평균이 아님. |
+| `cm_*_cell_{N}` / `cp_ref_*_cell_{N}` / `n_faces_jw_nonpositive_cell_{N}` / `area_jw_nonpositive_cell_{N}` | 혼재 | cell | diagnostic | |
+| `turbulence_metrics_status` | — | fluid | diagnostic | `laminar`, `legacy_manifest_no_viscous_model`, `computed`. §7. |
+| `viscosity_ratio_max` / `_volavg` | — | fluid | diagnostic | laminar·legacy는 null. |
+| `diff_nacl_max` / `_volavg` | m2/s | fluid | diagnostic | |
+| `diffl_nacl_min` / `_max` | m2/s | fluid | diagnostic | `mass_diffusivity`와 상대 1e-9. |
+| `diff_ratio_max` / `_volavg` | — | fluid | diagnostic | `diff_nacl / mass_diffusivity`. |
 
 ### Pressure drop
 
@@ -423,3 +436,43 @@ Spacer 사이 비교는 `cp_canon_window_avg`와 `pressure_drop_spacer`(또는
 `cp_inlet_avg`·`c_bulk_center_*`·`cp_L1_*`·`cp_L2_*`로 ranking하지 않는다.
 `c_b`가 `surface-massavg`인 것은 코드로 확인되고, 그 가중이 z-법선
 질량유량인지 아닌지는 이 코드가 증명하지 않는다.
+`cpc_window_avg_*`와 `cp_q*_window_*`로 ranking하지 않는다.
+
+---
+
+## 6. Concentration-statistics CP
+
+기존 CP 열은 그대로다. 이 열은 load-bearing이 아니고, laminar를 포함한
+모든 run에서 계산한다. 정의는 `docs/metrics_conventions.md`. 구현은
+`src/ro/cp_concentration_stats.py`와 extract의
+`collect_concentration_cp_faces`.
+
+입력은 evaluation window의 양쪽 막을 한 x-clip으로 자른 face다. `udm-7`,
+`udm-6`은 `boundary_value=False`라 인접 셀 UDM이다. 생산 UDF는 face UDM을
+쓰지 않는다. \(B\)는 `udfs/260822_RO_UDF.c`의 `B_perm` (\(2.50\times10^{-8}\)).
+\(c_b\)는 이미 있는 `c_b_window_mol_m3`다. 같은 이름의 열을 다시 쓰지 않는다.
+
+\(Q_p\)는 window face 전체를 \(c_m\)으로 정렬한 뒤, 누적 면적 분율이 \(p\)
+이상이 되는 가장 작은 \(c_m\)이다. cell 분위를 평균하지 않는다. cell 열
+(생산 window는 5–8)은 그 cell의 mid-plane \(c_b\)로 같은 식을 다시 계산한
+진단이다.
+
+`raw_report_values.json`의 `derived_values.concentration_cp`에 window와
+cell dict가 있다. \(J_w>0\)인 면의 \(\sum J_w A\le 0\)이거나
+\(c_b-c_{p,\mathrm{ref}}\le 0\)이면 extract가 실패한다.
+
+이미 추출된 leaf에는 이 열이 없다. 다시 뽑을 때는
+`scripts/mfbo/reextract_runs.py --copy-from-production PROD_LEAF --data-root ROOT`
+로 복사본만 연다.
+
+## 7. RANS 진단 열
+
+`viscous_model`이 없는 옛 manifest는
+`turbulence_metrics_status=legacy_manifest_no_viscous_model`이고 숫자 열은
+null이다. `laminar`도 null이다. 그 외에는 fluid zone에서
+`viscosity-ratio`, `diff-nacl`, `diffl-nacl`의 volume max/average
+(diffl은 min/max)를 읽고, `diffl_*`가 `run_config.mass_diffusivity`
+(\(2.0\times10^{-9}\,\mathrm{m^2/s}\))와 상대 1e-9 안에서 같아야
+`diff_ratio_* = diff_nacl_* / mass_diffusivity`를 쓴다. 필드가 없거나
+diffl이 어긋나면 extract가 실패한다. load-bearing 열에 넣지 않는다.
+기본 솔버는 여전히 laminar다.

@@ -65,6 +65,29 @@ Marked **not** a normal human campaign entry. All have `__main__` but are one-of
 | `scripts/analysis/nacl_ptp.py` | leftover scraper | same |
 | `scripts/analysis/period.py` | leftover scraper | same |
 
+### 1.4 MFBO drivers (`scripts/mfbo/`)
+
+These re-mesh, re-solve, or re-extract under a data root that is not
+`C:/ro_data`. They call the production workers. They are not a Bayesian
+optimizer. Child processes receive `RO_DATA_ROOT`; the parent is restored.
+Fluent is not pointed at `C:/ro_data`.
+
+| Script | Purpose |
+|---|---|
+| `mesh_mfbo_case.py` | Mesh one MFP pillar geometry from the `P_p100_h30` template |
+| `solve_mfbo_case.py` | Solve one MFP mesh with the production solver worker |
+| `solve_campaign_case.py` | Re-solve one production campaign case under another root, optionally RANS |
+| `reextract_runs.py` | Re-extract explicit run leaves. `--copy-from-production` copies the production run and mesh leaves first |
+| `mesh_study_case.py` | One campaign mesh with `--m-max` / `--m-min` / `--m-cpg` / `--bl-layers` / `--bl-first-height-factor`, then solve and extract. Refuses the production `mesh_id` |
+| `diagnose_cp_max_hotspots.py` | Per-face CP hotspot report on a copied leaf. `--cp-definition-check` adds the UDM-9 denominator check |
+| `run_parity_mesh.py`, `run_parity_solve.py`, `compare_parity_solves.py` | Parity mesh/solve against a reference leaf |
+| `run_geometry_parity_all.py` | Compare generated Pillar CAD with the nine manual Discovery files |
+| `_common.py` | Shared extract launch (`launch_extract`) |
+
+`mesh_study_case.py` builds `mesh_id` with `format_production_mesh_id` and
+inserts `_fNNN` (`round(bl_height_factor × 100)`) only when the factor
+differs from the template.
+
 **Spawn map**
 
 ```
@@ -329,8 +352,10 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
 4. **Surface-size grid independence not closed**  
    `AGENTS.md` / restructure notes: bl4-vs-bl6 LMH/CP figures are wall-normal, not an `m_max` study. The `m_max` exploration on D2450_a45 is recorded in `docs/MESH_LANDSCAPE.md`; neither the `bl` nor the `m_max` axis is converged.
 
-5. **MFBO layer**  
-   Mentioned in `AGENTS.md` as planned, not implemented.
+5. **MFBO optimizer**  
+   Drivers in `scripts/mfbo/` copy, mesh, solve, and re-extract outside
+   `C:/ro_data` (section 1.4). The optimizer that would choose the next
+   geometry is not implemented.
 
 6. **`batch_solver_rerun` ↔ report extract CLI mismatch**  
    Rerun optionally wants `pyfluent_report_extract.py --geo-name/--case-name`; report worker is env/`PYFLUENT_POST_*` driven. Auto report-after-rerun is deferred in code.

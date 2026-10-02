@@ -30,11 +30,18 @@ Baseline: `m_max` 0.085 / `m_min` 0.006 / `m_cpg` 5 / `bl` 4 / peel 2 →
 
 ### Key findings
 
-- **`bl_height_factor` is inert.** `bl8_f020` and `bl8_f040` have different
-  `mesh_sha256` but byte-identical physics (`cp_canon` 1.036991, \(c_b\)
-  622.626, `lmh` 25.6599, ΔP 843.791, \(y_1\) 2.769 µm). Smooth-transition
-  offset ignores the specified first height and sets prism thickness from
-  layer count and growth rate alone. The `_fNNN` mesh_id token is **retired**.
+- **`bl_height_factor` does not change the mesh under smooth-transition.**
+  `bl8`, `bl8_f020`, and `bl8_f040` have different `mesh_sha256` but the
+  same cell count and byte-identical physics (`cp_canon` 1.036991, \(c_b\)
+  622.626, `lmh` 25.6599, ΔP 843.791, \(y_1\) 2.769 µm). The worker does
+  apply the override: `bl_height = m_min * bl_height_factor` and that
+  value is `FirstHeight` on Add Boundary Layers
+  (`scripts/meshing_code_260616.py` 279–280 and 1043). Smooth-transition
+  then ignores `FirstHeight` and sets prism thickness from layer count
+  and growth rate. `_fNNN` is `round(factor × 100)` (`f040` = 0.40, not
+  ×1000). `format_production_mesh_id` omits it. A study whose factor
+  differs from the template puts the token back
+  (`scripts/mfbo/mesh_study_case.py`).
 - **\(y_1\) responds to both axes and is not separable:** bl4 5.736 µm, bl6
   3.985, bl8 2.769, bl10 1.926; `m_max` 0.045 at bl4 already gives 3.304 µm.
   Smooth-transition sets prism thickness from the adjacent core cell.
@@ -62,6 +69,17 @@ smoothly.
 **Open question for the real mesh study:** can a thinner, deeper BL (Liang-like)
 be realised under poly-hexcore without AR failure, or does the study need a
 different core strategy?
+
+`scripts/mfbo/mesh_study_case.py` is the driver for one such case. It
+takes the production mesh template for `--geo-id`, requires at least one
+of `--m-max`, `--m-min`, `--m-cpg`, `--bl-layers`,
+`--bl-first-height-factor`, and refuses a `mesh_id` equal to production.
+The unchanged baseline is
+`scripts/mfbo/reextract_runs.py --copy-from-production`, which copies the
+run and mesh leaves and re-extracts the copy. Neither driver opens
+`C:/ro_data` in Fluent. Because smooth-transition ignores `FirstHeight`,
+a factor-only study is not expected to move \(y_1\) until the offset
+method changes.
 
 ---
 

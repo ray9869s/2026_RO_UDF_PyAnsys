@@ -181,6 +181,9 @@ Raises if canonical window CP cannot be formed (extract fails hard).
 
 `pp_q_*` names appear in **diagnostic** scripts
 (`diagnose_cp_quantile_spread.py`), not in production extract.
+Concentration-statistics quantiles (§3) are computed in Python from face
+samples on `pp_cpc_window` and `pp_cpc_cell_{N}` iso-clips, which are
+deleted after the read. They are not Fluent `pp_q_*` reports.
 
 ### Rough Fluent call cost (one run, 1+7+2)
 
@@ -310,6 +313,10 @@ Renamed or copied into summary:
   spread for δ uses area-backed \(c_{p,\min}\) and quantile \(c_{p,\max}\) (see `docs/metrics_conventions.md`).
 
 - **`cp_canon_window_avg` / `_max`**: area-weighted mean / pointwise max of per-eval-cell canon (max uses facetmax UDM-9 × same \(k_N\)).
+
+- **Concentration-statistics CP** (new columns only; not load-bearing; every run, including laminar): on the evaluation-window clip of both membranes, \(c_{p,\mathrm{face}}=B c_m/(J_w+B)\) from cell-stored `udm-7` and `udm-6`. \(Q_p\) is the smallest \(c_m\) with cumulative area fraction \(\ge p\) on that whole clip. \(c_b\) is `c_b_window_mol_m3`. For \(r\in\{\mathrm{area},\mathrm{flux}\}\), `cpc_window_avg_r` \(=(\overline{c_m}-c_{p,\mathrm{ref},r})/(c_b-c_{p,\mathrm{ref},r})\), and `cp_q999_window_r` / `cp_q99_window_r` use \(Q_{0.999}\) / \(Q_{0.99}\). `cp_ref_flux` uses faces with \(J_w>0\). Per-cell twins (`cpc_cell_{N}_*`, cells 5–8 on the production window) use that cell's mid-plane \(c_b\) and are not averaged into the window quantile. See `docs/metrics_conventions.md`.
+
+- **RANS diagnostics** (not load-bearing): null with status `laminar` or `legacy_manifest_no_viscous_model`. Otherwise volume max/average of `viscosity-ratio` and `diff-nacl`, min/max of `diffl-nacl` (must match `mass_diffusivity` within \(10^{-9}\) relative), then `diff_ratio_*`.
 
 - **`cp_L1_window_avg`**: area-weighted \(c_m / c_b\) (Gu 2017).
 
