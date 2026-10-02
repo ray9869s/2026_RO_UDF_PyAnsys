@@ -12,8 +12,9 @@ Code lives in `src/ro_2d_pilot/optimization/`. Case files and experiment
 logs live under absolute `RO_2D_DATA_ROOT`, never in git and never under
 `RO_DATA_ROOT`.
 
-The live equal-budget comparison has not been run. Offline replay checks
-the software. It does not measure CFD savings and does not rank the methods.
+Offline replay checks the software and does not rank the methods. The live
+comparison that was run is recorded below. It does not establish that MFBO
+is generally cheaper than HF-only BO.
 
 ## Problem
 
@@ -109,6 +110,66 @@ toward this benchmark cost.
 Compare methods by the best HF-validated feasible LMH against cumulative
 HF-equivalent cost, not by iteration count.
 
+## Live pilot (`experiment_id = pilot`)
+
+Both methods were run on the Windows Fluent host with `mode = live`,
+`seed = 0`, and budget 8.0. Logs are
+`RO_2D_DATA_ROOT/studies/optimization/{hf_bo,mfbo}/pilot/`. The comparison
+script does not declare a winner.
+
+| | HF-only BO | MFBO |
+|---|---:|---:|
+| Acquisition | constrained expected improvement | Kennedy–O'Hagan + Forrester |
+| medium evaluations | 0 | 5 |
+| very_fine evaluations | 8 | 7 |
+| Sequential queries | 4 | 4 |
+| Failures | 0 | 0 |
+| Solver time | 5635.99 s | 5494.52 s |
+| HF-equivalent cost | 7.434 | 7.247 |
+| Summed case wall time | 7094.78 s | 7645.91 s |
+| Final `d`, `L` | 0.375 mm, 3.0 mm | 0.375 mm, 3.0 mm |
+| HF LMH | 25.3565 | 25.3565 |
+| HF dP/L | 28481.7 Pa/m | 28481.7 Pa/m |
+| HF CP | 1.07803 | 1.07803 |
+
+Both histories name the same `very_fine` design. It satisfies
+`28481.7 <= 30000` Pa/m, with about 1518 Pa/m of slack. `L` is the lower
+edge of the pilot box. `d = 0.375 mm` is not one of the 3×3 screening
+diameters. The best feasible screening point, `d = 0.30 mm`, `L = 3.0 mm`,
+has HF LMH 25.3042, so this design is about 0.21% higher. An infeasible
+neighbor, `d = 0.425 mm`, `L = 3.0 mm`, has a higher HF LMH (25.3906) and
+dP/L 39599.8 Pa/m, so the reported point is the feasible incumbent, not the
+unconstrained LMH maximum.
+
+HF-only queried only `very_fine`. Its first sequential design was
+`(0.375 mm, 3.0 mm)` and stayed the feasible incumbent. The next three
+`very_fine` queries were `(0.400, 3.0)`, `(0.425, 3.0)`, and
+`(0.425, 3.25)` mm. The last three are infeasible under the 30000 Pa/m
+limit. Three of the eight HF-only rows were new Fluent runs. The four
+initial rows and `(0.400 mm, 3.0 mm)` were valid results already on disk.
+
+MFBO used the same four `very_fine` initials, then the same four designs at
+`medium`, then four sequential queries: `very_fine (0.375, 3.0)`,
+`medium (0.400, 3.0)`, `very_fine (0.300, 3.0)`, and
+`very_fine (0.425, 3.0)` mm. Four of the five medium rows are that required
+initial set. One medium row is a sequential choice. Every MFBO row was
+reused from an existing valid result, including the two `very_fine` points
+first solved while HF-only was running. This MFBO process launched no new
+Fluent case.
+
+Solver seconds and wall seconds in the table are the sum of the case
+records in each history. A reused case is not solved again, and its stored
+time is still added to the benchmark total. The wall column is therefore
+not the clock time of the optimizer session, and it is not a cold-start
+cost. On that accounting, MFBO spent 0.187 fewer HF-equivalent solver units
+(about 2.5% of the HF-only total) and accumulated about 7.8% more case wall
+time. The extra wall time is the medium cases' startup, not a measured
+wait during the MFBO process.
+
+Read this run as a closed loop on a small two-variable box: both methods
+reached one HF-validated feasible design, and the solver-cost gap is small.
+It is not evidence that MFBO is the cheaper method on a 3D spacer campaign.
+
 ## Models
 
 NumPy only. BoTorch / PyTorch are not dependencies.
@@ -166,10 +227,12 @@ python scripts/compare_ro_2d_optimization.py \
   --mfbo /c/RO_2D_Data/studies/optimization/mfbo/pilot
 ```
 
-If the four initial designs are already `valid` on disk, each method
-launches at most six sequential cases plus one final `very_fine` check
-(7 new CFD runs). If those initials are missing, the caps are 11 (HF-only)
-and 15 (MFBO).
+`experiment_id = pilot` has already been run. A repeat reuses valid cases
+and still charges their stored solver time, so it does not reproduce a
+cold-start cost. The executed histories are in the section above. With a
+warm cache the sequential cap is still 6, plus one final `very_fine` check
+when the recommended design has no `very_fine` result. Without the four
+initial results on disk the caps are 11 new runs (HF-only) and 15 (MFBO).
 
 Offline check, still under `RO_2D_DATA_ROOT`, does not launch Fluent:
 

@@ -24,7 +24,7 @@ multi-fidelity pilot. Data go under absolute `RO_2D_DATA_ROOT`, not
 `RO_DATA_ROOT`. The problem, the 30000 Pa/m pressure constraint, the
 shared initial designs, the HF-equivalent budget, and the Windows commands
 are in [docs/RO_2D_OPTIMIZATION.md](docs/RO_2D_OPTIMIZATION.md). The live
-comparison has not been run. This does not implement 3D MFBO.
+`pilot` comparison has been run there. This does not implement 3D MFBO.
 
 ## Pipeline
 
