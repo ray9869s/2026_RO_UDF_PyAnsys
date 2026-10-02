@@ -4,6 +4,11 @@ The production baseline is not rebuilt here. Re-extract that leaf with
 ``reextract_runs.py --copy-from-production``. This driver refuses a study
 ``mesh_id`` that matches the production mesh id.
 
+Before the meshing worker starts, the production geometry file
+``C:/ro_data/geometries/<family>/<geo_id>/<geo_id>.dsco`` is copied into
+the study data root. An existing copy is reused only when its sha256
+matches. The source is never moved.
+
 ``format_production_mesh_id`` encodes max/min/cpg/bl/peel and omits the
 default first-height factor. A factor that differs from the template is
 inserted as ``_fNNN`` (``round(factor * 100)``, so 0.40 is ``f040``) before
@@ -37,6 +42,7 @@ from ro.paths import MESH_ID_RE, project_root
 
 _FLOAT_REL_TOL = 1.0e-9
 _FLOAT_ABS_TOL = 1.0e-12
+PRODUCTION_DATA_ROOT = Path("C:/ro_data")
 
 MESH_PRINT_FIELDS = (
     "cell_count",
@@ -317,6 +323,62 @@ def print_override_table(rows):
         )
 
 
+def production_geometry_dsco(family, geo_id):
+    """``C:/ro_data/geometries/<family>/<geo_id>/<geo_id>.dsco``."""
+    return (
+        PRODUCTION_DATA_ROOT
+        / "geometries"
+        / family
+        / geo_id
+        / f"{geo_id}.dsco"
+    )
+
+
+def study_geometry_dsco(data_root, family, geo_id):
+    return (
+        Path(data_root) / "geometries" / family / geo_id / f"{geo_id}.dsco"
+    )
+
+
+def _under_production_tree(path):
+    folded = Path(path).as_posix().casefold().rstrip("/")
+    return (
+        folded == "c:/ro_data"
+        or folded.startswith("c:/ro_data/")
+        or folded == "/mnt/c/ro_data"
+        or folded.startswith("/mnt/c/ro_data/")
+    )
+
+
+def ensure_production_geometry_dsco(data_root, family, geo_id):
+    """Copy the production .dsco, or reuse it when the sha256 matches.
+
+    Uses ``run_parity_mesh.copy_geometry_file`` (copy only; sha256 checked
+    after the copy). An existing destination is not rewritten: the same
+    helper's sha256 compare must match, or this raises and leaves the file
+    in place. The source is never moved.
+    """
+    import mfbo.run_parity_mesh as parity_mesh
+
+    source = production_geometry_dsco(family, geo_id)
+    dest = study_geometry_dsco(data_root, family, geo_id)
+    if _under_production_tree(dest):
+        raise ValueError(f"Refusing to copy geometry into C:/ro_data: {dest}")
+    if not source.is_file():
+        raise FileNotFoundError(f"Geometry file not found: {source}")
+    if dest.exists():
+        if not dest.is_file():
+            raise FileExistsError(
+                f"Refusing to overwrite geometry path that is not a file: {dest}"
+            )
+        digest = parity_mesh.assert_sha256_equal(source, dest)
+        print(f"Reusing geometry {dest} sha256={digest}")
+        return dest
+    digest = parity_mesh.copy_geometry_file(source, dest)
+    print(f"Copied geometry {source} -> {dest} sha256={digest}")
+    return dest
+
+
 def mesh_leaf(data_root, family, geo_id, mesh_id):
     return Path(data_root) / "meshes" / family / geo_id / mesh_id
 
@@ -513,6 +575,7 @@ def main(argv=None):
     study_id = overrides["mesh_id"]
     leaf = mesh_leaf(data_root, family, args.geo_id, study_id)
     refuse_existing_directory(leaf, "mesh leaf")
+    ensure_production_geometry_dsco(data_root, family, args.geo_id)
     mesh_result = launch_meshing(
         overrides,
         data_root,

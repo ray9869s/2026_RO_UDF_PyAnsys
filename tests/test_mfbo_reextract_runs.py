@@ -12,6 +12,7 @@ reextract_runs = load_module(
     "reextract_runs_under_test",
     SCRIPTS_DIR / "mfbo" / "reextract_runs.py",
 )
+import mfbo.mesh_study_case as mesh_study  # noqa: E402
 
 
 def _leaf(root):
@@ -110,10 +111,26 @@ def _production_identity(tmp_path):
     }
 
 
+def _plant_geometry(root, payload=b"dsco-v1"):
+    path = (
+        root
+        / "geometries"
+        / "pillar"
+        / "P_p100_h30"
+        / "P_p100_h30.dsco"
+    )
+    path.parent.mkdir(parents=True)
+    path.write_bytes(payload)
+    return path
+
+
 def test_copy_from_production_reextracts_the_copy(monkeypatch, tmp_path):
     import mfbo.diagnose_cp_max_hotspots as hotspots
 
     identity = _production_identity(tmp_path)
+    prod = tmp_path / "prod"
+    source = _plant_geometry(prod)
+    monkeypatch.setattr(mesh_study, "PRODUCTION_DATA_ROOT", prod)
     monkeypatch.setattr(hotspots, "parse_production_run_leaf", lambda value: identity)
     seen = []
 
@@ -138,25 +155,56 @@ def test_copy_from_production_reextracts_the_copy(monkeypatch, tmp_path):
     mesh_copy = data / "meshes" / "pillar" / "P_p100_h30" / "mesh" / "mesh.msh"
     assert mesh_copy.read_bytes() == b"mesh"
     assert (dest / "P_p100_h30_u0p2_p6M_final.cas.h5").read_bytes() == b"case"
+    geometry = data / "geometries" / "pillar" / "P_p100_h30" / "P_p100_h30.dsco"
+    assert geometry.read_bytes() == b"dsco-v1"
+    assert source.read_bytes() == b"dsco-v1"
 
 
 def test_copy_reuses_identical_tree_and_refuses_a_different_one(monkeypatch, tmp_path):
     import mfbo.diagnose_cp_max_hotspots as hotspots
 
     identity = _production_identity(tmp_path)
+    prod = tmp_path / "prod"
+    _plant_geometry(prod)
+    monkeypatch.setattr(mesh_study, "PRODUCTION_DATA_ROOT", prod)
     monkeypatch.setattr(hotspots, "parse_production_run_leaf", lambda value: identity)
     data = tmp_path / "root"
-    prod = "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M"
-    first = reextract_runs.copy_production_for_reextract(prod, str(data))
+    prod_leaf = "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M"
+    first = reextract_runs.copy_production_for_reextract(prod_leaf, str(data))
     mesh_copy = data / "meshes" / "pillar" / "P_p100_h30" / "mesh" / "mesh.msh"
     mesh_copy.chmod(0o444)
-    second = reextract_runs.copy_production_for_reextract(prod, str(data))
+    second = reextract_runs.copy_production_for_reextract(prod_leaf, str(data))
     assert second == first
     mesh_copy.chmod(0o644)
     mesh_copy.write_bytes(b"changed")
     with pytest.raises(RuntimeError, match="not identical"):
-        reextract_runs.copy_production_for_reextract(prod, str(data))
+        reextract_runs.copy_production_for_reextract(prod_leaf, str(data))
     assert mesh_copy.read_bytes() == b"changed"
+
+
+def test_copy_from_production_geometry_reuse_and_mismatch(monkeypatch, tmp_path):
+    import mfbo.diagnose_cp_max_hotspots as hotspots
+
+    identity = _production_identity(tmp_path)
+    prod = tmp_path / "prod"
+    source = _plant_geometry(prod, b"dsco-v1")
+    monkeypatch.setattr(mesh_study, "PRODUCTION_DATA_ROOT", prod)
+    monkeypatch.setattr(hotspots, "parse_production_run_leaf", lambda value: identity)
+    data = tmp_path / "root"
+    prod_leaf = "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M"
+    reextract_runs.copy_production_for_reextract(prod_leaf, str(data))
+    geometry = data / "geometries" / "pillar" / "P_p100_h30" / "P_p100_h30.dsco"
+    geometry.chmod(0o444)
+    again = reextract_runs.copy_production_for_reextract(prod_leaf, str(data))
+    assert again.name == "u0p2_p6M"
+    assert geometry.read_bytes() == b"dsco-v1"
+    assert source.read_bytes() == b"dsco-v1"
+    geometry.chmod(0o644)
+    geometry.write_bytes(b"other-dsco")
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        reextract_runs.copy_production_for_reextract(prod_leaf, str(data))
+    assert geometry.read_bytes() == b"other-dsco"
+    assert source.read_bytes() == b"dsco-v1"
 
 
 def test_copy_from_production_does_not_launch_on_production_root(monkeypatch, tmp_path):

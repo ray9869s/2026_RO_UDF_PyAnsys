@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ driver = load_module(
     "mesh_study_case_under_test",
     SCRIPTS_DIR / "mfbo" / "mesh_study_case.py",
 )
+import mfbo.run_parity_mesh as parity_mesh  # noqa: E402
 
 
 def _template():
@@ -101,6 +103,56 @@ def test_solver_overrides_replace_only_mesh_id():
     assert template["mesh_id"] == "max085_min006_cpg5_bl4_peel2"
 
 
+def _plant_dsco(root, family, geo_id, payload):
+    path = root / "geometries" / family / geo_id / f"{geo_id}.dsco"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def test_geometry_dsco_copy_reuse_and_mismatch(monkeypatch, tmp_path):
+    prod = tmp_path / "prod"
+    source = _plant_dsco(prod, "diamond", "D0817_a30", b"dsco-v1")
+    monkeypatch.setattr(driver, "PRODUCTION_DATA_ROOT", prod)
+    study = tmp_path / "meshstudy"
+    dest = driver.ensure_production_geometry_dsco(study, "diamond", "D0817_a30")
+    assert dest == study / "geometries" / "diamond" / "D0817_a30" / "D0817_a30.dsco"
+    assert dest.read_bytes() == b"dsco-v1"
+    assert source.read_bytes() == b"dsco-v1"
+    source_stat = source.stat()
+
+    def refuse_copy(source_path, dest_path):
+        raise AssertionError(
+            f"reuse must not copy {source_path} -> {dest_path}"
+        )
+
+    monkeypatch.setattr(parity_mesh, "copy_geometry_file", refuse_copy)
+    dest.chmod(0o444)
+    again = driver.ensure_production_geometry_dsco(study, "diamond", "D0817_a30")
+    assert again == dest
+    assert dest.read_bytes() == b"dsco-v1"
+    assert source.stat().st_ino == source_stat.st_ino
+    assert source.read_bytes() == b"dsco-v1"
+
+    dest.chmod(0o644)
+    dest.write_bytes(b"hand-edit")
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        driver.ensure_production_geometry_dsco(study, "diamond", "D0817_a30")
+    assert dest.read_bytes() == b"hand-edit"
+    assert source.read_bytes() == b"dsco-v1"
+
+
+def test_geometry_dsco_missing_source_and_production_destination(monkeypatch, tmp_path):
+    prod = tmp_path / "prod"
+    monkeypatch.setattr(driver, "PRODUCTION_DATA_ROOT", prod)
+    with pytest.raises(FileNotFoundError, match=r"D0817_a30\.dsco"):
+        driver.ensure_production_geometry_dsco(tmp_path / "study", "diamond", "D0817_a30")
+    with pytest.raises(ValueError, match="C:/ro_data"):
+        driver.ensure_production_geometry_dsco(
+            Path("C:/ro_data"), "diamond", "D0817_a30"
+        )
+
+
 def test_meshing_child_env_sets_data_root_and_restores_parent(monkeypatch, tmp_path):
     captured = {}
 
@@ -161,6 +213,15 @@ def test_main_meshes_solves_and_extracts_the_study_copy(monkeypatch, tmp_path):
         seen["mesh_id"] = mesh_id
         seen["overrides"] = overrides
         seen["data_root"] = data_root
+        geometry = (
+            Path(data_root)
+            / "geometries"
+            / "diamond"
+            / "D2450_a45"
+            / "D2450_a45.dsco"
+        )
+        assert geometry.read_bytes() == b"diamond-dsco"
+        assert source.read_bytes() == b"diamond-dsco"
         mesh_directory.mkdir(parents=True)
         (mesh_directory / "manifest.json").write_text(
             json.dumps(
@@ -214,6 +275,9 @@ def test_main_meshes_solves_and_extracts_the_study_copy(monkeypatch, tmp_path):
         "validate_summary_wide_csv",
         lambda path: (True, ""),
     )
+    prod = tmp_path / "prod"
+    source = _plant_dsco(prod, "diamond", "D2450_a45", b"diamond-dsco")
+    monkeypatch.setattr(driver, "PRODUCTION_DATA_ROOT", prod)
     monkeypatch.delenv("RO_DATA_ROOT", raising=False)
     code = driver.main(
         [

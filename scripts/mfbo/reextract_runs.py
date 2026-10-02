@@ -6,10 +6,11 @@ Keeps the previous ``post/reports/`` by renaming it to
 ``RO_DATA_ROOT`` on the child is the leaf's data root (the directory that
 contains ``runs/``).
 
-``--copy-from-production`` copies a production run leaf and its mesh leaf
-into ``--data-root`` (sha256 every file, reuse an identical copy, refuse a
-different one) and re-extracts the copy. Fluent is not pointed at
-``C:/ro_data``.
+``--copy-from-production`` copies a production run leaf, its mesh leaf,
+and ``geometries/<family>/<geo_id>/<geo_id>.dsco`` into ``--data-root``
+(sha256 every file, reuse an identical copy, refuse a different one) and
+re-extracts the copy. Fluent is not pointed at ``C:/ro_data``. The
+geometry file is copied, never moved.
 """
 
 from __future__ import annotations
@@ -124,10 +125,14 @@ def copy_production_for_reextract(prod_leaf, data_root):
     Does not open Fluent. The caller re-extracts the returned copy only.
     """
     import mfbo.diagnose_cp_max_hotspots as hotspots
+    import mfbo.mesh_study_case as mesh_study
 
     root = hotspots.resolve_data_root(data_root)
     identity = hotspots.parse_production_run_leaf(prod_leaf)
     copied = hotspots.copy_source_leaves(root, identity)
+    mesh_study.ensure_production_geometry_dsco(
+        root, identity["family"], identity["geo_id"]
+    )
     run_leaf = copied["run_leaf"]
     case_file, data_file = hotspots.final_case_data(
         run_leaf, identity["geo_id"], identity["run_id"]
@@ -165,7 +170,7 @@ def main(argv=None) -> int:
         default=None,
         help=(
             "Production run leaf under C:/ro_data. Copied with its mesh leaf "
-            "into --data-root; Fluent opens only the copy."
+            "and geometry .dsco into --data-root; Fluent opens only the copy."
         ),
     )
     parser.add_argument(
