@@ -110,6 +110,10 @@ from ro.cp_concentration_stats import (  # noqa: E402
     polygon_area,
     window_x_bounds,
 )
+from ro.membrane_y1 import (  # noqa: E402
+    y1_window_resolution,
+    y1_window_summary_rows,
+)
 from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_CELL_STRAIN_RATE,
     FIELD_UDM_CM,
@@ -120,6 +124,7 @@ from ro.udm_layout import (  # noqa: E402
     FIELD_UDM_SALT_FLUX,
     FIELD_UDM_SI,
     FIELD_UDM_TOTAL_S,
+    FIELD_UDM_Y1,
 )
 
 REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
@@ -675,15 +680,34 @@ def _scalar_values(payload):
     return _as_floats(payload[surface_id])
 
 
-def read_membrane_clip_faces(solver, surface_names, x_min_m, x_max_m, clip_name):
+_MEMBRANE_FACE_FIELD_KEYS = {
+    FIELD_UDM_CM: "cm",
+    FIELD_UDM_JW: "jw",
+    FIELD_UDM_Y1: "y1",
+}
+
+
+def read_membrane_clip_faces(
+    solver,
+    surface_names,
+    x_min_m,
+    x_max_m,
+    clip_name,
+    extra_fields=(),
+):
     """Per-face cm, Jw, and area on one x-range clip of the membrane walls.
 
     ``boundary_value=False`` reads the adjacent cell UDM. Face UDM slots are
     not written in production (``RO_UDM_FACE_DIAGNOSTICS`` is off); surface
-    reports of udm-6 and udm-7 use the cell values.
+    reports of udm-6 and udm-7 use the cell values. ``extra_fields`` (udm-12
+    on the evaluation window) uses the same cell-value read and is not caught.
     """
     from ansys.fluent.core.field_data_interfaces import SurfaceDataType
 
+    field_names = (FIELD_UDM_CM, FIELD_UDM_JW, *extra_fields)
+    unknown = [name for name in field_names if name not in _MEMBRANE_FACE_FIELD_KEYS]
+    if unknown:
+        raise ValueError(f"Unsupported membrane clip fields: {unknown}.")
     create_x_range_iso_clip(
         solver,
         clip_name,
@@ -708,7 +732,7 @@ def read_membrane_clip_faces(solver, surface_names, x_min_m, x_max_m, clip_name)
             points = [vertices[int(node)] for node in face]
             areas.append(polygon_area(points))
         columns = {}
-        for field_name in (FIELD_UDM_CM, FIELD_UDM_JW):
+        for field_name in field_names:
             scalar = solver.fields.field_data.get_scalar_field_data(
                 field_name=field_name,
                 surfaces=[clip_name],
@@ -722,14 +746,13 @@ def read_membrane_clip_faces(solver, surface_names, x_min_m, x_max_m, clip_name)
                     f"for {len(areas)} faces."
                 )
             columns[field_name] = values
-        return [
-            {
-                "cm": columns[FIELD_UDM_CM][index],
-                "jw": columns[FIELD_UDM_JW][index],
-                "area": areas[index],
-            }
-            for index in range(len(areas))
-        ]
+        faces = []
+        for index in range(len(areas)):
+            face = {"area": areas[index]}
+            for field_name in field_names:
+                face[_MEMBRANE_FACE_FIELD_KEYS[field_name]] = columns[field_name][index]
+            faces.append(face)
+        return faces
     finally:
         delete_iso_clip(solver, clip_name)
 
@@ -761,6 +784,7 @@ def collect_concentration_cp_faces(
         x_min_m,
         x_max_m,
         "pp_cpc_window",
+        extra_fields=(FIELD_UDM_Y1,),
     )
     return window_faces, cell_faces
 
@@ -1908,6 +1932,14 @@ if __name__ == "__main__":
             f"cpc_window_avg_flux="
             f"{concentration_cp_metrics['window']['cpc_avg_flux']}"
         )
+        membrane_y1_metrics = y1_window_resolution(window_faces)
+        print(
+            "Membrane y1: "
+            f"areamean_um={membrane_y1_metrics['y1_window_areamean_um']}, "
+            f"q10_um={membrane_y1_metrics['y1_window_q10_um']}, "
+            f"median_um={membrane_y1_metrics['y1_window_median_um']}, "
+            f"q90_um={membrane_y1_metrics['y1_window_q90_um']}"
+        )
 
         _end_extract_phase()
         # ==========================================================
@@ -2416,6 +2448,7 @@ if __name__ == "__main__":
         summary_rows.extend(unit_cell_summary_rows)
         summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
         summary_rows.extend(concentration_cp_summary_rows(concentration_cp_metrics))
+        summary_rows.extend(y1_window_summary_rows(membrane_y1_metrics))
 
         # ----------------------------------------------------------
         # Mass balance table
@@ -2644,6 +2677,7 @@ if __name__ == "__main__":
                 "segmented_cp_diagnostic_error_message": segmented_cp_diagnostic_error_message,
                 "turbulence_metrics": turbulence_metrics,
                 "concentration_cp": concentration_cp_metrics,
+                "membrane_y1": membrane_y1_metrics,
             },
             "raw_results": raw_results,
         }
