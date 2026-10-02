@@ -11,9 +11,12 @@ RO-membrane CFD automation. Ansys Fluent 25.1 driven via PyFluent + PyEnSight;
 membrane physics live in a compiled C UDF (`udfs/*.c`). Pipeline: case matrices
 in `configs/batch_config.py` → subprocess workers (`scripts/meshing_code_*.py`,
 `scripts/solver_code_*.py`) → `RO_DATA_ROOT/runs/{family}/{geo_id}/{mesh_id}/{run_id}/`
-→ post-processing orchestrators under `scripts/`. A multi-fidelity Bayesian
-optimization (MFBO) layer is planned but not implemented — keep it in mind,
-don't build it unasked.
+→ post-processing orchestrators under `scripts/`. A 3D multi-fidelity
+Bayesian optimization layer is planned but not implemented — keep it in mind,
+don't build it unasked. The separate 2D methodological pilot in
+`src/ro_2d_pilot/optimization/` is documented in `docs/RO_2D_OPTIMIZATION.md`.
+It does not change the 3D campaign, and its offline replay is not a
+performance result.
 
 Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 `260816_RO_UDF.c` is a frozen ASCII compile-fix sibling; new runs use 260822.

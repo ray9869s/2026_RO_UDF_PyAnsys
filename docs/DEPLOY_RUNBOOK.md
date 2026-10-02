@@ -190,6 +190,32 @@ Results and logs go under `RO_DATA_ROOT/inventory/`, not `03_Results/_inventory/
 
 ---
 
+## 2D optimization pilot (separate data root)
+
+Not part of the 279-run campaign. Scientific record and limits:
+`docs/RO_2D_OPTIMIZATION.md`. Do not run HF-only and MFBO at the same time.
+`very_fine` is the pilot target fidelity, not a grid-independent solution.
+Offline replay does not rank the methods.
+
+```bash
+cd /c/pyfluent
+git fetch origin
+git reset --hard origin/main
+source .venv/Scripts/activate
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export RO_2D_DATA_ROOT="/c/RO_2D_Data"
+python scripts/run_ro_2d_hf_bo.py --mode live --experiment-id pilot
+python scripts/run_ro_2d_mfbo.py --mode live --experiment-id pilot
+python scripts/compare_ro_2d_optimization.py \
+  --hf /c/RO_2D_Data/studies/optimization/hf_bo/pilot \
+  --mfbo /c/RO_2D_Data/studies/optimization/mfbo/pilot
+```
+
+`RO_2D_DATA_ROOT` must be absolute and outside this git tree. Logs are
+written under `studies/optimization/`, not into `RO_DATA_ROOT`.
+
+---
+
 ## Historical — July 2026 `03_Results` playbook (do not follow)
 
 The F-01 / F-02 / F-20 procedure that used to occupy this file targeted the

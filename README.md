@@ -16,6 +16,16 @@ All 31 meshes are built at campaign settings `max085_min006_cpg5_bl4_peel2`
 that mesh (796,009 cells). Historical runs under `RO_DATA_ROOT/archive/` are
 not read.
 
+## 2D methodological pilot
+
+A separate 2D channel study lives in `src/ro_2d_pilot/`. Its optimization
+layer is an HF-only Bayesian optimization baseline and a cost-aware
+multi-fidelity pilot. Data go under absolute `RO_2D_DATA_ROOT`, not
+`RO_DATA_ROOT`. The problem, the 30000 Pa/m pressure constraint, the
+shared initial designs, the HF-equivalent budget, and the Windows commands
+are in [docs/RO_2D_OPTIMIZATION.md](docs/RO_2D_OPTIMIZATION.md). The live
+comparison has not been run. This does not implement 3D MFBO.
+
 ## Pipeline
 
 No manual steps in the loop. Orchestrators (`batch_meshing.py`,

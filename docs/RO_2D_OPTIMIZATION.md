@@ -1,0 +1,186 @@
+# 2D RO optimization pilot
+
+Methodological pilot only. It is not the 3D campaign, and `very_fine` is
+the target fidelity for this pilot, not a grid-independent solution.
+
+The 3D production workflow (`src/ro/`, `scripts/solver_code_260616.py`,
+`udfs/260822_RO_UDF.c`, `RO_DATA_ROOT`) is unchanged. A 3D multi-fidelity
+Bayesian optimization layer is still not implemented. This document records
+the 2D closed loop that can later be attached to a separate 3D evaluator.
+
+Code lives in `src/ro_2d_pilot/optimization/`. Case files and experiment
+logs live under absolute `RO_2D_DATA_ROOT`, never in git and never under
+`RO_DATA_ROOT`.
+
+The live equal-budget comparison has not been run. Offline replay checks
+the software. It does not measure CFD savings and does not rank the methods.
+
+## Problem
+
+2D channel, height `H = 0.770 mm`, circular obstacle, `n_pitches = 3`,
+inlet `0.2 m/s`, pressure `6 MPa`.
+
+| Quantity | Range |
+|---|---|
+| Obstacle diameter `d` | 0.30–0.50 mm |
+| Streamwise pitch `L` | 3.0–5.0 mm |
+
+The GP uses `x1, x2` in `[0, 1]`. Result records keep physical `d` and `L`.
+Geometry still goes through `PilotConfig` (`d < H`, `L > d`).
+
+Fidelities are mesh levels, not the campaign `low` / `high` labels:
+
+| Role | Mesh level |
+|---|---|
+| Low-fidelity candidate | `medium` |
+| Target / high fidelity | `very_fine` |
+
+## Objective
+
+Maximize LMH subject to
+
+```
+pressure_drop_per_length <= 30000 Pa/m
+```
+
+CP is a diagnostic and a final-report quantity. It is not an objective.
+
+`30000 Pa/m` is a pilot constraint, not a membrane specification. The eight
+valid `very_fine` screening points span about 13000–72200 Pa/m. This limit
+keeps the solved center (`d = 0.40 mm`, `L = 4.0 mm`, about 25924 Pa/m)
+feasible and leaves the short-pitch `d = 0.40 mm` point (about 33377 Pa/m)
+and both valid `d = 0.50 mm` points infeasible, so the constraint is active
+and the feasible set is nonempty.
+
+## Fidelity screen used as qualification, not as the initial GP
+
+A 3×3 medium / very_fine screen was collected for qualification. One
+`very_fine` case diverged and is excluded from the correlations:
+`d = 0.50 mm`, `L = 4.0 mm` (stopped at ramp 0.2, iteration 9).
+
+Across the eight valid pairs, relative discrepancy is
+`(medium − very_fine) / very_fine`:
+
+| QoI | Pearson | Spearman | Mean signed relative | Rank reversals |
+|---|---:|---:|---:|---:|
+| LMH | 0.985 | 0.929 | +2.14% | 2 / 28 |
+| CP − 1 | 0.985 | 0.929 | −22.9% | 2 / 28 |
+| dP/L | 1.000 | 1.000 | −0.31% | 0 / 28 |
+
+Median medium / very_fine solver-time ratio is 0.1059 (about 9.4× solver
+speedup). Median total-wall-time ratio is 0.265. Medium is informative
+enough to test a multi-fidelity loop. That is not a claim that MFBO is
+better, and medium CP−1 is not a quantitative substitute for `very_fine`.
+
+The full screen is a replay table and a reference. It is not loaded into
+both optimizers at initialization.
+
+## Common start and budget
+
+Both methods start from the same four `very_fine` designs:
+
+- `(0.40 mm, 4.0 mm)` center
+- `(0.50 mm, 3.0 mm)`
+- `(0.50 mm, 5.0 mm)`
+- `(0.30 mm, 5.0 mm)`
+
+`(0.30 mm, 3.0 mm)` is the best feasible screened HF point and is left out
+so sequential search still has something to find.
+
+MFBO also evaluates those four designs at `medium`. That cost is charged
+and is not part of the common HF initialization.
+
+Primary cost is solver time. Wall time is recorded and is not mixed into
+the acquisition function.
+
+```
+HF-equivalent = cumulative solver seconds / 758.1605 s
+```
+
+`758.1605 s` is the median `very_fine` solver time of the eight valid
+pairs. Normalized costs are `very_fine = 1` and `medium = 0.1059`. There
+is no geometry-dependent cost model.
+
+Pilot budget: 8.0 HF-equivalent, and at most 6 sequential queries. A final
+`very_fine` evaluation of the recommended design is still required and is
+charged. Cached valid results are not re-solved, but they still count
+toward this benchmark cost.
+
+Compare methods by the best HF-validated feasible LMH against cumulative
+HF-equivalent cost, not by iteration count.
+
+## Models
+
+NumPy only. BoTorch / PyTorch are not dependencies.
+
+HF-only (`constrained_expected_improvement`): every new query is
+`very_fine`. An RBF GP. Constrained expected improvement is LMH expected
+improvement times the probability that dP/L is within the limit.
+
+MFBO (`kennedy_ohagan_forrester_constrained_ei`): one autoregressive model
+`y_HF = ρ y_LF + δ` for LMH and another for dP/L. Forrester scores compare
+HF constrained EI with LF constrained EI scaled by cross-fidelity
+correlation and the HF/LF cost ratio. The target fidelity is `very_fine`.
+
+Only `valid` CFD results train the GP. `diverged`, `invalid`, and
+`execution_failed` are recorded, excluded from training, and not repeated
+at the same `(d, L, fidelity)`. They are not turned into LMH = 0 or a
+penalty. There is no failure classifier.
+
+The reported design of each method is an evaluated `very_fine` point that
+satisfies the pressure limit. An LF prediction is not compared with an HF
+evaluation.
+
+## Modes and outputs
+
+`offline_replay` looks up the screening table. A design that is not in the
+table is refused. Do not quote replay LMH or cost as the live result.
+
+`live` calls the existing 2D case runner, one Fluent process at a time.
+It runs only on the Windows Fluent host.
+
+Each experiment writes, under
+`RO_2D_DATA_ROOT/studies/optimization/{hf_bo|mfbo}/<experiment_id>/`:
+
+- `config.json`
+- `history.csv`
+- `history.json`
+- `final_summary.json`
+
+## Windows live commands
+
+Git Bash, after this documentation commit is on `origin/main`. Do not run
+the two pilots in parallel.
+
+```bash
+cd /c/pyfluent
+git fetch origin
+git reset --hard origin/main
+source .venv/Scripts/activate
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export RO_2D_DATA_ROOT="/c/RO_2D_Data"
+python scripts/run_ro_2d_hf_bo.py --mode live --experiment-id pilot
+python scripts/run_ro_2d_mfbo.py --mode live --experiment-id pilot
+python scripts/compare_ro_2d_optimization.py \
+  --hf /c/RO_2D_Data/studies/optimization/hf_bo/pilot \
+  --mfbo /c/RO_2D_Data/studies/optimization/mfbo/pilot
+```
+
+If the four initial designs are already `valid` on disk, each method
+launches at most six sequential cases plus one final `very_fine` check
+(7 new CFD runs). If those initials are missing, the caps are 11 (HF-only)
+and 15 (MFBO).
+
+Offline check, still under `RO_2D_DATA_ROOT`, does not launch Fluent:
+
+```bash
+python scripts/run_ro_2d_hf_bo.py --mode offline_replay --experiment-id replay_check
+python scripts/run_ro_2d_mfbo.py --mode offline_replay --experiment-id replay_check
+```
+
+## Later 3D attachment
+
+The optimizer needs a design box, an `evaluate(design, fidelity)` function,
+fidelity names, LMH and dP/L extraction, and a cost model. A future 3D
+evaluator can map its own design variables through CAD, meshing, and CFD
+and return the same result record. That adapter is not in this repository.

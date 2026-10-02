@@ -12,8 +12,10 @@ need `pip install -e .` so `import ro` works outside pytest.
 
 ## 1 — Entry points
 
-Every `scripts/*.py` file. Human entry points first; then workers typically
-spawned by a batch driver; then leftovers.
+Every 3D-campaign `scripts/*.py` file. Human entry points first; then workers
+typically spawned by a batch driver; then leftovers. Scripts named `*ro_2d*` use `RO_2D_DATA_ROOT` and are not campaign
+orchestrators. The optimization pilot is recorded in
+`docs/RO_2D_OPTIMIZATION.md`.
 
 ### 1.1 Human entry points (orchestrators / tools)
 
