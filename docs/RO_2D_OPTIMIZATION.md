@@ -170,6 +170,20 @@ Read this run as a closed loop on a small two-variable box: both methods
 reached one HF-validated feasible design, and the solver-cost gap is small.
 It is not evidence that MFBO is the cheaper method on a 3D spacer campaign.
 
+On 2026-10-03, `scripts/compare_ro_2d_optimization.py` re-read the two
+`pilot` directories on the Windows host and printed the same design and
+the unrounded costs behind the table above: HF-only solver time
+5635.9889471001225 s, HF-equivalent 7.433767582326068, wall time
+7094.78346329974 s; MFBO solver time 5494.516356300213 s, HF-equivalent
+7.247167791384824, wall time 7645.913412399823 s; both final HF rows
+`d_m = 0.000375`, `L_m = 0.003`, LMH 25.356507233737542, dP/L
+28481.694331910043 Pa/m, CP 1.078030037929223. The script reads
+`final_summary.json` and exits if that file is missing, so this re-read
+is the file on disk. A later Python literal `Path("/c/RO_2D_Data/...")`
+reported the summaries missing: Git Bash rewrites `/c/...` only in
+command arguments, not inside a script string. That probe did not show
+an absent file, and it did not re-open the fidelity-screen summary.
+
 ## Models
 
 NumPy only. BoTorch / PyTorch are not dependencies.

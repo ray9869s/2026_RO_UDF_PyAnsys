@@ -18,7 +18,8 @@ separate 2D methodological pilot in
 `src/ro_2d_pilot/optimization/` is documented in `docs/RO_2D_OPTIMIZATION.md`.
 It does not change the 3D campaign. Offline replay is not a performance
 result. The live `pilot` comparison is recorded in that document and does
-not by itself justify a 3D fidelity choice.
+not by itself justify a 3D fidelity choice. The production p6M
+geometry comparison is `docs/P6M_COMPARISON.md`.
 
 Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 `260816_RO_UDF.c` is a frozen ASCII compile-fix sibling; new runs use 260822.

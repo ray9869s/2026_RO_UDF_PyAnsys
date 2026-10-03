@@ -2,14 +2,17 @@
 
 Systematic CFD comparison of reverse-osmosis membrane feed spacer designs.
 Ansys Fluent 25.1 is driven by PyFluent. The campaign mesh set is built
-(31 geometries); the 279-run solver sweep is the next stage.
+(31 geometries). The p6M column (31 geometries × 3 velocities) has been
+solved and compared; outlet pressures 4 MPa and 8 MPa have not been run.
+The comparison is [docs/P6M_COMPARISON.md](docs/P6M_COMPARISON.md).
 
 ## Campaign
 
 Four spacer families — diamond, multi-layer, pillar, and sinusoidal — plus an
 empty reference channel. 31 geometries, each at nine operating points (inlet
 velocity 0.1 / 0.2 / 0.3 m/s crossed with outlet gauge pressure 4 / 6 / 8 MPa)
-→ 279 solver runs.
+→ 279 solver runs. The p6M column of that matrix is compared in
+[docs/P6M_COMPARISON.md](docs/P6M_COMPARISON.md).
 
 All 31 meshes are built at campaign settings `max085_min006_cpg5_bl4_peel2`
 (D0817_a60 uses `m_max` 0.060). The diamond reference remains `D2450_a45` on

@@ -233,7 +233,8 @@ the max path as well as the average — do not re-litigate max separately.
 ## Iteration-robust QoIs
 
 For spacer comparison, use **`cp_canon_window_avg`** and
-**`pressure_drop_spacer`** only. **`cp_canon_window_max` is not usable** for
+**`pressure_drop_spacer`** (per length when pitches differ). The p6M
+read that uses those columns is `docs/P6M_COMPARISON.md`. **`cp_canon_window_max` is not usable** for
 that purpose: between the 301-iteration QoI stop and a 2000-iteration solve on
 D2450_a45 u0p1 (p = 6 MPa) it moved \(2.73751 \rightarrow 125.245\)
 (\(+4475\%\)) while `cp_canon_window_avg` moved only \(0.25\%\). The window
