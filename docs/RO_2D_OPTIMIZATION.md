@@ -60,18 +60,46 @@ A 3×3 medium / very_fine screen was collected for qualification. One
 `d = 0.50 mm`, `L = 4.0 mm` (stopped at ramp 0.2, iteration 9).
 
 Across the eight valid pairs, relative discrepancy is
-`(medium − very_fine) / very_fine`:
+`(medium − very_fine) / very_fine`. On 2026-10-03 the Windows host read
+`RO_2D_DATA_ROOT/studies/fidelity_pairs/medium_very_fine_summary.json`
+(`study = medium_very_fine_screening`, 9 geometries, 8 comparable pairs).
+The rounded table matches that file. The same eight rows in
+`src/ro_2d_pilot/optimization/replay.py` reproduce it. The summary's
+`decision` is `not_made`: the screen does not accept medium as a
+low-fidelity model.
 
-| QoI | Pearson | Spearman | Mean signed relative | Rank reversals |
-|---|---:|---:|---:|---:|
-| LMH | 0.985 | 0.929 | +2.14% | 2 / 28 |
-| CP − 1 | 0.985 | 0.929 | −22.9% | 2 / 28 |
-| dP/L | 1.000 | 1.000 | −0.31% | 0 / 28 |
+| QoI | Pearson | Spearman | Mean signed | Mean absolute | Max absolute | Rank reversals |
+|---|---:|---:|---:|---:|---:|---:|
+| LMH | 0.985 | 0.929 | +2.14% | 2.14% | 2.62% | 2 / 28 |
+| CP − 1 | 0.985 | 0.929 | −22.9% | 22.9% | 24.9% | 2 / 28 |
+| dP/L | 1.000 | 1.000 | −0.31% | 0.68% | 2.05% | 0 / 28 |
 
-Median medium / very_fine solver-time ratio is 0.1059 (about 9.4× solver
-speedup). Median total-wall-time ratio is 0.265. Medium is informative
-enough to test a multi-fidelity loop. That is not a claim that MFBO is
-better, and medium CP−1 is not a quantitative substitute for `very_fine`.
+LMH and CP−1 do not change sign across the eight pairs, so the signed mean
+and the absolute mean are the same number. Medium LMH is always a little
+high. Medium CP−1 is always about 23% low, which is why it is not a
+quantitative substitute for `very_fine`. dP/L does change sign. The −0.31%
+signed mean cancels a 0.68% absolute mean. The largest dP/L miss is 2.05%,
+at `d = 0.50 mm`, `L = 5.0 mm`, where medium is low.
+
+Both LMH reversals and both CP−1 reversals are the same two comparisons,
+both at `L = 5.0 mm`: `(0.30 mm, 5.0 mm)` against `(0.50 mm, 5.0 mm)`, and
+`(0.40 mm, 5.0 mm)` against `(0.50 mm, 5.0 mm)`. Medium ranks the
+`d = 0.50 mm` point better on both quantities. `very_fine` ranks it worse.
+The `very_fine` LMH gaps are 0.010 and 0.070 (24.7917 and 24.8509 against
+24.7814), so these are near-ties, not a large reorder. dP/L has no
+reversal.
+
+The summary's solver-time ratio (medium / very_fine) is minimum 0.0787,
+median 0.1059, maximum 0.1503. The median is about 9.4× solver speedup.
+Median `very_fine` solver time on the replay rows is 758.1605 s, the same
+denominator as the HF-equivalent cost below. Total wall-time ratio in the
+same file is minimum 0.214, median 0.265, maximum 0.385, so medium startup
+and extraction leave about a 2.6–4.7× wall-time speedup rather than the
+9.4× solver speedup. Medium is informative enough to test a
+multi-fidelity loop. That is not a claim that MFBO is better.
+
+The one skipped geometry is `d0p50_L4p00`: medium `valid`, very_fine
+`invalid`. That is the diverged `d = 0.50 mm`, `L = 4.0 mm` case above.
 
 The full screen is a replay table and a reference. It is not loaded into
 both optimizers at initialization.
@@ -182,7 +210,9 @@ the unrounded costs behind the table above: HF-only solver time
 is the file on disk. A later Python literal `Path("/c/RO_2D_Data/...")`
 reported the summaries missing: Git Bash rewrites `/c/...` only in
 command arguments, not inside a script string. That probe did not show
-an absent file, and it did not re-open the fidelity-screen summary.
+an absent file. A later argument-path read of
+`studies/fidelity_pairs/medium_very_fine_summary.json` succeeded and is
+the fidelity section above.
 
 ## Models
 
