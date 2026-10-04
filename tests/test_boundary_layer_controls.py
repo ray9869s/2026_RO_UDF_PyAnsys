@@ -90,37 +90,45 @@ class _TaskList:
         self.state.append(name)
 
 
-# Display names differ from both the TaskList id and BLControlName.
-_CHILD_DISPLAY_NAME = {
-    "smooth_transition_mem": "Smooth Transition Mem",
-    "smooth_transition_spacer": "Smooth Transition Spacer",
-    "smooth_transition_1": "smooth_transition_1",
-}
+# Keys observed on the live Fluent 25.1 session (commit f9697e5).
+LIVE_TASK_KEYS = [
+    "Import Geometry",
+    "Add Local Sizing",
+    "Generate the Surface Mesh",
+    "Describe Geometry",
+    "Apply Share Topology",
+    "Enclose Fluid Regions (Capping)",
+    "Update Boundaries",
+    "Create Regions",
+    "Update Regions",
+    "Add Boundary Layers",
+    "Generate the Volume Mesh",
+    "proximity_1",
+    "Set Up Periodic Boundaries",
+]
 
 
 class _TaskContainer:
-    """Fake of PyNamedObjectContainer: keys are display names, state is by id."""
+    """Display name equals BLControlName; get_state() has no _name_ for ids."""
 
     def __init__(self):
         self._tasks = {}
-        self._id_by_display = {}
+        self._internal_ids = []
         self.object_name_reads = 0
         self.state_reads = 0
 
-    def add(self, display_name, task, internal_id):
-        self._tasks[display_name] = task
-        self._id_by_display[display_name] = internal_id
+    def add(self, name, task, internal_id):
+        self._tasks[name] = task
+        self._internal_ids.append(internal_id)
 
     def get_object_names(self):
         self.object_name_reads += 1
         return list(self._tasks)
 
     def get_state(self):
+        """Live sessions return no ``_name_`` for a TaskList id."""
         self.state_reads += 1
-        return {
-            internal_id: {"_name_": display_name}
-            for display_name, internal_id in self._id_by_display.items()
-        }
+        return {internal_id: None for internal_id in self._internal_ids}
 
     def __getitem__(self, key):
         if key not in self._tasks:
@@ -141,30 +149,39 @@ class _Task:
             {"DeferUpdate": DeferUpdate, "state": dict(self.Arguments.state)}
         )
         control_name = self.Arguments.state["BLControlName"]
-        display_name = _CHILD_DISPLAY_NAME[control_name]
-        child = self.workflow.container._tasks.get(display_name)
+        internal_id = f"TaskObject{14 + self.workflow.child_count}"
+        self.workflow.child_count += 1
+        self.TaskList.append(internal_id)
+        if control_name == self.workflow.omit_control:
+            self.workflow.container._internal_ids.append(internal_id)
+            return
+        child = self.workflow.container._tasks.get(control_name)
         if child is None:
-            child = _Task(display_name, self.workflow)
-            internal_id = f"TaskObject{14 + self.workflow.child_count}"
-            self.workflow.child_count += 1
-            self.workflow.container.add(display_name, child, internal_id)
-            self.TaskList.append(internal_id)
+            child = _Task(control_name, self.workflow)
+            self.workflow.container.add(control_name, child, internal_id)
         child.Arguments.set_state(self.Arguments.state)
         if (
             self.workflow.corrupt_membrane_on_spacer
             and control_name == "smooth_transition_spacer"
         ):
-            membrane = self.workflow.container["Smooth Transition Mem"]
+            membrane = self.workflow.container["smooth_transition_mem"]
             membrane.Arguments.state["NumberOfLayers"] = 1
 
 
 class _Workflow:
-    def __init__(self, *, corrupt_membrane_on_spacer=False):
+    def __init__(
+        self, *, corrupt_membrane_on_spacer=False, omit_control=None
+    ):
         self.container = _TaskContainer()
         self.corrupt_membrane_on_spacer = corrupt_membrane_on_spacer
+        self.omit_control = omit_control
         self.child_count = 0
-        parent = _Task("Add Boundary Layers", self)
-        self.container.add(parent.name, parent, "TaskObject1")
+        for name in LIVE_TASK_KEYS:
+            self.container.add(
+                name,
+                _Task(name, self),
+                f"TaskObject{len(self.container._tasks)}",
+            )
 
     @property
     def TaskObject(self):
@@ -275,25 +292,53 @@ def test_split_path_payloads_and_membrane_layer_count(capsys):
     assert [item["state"] for item in task.updates] == [membrane, spacer]
     assert all(item["DeferUpdate"] is False for item in task.updates)
     assert task.TaskList.get_state() == ["TaskObject14", "TaskObject15"]
+    assert workflow.container.get_state()["TaskObject14"] is None
+    assert workflow.container.get_state()["TaskObject15"] is None
     with pytest.raises(LookupError, match="TaskObject14"):
         workflow.TaskObject["TaskObject14"]
     assert (
-        workflow.TaskObject["Smooth Transition Mem"].Arguments.get_state()[
+        workflow.TaskObject["smooth_transition_mem"].Arguments.get_state()[
             "NumberOfLayers"
         ]
         == 8
     )
+    assert workflow.TaskObject.get_object_names() == [
+        *LIVE_TASK_KEYS,
+        "smooth_transition_mem",
+        "smooth_transition_spacer",
+    ]
     printed = capsys.readouterr().out
     assert "Arguments.get_state() after smooth_transition_mem" in printed
     assert "TaskList after smooth_transition_mem" in printed
     assert "Arguments.get_state() after smooth_transition_spacer" in printed
     assert "TaskList after smooth_transition_spacer" in printed
-    assert "Boundary layer child 'Smooth Transition Mem'" in printed
-    assert "Boundary layer child 'Smooth Transition Spacer'" in printed
-    assert "TaskList id 'TaskObject14'" in printed
-    assert "TaskList id 'TaskObject15'" in printed
+    assert "Boundary layer child 'smooth_transition_mem'" in printed
+    assert "Boundary layer child 'smooth_transition_spacer'" in printed
 
-def test_unresolved_task_list_id_raises_with_keys_and_ids():
+
+def test_missing_child_name_raises_with_the_key_list():
+    meshing = load_meshing_code()
+    with pytest.raises(RuntimeError, match="smooth_transition_spacer") as raised:
+        meshing.configure_boundary_layers(
+            _Workflow(omit_control="smooth_transition_spacer"),
+            boundary_layer_labels=LABELS,
+            membrane_and_buffer_labels=MEMBRANE_AND_BUFFER,
+            wall_spacer_labels=SPACER,
+            bl_height=0.002,
+            bl_layers=8,
+            spacer_bl_layers=4,
+            bl_offset_method="smooth-transition",
+            bl_growth_rate=1.2,
+            include_spacer_in_boundary_layers=True,
+        )
+    message = str(raised.value)
+    assert "TaskObject keys:" in message
+    for key in LIVE_TASK_KEYS:
+        assert key in message
+    assert "smooth_transition_mem" in message
+
+
+def test_label_list_mismatch_raises():
     meshing = load_meshing_code()
     workflow = _Workflow()
     meshing.configure_boundary_layers(
@@ -308,28 +353,11 @@ def test_unresolved_task_list_id_raises_with_keys_and_ids():
         bl_growth_rate=1.2,
         include_spacer_in_boundary_layers=True,
     )
-    task = workflow.TaskObject["Add Boundary Layers"]
-    task.TaskList.append("TaskObject99")
-    with pytest.raises(RuntimeError, match="TaskObject99") as raised:
-        meshing._assert_membrane_control_layer_count(
-            workflow,
-            task.TaskList.get_state(),
-            8,
-            4,
-            MEMBRANE_AND_BUFFER,
-            SPACER,
-        )
-    message = str(raised.value)
-    assert "Smooth Transition Mem" in message
-    assert "TaskObject14" in message
-    assert "TaskObject99" in message
-
-    membrane = workflow.TaskObject["Smooth Transition Mem"]
+    membrane = workflow.TaskObject["smooth_transition_mem"]
     membrane.Arguments.state["BlLabelList"] = ["not-the-membrane"]
     with pytest.raises(RuntimeError, match="BlLabelList"):
         meshing._assert_membrane_control_layer_count(
             workflow,
-            ["TaskObject14", "TaskObject15"],
             8,
             4,
             MEMBRANE_AND_BUFFER,

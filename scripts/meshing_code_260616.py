@@ -290,56 +290,6 @@ def _task_object_keys(task_container):
     return list(names)
 
 
-def _task_object_state_by_internal_id(task_container):
-    """Container state keyed by internal ids such as ``TaskObject14``."""
-    try:
-        state = task_container.get_state()
-    except Exception as exc:
-        raise RuntimeError(
-            "Could not read workflow.TaskObject.get_state()."
-        ) from exc
-    if not isinstance(state, dict):
-        raise RuntimeError(
-            "workflow.TaskObject.get_state() must be a dict keyed by "
-            f"internal task id, got {state!r}."
-        )
-    return state
-
-
-def _resolve_task_list_child(task_container, task_id, keys, container_state, task_list_ids):
-    """Map one TaskList id to ``TaskObject[display_name].Arguments``."""
-    entry = container_state.get(task_id)
-    display_name = entry.get("_name_") if isinstance(entry, dict) else None
-    if not isinstance(display_name, str) or not display_name:
-        raise RuntimeError(
-            f"TaskList id {task_id!r} has no _name_ display name in "
-            "workflow.TaskObject.get_state(). "
-            f"TaskObject keys: {keys!r}. TaskList ids: {list(task_list_ids)!r}. "
-            f"get_state() entry: {entry!r}."
-        )
-    if display_name not in keys:
-        raise RuntimeError(
-            f"TaskList id {task_id!r} display name {display_name!r} is not a "
-            "workflow.TaskObject key. "
-            f"TaskObject keys: {keys!r}. TaskList ids: {list(task_list_ids)!r}."
-        )
-    try:
-        child = task_container[display_name]
-    except LookupError as exc:
-        raise RuntimeError(
-            f"TaskObject[{display_name!r}] failed for TaskList id {task_id!r}. "
-            f"TaskObject keys: {keys!r}. TaskList ids: {list(task_list_ids)!r}."
-        ) from exc
-    state = child.Arguments.get_state()
-    if not isinstance(state, dict):
-        raise RuntimeError(
-            f"Child {display_name!r} Arguments.get_state() is not a dict: "
-            f"{state!r}. TaskObject keys: {keys!r}. "
-            f"TaskList ids: {list(task_list_ids)!r}."
-        )
-    return display_name, state
-
-
 def _require_boundary_layer_control(state, display_name, *, control_name, layers, labels):
     got_layers = state.get("NumberOfLayers")
     if isinstance(got_layers, bool) or got_layers != layers:
@@ -355,67 +305,73 @@ def _require_boundary_layer_control(state, display_name, *, control_name, layers
         )
 
 
+_SPLIT_BL_CONTROL_NAMES = (
+    "smooth_transition_mem",
+    "smooth_transition_spacer",
+)
+
+
 def _assert_membrane_control_layer_count(
     workflow,
-    task_list_ids,
     bl_layers,
     spacer_bl_layers,
     membrane_and_buffer_labels,
     wall_spacer_labels,
 ):
-    """Resolve TaskList ids to display names and check both child controls."""
+    """Open both split controls by name and check layers and labels."""
     task_container = workflow.TaskObject
     keys = _task_object_keys(task_container)
-    container_state = _task_object_state_by_internal_id(task_container)
-    found = {}
-    for task_id in task_list_ids:
-        display_name, state = _resolve_task_list_child(
-            task_container,
-            task_id,
-            keys,
-            container_state,
-            task_list_ids,
+    missing = [name for name in _SPLIT_BL_CONTROL_NAMES if name not in keys]
+    if missing:
+        raise RuntimeError(
+            f"Missing boundary-layer controls {missing!r}. "
+            f"TaskObject keys: {keys!r}."
         )
-        print(
-            f"Boundary layer child {display_name!r} "
-            f"(TaskList id {task_id!r}) Arguments.get_state(): {state}"
+    task_list_ids = task_container["Add Boundary Layers"].TaskList.get_state()
+    if (
+        not isinstance(task_list_ids, (list, tuple))
+        or len(list(task_list_ids)) != 2
+    ):
+        raise RuntimeError(
+            "Add Boundary Layers TaskList must have exactly two entries "
+            f"after the split controls, got {task_list_ids!r}. "
+            f"TaskObject keys: {keys!r}."
         )
-        control_name = state.get("BLControlName")
-        if control_name not in (
-            "smooth_transition_mem",
-            "smooth_transition_spacer",
-        ):
-            raise RuntimeError(
-                f"Child {display_name!r} BLControlName is {control_name!r}; "
-                "expected 'smooth_transition_mem' or 'smooth_transition_spacer'. "
-                f"TaskObject keys: {keys!r}. "
-                f"TaskList ids: {list(task_list_ids)!r}. State: {state!r}."
-            )
-        if control_name in found:
-            previous, _previous_state = found[control_name]
-            raise RuntimeError(
-                f"BLControlName {control_name!r} is on both {previous!r} and "
-                f"{display_name!r}. TaskObject keys: {keys!r}. "
-                f"TaskList ids: {list(task_list_ids)!r}."
-            )
-        found[control_name] = (display_name, state)
     expected = {
         "smooth_transition_mem": (bl_layers, membrane_and_buffer_labels),
         "smooth_transition_spacer": (spacer_bl_layers, wall_spacer_labels),
     }
-    missing = [name for name in expected if name not in found]
-    if missing:
-        resolved = {name: display for name, (display, _state) in found.items()}
-        raise RuntimeError(
-            f"Missing boundary-layer controls {missing!r}. "
-            f"TaskObject keys: {keys!r}. TaskList ids: {list(task_list_ids)!r}. "
-            f"Resolved: {resolved!r}."
-        )
     for control_name, (layers, labels) in expected.items():
-        display_name, state = found[control_name]
+        try:
+            child = task_container[control_name]
+        except LookupError as exc:
+            raise RuntimeError(
+                f"TaskObject[{control_name!r}] failed. "
+                f"TaskObject keys: {keys!r}. "
+                f"TaskList ids: {list(task_list_ids)!r}."
+            ) from exc
+        state = child.Arguments.get_state()
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                f"Child {control_name!r} Arguments.get_state() is not a dict: "
+                f"{state!r}. TaskObject keys: {keys!r}. "
+                f"TaskList ids: {list(task_list_ids)!r}."
+            )
+        print(
+            f"Boundary layer child {control_name!r} "
+            f"Arguments.get_state(): {state}"
+        )
+        got_name = state.get("BLControlName")
+        if got_name != control_name:
+            raise RuntimeError(
+                f"Child {control_name!r} BLControlName is {got_name!r}; "
+                f"expected {control_name!r}. "
+                f"TaskObject keys: {keys!r}. "
+                f"TaskList ids: {list(task_list_ids)!r}. State: {state!r}."
+            )
         _require_boundary_layer_control(
             state,
-            display_name,
+            control_name,
             control_name=control_name,
             layers=layers,
             labels=labels,
@@ -476,19 +432,12 @@ def configure_boundary_layers(
         bl_offset_method,
         bl_growth_rate,
     )
-    seen_children = []
     for arguments in (membrane_args, spacer_args):
         task.Arguments.set_state(arguments)
         task.AddChildAndUpdate(DeferUpdate=False)
-        names = _print_boundary_layer_task_state(
-            task, arguments["BLControlName"]
-        )
-        for name in names:
-            if name not in seen_children:
-                seen_children.append(name)
+        _print_boundary_layer_task_state(task, arguments["BLControlName"])
     _assert_membrane_control_layer_count(
         workflow,
-        seen_children,
         bl_layers,
         spacer_bl_layers,
         membrane_and_buffer_labels,
