@@ -38,6 +38,7 @@ orchestrators. The optimization pilot is recorded in
 | `pyfluent_field_check.py` | Diagnostic field / UDM sanity check | `python scripts/pyfluent_field_check.py [--config PATH] [--family] [--geo-id] [--mesh-id] [--run-id] [--geo-name] [--case-name] [--with-fluent] [--fail-on-warn]` | `PYFLUENT_POST_CONFIG` optional; `RO_DATA_ROOT` for four-id selection |
 | `pyensight_extra_figures.py` | Extra EnSight figures (not spawned by `batch_postprocess_all_cases`) | `python scripts/pyensight_extra_figures.py [--family] [--geo-id] [--mesh-id] [--run-id] [--geo-name] [--case-name] [--results-dir PATH] [--run] [--dry-run] [--active-x-min] [--active-x-max]` | `RO_DATA_ROOT`; optional `PYFLUENT_EXTRA_FIGURES_OVERRIDES` |
 | `probe_species_numerics_context.py` | Live Fluent species-numerics probe matrix (no save/iterate) | `python scripts/probe_species_numerics_context.py [--template-case PATH] [--mesh-file PATH] [--product-version] [--processor-count] [--graphics-driver] [--ui-mode] [--start-timeout] [--dry-run]` | `RO_DATA_ROOT` for default mesh path |
+| `generate_pillar_cad.py` | One Pillar/Hole-Pillar fluid body as `.pmdb` and SCDOCX (Discovery 25.1, Windows). Added for the 2026-09-29 .. 2026-10-02 CAD session | `python scripts/generate_pillar_cad.py --d-p-mm F --d-h-mm F --d-f-mm F --geo-id ID --out-dir DIR` | none; `--out-dir` under `C:/ro_data/geometries` is refused |
 
 ### 1.2 Workers (invoked by batch drivers or directly)
 
@@ -86,7 +87,18 @@ Fluent is not pointed at `C:/ro_data`.
 
 `mesh_study_case.py` builds `mesh_id` with `format_production_mesh_id` and
 inserts `_fNNN` (`round(bl_height_factor × 100)`) only when the factor
-differs from the template.
+differs from the template. A spacer layer count that differs from the
+membrane count is `bl{membrane}s{spacer}` (split BL, commit `5fe1d38`).
+
+**Measured, session 2026-09-29 .. 2026-10-02 (recorded 2026-10-04).**
+Off-matrix `MFP_d0900_h0200_f0400` was meshed and solved end to end
+through these drivers. The paste did not name the study data root,
+`mesh_id`, or `run_id`. The leaf shape is
+`<study-root>/runs/pillar/MFP_d0900_h0200_f0400/<mesh_id>/<run_id>/`.
+Parity numbers for the nine campaign pillars are in
+`docs/GEOMETRY_DESIGN.md`. The screening and RANS checks that used
+`mesh_study_case.py` and `solve_campaign_case.py` are in
+`docs/MESH_LANDSCAPE.md`.
 
 **Spawn map**
 
@@ -112,13 +124,20 @@ batch_solver_rerun.py            → embedded Fluent (not solver_code)
 There is **no automated geometry/CAD stage** in `scripts/`. Discovery `.dsco`
 files are expected under `RO_DATA_ROOT/geometries/` (created outside this repo).
 
+**Pillar exception (session 2026-09-29 .. 2026-10-02).** The sentence above
+still holds for Diamond, ML, Sinusoidal, and `REF_empty`. Pillar `.pmdb`
+generation is `src/ro/pillar_cad.py`, launched by
+`scripts/generate_pillar_cad.py`. It does not write into
+`C:/ro_data/geometries`. Measured parity against the nine manual `.dsco`
+files is in `docs/GEOMETRY_DESIGN.md`.
+
 Ordered stages the code implements:
 
 ### Stage A — Geometry (external)
 
 | | |
 |---|---|
-| Entry | **None in-repo.** Manual Ansys Discovery / archive copy. |
+| Entry | **None in-repo.** Manual Ansys Discovery / archive copy. **Superseded for Pillar only (session 2026-09-29 .. 2026-10-02):** `scripts/generate_pillar_cad.py` writes `.pmdb` outside `C:/ro_data/geometries`. Diamond, ML, Sinusoidal, and `REF_empty` stay manual. |
 | Reads | UNKNOWN (outside this repo) |
 | Writes | `RO_DATA_ROOT/geometries/{family}/{geo_id}/{geo_id}.dsco` |
 | `ro` deps | none for creation; `geometry_dir` / `campaign_geo_ids` validate ids when used later |
@@ -202,6 +221,10 @@ Line counts from `wc -l` at write time.
 | `fluent_report_helpers.py` | 1367 | Shared Fluent report / unit-cell diagnostics | `pyfluent_report_extract.py`, `solver_code_260616.py`, `_tmp_*` |
 
 **No `src/ro/` module is imported by nothing.** Four are only reached via other `ro` modules from scripts: `campaign_geo_ids`, `cp_metrics`, `manifest_errors`, `manifest_validation`.
+
+The line-count table predates `src/ro/pillar_cad.py` (Pillar `.pmdb`
+generator, session 2026-09-29 .. 2026-10-02). That module is imported by
+`scripts/generate_pillar_cad.py` and `scripts/mfbo/run_geometry_parity_all.py`.
 
 ---
 
@@ -298,7 +321,9 @@ Tree the code expects:
 ```
 RO_DATA_ROOT/
   geometries/{family}/{geo_id}/{geo_id}.dsco
-      # created: Stage A (external). Read by meshing.
+      # created: Stage A. Manual .dsco, except Pillar .pmdb from
+      # generate_pillar_cad.py, which is not written into this tree.
+      # Read by meshing.
 
   meshes/{family}/{geo_id}/{mesh_id}/
       {geo_id}_{mesh_id}.msh.h5          # Stage B success
@@ -348,9 +373,10 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
 
 3. **No in-repo geometry generation**  
    Pipeline assumes `.dsco` already exists. Campaign matrix expansion that needs new CAD is outside automation.
+   **Pillar exception, session 2026-09-29 .. 2026-10-02.** Those two sentences still hold for Diamond, ML, Sinusoidal, and `REF_empty`. `src/ro/pillar_cad.py` writes a Pillar `.pmdb` outside `C:/ro_data/geometries`. An off-matrix MFP geometry has been meshed and solved (`docs/GEOMETRY_DESIGN.md`).
 
 4. **Surface-size grid independence not closed**  
-   `AGENTS.md` / restructure notes: bl4-vs-bl6 LMH/CP figures are wall-normal, not an `m_max` study. The `m_max` exploration on D2450_a45 is recorded in `docs/MESH_LANDSCAPE.md`; neither the `bl` nor the `m_max` axis is converged.
+   `AGENTS.md` / restructure notes: bl4-vs-bl6 LMH/CP figures are wall-normal, not an `m_max` study. The `m_max` exploration on D2450_a45 is recorded in `docs/MESH_LANDSCAPE.md`; neither the `bl` nor the `m_max` axis is converged. The 2026-10 screening on D0817_a30 and P_p80_h15 is in that file and does not close these axes.
 
 5. **MFBO optimizer**  
    Drivers in `scripts/mfbo/` copy, mesh, solve, and re-extract outside

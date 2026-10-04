@@ -24,6 +24,16 @@ Do **not** assume a bottom-origin frame where the mid-plane would be
 derived in that frame (outer axes at \(\pm(r_{\mathrm{mid}}+r_{\mathrm{out}})\),
 spheres at \(\pm r_{\mathrm{mid}}\)).
 
+### Silent \(z = 0\) fallback (known issue, 2026-10-02)
+
+`resolve_channel_midplane_z_m` in `src/ro/fluent_report_helpers.py`
+(lines 243–248) returns `fallback_z_m` (default 0) when the fluid-zone
+reduction raises. It records `source=fallback_centred_origin` and does
+not raise. On the campaign frame that value is the mid-plane, so
+campaign \(c_b\) sampled this way is still at \(z = 0\). The failure
+itself is silent. It has to become loud. The \(h/2\) candidate-list bug
+above is a different, already-fixed path.
+
 ---
 
 # CP modulus conventions
@@ -252,6 +262,20 @@ The local `cp_perm` inside `ro_cwall_from_film` does feed the solve when
 (`--cp-definition-check`) records the faces on a copy of the run. Fluent
 never opens `C:/ro_data`.
 
+**Algebra, same definition.** With \(c_p = B c_m/(J_w+B)\), the stored
+per-face form \((c_m - c_p)/(c_0 - c_p)\) is singular at
+\(J_w = B(c_m/c_0 - 1)\). The contact-line statement above (\(J_w\) about
+\(2B\)) is unchanged.
+
+**Measured facet and area-average behaviour (session 2026-09-29 ..
+2026-10-02, recorded 2026-10-04).** The paste did not name the run id.
+Facet maxima diverge: Sinusoidal up to 1794, Diamond a60 up to 4.48.
+Area averages are biased on contact families: `S_a072_l1733` −0.0014,
+`D1225_a60` +0.0011. UDM-9 remains diagnostic only; the no-feedback
+statement above already covers that. Production mesh for these geos is
+`max085_min006_cpg5_bl4_peel2` except `D0817_a60`
+(`max060_min006_cpg5_bl4_peel2`), under `C:/ro_data`.
+
 ## Concentration-statistics CP (diagnostic columns)
 
 Extract also writes a second family that does not read UDM-9.
@@ -302,6 +326,24 @@ The average form above is a ratio of window aggregates with one
 \(c_{p,\mathrm{ref}}\). It is not the per-face-then-area-weight order
 required for `cp_canon_window_avg`. Do not substitute it for that column
 until a campaign comparison says so.
+
+**Three-geometry comparison (commit `720ec4c`, session 2026-09-29 ..
+2026-10-02, recorded 2026-10-04).** On `REF_empty`, `P_p100_h30`, and
+`M_c267`, `cpc_window_avg` matched the previous window average within
+\(1\times10^{-5}\). Switching `cp_ref` between area and flux changed the
+new metrics by less than \(1\times10^{-4}\). The paste did not name the
+run id. Production mesh id is `max085_min006_cpg5_bl4_peel2`. Leaves
+that predate `720ec4c` lack these columns; a re-extract copy lives under
+a study data root, not under `C:/ro_data`
+(`scripts/mfbo/reextract_runs.py`). That root's path was not in the
+paste. Production geometry leaves for the three ids:
+
+- `C:/ro_data/runs/empty/REF_empty/max085_min006_cpg5_bl4_peel2/`
+- `C:/ro_data/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/`
+- `C:/ro_data/runs/ml/M_c267/max085_min006_cpg5_bl4_peel2/`
+
+This agreement is those three geometries. The substitution sentence
+above still stands for campaign ranking.
 
 ## Why \(c_b\) and not \(c_0\)
 
@@ -471,6 +513,12 @@ dependence. The Diamond growth is spacer-induced.
 
 ## Fixed `n_lead_excluded=3` residual bias (Diamond)
 
+**Superseded in part (session 2026-09-29 .. 2026-10-02).** The per-cell
+read at the end of this section replaces the extrapolated D0817
+window-mean bias (0.12% on D0817_a45, and the 0.09% / ~0.3% bound on
+D0817_a30). The archive rows and the D2450_a60 two-cell sample-size
+warning stay.
+
 `n_lead_excluded` stays 3 on all nine Diamond geometries. Cell count
 predicts entrance length better than millimetres, but is not invariant.
 Archive D0817_a45_21c at \(u=0.2\): plateau from the 5th active cell
@@ -497,6 +545,22 @@ about \(\varepsilon/N_{\mathrm{window}}\).
 The real problem is D2450_a60: \(n_{\mathrm{active}}=5\) leaves a
 two-cell window. Even a clean 4th active cell is a two-sample mean of a
 periodic quantity.
+
+### Entrance development at `u0p2_p6M` (session 2026-09-29 .. 2026-10-02)
+
+Recorded 2026-10-04 from the workstation paste. Per-cell CP was formed
+from \(c_m\), \(c_p\), and \(c_b\). Production leaves are
+`C:/ro_data/runs/{family}/{geo_id}/{mesh_id}/u0p2_p6M/` with mesh id
+`max085_min006_cpg5_bl4_peel2`, except `D0817_a60` at
+`max060_min006_cpg5_bl4_peel2`.
+
+Measured: Pillar and ML develop within 3.5 mm, and the evaluation-window
+bias is under 0.3%. Sinusoidal stays mostly within ±2%. Diamond develops
+over 10–21 mm. The current 3-cell exclusion biases D0817 CP low by 5–7%.
+That 5–7% replaces the extrapolated D0817 window-mean bias in the table
+above. \(\Delta P\) develops within 3–4 cells for every family. That
+entrance length is separate from the developed-cell spread
+`pp_pressure_drop_rel_spread_window` under **Evaluation-window dP spread**.
 
 ## `REF_empty` discretisation excess over plane Poiseuille
 
@@ -525,3 +589,18 @@ would have inflated LMH by 8.7 / 6.4 / 5.3% and were removed before any
 Pillar solver run (`e493975`). `membrane_blocked_area_frac_geometric`
 (Pillar 0.047 / 0.084 / 0.131) is CAD footprint metadata over the unit-cell
 node, a different quantity, and is not consumed by LMH.
+
+## LMH area basis (session 2026-09-29 .. 2026-10-02)
+
+Recorded 2026-10-04 from the workstation paste. Source leaves are the
+production p6M column under `C:/ro_data`, run ids `u0p1_p6M`,
+`u0p2_p6M`, and `u0p3_p6M`, mesh id `max085_min006_cpg5_bl4_peel2`
+(`D0817_a60` uses `max060_min006_cpg5_bl4_peel2`). The same extracts are
+tabulated in `docs/P6M_COMPARISON.md`.
+
+Measured: reported LMH is per exposed membrane area (`area_mem`).
+Within the pillar family that exposed-area LMH spans 3.9% / 1.6% / 0.4%
+at \(u = 0.1\) / \(0.2\) / \(0.3\,\mathrm{m/s}\). At \(u = 0.2\), p100
+is the best pillar on exposed area, and p60 is about 8% higher once the
+same flux is taken per module area. The CP rank tables in
+`docs/P6M_COMPARISON.md` are a different ordering and are unchanged.

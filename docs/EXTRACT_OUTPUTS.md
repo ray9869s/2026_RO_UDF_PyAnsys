@@ -296,6 +296,14 @@ UDM-9가 저장하는 것은 이 식이 아니라 inlet 분모 L2:
 `surface-massavg`이고, x-normal 같은 타입 평균과 0.5% 안에서 맞는다는
 것이다.
 
+**알려진 문제 (2026-10-02, `src/ro/fluent_report_helpers.py` 243–248).**
+reduction이 예외를 내면 `resolve_channel_midplane_z_m`은 올리지 않고
+`fallback_z_m`(기본 0)을 반환한다. diagnostics `source`는
+`fallback_centred_origin`이다. 캠페인 좌표에서는 그 값이 중앙평면과
+같다. 실패가 조용한 것은 고쳐야 한다. 위의 성공 경로
+(`0.5*(z_min+z_max)`)는 그대로다. 같은 기록은
+`docs/metrics_conventions.md`에 있다.
+
 ---
 
 ## 5. 열 지도 (`summary_metrics_wide.csv`)

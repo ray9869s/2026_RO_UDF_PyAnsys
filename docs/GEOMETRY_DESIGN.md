@@ -147,6 +147,53 @@ CAD, no `batch_config` case, and were never meshed. Dropped from the
 31-id whitelist; re-add only if an Ali 2019 / Qamar 2021 filament-diameter
 review calls for them.
 
+Session 2026-09-29 .. 2026-10-02 restates the gap as
+\(G = R_p(45^\circ - \arcsin(r_f/R_p) - \arcsin(r_h/R_p))\) and the
+meshing rule \(0 < G < m_{\min}\). The p80_h20 row above is that case
+(\(G = 3.65\,\mu\mathrm{m}\)). The table above is that measurement.
+
+---
+
+## Pillar CAD generator (session 2026-09-29 .. 2026-10-02)
+
+Recorded 2026-10-04 from the workstation paste. The nine manual references
+are `C:/ro_data/geometries/pillar/{geo_id}/{geo_id}.dsco`. Generated files
+are written by `scripts/generate_pillar_cad.py` (`src/ro/pillar_cad.py`,
+PyAnsys Geometry 0.15.5, Discovery 25.1). `--out-dir` under
+`C:/ro_data/geometries` is refused, so the parity output root is not the
+production geometry tree. That output root's path was not in the paste.
+
+### Measured
+
+Against the nine manual `.dsco` files: named-selection labels identical,
+bounding-box maximum difference \(3.9\times10^{-4}\,\mathrm{mm}\),
+per-label area relative difference \(\le 4.2\times10^{-4}\).
+
+`P_p100_h30` mesh, generated `.pmdb` against the manual `.dsco` mesh:
+porosity relative difference \(1.25\times10^{-5}\), cell count \(+0.01\%\).
+Solve `u0p2_p6M`, same comparison: LMH \(2.6\times10^{-5}\), \(\Delta P\)
+\(2.9\times10^{-4}\), CP average \(6.7\times10^{-6}\). The campaign mesh
+id for this geo is `max085_min006_cpg5_bl4_peel2`. Manual-side run leaf:
+`C:/ro_data/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/u0p2_p6M/`.
+The paste did not print a different mesh id for the pair. The generated
+side is under the parity data root, which was not named.
+
+**Reading of the solve figures.** The paste attaches "rel diff" to the
+porosity line and then gives LMH, \(\Delta P\), and CP average in the
+same list. Campaign LMH is about 25 and spacer \(\Delta P\) is hundreds
+of pascals, so \(2.6\times10^{-5}\) and \(2.9\times10^{-4}\) are relative
+differences, as the porosity figure is.
+
+Geometry import wall time: `.pmdb` 0.1 min, `.dsco` 2.5 min.
+
+Off-matrix `MFP_d0900_h0200_f0400` (registry token for
+\(d_p = 0.900\,\mathrm{mm}\), \(d_h = 0.200\,\mathrm{mm}\),
+\(d_f = 0.400\,\mathrm{mm}\)) was meshed and solved end to end.
+`mesh_id` and `run_id` were not in the paste. The leaf shape the MFBO
+drivers write is
+`<study-root>/runs/pillar/MFP_d0900_h0200_f0400/<mesh_id>/<run_id>/`,
+and that study root is not `C:/ro_data`.
+
 ---
 
 ## Sinusoidal family

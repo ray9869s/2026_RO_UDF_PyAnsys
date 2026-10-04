@@ -41,6 +41,8 @@ mixing-cup \(c_b\) (`surface-massavg`) on the evaluation window. See
 
 **CP window:** CP table metrics are always evaluation-window restricted
 (mesh manifest `n_lead_excluded` / `n_trail_excluded`), not all active cells.
+A 2026-10 per-cell read finds that lead = 3 still biases Diamond D0817 CP
+low by 5–7%. See `docs/metrics_conventions.md`.
 
 **Grid independence:** CP figures from before the mid-plane \(c_b\) fix
 (commit `0377109`) are invalid — the denominator was tracking the upper
@@ -52,15 +54,20 @@ D2450_a45 (`m_max` 0.085 / 0.060 / 0.045 / 0.035 → 796k / 4.28M / 5.15M /
 axis is converged**. Open question: can poly-hexcore reach the near-wall
 resolution Liang et al. use (≥20 prism layers within 2–4% of \(h\), tet core
 at 3–5% of \(h\)), given that `bl` 12 failed at AR 251.9? See
-`docs/MESH_LANDSCAPE.md`.
+`docs/MESH_LANDSCAPE.md`. A 2026-10 screening on D0817_a30 and P_p80_h15
+is in that file. It does not close these D2450_a45 axes.
 
 **Mesh / geometry session notes:** `docs/MESH_LANDSCAPE.md` (parameter
-landscape, 31-mesh inventory, convergence gate, meshing determinism),
-`docs/GEOMETRY_DESIGN.md` (joint-sphere rule, Pillar bore, sinusoidal CAD
-and curvature gate, REF_empty, import-zone counts),
+landscape, 31-mesh inventory, convergence gate, meshing determinism,
+2026-10 mesh screening and turbulence check),
+`docs/GEOMETRY_DESIGN.md` (joint-sphere rule, Pillar bore, Pillar CAD
+generator parity, sinusoidal CAD and curvature gate, REF_empty,
+import-zone counts),
 `docs/POSTPROCESSING_MAP.md` (extract cost, flux decomposition, load-bearing
-guards), `docs/metrics_conventions.md` (`u_mean_ms` label, `G`, blocked-area),
-`docs/PIPELINE_MAP.md` (manifest schema / backfill / rebuild).
+guards), `docs/metrics_conventions.md` (`u_mean_ms` label, `G`, blocked-area,
+entrance-window bias, LMH area basis, silent mid-plane fallback),
+`docs/PIPELINE_MAP.md` (manifest schema / backfill / rebuild, Pillar
+`.pmdb` exception).
 
 The D2450_a45 peel2 remesh matched the archive ledger (796,009 cells, ortho
 0.102087, AR 62.7715, skew 0.67063399). The restructure is physics-neutral.

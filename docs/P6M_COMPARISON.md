@@ -18,7 +18,11 @@ Ranking metric is `cp_canon_window_avg - 1` (lower excess is less
 polarization). Pressure is `pressure_drop_spacer_per_m` divided by
 `REF_empty` at the same velocity. Absolute pascal drop is not used: active
 length differs by pitch. LMH is `lmh_mass_balance` over the empty channel
-at the same velocity. `cp_canon_window_max`, inlet CP, L1, and L2 are not
+at the same velocity. That LMH is per exposed membrane area (`area_mem`).
+A 2026-10 read of the same column finds that, inside the pillar family,
+per-module-area ranking reverses the exposed-area ranking. The numbers
+are in `docs/metrics_conventions.md`. The CP rank tables below are
+unchanged. `cp_canon_window_max`, inlet CP, L1, and L2 are not
 ranks.
 
 `REF_empty` dP/L is 3707.5 Pa/m at 0.2 m/s and 5634.2 Pa/m at 0.3 m/s, the

@@ -45,6 +45,8 @@ Baseline: `m_max` 0.085 / `m_min` 0.006 / `m_cpg` 5 / `bl` 4 / peel 2 →
 - **\(y_1\) responds to both axes and is not separable:** bl4 5.736 µm, bl6
   3.985, bl8 2.769, bl10 1.926; `m_max` 0.045 at bl4 already gives 3.304 µm.
   Smooth-transition sets prism thickness from the adjacent core cell.
+  Medians on D0817_a30 and P_p80_h15 from the 2026-10 screening are in
+  the next section. They do not replace this D2450_a45 list.
 - **`m_max` is cheap below the cliff:** 0.085 → 0.060 costs ×5.38; each step
   below that costs only ~×1.20.
 - **Gate ceiling at campaign `m_max`:** `bl` 10 is the max that still passes
@@ -217,6 +219,65 @@ only about a quarter of what h30 adds, consistent with bore volume scaling as
 diameter squared.
 
 ---
+
+## Screening mesh study (session 2026-09-29 .. 2026-10-02)
+
+Recorded 2026-10-04 from the workstation paste. Run id `u0p2_p6M`.
+Changes are relative to production bl4. This screening does not close
+the D2450_a45 `bl` or `m_max` axes in the parameter landscape above.
+
+Production reference leaves:
+
+- `C:/ro_data/runs/diamond/D0817_a30/max085_min006_cpg5_bl4_peel2/u0p2_p6M/`
+- `C:/ro_data/runs/pillar/P_p80_h15/max085_min006_cpg5_bl4_peel2/u0p2_p6M/`
+
+`scripts/mfbo/mesh_study_case.py` writes the variants under a
+`--data-root` that it refuses to set to `C:/ro_data`. That root's path
+was not in the paste. Mesh ids below are what
+`format_production_mesh_id` builds when the other knobs stay at the
+production template (`m_max` 0.085, `m_min` 0.006, `m_cpg` 5, peel 2).
+The paste did not print those id strings.
+
+| geo_id | knob | mesh_id | CP-excess change vs bl4 | \(\Delta P\) change vs bl4 |
+|---|---|---|---:|---:|
+| D0817_a30 | `m_max` 0.060 | `max060_min006_cpg5_bl4_peel2` | +22% | −4.6% |
+| D0817_a30 | `m_cpg` 7 | `max085_min006_cpg7_bl4_peel2` | +18% | −0.8% |
+| D0817_a30 | `bl` 8 | `max085_min006_cpg5_bl8_peel2` | +4.4% | +7.4% |
+| D0817_a30 | `m_min` 0.004 | `max085_min004_cpg5_bl4_peel2` | negligible | negligible |
+| P_p80_h15 | `bl` 8 | `max085_min006_cpg5_bl8_peel2` | +6.4% | +1.2% |
+| P_p80_h15 | `m_max` | (value not repeated in the paste) | +1.2% | (not stated) |
+| P_p80_h15 | `m_cpg` 7 | `max085_min006_cpg7_bl4_peel2` | −0.9% | (not stated) |
+| P_p80_h15 | `m_min` 0.004 | `max085_min004_cpg5_bl4_peel2` | negligible | negligible |
+
+`CP_q99` / `CP_q999` move 10–36% across this screening. The paste does
+not assign that range to one knob.
+
+\(y_1\) median, µm. Smooth-transition still ignores `FirstHeight`
+(parameter-landscape finding above); these medians are the layer-count
+response on these two geometries.
+
+| | D0817_a30 | P_p80_h15 |
+|---|---:|---:|
+| bl4 | 3.69 | 5.58 |
+| bl8 | 1.77 | 2.69 |
+
+### Split boundary layer (commit `5fe1d38`)
+
+Membrane 8 layers, spacer 4. With the other production knobs the mesh id
+is `max085_min006_cpg5_bl8s4_peel2`.
+
+Measured: on P_p80_h15, CP matches bl8 and \(\Delta P\) matches bl4, and
+the cell count is −16% (the paste does not name the baseline of that
+percentage). On D0817_a30, CP excess is −20% versus bl8, outside the
+bl4..bl8 range. Mesh quality was normal. The difference grows downstream.
+
+**Session conclusion:** split BL is unsafe for contact geometries.
+**Hypothesis:** the miss is a boundary-layer transition at the contact
+wedges. The downstream growth and the departure from the bl4..bl8
+bracket are the measurements that conclusion uses.
+
+---
+
 ## Convergence
 
 ### Post-hoc gate
@@ -264,6 +325,52 @@ the solver stops on LMH ∧ spacer ΔP ∧ residuals.
 The previous `any-condition-is-met` LMH-only stop is why u0p3 declared
 `qoi_converged` at iteration 301 while continuity was still
 \(6.4\times10^{-3}\).
+
+### Turbulence check (session 2026-09-29 .. 2026-10-02)
+
+Recorded 2026-10-04 from the workstation paste. Laminar campaign leaves
+are under `C:/ro_data`, production mesh
+`max085_min006_cpg5_bl4_peel2`. SST and realizable k-ε leaves are the
+copies `scripts/mfbo/solve_campaign_case.py` writes under a study data
+root that is not `C:/ro_data`. That root's path was not in the paste.
+The driver appends `_sst` (`k-omega-sst`) or `_rke`
+(`k-epsilon-realizable-ewt`) to the base run id.
+
+Production laminar leaves for the cases named below:
+
+- `C:/ro_data/runs/pillar/P_p100_h00/max085_min006_cpg5_bl4_peel2/u0p3_p6M/`
+- `C:/ro_data/runs/pillar/P_p100_h00/max085_min006_cpg5_bl4_peel2/u0p2_p6M/`
+- `C:/ro_data/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/u0p2_p6M/`
+- `C:/ro_data/runs/diamond/D0817_a30/max085_min006_cpg5_bl4_peel2/u0p3_p6M/`
+- `C:/ro_data/runs/diamond/D1225_a30/max085_min006_cpg5_bl4_peel2/u0p3_p6M/`
+- `C:/ro_data/runs/diamond/D2450_a30/max085_min006_cpg5_bl4_peel2/u0p3_p6M/`
+- `C:/ro_data/runs/pillar/P_p100_h15/max085_min006_cpg5_bl4_peel2/u0p3_p6M/`
+
+Study leaves, same mesh id, run ids `u0p3_p6M_sst`, `u0p3_p6M_rke` on
+`P_p100_h00`, and `u0p2_p6M_sst` on `P_p100_h30`.
+
+Measured on `P_p100_h00` at `u0p3`: laminar continuity 0.54. SST failed
+(continuity 0.61, \(\mu_t/\mu\) average 0.10, \(D_{\mathrm{eff}}/D\)
+average 68). Realizable k-ε with enhanced wall treatment reached a stop
+at 301 iterations with \(\mu_t/\mu\) average 3.2 (maximum 29) and
+\(D_{\mathrm{eff}}/D\) average about 2000.
+
+**Session reading of those k-ε ratios:** the field that stopped is
+model-made.
+
+Measured control, `P_p100_h30` at `u0p2`: SST and laminar agree within
+0.1% on LMH, \(\Delta P\), and CP. \(\mu_t/\mu\) average is 0.034.
+
+**Session conclusion, drawn from this control and the `P_p100_h00`
+RANS attempt:** laminar is appropriate.
+**Hypothesis:** the \(u = 0.3\) laminar failures have no steady
+solution because the flow has become unsteady. They are treated that way.
+The gate metrics of the original rejects stay in
+`docs/STATUS_2026-09-22.md`; this check does not replace that table.
+
+Failed at `u0p3`: `D0817_a30`, `D1225_a30`, `D2450_a30`, `P_p100_h15`,
+`P_p100_h00`. `P_p100_h00` also fails at `u0p2`. `D2450_a45` at `u0p3`
+in the independence study above is a different geometry and did converge.
 
 ### \(u = 0.1\) saturation patch
 
