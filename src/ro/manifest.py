@@ -50,7 +50,7 @@ from ro.manifest_validation import (
     validate_mesh_geometry_fields,
     validate_run_geometry_fields,
 )
-from ro.paths import mesh_dir, meshes_root, run_dir, runs_root
+from ro.paths import mesh_dir, mesh_id_bl_tokens, meshes_root, run_dir, runs_root
 from ro.solver_common import STOP_REASON_VALUES
 from ro.udm_layout import parse_ro_analytic_cwall_from_case
 
@@ -337,6 +337,29 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
             "Mesh manifest mesh_id peel token must match field 'peel'. "
             f"mesh_id={mesh_id!r}, peel={payload['peel']!r}."
         )
+    if "spacer_bl" in payload:
+        _require_integer(payload, "spacer_bl", "Mesh", minimum=1)
+        if payload["spacer_bl"] == payload["bl"]:
+            raise ManifestError(
+                "Mesh manifest spacer_bl is recorded only when it differs "
+                f"from bl. bl={payload['bl']!r}, "
+                f"spacer_bl={payload['spacer_bl']!r}."
+            )
+    bl_tokens = mesh_id_bl_tokens(mesh_id)
+    if bl_tokens is not None:
+        bl_token, spacer_token = bl_tokens
+        if "spacer_bl" in payload:
+            if spacer_token != payload["spacer_bl"] or bl_token != payload["bl"]:
+                raise ManifestError(
+                    "Mesh manifest bl / spacer_bl must match the mesh_id "
+                    f"tokens. mesh_id={mesh_id!r}, bl={payload['bl']!r}, "
+                    f"spacer_bl={payload['spacer_bl']!r}."
+                )
+        elif spacer_token is not None:
+            raise ManifestError(
+                "Mesh manifest mesh_id has a spacer layer token but "
+                f"spacer_bl is missing: mesh_id={mesh_id!r}."
+            )
     for field in ("membrane_wall_base_names", "buffer_wall_base_names"):
         _require_string_list(payload, field, "Mesh")
 

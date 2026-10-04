@@ -23,6 +23,7 @@ from ro.mesh_manifest_payload import (
 from ro.mesh_common import (
     MESH_METRIC_NAMES,
     _parse_surface_skewness_table,
+    boundary_layers_are_split,
     build_mesh_ledger_record,
     mesh_parameters_from_mapping,
     parse_last_float as _parse_last_float,
@@ -180,6 +181,186 @@ def teardown_meshing_session(meshing, *, exit_timeout_s=60.0):
                 return "unresolved"
     return "graceful"
 
+def single_boundary_layer_arguments(
+    boundary_layer_labels,
+    bl_height,
+    bl_layers,
+    bl_offset_method,
+    bl_growth_rate,
+):
+    """Arguments for the one-control Add Boundary Layers task."""
+    return {
+        "BLControlName": "smooth_transition_1",
+        "BlLabelList": boundary_layer_labels,
+        "FaceScope": {
+            "GrowOn": "selected-labels",
+        },
+        "FirstHeight": bl_height,
+        "NumberOfLayers": bl_layers,
+        "OffsetMethodType": bl_offset_method,
+        "Rate": bl_growth_rate,
+    }
+
+
+def split_boundary_layer_arguments(
+    membrane_and_buffer_labels,
+    wall_spacer_labels,
+    bl_height,
+    bl_layers,
+    spacer_bl_layers,
+    bl_offset_method,
+    bl_growth_rate,
+):
+    """Membrane/buffer control, then spacer control. Both set AddChild."""
+    shared = {
+        "AddChild": "yes",
+        "FaceScope": {
+            "GrowOn": "selected-labels",
+        },
+        "FirstHeight": bl_height,
+        "OffsetMethodType": bl_offset_method,
+        "Rate": bl_growth_rate,
+    }
+    membrane = {
+        **shared,
+        "BLControlName": "smooth_transition_mem",
+        "BlLabelList": list(membrane_and_buffer_labels),
+        "NumberOfLayers": bl_layers,
+    }
+    spacer = {
+        **shared,
+        "BLControlName": "smooth_transition_spacer",
+        "BlLabelList": list(wall_spacer_labels),
+        "NumberOfLayers": spacer_bl_layers,
+    }
+    return membrane, spacer
+
+
+def boundary_layer_count_summary_lines(bl_layers, spacer_bl_layers):
+    """Input-summary lines. The spacer count is printed only for a real split."""
+    lines = [f"Boundary layer number of layers [-]: {bl_layers}"]
+    if boundary_layers_are_split(bl_layers, spacer_bl_layers):
+        lines.append(
+            f"Spacer boundary layer number of layers [-]: {spacer_bl_layers}"
+        )
+    return lines
+
+
+def _boundary_layer_task_names(task_list_state):
+    if isinstance(task_list_state, (list, tuple)):
+        return list(task_list_state)
+    raise RuntimeError(
+        "Add Boundary Layers TaskList.get_state() must be a list of child "
+        f"task names, got {task_list_state!r}."
+    )
+
+
+def _print_boundary_layer_task_state(task, control_name):
+    state = task.Arguments.get_state()
+    task_list = task.TaskList.get_state()
+    print(
+        f"Add Boundary Layers Arguments.get_state() after {control_name}: "
+        f"{state}"
+    )
+    print(f"Add Boundary Layers TaskList after {control_name}: {task_list}")
+    return _boundary_layer_task_names(task_list)
+
+
+def _assert_membrane_control_layer_count(workflow, child_names, bl_layers):
+    matches = []
+    for name in child_names:
+        try:
+            child = workflow.TaskObject[name]
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read boundary-layer child task {name!r}."
+            ) from exc
+        state = child.Arguments.get_state()
+        control_name = state.get("BLControlName") if isinstance(state, dict) else None
+        if name == "smooth_transition_mem" or control_name == "smooth_transition_mem":
+            matches.append((name, state))
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Expected one membrane boundary-layer child "
+            f"'smooth_transition_mem' after both controls, found "
+            f"{[name for name, _state in matches]!r} among {child_names!r}."
+        )
+    name, state = matches[0]
+    layers = state.get("NumberOfLayers") if isinstance(state, dict) else None
+    if layers != bl_layers:
+        raise RuntimeError(
+            f"Membrane boundary-layer control {name!r} NumberOfLayers is "
+            f"{layers!r}; expected {bl_layers!r}. State: {state!r}."
+        )
+
+
+def configure_boundary_layers(
+    workflow,
+    *,
+    boundary_layer_labels,
+    membrane_and_buffer_labels,
+    wall_spacer_labels,
+    bl_height,
+    bl_layers,
+    spacer_bl_layers,
+    bl_offset_method,
+    bl_growth_rate,
+    include_spacer_in_boundary_layers,
+):
+    """One control when spacer layers are unset or equal; two controls otherwise."""
+    task = workflow.TaskObject["Add Boundary Layers"]
+    if not boundary_layers_are_split(bl_layers, spacer_bl_layers):
+        task.Arguments.set_state(
+            single_boundary_layer_arguments(
+                boundary_layer_labels,
+                bl_height,
+                bl_layers,
+                bl_offset_method,
+                bl_growth_rate,
+            )
+        )
+        task.AddChildAndUpdate(DeferUpdate=False)
+        return
+
+    if include_spacer_in_boundary_layers is not True:
+        raise ValueError(
+            "spacer_bl_layers differs from bl_layers, so "
+            "include_spacer_in_boundary_layers must be True. "
+            f"bl_layers={bl_layers!r}, spacer_bl_layers={spacer_bl_layers!r}, "
+            "include_spacer_in_boundary_layers="
+            f"{include_spacer_in_boundary_layers!r}."
+        )
+    if not membrane_and_buffer_labels:
+        raise ValueError(
+            "Split boundary layers require membrane and buffer labels."
+        )
+    if not wall_spacer_labels:
+        raise ValueError(
+            "Split boundary layers require wall_spacer_labels."
+        )
+
+    membrane_args, spacer_args = split_boundary_layer_arguments(
+        membrane_and_buffer_labels,
+        wall_spacer_labels,
+        bl_height,
+        bl_layers,
+        spacer_bl_layers,
+        bl_offset_method,
+        bl_growth_rate,
+    )
+    seen_children = []
+    for arguments in (membrane_args, spacer_args):
+        task.Arguments.set_state(arguments)
+        task.AddChildAndUpdate(DeferUpdate=False)
+        names = _print_boundary_layer_task_state(
+            task, arguments["BLControlName"]
+        )
+        for name in names:
+            if name not in seen_children:
+                seen_children.append(name)
+    _assert_membrane_control_layer_count(workflow, seen_children, bl_layers)
+
+
 # ==========================================================
 # ##### [1] Load Run Configuration #####
 # ==========================================================
@@ -279,6 +460,7 @@ if __name__ == "__main__":
     bl_height_factor = cfg.bl_height_factor
     bl_height = m_min * bl_height_factor
     bl_layers = cfg.bl_layers
+    spacer_bl_layers = cfg.spacer_bl_layers
     bl_offset_method = cfg.bl_offset_method
     bl_growth_rate = cfg.bl_growth_rate
 
@@ -503,7 +685,7 @@ def print_meshing_input_summary():
         f"Boundary layer offset method: {bl_offset_method}",
         f"Boundary layer first height factor [-]: {bl_height_factor}",
         f"Boundary layer first height [mm]: {bl_height}",
-        f"Boundary layer number of layers [-]: {bl_layers}",
+        *boundary_layer_count_summary_lines(bl_layers, spacer_bl_layers),
         f"Boundary layer growth rate [-]: {bl_growth_rate}",
         f"Volume mesh fill type: poly-hexcore",
         f"Volume hex max factor [-]: {vol_hex_max_factor}",
@@ -1034,20 +1216,21 @@ if __name__ == "__main__":
         # ##### [11] Add Boundary Layers #####
         # ======================================================
 
-        workflow.TaskObject["Add Boundary Layers"].Arguments.set_state({
-            r"BLControlName": r"smooth_transition_1",
-            r"BlLabelList": boundary_layer_labels,
-            r"FaceScope": {
-                r"GrowOn": r"selected-labels",
-            },
-            r"FirstHeight": bl_height,
-            r"NumberOfLayers": bl_layers,
-            r"OffsetMethodType": bl_offset_method,
-            r"Rate": bl_growth_rate,
-        })
-
-        workflow.TaskObject["Add Boundary Layers"].AddChildAndUpdate(
-            DeferUpdate=False
+        configure_boundary_layers(
+            workflow,
+            boundary_layer_labels=boundary_layer_labels,
+            membrane_and_buffer_labels=(
+                active_membrane_wall_labels + buffer_wall_labels
+            ),
+            wall_spacer_labels=wall_spacer_labels,
+            bl_height=bl_height,
+            bl_layers=bl_layers,
+            spacer_bl_layers=spacer_bl_layers,
+            bl_offset_method=bl_offset_method,
+            bl_growth_rate=bl_growth_rate,
+            include_spacer_in_boundary_layers=(
+                cfg.include_spacer_in_boundary_layers
+            ),
         )
 
         # ======================================================

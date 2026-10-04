@@ -74,6 +74,18 @@ def test_legacy_opt_out_returns_canonical_name_without_raising():
     assert canonical == "mesh_max085_min005_cpg5_bl4"
 
 
+def test_canonical_name_adds_spacer_token_only_for_a_real_split():
+    assert make_canonical_mesh_case_name(
+        0.085, 0.006, 5, 8, spacer_bl_layers=None
+    ) == "mesh_max085_min006_cpg5_bl8"
+    assert make_canonical_mesh_case_name(
+        0.085, 0.006, 5, 8, 8
+    ) == "mesh_max085_min006_cpg5_bl8"
+    assert make_canonical_mesh_case_name(
+        0.085, 0.006, 5, 8, spacer_bl_layers=4
+    ) == "mesh_max085_min006_cpg5_bl8s4"
+
+
 def test_non_integral_name_tokens_are_rejected():
     with pytest.raises(ValueError, match="cannot be represented"):
         make_canonical_mesh_case_name(0.0855, 0.005, 5, 4)

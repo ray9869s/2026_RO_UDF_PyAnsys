@@ -13,7 +13,9 @@ from ro.geometry_registry import validate_known_geo_id
 
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
-MESH_ID_RE = re.compile(r"^max\d{3}_min\d{3}_cpg\d+_bl\d+(?:_f\d{3})?_peel\d+$")
+MESH_ID_RE = re.compile(
+    r"^max\d{3}_min\d{3}_cpg\d+_bl(\d+)(?:s(\d+))?(?:_f\d{3})?_peel\d+$"
+)
 # Optional _label suffix (letter-led). Bare u0p2_p6M remains the campaign form.
 # A digits-only suffix is rejected so u0p2_p6M_20 cannot look like a new u or p.
 RUN_ID_RE = re.compile(r"^u\d+p\d+_p\d+M(?:_[a-z][a-z0-9]*)?$")
@@ -81,6 +83,21 @@ def _validate_geo_id(geo_id: str) -> None:
     ):
         raise ValueError(f"Invalid geo_id: {geo_id!r}.")
     validate_known_geo_id(geo_id)
+
+
+def mesh_id_bl_tokens(mesh_id: str) -> tuple[int, int | None] | None:
+    """Return ``(bl, spacer_bl)`` when ``mesh_id`` matches ``MESH_ID_RE``.
+
+    ``spacer_bl`` is None when the id has no ``s`` token. Returns None when
+    ``mesh_id`` does not match.
+    """
+    if not isinstance(mesh_id, str):
+        return None
+    match = MESH_ID_RE.fullmatch(mesh_id)
+    if match is None:
+        return None
+    spacer = match.group(2)
+    return int(match.group(1)), None if spacer is None else int(spacer)
 
 
 def _validate_mesh_id(mesh_id: str) -> None:

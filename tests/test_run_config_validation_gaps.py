@@ -99,6 +99,34 @@ class TestMeshingValidation:
         cfg.mesh_id = mesh_id
         cfg.validate_for_meshing()
 
+    def test_unset_spacer_bl_layers_keeps_the_current_mesh_id(self, cfg):
+        assert cfg.spacer_bl_layers is None
+        cfg.validate_for_meshing()
+
+    def test_equal_spacer_bl_layers_keeps_the_current_mesh_id(self, cfg):
+        cfg.spacer_bl_layers = cfg.bl_layers
+        cfg.validate_for_meshing()
+
+    def test_split_spacer_bl_layers_requires_the_s_token(self, cfg):
+        cfg.spacer_bl_layers = 8
+        with pytest.raises(ValueError, match="does not match"):
+            cfg.validate_for_meshing()
+        cfg.mesh_id = "max085_min005_cpg5_bl4s8_peel2"
+        cfg.validate_for_meshing()
+
+    def test_split_spacer_bl_layers_requires_spacer_walls(self, cfg):
+        cfg.spacer_bl_layers = 8
+        cfg.include_spacer_in_boundary_layers = False
+        cfg.mesh_id = "max085_min005_cpg5_bl4s8_peel2"
+        with pytest.raises(ValueError, match="include_spacer_in_boundary_layers"):
+            cfg.validate_for_meshing()
+
+    @pytest.mark.parametrize("spacer_bl_layers", [0, True, 4.0, "4"])
+    def test_spacer_bl_layers_must_be_none_or_an_integer(self, cfg, spacer_bl_layers):
+        cfg.spacer_bl_layers = spacer_bl_layers
+        with pytest.raises((TypeError, ValueError)):
+            cfg.validate_for_meshing()
+
 
 class TestSolverValidation:
     def test_negative_inlet_velocity_is_rejected(self, cfg):

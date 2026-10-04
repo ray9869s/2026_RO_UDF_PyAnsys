@@ -71,6 +71,17 @@ def test_mesh_id_uses_formatter_and_factor_token():
     assert same_factor == "max085_min006_cpg5_bl8_peel2"
     with pytest.raises(ValueError, match="production mesh_id"):
         driver.apply_study_overrides(template, {"bl_layers": 4})
+    split = driver.apply_study_overrides(template, {"spacer_bl_layers": 2})
+    assert split["mesh_id"] == "max085_min006_cpg5_bl4s2_peel2"
+    assert split["spacer_bl_layers"] == 2
+    assert driver.MESH_ID_RE.fullmatch(split["mesh_id"])
+    both = driver.apply_study_overrides(
+        template,
+        {"bl_layers": 8, "spacer_bl_layers": 4, "bl_height_factor": 0.2},
+    )
+    assert both["mesh_id"] == "max085_min006_cpg5_bl8s4_f020_peel2"
+    with pytest.raises(ValueError, match="production mesh_id"):
+        driver.apply_study_overrides(template, {"spacer_bl_layers": 4})
 
 
 def test_override_table_marks_only_the_changed_knobs():

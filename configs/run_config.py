@@ -18,6 +18,7 @@ import re
 import types
 
 from ro.mesh_common import (
+    boundary_layers_are_split as _boundary_layers_are_split,
     make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
 )
 from ro import paths as ro_paths
@@ -132,6 +133,9 @@ boi_growth_rate = 1.2
 # Boundary layer controls
 bl_height_factor = 0.4
 bl_layers = REQUIRED
+# None, or equal to bl_layers, keeps one boundary-layer control.
+# An integer >= 1 that differs from bl_layers is membrane/buffer vs spacer.
+spacer_bl_layers = None
 
 # When False, spacer walls keep local proximity sizing but do not receive
 # boundary layers. Default True preserves current BL face-label composition.
@@ -685,6 +689,18 @@ def validate_for_meshing():
     _require_positive_number("m_min", m_min)
     _require_positive_number("m_cpg", m_cpg)
     _require_positive_number("bl_layers", bl_layers)
+    if spacer_bl_layers is not None:
+        _require_integer("spacer_bl_layers", spacer_bl_layers, minimum=1)
+    if _boundary_layers_are_split(bl_layers, spacer_bl_layers):
+        if include_spacer_in_boundary_layers is not True:
+            raise ValueError(
+                "run_config.py spacer_bl_layers differs from bl_layers, so "
+                "include_spacer_in_boundary_layers must be True. "
+                f"bl_layers={bl_layers!r}, "
+                f"spacer_bl_layers={spacer_bl_layers!r}, "
+                f"include_spacer_in_boundary_layers="
+                f"{include_spacer_in_boundary_layers!r}."
+            )
     _require_integer("peel_layers", peel_layers, minimum=0)
     if not mesh_id.endswith(f"_peel{peel_layers}"):
         raise ValueError(
@@ -707,6 +723,7 @@ def validate_for_meshing():
         m_min,
         m_cpg,
         bl_layers,
+        spacer_bl_layers,
     ).removeprefix("mesh_")
     # Optional _fNNN (bl_height_factor ×1000 token) between bl and peel.
     expected_mesh_id = re.compile(

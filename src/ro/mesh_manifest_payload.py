@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
 from ro.manifest import MANIFEST_SCHEMA_VERSION
+from ro.mesh_common import boundary_layers_are_split
 
 
 def utc_now_string():
@@ -67,6 +68,8 @@ def build_mesh_manifest_payload(
             else Path(__file__).name
         ),
     }
+    if boundary_layers_are_split(cfg.bl_layers, cfg.spacer_bl_layers):
+        base["spacer_bl"] = cfg.spacer_bl_layers
     merged = merge_geometry_into_mesh_manifest(base, cfg.geo_id)
     # Measured porosity from fluid volume / bounding box; never a registry constant.
     measured_porosity = mesh_metrics.get("porosity")

@@ -28,6 +28,7 @@ from typing import Any, Mapping, Sequence
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_IDS, family_for_geo_id
 from ro.campaign_geometry import geometry_parameters_for_geo_id
+from ro.mesh_common import boundary_layers_are_split
 from ro.solver_common import make_base_case_name
 
 # Keys that must never be inherited from a common-mesh template.
@@ -69,12 +70,16 @@ def format_production_mesh_id(
     m_cpg: int,
     bl_layers: int,
     peel_layers: int,
+    spacer_bl_layers: int | None = None,
 ) -> str:
+    bl_token = f"_bl{int(bl_layers)}"
+    if boundary_layers_are_split(bl_layers, spacer_bl_layers):
+        bl_token += f"s{int(spacer_bl_layers)}"
     return (
         f"max{int(round(float(m_max) * 1000.0)):03d}"
         f"_min{int(round(float(m_min) * 1000.0)):03d}"
         f"_cpg{int(m_cpg)}"
-        f"_bl{int(bl_layers)}"
+        f"{bl_token}"
         f"_peel{int(peel_layers)}"
     )
 

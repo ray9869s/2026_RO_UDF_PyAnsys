@@ -12,7 +12,8 @@ matches. The source is never moved.
 ``format_production_mesh_id`` encodes max/min/cpg/bl/peel and omits the
 default first-height factor. A factor that differs from the template is
 inserted as ``_fNNN`` (``round(factor * 100)``, so 0.40 is ``f040``) before
-``_peel``, which is the token ``MESH_ID_RE`` already accepts.
+``_peel``, which is the token ``MESH_ID_RE`` already accepts. A spacer
+layer count that differs from ``bl_layers`` is ``bl{membrane}s{spacer}``.
 """
 
 from __future__ import annotations
@@ -97,6 +98,7 @@ def collect_overrides(
     m_cpg=None,
     bl_layers=None,
     bl_height_factor=None,
+    spacer_bl_layers=None,
 ):
     """Return the mesh knobs the caller set. At least one is required."""
     changes = {}
@@ -115,11 +117,15 @@ def collect_overrides(
     if bl_height_factor is not None:
         _require_positive("bl_height_factor", bl_height_factor)
         changes["bl_height_factor"] = float(bl_height_factor)
+    if spacer_bl_layers is not None:
+        _require_positive_int("spacer_bl_layers", spacer_bl_layers)
+        changes["spacer_bl_layers"] = int(spacer_bl_layers)
     if not changes:
         raise ValueError(
             "At least one mesh override is required "
             "(--m-max, --m-min, --m-cpg, --bl-layers, "
-            "--bl-first-height-factor). The production baseline is "
+            "--bl-first-height-factor, --spacer-bl-layers). "
+            "The production baseline is "
             "reextract_runs.py --copy-from-production."
         )
     return changes
@@ -175,6 +181,7 @@ def study_mesh_id(
     peel_layers,
     bl_height_factor,
     template_factor,
+    spacer_bl_layers=None,
 ):
     """Production formatter, plus ``_fNNN`` when the factor is not the template."""
     mesh_id = format_production_mesh_id(
@@ -183,6 +190,7 @@ def study_mesh_id(
         m_cpg=m_cpg,
         bl_layers=bl_layers,
         peel_layers=peel_layers,
+        spacer_bl_layers=spacer_bl_layers,
     )
     if not math.isclose(
         float(bl_height_factor),
@@ -258,6 +266,7 @@ def apply_study_overrides(template, changes):
         peel_layers=int(overrides["peel_layers"]),
         bl_height_factor=factor,
         template_factor=template_bl_height_factor(template),
+        spacer_bl_layers=overrides.get("spacer_bl_layers"),
     )
     require_distinct_mesh_id(mesh_id, template["mesh_id"])
     overrides["mesh_id"] = mesh_id
@@ -553,6 +562,7 @@ def build_parser():
     parser.add_argument("--m-cpg", type=int, default=None)
     parser.add_argument("--bl-layers", type=int, default=None)
     parser.add_argument("--bl-first-height-factor", type=float, default=None)
+    parser.add_argument("--spacer-bl-layers", type=int, default=None)
     return parser
 
 
@@ -566,6 +576,7 @@ def main(argv=None):
         m_cpg=args.m_cpg,
         bl_layers=args.bl_layers,
         bl_height_factor=args.bl_first_height_factor,
+        spacer_bl_layers=args.spacer_bl_layers,
     )
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]

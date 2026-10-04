@@ -178,14 +178,45 @@ def _integer_token(name, value, *, scale=1.0, width=0):
     return f"{int(rounded):0{width}d}"
 
 
-def make_canonical_mesh_case_name(m_max, m_min, m_cpg, bl_layers):
-    """Construct the canonical mesh folder name from encoded parameters."""
+def boundary_layers_are_split(bl_layers, spacer_bl_layers):
+    """True when spacer layers are set and differ from the membrane count.
+
+    ``None`` and a count equal to ``bl_layers`` stay on the single-control path.
+    """
+    if spacer_bl_layers is None:
+        return False
+    if (
+        isinstance(spacer_bl_layers, bool)
+        or not isinstance(spacer_bl_layers, int)
+        or spacer_bl_layers < 1
+    ):
+        raise ValueError(
+            "spacer_bl_layers must be None or an integer >= 1, "
+            f"got {spacer_bl_layers!r}."
+        )
+    return spacer_bl_layers != bl_layers
+
+
+def make_canonical_mesh_case_name(
+    m_max,
+    m_min,
+    m_cpg,
+    bl_layers,
+    spacer_bl_layers=None,
+):
+    """Construct the canonical mesh folder name from encoded parameters.
+
+    The ``s`` token is emitted only for a real spacer/membrane split.
+    """
+    bl_token = f"bl{_integer_token('bl_layers', bl_layers)}"
+    if boundary_layers_are_split(bl_layers, spacer_bl_layers):
+        bl_token += f"s{_integer_token('spacer_bl_layers', spacer_bl_layers)}"
     return (
         "mesh_"
         f"max{_integer_token('m_max', m_max, scale=1000.0, width=3)}_"
         f"min{_integer_token('m_min', m_min, scale=1000.0, width=3)}_"
         f"cpg{_integer_token('m_cpg', m_cpg)}_"
-        f"bl{_integer_token('bl_layers', bl_layers)}"
+        f"{bl_token}"
     )
 
 
@@ -197,6 +228,7 @@ def assert_mesh_case_name_matches(
     bl_layers,
     *,
     allow_legacy=False,
+    spacer_bl_layers=None,
 ):
     """Raise when a supplied mesh name disagrees with its encoded parameters."""
     if not isinstance(allow_legacy, bool):
@@ -208,6 +240,7 @@ def assert_mesh_case_name_matches(
         m_min,
         m_cpg,
         bl_layers,
+        spacer_bl_layers,
     )
     if mesh_case_name != expected and not allow_legacy:
         raise AssertionError(
@@ -226,7 +259,8 @@ def mesh_case_name_provenance(mesh_case_name, mesh_parameters):
         return None, "UNAVAILABLE"
     try:
         canonical = make_canonical_mesh_case_name(
-            *(mesh_parameters[name] for name in required)
+            *(mesh_parameters[name] for name in required),
+            spacer_bl_layers=mesh_parameters.get("spacer_bl_layers"),
         )
     except (TypeError, ValueError):
         return None, "UNAVAILABLE"
@@ -591,6 +625,10 @@ def parse_meshing_input_summary(text):
         ),
         "Boundary layer first height [mm]": ("bl_height", float),
         "Boundary layer number of layers [-]": ("bl_layers", int),
+        "Spacer boundary layer number of layers [-]": (
+            "spacer_bl_layers",
+            int,
+        ),
         "Boundary layer growth rate [-]": ("bl_growth_rate", float),
         "Volume hex max factor [-]": ("vol_hex_max_factor", float),
         "Volume hex max cell length [mm]": ("vol_hex_max", float),

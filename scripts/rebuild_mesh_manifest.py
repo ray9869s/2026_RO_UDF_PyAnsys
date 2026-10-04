@@ -91,6 +91,7 @@ MESH_LOG_CFG_OVERRIDE_KEYS: frozenset[str] = frozenset({
     "bl_offset_method",
     "bl_height_factor",
     "bl_layers",
+    "spacer_bl_layers",
     "bl_growth_rate",
     "vol_hex_max_factor",
     "peel_layers",
@@ -151,6 +152,8 @@ def _manifest_layout_overrides(manifest: dict[str, Any]) -> dict[str, Any]:
             overrides[cfg_key] = float(manifest[manifest_field]) * 1.0e3
         else:
             overrides[cfg_key] = manifest[manifest_field]
+    if "spacer_bl" in manifest:
+        overrides["spacer_bl_layers"] = manifest["spacer_bl"]
     return overrides
 
 
