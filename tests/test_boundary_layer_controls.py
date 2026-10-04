@@ -90,6 +90,44 @@ class _TaskList:
         self.state.append(name)
 
 
+# Display names differ from both the TaskList id and BLControlName.
+_CHILD_DISPLAY_NAME = {
+    "smooth_transition_mem": "Smooth Transition Mem",
+    "smooth_transition_spacer": "Smooth Transition Spacer",
+    "smooth_transition_1": "smooth_transition_1",
+}
+
+
+class _TaskContainer:
+    """Fake of PyNamedObjectContainer: keys are display names, state is by id."""
+
+    def __init__(self):
+        self._tasks = {}
+        self._id_by_display = {}
+        self.object_name_reads = 0
+        self.state_reads = 0
+
+    def add(self, display_name, task, internal_id):
+        self._tasks[display_name] = task
+        self._id_by_display[display_name] = internal_id
+
+    def get_object_names(self):
+        self.object_name_reads += 1
+        return list(self._tasks)
+
+    def get_state(self):
+        self.state_reads += 1
+        return {
+            internal_id: {"_name_": display_name}
+            for display_name, internal_id in self._id_by_display.items()
+        }
+
+    def __getitem__(self, key):
+        if key not in self._tasks:
+            raise LookupError(f"{key} is not found at path /TaskObject")
+        return self._tasks[key]
+
+
 class _Task:
     def __init__(self, name, workflow):
         self.name = name
@@ -102,31 +140,35 @@ class _Task:
         self.updates.append(
             {"DeferUpdate": DeferUpdate, "state": dict(self.Arguments.state)}
         )
-        child_name = self.Arguments.state["BLControlName"]
-        child = self.workflow.tasks.get(child_name)
+        control_name = self.Arguments.state["BLControlName"]
+        display_name = _CHILD_DISPLAY_NAME[control_name]
+        child = self.workflow.container._tasks.get(display_name)
         if child is None:
-            child = _Task(child_name, self.workflow)
-            self.workflow.tasks[child_name] = child
-            self.TaskList.append(child_name)
+            child = _Task(display_name, self.workflow)
+            internal_id = f"TaskObject{14 + self.workflow.child_count}"
+            self.workflow.child_count += 1
+            self.workflow.container.add(display_name, child, internal_id)
+            self.TaskList.append(internal_id)
         child.Arguments.set_state(self.Arguments.state)
-        if self.workflow.corrupt_membrane_on_spacer and child_name == (
-            "smooth_transition_spacer"
+        if (
+            self.workflow.corrupt_membrane_on_spacer
+            and control_name == "smooth_transition_spacer"
         ):
-            membrane = self.workflow.tasks["smooth_transition_mem"]
+            membrane = self.workflow.container["Smooth Transition Mem"]
             membrane.Arguments.state["NumberOfLayers"] = 1
 
 
 class _Workflow:
     def __init__(self, *, corrupt_membrane_on_spacer=False):
-        self.tasks = {}
+        self.container = _TaskContainer()
         self.corrupt_membrane_on_spacer = corrupt_membrane_on_spacer
-        self.tasks["Add Boundary Layers"] = _Task(
-            "Add Boundary Layers", self
-        )
+        self.child_count = 0
+        parent = _Task("Add Boundary Layers", self)
+        self.container.add(parent.name, parent, "TaskObject1")
 
     @property
     def TaskObject(self):
-        return self.tasks
+        return self.container
 
 
 def _metrics():
@@ -172,6 +214,8 @@ def test_default_path_calls_one_control_without_reading_task_list():
         {"DeferUpdate": False, "state": SINGLE_ARGUMENTS}
     ]
     assert task.TaskList.reads == 0
+    assert workflow.container.object_name_reads == 0
+    assert workflow.container.state_reads == 0
 
     workflow_equal = _Workflow()
     meshing.configure_boundary_layers(
@@ -230,8 +274,11 @@ def test_split_path_payloads_and_membrane_layer_count(capsys):
     task = workflow.TaskObject["Add Boundary Layers"]
     assert [item["state"] for item in task.updates] == [membrane, spacer]
     assert all(item["DeferUpdate"] is False for item in task.updates)
+    assert task.TaskList.get_state() == ["TaskObject14", "TaskObject15"]
+    with pytest.raises(LookupError, match="TaskObject14"):
+        workflow.TaskObject["TaskObject14"]
     assert (
-        workflow.TaskObject["smooth_transition_mem"].Arguments.get_state()[
+        workflow.TaskObject["Smooth Transition Mem"].Arguments.get_state()[
             "NumberOfLayers"
         ]
         == 8
@@ -241,7 +288,57 @@ def test_split_path_payloads_and_membrane_layer_count(capsys):
     assert "TaskList after smooth_transition_mem" in printed
     assert "Arguments.get_state() after smooth_transition_spacer" in printed
     assert "TaskList after smooth_transition_spacer" in printed
+    assert "Boundary layer child 'Smooth Transition Mem'" in printed
+    assert "Boundary layer child 'Smooth Transition Spacer'" in printed
+    assert "TaskList id 'TaskObject14'" in printed
+    assert "TaskList id 'TaskObject15'" in printed
 
+def test_unresolved_task_list_id_raises_with_keys_and_ids():
+    meshing = load_meshing_code()
+    workflow = _Workflow()
+    meshing.configure_boundary_layers(
+        workflow,
+        boundary_layer_labels=LABELS,
+        membrane_and_buffer_labels=MEMBRANE_AND_BUFFER,
+        wall_spacer_labels=SPACER,
+        bl_height=0.002,
+        bl_layers=8,
+        spacer_bl_layers=4,
+        bl_offset_method="smooth-transition",
+        bl_growth_rate=1.2,
+        include_spacer_in_boundary_layers=True,
+    )
+    task = workflow.TaskObject["Add Boundary Layers"]
+    task.TaskList.append("TaskObject99")
+    with pytest.raises(RuntimeError, match="TaskObject99") as raised:
+        meshing._assert_membrane_control_layer_count(
+            workflow,
+            task.TaskList.get_state(),
+            8,
+            4,
+            MEMBRANE_AND_BUFFER,
+            SPACER,
+        )
+    message = str(raised.value)
+    assert "Smooth Transition Mem" in message
+    assert "TaskObject14" in message
+    assert "TaskObject99" in message
+
+    membrane = workflow.TaskObject["Smooth Transition Mem"]
+    membrane.Arguments.state["BlLabelList"] = ["not-the-membrane"]
+    with pytest.raises(RuntimeError, match="BlLabelList"):
+        meshing._assert_membrane_control_layer_count(
+            workflow,
+            ["TaskObject14", "TaskObject15"],
+            8,
+            4,
+            MEMBRANE_AND_BUFFER,
+            SPACER,
+        )
+
+
+def test_split_rejects_a_changed_membrane_layer_count():
+    meshing = load_meshing_code()
     with pytest.raises(RuntimeError, match="NumberOfLayers"):
         meshing.configure_boundary_layers(
             _Workflow(corrupt_membrane_on_spacer=True),
