@@ -358,11 +358,19 @@ at 301 iterations with \(\mu_t/\mu\) average 3.2 (maximum 29) and
 **Session reading of those k-ε ratios:** the field that stopped is
 model-made.
 
+**Withdrawn (2026-10-04).** That `u0p3` comparison was also read as
+realizable k-ε turbulent salt diffusion lowering CP. The laminar side
+was the non-converged `u0p3` run (continuity 0.54). The controls below,
+against residual-converged laminar, show realizable k-ε raises
+CP-excess. That direction is withdrawn. The ratios and the 301-iteration
+stop above stay.
+
 Measured control, `P_p100_h30` at `u0p2`: SST and laminar agree within
 0.1% on LMH, \(\Delta P\), and CP. \(\mu_t/\mu\) average is 0.034.
 
 **Session conclusion, drawn from this control and the `P_p100_h00`
-RANS attempt:** laminar is appropriate.
+RANS attempt:** laminar is appropriate as the production viscous model.
+The 2026-10-04 controls below decide the realizable k-ε `u0p3` field.
 **Hypothesis:** the \(u = 0.3\) laminar failures have no steady
 solution because the flow has become unsteady. They are treated that way.
 The gate metrics of the original rejects stay in
@@ -371,6 +379,51 @@ The gate metrics of the original rejects stay in
 Failed at `u0p3`: `D0817_a30`, `D1225_a30`, `D2450_a30`, `P_p100_h15`,
 `P_p100_h00`. `P_p100_h00` also fails at `u0p2`. `D2450_a45` at `u0p3`
 in the independence study above is a different geometry and did converge.
+
+#### Controls on converged laminar cases (2026-10-04)
+
+Recorded 2026-10-04 from the workstation paste. Turbulent leaves are
+under `C:/ro_data_mfbo/turb`. Laminar references are production runs
+under `C:/ro_data`, mesh id `max085_min006_cpg5_bl4_peel2`, all
+`residual_converged`, PASS. The paste did not name the workstation git
+commit. Run ids follow `scripts/mfbo/solve_campaign_case.py`: `_sst` is
+`k-omega-sst`, `_rke` is `k-epsilon-realizable-ewt`.
+
+Laminar references:
+
+- `C:/ro_data/runs/pillar/P_p100_h00/max085_min006_cpg5_bl4_peel2/u0p1_p6M/`
+- `C:/ro_data/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/u0p2_p6M/`
+
+Turbulent leaves:
+
+- `C:/ro_data_mfbo/turb/runs/pillar/P_p100_h00/max085_min006_cpg5_bl4_peel2/u0p1_p6M_sst/`
+- `C:/ro_data_mfbo/turb/runs/pillar/P_p100_h00/max085_min006_cpg5_bl4_peel2/u0p1_p6M_rke/`
+- `C:/ro_data_mfbo/turb/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/u0p2_p6M_rke/`
+
+All three turbulent runs are `residual_converged`, PASS. Deltas are
+versus the laminar reference of the same geometry and inlet velocity.
+
+| leaf | \(\mu_t/\mu\) avg (max) | \(D_{\mathrm{eff}}/D\) avg | LMH | \(\Delta P\) | CP-excess avg | CP max excess |
+|---|---|---:|---:|---:|---:|---:|
+| `P_p100_h00` `u0p1_p6M_sst` | 0.0074 (4.2) | 5.8 | +0.01% | +0.09% | −0.27% | −1.96% |
+| `P_p100_h00` `u0p1_p6M_rke` | 0.069 (1.86) | 45 | −0.45% | −0.15% | +10.4% | (not stated) |
+| `P_p100_h30` `u0p2_p6M_rke` | 1.09 (12.4) | 698 | −0.79% | −1.40% | +28.8% | +20.3% |
+
+**Session conclusion, drawn from this table and the earlier `P_p100_h30`
+`u0p2` SST control:** SST reproduces the steady laminar LMH, \(\Delta P\),
+and average CP-excess on the cases measured. Realizable k-ε changes those
+steady laminar results: CP-excess average is higher than the converged
+laminar reference on both RKE leaves. The `P_p100_h00` realizable k-ε
+`u0p3` field is therefore not a usable laminar solution. The laminar
+`u0p3` leaf for this geometry failed the gate, so that unusability is
+inferred from these controls and the earlier `u0p3` ratios.
+**Hypothesis (unverified):** the larger RKE departure on `P_p100_h30` at
+`u0p2` than on `P_p100_h00` at `u0p1` is a velocity effect. Those leaves
+are different geometries, so the paste does not separate velocity from
+geometry.
+**Hypothesis (unverified):** realizable k-ε eddy viscosity damps
+spacer-induced secondary flows near the membrane and weakens convective
+mixing.
 
 ### \(u = 0.1\) saturation patch
 
