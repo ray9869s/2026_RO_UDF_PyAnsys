@@ -288,6 +288,44 @@ python scripts/run_ro_2d_mfbo.py --mode offline_replay --experiment-id replay_ch
 ## Later 3D attachment
 
 The optimizer needs a design box, an `evaluate(design, fidelity)` function,
-fidelity names, LMH and dP/L extraction, and a cost model. A future 3D
-evaluator can map its own design variables through CAD, meshing, and CFD
-and return the same result record. That adapter is not in this repository.
+fidelity names, LMH and dP/L extraction, and a cost model. The pillar
+evaluator that supplies that function is below. It does not replace the
+2D design box.
+
+## 3D adapter
+
+`src/ro/mfbo_adapter.py` wraps one pillar case as
+`evaluate(design, fidelity, *, run_id, data_root, fidelity_table, drivers)`.
+The design is `d_p_mm`, `d_h_mm`, and `d_f_mm`. `run_id` is the operating
+point, for example `u0p2_p6M`. `data_root` is required and must not be
+`C:/ro_data`. The module does not import Fluent. Geometry, meshing, the
+solve, and extraction are the injected drivers, called in that order.
+
+`fidelity_table` maps a name to `m_max`, `m_min`, `m_cpg`, `bl_layers`,
+optional `spacer_bl_layers`, and `peel_layers`. The only shipped example
+is `EXAMPLE_FIDELITY_TABLE["LF"]`, the production operating mesh
+`max085_min006_cpg5_bl4_peel2`. There is no default high-fidelity mesh.
+A name that is not in the table raises.
+
+Before CAD, the opening gap
+`G = R_p*(pi/4 - asin(r_f/R_p) - asin(r_h/R_p))`
+(`r_h = 0` when `d_h = 0`) is compared with that fidelity's `m_min`,
+both in millimetres. `0 < G < m_min` returns status `invalid` and reason
+`opening_gap_sliver`, and no driver is called.
+
+A geometry, mesh, or run leaf is reused only when its manifest records
+success. A leaf that exists without that record returns
+`execution_failed` and the leaf path, and is not run again.
+
+`lmh` is `lmh_mass_balance` per exposed membrane area.
+`lmh_module_area` rescales it with the same module-area formula as
+`scripts/mfbo/summarize_results.py`.
+`pressure_drop_per_length_pa_per_m` is `pressure_drop_spacer_per_m`.
+`cp_average` is `cpc_window_avg_flux`. `cp_q999` is `cp_q999_window_flux`.
+`cp_canon_window_avg` is kept as a reference and is not `cp_average`.
+The record also carries `cell_count`, mesh wall time, solver wall time,
+extraction wall time, and solver time. `convergence_quality` `FAIL` is
+`diverged` when `stop_reason` is `diverged`, and `invalid` otherwise.
+A failed evaluation is not stored as LMH = 0.
+
+High fidelity is not defined yet.
