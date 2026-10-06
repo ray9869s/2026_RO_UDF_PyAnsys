@@ -1,8 +1,10 @@
-"""Import-only extraction of one production reference CAD file.
+"""Import-only extraction of a production reference CAD file.
 
-Launches Fluent Meshing, imports ``P_p100_h30.dsco`` through Watertight
-Import Geometry, and records objects, face labels, per-label zones, and
-bounding boxes. Does not execute any meshing task after Import Geometry.
+Launches Fluent Meshing and imports through Watertight Import Geometry.
+The default is one pillar file, ``P_p100_h30.dsco``. ``--family diamond``
+imports the nine production Diamond ``.dsco`` files and prints labels,
+per-label face counts, areas, bounding boxes, body count, and region
+volume. Does not execute any meshing task after Import Geometry.
 
 Windows Fluent server only. Do not run from WSL.
 """
@@ -19,10 +21,14 @@ import traceback
 
 import ansys.fluent.core as pyfluent
 
+from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.paths import geometry_dir, project_root
 
 FAMILY = "pillar"
 GEO_ID = "P_p100_h30"
+DIAMOND_FAMILY = "diamond"
+DIAMOND_WORK_DIR = "C:/ro_data/geom_smoke/probe_diamond_reference"
+DIAMOND_SUMMARY_NAME = "diamond_reference_geometry.json"
 DEFAULT_D_H_MM = 0.30
 WORK_DIR = "C:/ro_data/geom_smoke/probe_ref_P_p100_h30"
 SUMMARY_NAME = "reference_geometry.json"
@@ -146,6 +152,161 @@ def _unique(items):
     return unique
 
 
+def production_diamond_geo_ids():
+    """The nine campaign Diamond ids, in campaign order."""
+    return tuple(
+        geo_id
+        for geo_id in CAMPAIGN_GEO_ID_ORDER
+        if family_for_geo_id(geo_id) == DIAMOND_FAMILY
+    )
+
+
+def production_diamond_cases():
+    """Read-only paths of the nine manual Diamond ``.dsco`` files."""
+    cases = []
+    for geo_id in production_diamond_geo_ids():
+        cases.append(
+            {
+                "geo_id": geo_id,
+                "cad_path": (
+                    f"C:/ro_data/geometries/diamond/{geo_id}/{geo_id}.dsco"
+                ),
+            }
+        )
+    if len(cases) != 9:
+        raise RuntimeError(f"Expected 9 Diamond geometries, found {len(cases)}.")
+    return cases
+
+
+def reference_dump(extracted):
+    """Labels, face counts, areas, boxes, and body volumes from one import."""
+    if not isinstance(extracted, dict):
+        raise TypeError(
+            f"extract result must be an object, got {type(extracted).__name__}."
+        )
+    labels = {}
+    for label, record in extracted["labels"].items():
+        if not isinstance(record, dict):
+            raise TypeError(f"label {label!r} is not an object.")
+        zone_ids = _require_zone_ids(
+            record.get("face_zone_ids"), f"label {label}"
+        )
+        labels[label] = {
+            "face_zone_count": len(zone_ids),
+            "face_count": record.get("face_count"),
+            "area": record.get("face_zone_area"),
+            "bounding_box_mm": _require_bbox_mm(
+                record.get("bounding_box_mm"), f"label {label}"
+            ),
+        }
+    objects = extracted.get("objects")
+    if not isinstance(objects, list):
+        raise TypeError("extract result 'objects' must be a list.")
+    bodies = extracted.get("bodies")
+    if bodies is None:
+        bodies = []
+    if not isinstance(bodies, list):
+        raise TypeError("extract result 'bodies' must be a list.")
+    return {
+        "body_count": len(objects),
+        "bodies": bodies,
+        "labels": labels,
+        "overall_bounding_box_mm": _require_bbox_mm(
+            extracted.get("overall_bounding_box_mm"), "overall"
+        ),
+    }
+
+
+def format_diamond_case_report(geo_id, dump):
+    """One pasteable block for a Diamond import."""
+    lines = [f"=== {geo_id} ===", f"body_count: {dump['body_count']}"]
+    if not dump["bodies"]:
+        lines.append("bodies: (none recorded)")
+    for body in dump["bodies"]:
+        name = body.get("name")
+        if body.get("error"):
+            lines.append(f"body {name}: VOLUME_UNREAD {body['error']}")
+            continue
+        regions = body.get("regions") or []
+        volumes = body.get("volumes") or []
+        if not regions:
+            lines.append(f"body {name}: no regions")
+            continue
+        for region, volume in zip(regions, volumes):
+            lines.append(
+                f"body {name} region {region}: volume_mm3={volume}"
+            )
+    overall = dump["overall_bounding_box_mm"]
+    lines.append(f"overall_bounding_box_mm: {overall}")
+    lines.append(
+        f"{'label':<28} {'zones':>6} {'faces':>8} {'area':>14}  bbox_mm"
+    )
+    for label in sorted(dump["labels"]):
+        record = dump["labels"][label]
+        face_count = record["face_count"]
+        face_text = "-" if face_count is None else str(face_count)
+        area = record["area"]
+        area_text = "-" if area is None else f"{area:.8g}"
+        lines.append(
+            f"{label:<28} {record['face_zone_count']:6d} {face_text:>8} "
+            f"{area_text:>14}  {record['bounding_box_mm']}"
+        )
+    return "\n".join(lines)
+
+
+def _require_volume(raw, source):
+    """Require the float returned by get_region_volume. Length unit is mm."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise TypeError(f"{source} volume must be a float, got {raw!r}.")
+    volume = float(raw)
+    if not math.isfinite(volume):
+        raise RuntimeError(f"{source} volume is not finite: {raw!r}.")
+    return volume
+
+
+def _face_zone_count(raw, source):
+    """Require the int returned by get_face_zone_count."""
+    _print_raw(source, raw)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TypeError(f"{source} must return an int, got {raw!r}.")
+    if raw < 0:
+        raise RuntimeError(f"{source} count is negative: {raw!r}.")
+    print(f"{source} count: {raw}")
+    return raw
+
+
+def _object_volumes(utilities, object_names):
+    """Region volumes for each imported object. A read error is recorded."""
+    bodies = []
+    for name in object_names:
+        entry = {"name": name, "regions": None, "volumes": None, "error": None}
+        try:
+            raw_regions = utilities.get_regions(object_name=name)
+            print(f"RAW regions {name!r}: {raw_regions!r}")
+            if isinstance(raw_regions, (str, bytes)):
+                raise TypeError(
+                    f"get_regions({name!r}) returned text: {raw_regions!r}"
+                )
+            regions = [str(item) for item in list(raw_regions)]
+            volumes = []
+            for region in regions:
+                raw_volume = utilities.get_region_volume(
+                    object_name=name,
+                    region_name=region,
+                )
+                print(f"RAW volume {name!r} {region!r}: {raw_volume!r}")
+                volumes.append(
+                    _require_volume(raw_volume, f"{name}/{region}")
+                )
+            entry["regions"] = regions
+            entry["volumes"] = volumes
+        except Exception as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            print(f"Volume read failed for {name!r}: {entry['error']}")
+        bodies.append(entry)
+    return bodies
+
+
 def extract_reference(meshing):
     """Read objects, labels, per-label zones, and bounding boxes."""
     utilities = meshing.meshing_utilities
@@ -233,11 +394,16 @@ def extract_reference(meshing):
             utilities.get_face_zone_area(face_zone_id_list=zone_ids),
             f"meshing_utilities.get_face_zone_area label={label!r}",
         )
+        face_count = _face_zone_count(
+            utilities.get_face_zone_count(face_zone_id_list=zone_ids),
+            f"meshing_utilities.get_face_zone_count label={label!r}",
+        )
         labels_report[label] = {
             "face_zone_ids": zone_ids,
             "zone_names": zone_names,
             "bounding_box_mm": bbox,
             "face_zone_area": area,
+            "face_count": face_count,
         }
 
     print(f"Overall zone_id_list: {all_face_zone_ids}")
@@ -245,8 +411,12 @@ def extract_reference(meshing):
         utilities.get_bounding_box_of_zone_list(zone_id_list=all_face_zone_ids),
         "meshing_utilities.get_bounding_box_of_zone_list overall",
     )
+    bodies = _object_volumes(utilities, object_names)
+    print(f"Body count: {len(object_names)}")
     return {
         "objects": objects,
+        "bodies": bodies,
+        "body_count": len(object_names),
         "cad_labels": cad_labels,
         "labels": labels_report,
         "all_face_zone_ids": all_face_zone_ids,
@@ -575,7 +745,146 @@ def build_parser():
         default=1e-3,
         help="Maximum relative per-label face-zone area difference.",
     )
+    parser.add_argument(
+        "--family",
+        choices=(FAMILY, DIAMOND_FAMILY),
+        default=FAMILY,
+        help=(
+            "pillar imports the single reference file. "
+            "diamond imports the nine production Diamond .dsco files."
+        ),
+    )
     return parser
+
+
+def _import_geometry(meshing, geometry_file):
+    """Initialize Watertight Geometry, import one file, and read it back."""
+    workflow = meshing.workflow
+    workflow.InitializeWorkflow(WorkflowType=r"Watertight Geometry")
+    workflow.TaskObject["Import Geometry"].Arguments.set_state({
+        r"FileName": as_fluent_path(geometry_file),
+        r"ImportCadPreferences": {
+            r"MaxFacetLength": 0,
+        },
+        r"LengthUnit": r"mm",
+    })
+    workflow.TaskObject["Import Geometry"].Execute()
+    print("Import Geometry executed.")
+    return extract_reference(meshing)
+
+
+def run_diamond_reference(args):
+    """Import the nine production Diamond files. Read-only on the CAD tree."""
+    if args.cad_path is not None or args.d_h_mm is not None or args.compare_to is not None:
+        raise ValueError(
+            "--family diamond does not take --cad-path, --d-h-mm, or --compare-to."
+        )
+    work_dir = DIAMOND_WORK_DIR if args.work_dir is None else args.work_dir
+    if _under_manual_cad(work_dir):
+        raise ValueError(
+            f"work dir {work_dir} is under C:/ro_data/geometries. "
+            "That tree is reserved for the manual CAD."
+        )
+    cases = production_diamond_cases()
+    missing = [case["cad_path"] for case in cases if not os.path.isfile(case["cad_path"])]
+    if missing:
+        raise FileNotFoundError(
+            "Diamond reference CAD is missing: " + ", ".join(missing)
+        )
+
+    cfg = load_run_config()
+    product_version = cfg.product_version
+    graphics_driver = cfg.graphics_driver
+    processor_count = 2
+    print(f"Family: {DIAMOND_FAMILY}")
+    print(f"Work dir: {work_dir}")
+    print(
+        "Length unit on import is mm. Region volume is reported as mm^3 "
+        "when Fluent returns a number in that unit."
+    )
+    print(
+        "launch_fluent args: "
+        f"product_version={product_version!r}, mode='meshing', dimension=3, "
+        f"precision='double', processor_count={processor_count!r}, "
+        f"ui_mode='gui', graphics_driver={graphics_driver!r}"
+    )
+    for case in cases:
+        print(f"DSCO: {case['cad_path']}")
+
+    meshing = None
+    transcript_is_running = False
+    changed_directory = False
+    original_working_directory = os.getcwd()
+    dumps = []
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+        os.chdir(work_dir)
+        changed_directory = True
+        transcript_path = os.path.join(work_dir, TRANSCRIPT_NAME)
+        meshing = pyfluent.launch_fluent(
+            product_version=product_version,
+            mode="meshing",
+            dimension=3,
+            precision="double",
+            processor_count=processor_count,
+            ui_mode="gui",
+            graphics_driver=graphics_driver,
+        )
+        meshing.transcript.start(file_name=as_fluent_path(transcript_path))
+        transcript_is_running = True
+        print(f"Transcript: {as_fluent_path(transcript_path)}")
+        for case in cases:
+            print(f"Importing {case['geo_id']}")
+            extracted = _import_geometry(meshing, case["cad_path"])
+            dump = reference_dump(extracted)
+            dumps.append(
+                {
+                    "family": DIAMOND_FAMILY,
+                    "geo_id": case["geo_id"],
+                    "geometry_file": case["cad_path"],
+                    **dump,
+                }
+            )
+            print(format_diamond_case_report(case["geo_id"], dump))
+        payload = {"family": DIAMOND_FAMILY, "cases": dumps}
+        output_path = os.path.join(work_dir, DIAMOND_SUMMARY_NAME)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        print(f"Wrote {output_path}")
+        print(
+            "Probe finished after Import Geometry. "
+            "No meshing task was executed."
+        )
+        return 0
+    finally:
+        cleanup_error = None
+        if meshing is not None and transcript_is_running:
+            try:
+                meshing.transcript.stop()
+                transcript_is_running = False
+            except Exception as stop_error:
+                cleanup_error = stop_error
+        exit_timeout_s = float(getattr(cfg, "fluent_exit_timeout_s", 60.0))
+        teardown_meshing_session(meshing, exit_timeout_s=exit_timeout_s)
+        if changed_directory:
+            try:
+                os.chdir(original_working_directory)
+            except OSError as chdir_error:
+                if cleanup_error is None:
+                    cleanup_error = chdir_error
+                else:
+                    print(
+                        "Warning: could not restore working directory: "
+                        f"{chdir_error}"
+                    )
+        if cleanup_error is not None and sys.exc_info()[0] is None:
+            raise cleanup_error
+        if cleanup_error is not None:
+            print(
+                "Warning: cleanup error while probe was already failing: "
+                f"{cleanup_error}"
+            )
 
 
 def main(argv=None):
@@ -588,6 +897,8 @@ def main(argv=None):
         raise ValueError(f"--area-rtol must be finite, got {args.area_rtol!r}.")
     if args.area_rtol < 0.0:
         raise ValueError(f"--area-rtol must be >= 0, got {args.area_rtol}.")
+    if args.family == DIAMOND_FAMILY:
+        return run_diamond_reference(args)
     d_h_mm = resolve_d_h_mm(args.cad_path, args.d_h_mm)
 
     if args.cad_path is None:
@@ -646,24 +957,11 @@ def main(argv=None):
             ui_mode="gui",
             graphics_driver=graphics_driver,
         )
-        workflow = meshing.workflow
-
         meshing.transcript.start(file_name=as_fluent_path(transcript_path))
         transcript_is_running = True
         print(f"Transcript: {as_fluent_path(transcript_path)}")
 
-        workflow.InitializeWorkflow(WorkflowType=r"Watertight Geometry")
-        workflow.TaskObject["Import Geometry"].Arguments.set_state({
-            r"FileName": as_fluent_path(geometry_file),
-            r"ImportCadPreferences": {
-                r"MaxFacetLength": 0,
-            },
-            r"LengthUnit": r"mm",
-        })
-        workflow.TaskObject["Import Geometry"].Execute()
-        print("Import Geometry executed.")
-
-        extracted = extract_reference(meshing)
+        extracted = _import_geometry(meshing, geometry_file)
         missing, extra = reconcile_labels(expected, extracted["cad_labels"])
         comparison = None
         if reference is not None:
@@ -678,6 +976,8 @@ def main(argv=None):
             "geo_id": GEO_ID,
             "geometry_file": str(geometry_file),
             "objects": extracted["objects"],
+            "bodies": extracted["bodies"],
+            "body_count": extracted["body_count"],
             "labels": extracted["labels"],
             "all_face_zone_ids": extracted["all_face_zone_ids"],
             "overall_bounding_box_mm": extracted["overall_bounding_box_mm"],
