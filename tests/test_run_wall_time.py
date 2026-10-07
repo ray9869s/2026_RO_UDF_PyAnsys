@@ -51,35 +51,88 @@ def _written_run(monkeypatch, tmp_path):
         created_utc=created_utc,
     )
     solver.finalize_worker_run_manifest(run_paths["run_directory"], "qoi_converged")
-    return solver, run_paths["run_directory"]
+    return solver, run_cfg, run_paths["mesh_directory"], run_paths["run_directory"]
 
 
 def test_solver_stamp_adds_wall_time_and_processor_count(monkeypatch, tmp_path):
-    solver, run_directory = _written_run(monkeypatch, tmp_path)
+    solver, _run_cfg, _mesh_directory, run_directory = _written_run(monkeypatch, tmp_path)
     before = read_run_manifest(run_directory)
     assert "solver_wall_time_s" not in before
     assert "processor_count" not in before
     assert "extraction_wall_time_s" not in before
     assert "solver_time_s" not in before
 
-    solver.stamp_solver_timing_on_run_manifest(run_directory, 12.5, 50)
+    solver.stamp_solver_timing_on_run_manifest(
+        run_directory, 12.5, 50, reached_final_write=True
+    )
     after = read_run_manifest(run_directory)
     assert after["solver_wall_time_s"] == pytest.approx(12.5)
     assert after["processor_count"] == 50
+    assert after["solver_wall_time_attempts"] == [
+        {
+            "solver_attempt_id": before["solver_attempt_id"],
+            "wall_time_s": 12.5,
+            "reached_final_write": True,
+        }
+    ]
     assert "extraction_wall_time_s" not in after
     assert "solver_time_s" not in after
     for key, value in before.items():
         assert after[key] == value
+    again = solver.stamp_solver_timing_on_run_manifest(
+        run_directory, 99.0, 50, reached_final_write=True
+    )
+    assert read_run_manifest(run_directory)["solver_wall_time_s"] == pytest.approx(12.5)
+    assert again.name == "manifest.json"
 
     with pytest.raises(TypeError):
-        solver.stamp_solver_timing_on_run_manifest(run_directory, 1.0, True)
+        solver.stamp_solver_timing_on_run_manifest(
+            run_directory, 1.0, True, reached_final_write=True
+        )
     with pytest.raises(ValueError):
-        solver.stamp_solver_timing_on_run_manifest(run_directory, -1.0, 50)
+        solver.stamp_solver_timing_on_run_manifest(
+            run_directory, -1.0, 50, reached_final_write=True
+        )
+
+
+def test_retried_solve_totals_every_fluent_launch(monkeypatch, tmp_path):
+    solver, run_cfg, mesh_directory, run_directory = _written_run(monkeypatch, tmp_path)
+    solver.stamp_solver_timing_on_run_manifest(
+        run_directory, 4.0, 50, reached_final_write=False
+    )
+    first_id = read_run_manifest(run_directory)["solver_attempt_id"]
+    solver.write_worker_run_manifest(
+        run_cfg,
+        mesh_directory,
+        run_directory,
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    carried = read_run_manifest(run_directory)
+    assert carried["solver_attempt_id"] != first_id
+    assert carried["solver_wall_time_s"] == pytest.approx(4.0)
+    assert carried["solver_wall_time_attempts"][0]["reached_final_write"] is False
+    solver.stamp_solver_timing_on_run_manifest(
+        run_directory, 6.5, 50, reached_final_write=True
+    )
+    after = read_run_manifest(run_directory)
+    assert after["solver_wall_time_s"] == pytest.approx(10.5)
+    assert [item["wall_time_s"] for item in after["solver_wall_time_attempts"]] == [
+        4.0,
+        6.5,
+    ]
+    assert [item["reached_final_write"] for item in after["solver_wall_time_attempts"]] == [
+        False,
+        True,
+    ]
+    assert after["solver_wall_time_attempts"][0]["solver_attempt_id"] == first_id
+    assert after["solver_wall_time_attempts"][1]["solver_attempt_id"] == after["solver_attempt_id"]
 
 
 def test_extraction_stamp_adds_only_extraction_wall_time(monkeypatch, tmp_path):
-    solver, run_directory = _written_run(monkeypatch, tmp_path)
-    solver.stamp_solver_timing_on_run_manifest(run_directory, 12.5, 50)
+    solver, _run_cfg, _mesh_directory, run_directory = _written_run(monkeypatch, tmp_path)
+    solver.stamp_solver_timing_on_run_manifest(
+        run_directory, 12.5, 50, reached_final_write=True
+    )
     before = read_run_manifest(run_directory)
     extract = load_report_extract()
     extract.stamp_extraction_wall_time_on_run_manifest(run_directory, 3.25)
@@ -108,12 +161,14 @@ def test_solver_clock_starts_at_launch_and_stops_after_final_write():
         "return solver_stop_reason"
     )
     call = source.index("        publish_stop_reason_and_finals(")
-    measured = source.index(
-        "        solver_wall_time_s = time.monotonic() - fluent_launched_at",
-        call,
-    )
-    stamped = source.index("        stamp_solver_timing_on_run_manifest(", call)
-    assert call < measured < stamped
+    done = source.index("        final_write_done = True", call)
+    stamped = source.index("        stamp_solver_timing_on_run_manifest(", done)
+    recorded = source.index("        solver_timing_recorded = True", stamped)
+    assert call < done < stamped < recorded
+    assert "time.monotonic() - fluent_launched_at" in source[stamped:recorded]
+    failed = source.index("    except Exception as e:", stamped)
+    assert "reached_final_write=True" in source[stamped:failed]
+    assert "reached_final_write=final_write_done" in source[failed:]
     stamp_fn = source[
         source.index("def stamp_solver_timing_on_run_manifest") : source.index(
             "def stamp_run_manifest_final_artifact_hashes"

@@ -294,6 +294,7 @@ def test_field_mapping_uses_summary_columns_and_module_area(tmp_path):
     assert record["mesh_wall_time_s"] == pytest.approx(3.0)
     assert record["solver_wall_time_s"] == pytest.approx(10.0)
     assert record["extraction_wall_time_s"] == pytest.approx(2.0)
+    assert record["extraction_wall_time_source"] == "run_manifest"
     assert record["solver_time_s"] == pytest.approx(9.5)
     assert record["failure_reason"] is None
 
@@ -317,8 +318,38 @@ def test_absent_solver_timing_stays_null(tmp_path):
     assert record["mesh_wall_time_s"] == pytest.approx(3.0)
     assert record["solver_wall_time_s"] is None
     assert record["extraction_wall_time_s"] is None
+    assert record["extraction_wall_time_source"] is None
     assert record["solver_time_s"] is None
     assert record["processor_count"] is None
+
+
+def test_extraction_time_falls_back_to_report_extract_timing_json(tmp_path):
+    _write_success_tree(tmp_path)
+    geo_id = "MFP_d0800_h0000_f0400"
+    run_dir = tmp_path / "runs" / "pillar" / geo_id / LF_MESH_ID / RUN_ID
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("extraction_wall_time_s", None)
+    _write_json(manifest_path, manifest)
+    timing_path = run_dir / "post" / "reports" / "report_extract_timing.json"
+    _write_json(timing_path, {"total_seconds": 4.5, "failed_phase": None})
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["extraction_wall_time_s"] == pytest.approx(4.5)
+    assert record["extraction_wall_time_source"] == "report_extract_timing"
+    assert record["solver_wall_time_s"] == pytest.approx(10.0)
+
+
+def test_manifest_extraction_time_wins_over_timing_json(tmp_path):
+    _write_success_tree(tmp_path)
+    geo_id = "MFP_d0800_h0000_f0400"
+    run_dir = tmp_path / "runs" / "pillar" / geo_id / LF_MESH_ID / RUN_ID
+    _write_json(
+        run_dir / "post" / "reports" / "report_extract_timing.json",
+        {"total_seconds": 99.0},
+    )
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["extraction_wall_time_s"] == pytest.approx(2.0)
+    assert record["extraction_wall_time_source"] == "run_manifest"
 
 
 def test_processor_count_is_read_when_the_run_manifest_has_it(tmp_path):

@@ -275,6 +275,17 @@ def test_run_timing_fields_are_optional_and_do_not_change_existing_keys(
     assert loaded["processor_count"] == 50
     for key, value in original.items():
         assert loaded[key] == value
+    mismatched = dict(loaded)
+    mismatched["solver_wall_time_attempts"] = [
+        {
+            "solver_attempt_id": "attempt-1",
+            "wall_time_s": 1.0,
+            "reached_final_write": True,
+        }
+    ]
+    mismatched["solver_wall_time_s"] = 2.0
+    with pytest.raises(ManifestError, match="sum"):
+        write_run_manifest(directory, mismatched)
 
     for bad in (
         {"solver_wall_time_s": -1.0},

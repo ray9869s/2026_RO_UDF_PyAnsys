@@ -33,7 +33,9 @@ Run-only:
                               (see docs/metrics_conventions.md)
 
 Optional, written by the worker after the fact. Absent on older leaves:
-  solver_wall_time_s:         seconds from Fluent launch to final data write
+  solver_wall_time_s:         seconds, total over every Fluent launch for this run
+  solver_wall_time_attempts:  list of {solver_attempt_id, wall_time_s,
+                              reached_final_write}; the total above is their sum
   extraction_wall_time_s:     seconds for report extraction
   processor_count:            int >= 1, the count passed to the solver launch
 """
@@ -524,6 +526,7 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     for field in ("solver_wall_time_s", "extraction_wall_time_s"):
         _optional_nonnegative_number(payload, field, "Run")
     _optional_processor_count(payload)
+    _optional_solver_wall_time_attempts(payload)
 
 
 def _optional_nonnegative_number(
@@ -544,6 +547,68 @@ def _optional_processor_count(payload: Mapping[str, Any]) -> None:
     if "processor_count" not in payload or payload["processor_count"] is None:
         return
     _require_integer(payload, "processor_count", "Run", minimum=1)
+
+
+def _optional_solver_wall_time_attempts(payload: Mapping[str, Any]) -> None:
+    if (
+        "solver_wall_time_attempts" not in payload
+        or payload["solver_wall_time_attempts"] is None
+    ):
+        return
+    attempts = payload["solver_wall_time_attempts"]
+    if not isinstance(attempts, list) or not attempts:
+        raise ManifestError(
+            "Run manifest field 'solver_wall_time_attempts' must be a "
+            f"non-empty list, got {attempts!r}."
+        )
+    seen: set[str] = set()
+    total = 0.0
+    for item in attempts:
+        if not isinstance(item, Mapping):
+            raise ManifestError(
+                "Run manifest solver_wall_time_attempts entries must be "
+                f"objects, got {item!r}."
+            )
+        attempt_id = item.get("solver_attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id.strip():
+            raise ManifestError(
+                "Run manifest solver_wall_time_attempts solver_attempt_id "
+                f"must be a non-empty string, got {attempt_id!r}."
+            )
+        if attempt_id in seen:
+            raise ManifestError(
+                "Run manifest solver_wall_time_attempts repeats "
+                f"solver_attempt_id {attempt_id!r}."
+            )
+        seen.add(attempt_id)
+        wall = item.get("wall_time_s")
+        if (
+            isinstance(wall, bool)
+            or not isinstance(wall, (int, float))
+            or not math.isfinite(float(wall))
+            or float(wall) < 0.0
+        ):
+            raise ManifestError(
+                "Run manifest solver_wall_time_attempts wall_time_s must be "
+                f"finite and >= 0, got {wall!r}."
+            )
+        reached = item.get("reached_final_write")
+        if not isinstance(reached, bool):
+            raise ManifestError(
+                "Run manifest solver_wall_time_attempts reached_final_write "
+                f"must be a bool, got {reached!r}."
+            )
+        total += float(wall)
+    recorded = payload.get("solver_wall_time_s")
+    if (
+        isinstance(recorded, bool)
+        or not isinstance(recorded, (int, float))
+        or not math.isclose(float(recorded), total, rel_tol=0.0, abs_tol=1e-6)
+    ):
+        raise ManifestError(
+            "Run manifest solver_wall_time_s must equal the sum of "
+            f"solver_wall_time_attempts, got {recorded!r} vs {total!r}."
+        )
 
 
 def _validate_mesh_location(directory: Path, payload: Mapping[str, Any]) -> None:

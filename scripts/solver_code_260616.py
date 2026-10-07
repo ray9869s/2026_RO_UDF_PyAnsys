@@ -321,6 +321,12 @@ def write_worker_run_manifest(
         existing = read_run_manifest(run_directory)
         if existing["u_mean_ms"] is not None and payload["u_mean_ms"] is None:
             payload["u_mean_ms"] = existing["u_mean_ms"]
+        prior_attempts = existing.get("solver_wall_time_attempts")
+        if isinstance(prior_attempts, list) and prior_attempts:
+            payload["solver_wall_time_attempts"] = prior_attempts
+            payload["solver_wall_time_s"] = existing["solver_wall_time_s"]
+        if existing.get("processor_count") is not None:
+            payload["processor_count"] = existing["processor_count"]
     require_u_mean_profile_identity(
         payload.get("u_mean_ms"),
         mesh_manifest.get("inlet_profile_G"),
@@ -380,11 +386,19 @@ def isolate_failed_attempt_write(solver, run_directory, *, as_fluent_path):
     return dest
 
 
-def stamp_solver_timing_on_run_manifest(run_directory, wall_time_s, processor_count):
-    """Record solve wall time and the processor count passed to Fluent.
+def stamp_solver_timing_on_run_manifest(
+    run_directory,
+    wall_time_s,
+    processor_count,
+    *,
+    reached_final_write,
+):
+    """Append this Fluent launch and set ``solver_wall_time_s`` to the sum.
 
     ``wall_time_s`` is seconds from ``launch_fluent`` until ``write_case_data``
-    returns. Runs that never reach that write keep the fields absent.
+    returns, or until the attempt fails when the final write was not reached.
+    A second stamp for the same ``solver_attempt_id`` does not add again.
+    ``write_worker_run_manifest`` keeps the list across a later attempt.
     """
     if isinstance(wall_time_s, bool) or not isinstance(wall_time_s, (int, float)):
         raise TypeError(
@@ -402,10 +416,36 @@ def stamp_solver_timing_on_run_manifest(run_directory, wall_time_s, processor_co
         raise ValueError(
             f"processor_count must be >= 1, got {processor_count!r}."
         )
+    if not isinstance(reached_final_write, bool):
+        raise TypeError(
+            "reached_final_write must be a bool, "
+            f"got {reached_final_write!r}."
+        )
+    payload = read_run_manifest(run_directory)
+    attempt_id = payload.get(SOLVER_ATTEMPT_ID_FIELD)
+    if not isinstance(attempt_id, str) or not attempt_id.strip():
+        raise ValueError(
+            f"run manifest has no solver_attempt_id, got {attempt_id!r}."
+        )
+    attempts = list(payload.get("solver_wall_time_attempts") or [])
+    if any(
+        isinstance(item, dict) and item.get("solver_attempt_id") == attempt_id
+        for item in attempts
+    ):
+        return Path(run_directory) / "manifest.json"
+    attempts.append(
+        {
+            "solver_attempt_id": attempt_id,
+            "wall_time_s": float(wall_time_s),
+            "reached_final_write": reached_final_write,
+        }
+    )
+    total = sum(float(item["wall_time_s"]) for item in attempts)
     return update_run_manifest_fields(
         run_directory,
         {
-            "solver_wall_time_s": float(wall_time_s),
+            "solver_wall_time_attempts": attempts,
+            "solver_wall_time_s": total,
             "processor_count": processor_count,
         },
     )
@@ -4289,6 +4329,8 @@ if __name__ == "__main__":
     original_working_directory = os.getcwd()
     inlet_profile_g = None
     fluent_launched_at = None
+    final_write_done = False
+    solver_timing_recorded = False
 
     try:
         os.chdir(case_path)
@@ -5427,12 +5469,14 @@ if __name__ == "__main__":
         )
         if fluent_launched_at is None:
             raise RuntimeError("solver wall time has no Fluent launch timestamp.")
-        solver_wall_time_s = time.monotonic() - fluent_launched_at
+        final_write_done = True
         stamp_solver_timing_on_run_manifest(
             case_path,
-            solver_wall_time_s,
+            time.monotonic() - fluent_launched_at,
             processor_count,
+            reached_final_write=True,
         )
+        solver_timing_recorded = True
         if input_mode == "restart_continuation":
             remove_staged_restart_copies(
                 staged_restart_case_file,
@@ -5441,6 +5485,19 @@ if __name__ == "__main__":
 
 
     except Exception as e:
+        if fluent_launched_at is not None and not solver_timing_recorded:
+            try:
+                stamp_solver_timing_on_run_manifest(
+                    case_path,
+                    time.monotonic() - fluent_launched_at,
+                    processor_count,
+                    reached_final_write=final_write_done,
+                )
+            except Exception as timing_error:
+                print(
+                    "Warning: could not record solver wall time: "
+                    f"{timing_error}"
+                )
         print("\n" + "=" * 72)
         print("ERROR: Solver automation failed.")
         print("=" * 72)

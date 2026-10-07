@@ -57,6 +57,9 @@ EXAMPLE_FIDELITY_TABLE = {LF_FIDELITY: dict(LF_MESH_SETTINGS)}
 # A missing status is not success.
 _MESH_RECORD_SUCCESS = "SUCCESS"
 _SUMMARY_CSV = Path("post") / "reports" / "summary_metrics_wide.csv"
+_EXTRACT_TIMING_JSON = Path("post") / "reports" / "report_extract_timing.json"
+_EXTRACTION_SOURCE_MANIFEST = "run_manifest"
+_EXTRACTION_SOURCE_TIMING_JSON = "report_extract_timing"
 _COMPLETED_STOP_REASONS = frozenset(
     {"residual_converged", "qoi_converged", "max_iter_reached"}
 )
@@ -90,6 +93,7 @@ _RESULT_FIELDS = (
     "solver_time_s",
     "leaf_path",
     "processor_count",
+    "extraction_wall_time_source",
 )
 
 
@@ -479,7 +483,6 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
     mesh_record = _read_object(mesh_dir / "mesh_run_record.json") or {}
     run_manifest = _read_object(run_dir / "manifest.json") or {}
     retry = _read_object(run_dir / "solver_retry_record.json") or {}
-    extract_record = _read_object(summary_path.parent / "extract_record.json") or {}
     summary = _read_summary_row(summary_path)
     if summary_path.is_file() and summary is None:
         return _finish(
@@ -491,7 +494,7 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
             mesh_record=mesh_record,
             run_manifest=run_manifest,
             retry=retry,
-            extract_record=extract_record,
+            run_dir=run_dir,
         )
     status, reason = _physics_status(run_manifest)
     if summary is None and status == STATUS_VALID:
@@ -504,7 +507,7 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
             mesh_record=mesh_record,
             run_manifest=run_manifest,
             retry=retry,
-            extract_record=extract_record,
+            run_dir=run_dir,
         )
     values = _quantities(summary, mesh_manifest)
     if status == STATUS_VALID and (
@@ -524,7 +527,7 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
         mesh_record=mesh_record,
         run_manifest=run_manifest,
         retry=retry,
-        extract_record=extract_record,
+        run_dir=run_dir,
         summary=summary,
     )
 
@@ -598,14 +601,13 @@ def _finish(
     mesh_record: Mapping[str, Any] | None = None,
     run_manifest: Mapping[str, Any] | None = None,
     retry: Mapping[str, Any] | None = None,
-    extract_record: Mapping[str, Any] | None = None,
+    run_dir: Path | None = None,
     summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     mesh_manifest = mesh_manifest or {}
     mesh_record = mesh_record or {}
     run_manifest = run_manifest or {}
     retry = retry or {}
-    extract_record = extract_record or {}
     quantities = _quantities(summary, mesh_manifest)
     record = {key: None for key in _RESULT_FIELDS}
     record.update(base)
@@ -618,16 +620,34 @@ def _finish(
         run_manifest.get("solver_wall_time_s"),
         retry.get("wall_time_seconds"),
     )
-    record["extraction_wall_time_s"] = _first_finite(
-        run_manifest.get("extraction_wall_time_s"),
-        extract_record.get("wall_time_seconds"),
-    )
+    extraction_s, extraction_source = _extraction_wall_time(run_manifest, run_dir)
+    record["extraction_wall_time_s"] = extraction_s
+    record["extraction_wall_time_source"] = extraction_source
     record["solver_time_s"] = _finite(run_manifest.get("solver_time_s"))
     record["leaf_path"] = leaf_path
     record["processor_count"] = _optional_processor_count(
         run_manifest.get("processor_count")
     )
     return record
+
+
+def _extraction_wall_time(
+    run_manifest: Mapping[str, Any],
+    run_dir: Path | None,
+) -> tuple[float | None, str | None]:
+    """Manifest field first, then ``report_extract_timing.json`` ``total_seconds``."""
+    from_manifest = _finite(run_manifest.get("extraction_wall_time_s"))
+    if from_manifest is not None:
+        return from_manifest, _EXTRACTION_SOURCE_MANIFEST
+    if run_dir is None:
+        return None, None
+    timing = _read_object(run_dir / _EXTRACT_TIMING_JSON)
+    if timing is None:
+        return None, None
+    from_file = _finite(timing.get("total_seconds"))
+    if from_file is None:
+        return None, None
+    return from_file, _EXTRACTION_SOURCE_TIMING_JSON
 
 
 def _optional_processor_count(value: Any) -> int | None:
