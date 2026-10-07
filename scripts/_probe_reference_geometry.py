@@ -6,7 +6,9 @@ imports the nine production Diamond ``.dsco`` files and prints labels,
 per-label face counts, areas, bounding boxes, body count, and region
 volume. ``--family diamond --cad-path`` imports one Diamond file and can
 ``--compare-to`` a previous ``reference_geometry.json``. Does not execute
-any meshing task after Import Geometry.
+any meshing task after Import Geometry. ``read_filament_orientation`` opens
+the same CAD in Discovery and reports ``sign(dir_x * dir_y)`` for the
+spacer cylinders above and below ``z = 0``.
 
 Windows Fluent server only. Do not run from WSL.
 """
@@ -20,6 +22,7 @@ import math
 import os
 import sys
 import traceback
+from pathlib import Path
 
 import ansys.fluent.core as pyfluent
 
@@ -773,6 +776,176 @@ def _import_geometry(meshing, geometry_file):
     workflow.TaskObject["Import Geometry"].Execute()
     print("Import Geometry executed.")
     return extract_reference(meshing)
+
+
+# Manual Diamond CAD, viewed from above (+x right, +y up): the upper layer
+# runs upper-left to lower-right. dir_x * dir_y is unchanged if the axis is
+# reversed.
+UPPER_LAYER_XY_SIGN = -1
+LOWER_LAYER_XY_SIGN = 1
+_LAYER_Z_TOL_M = 1.0e-6
+_AXIS_PRODUCT_TOL = 1.0e-12
+
+
+def direction_xy_sign(direction):
+    """Sign of ``dir_x * dir_y``. Zero when the axis is parallel to x or y."""
+    if len(direction) < 2:
+        raise ValueError(f"Cylinder direction needs x and y, got {direction!r}.")
+    product = float(direction[0]) * float(direction[1])
+    if abs(product) <= _AXIS_PRODUCT_TOL:
+        return 0
+    if product > 0.0:
+        return 1
+    return -1
+
+
+def filament_layer_report(cylinders):
+    """Split spacer cylinders by axis origin ``z`` and report ``sign(dir_x * dir_y)``.
+
+    ``z > 0`` is the upper layer and ``z < 0`` the lower layer. A cylinder
+    whose origin lies on the midplane is counted apart from both layers.
+    ``dir_xy_sign`` is set only when every cylinder in that layer has the
+    same non-zero product sign.
+    """
+    grouped = {"upper": [], "lower": []}
+    midplane_count = 0
+    if not isinstance(cylinders, list):
+        raise TypeError(f"cylinders must be a list, got {type(cylinders).__name__}.")
+    for index, item in enumerate(cylinders):
+        if not isinstance(item, dict):
+            raise TypeError(f"Cylinder {index} must be an object.")
+        origin = item.get("origin")
+        direction = item.get("direction")
+        if not isinstance(origin, (list, tuple)) or len(origin) < 3:
+            raise ValueError(f"Cylinder {index} origin must be xyz, got {origin!r}.")
+        if not isinstance(direction, (list, tuple)) or len(direction) < 2:
+            raise ValueError(
+                f"Cylinder {index} direction must include x and y, got {direction!r}."
+            )
+        z_m = float(origin[2])
+        sign = direction_xy_sign(direction)
+        if z_m > _LAYER_Z_TOL_M:
+            grouped["upper"].append(sign)
+        elif z_m < -_LAYER_Z_TOL_M:
+            grouped["lower"].append(sign)
+        else:
+            midplane_count += 1
+    report = {"midplane_count": midplane_count}
+    for layer, signs in grouped.items():
+        unique = set(signs)
+        if len(unique) == 1 and 0 not in unique:
+            dir_xy_sign = unique.pop()
+        else:
+            dir_xy_sign = None
+        report[layer] = {"count": len(signs), "dir_xy_sign": dir_xy_sign}
+    return report
+
+
+def filament_orientations_match(reference, current):
+    """True when both sides have upper ``dy/dx < 0`` and lower ``dy/dx > 0``."""
+    for report in (reference, current):
+        if not isinstance(report, dict):
+            return False
+        if report.get("midplane_count"):
+            return False
+        upper = report.get("upper")
+        lower = report.get("lower")
+        if not isinstance(upper, dict) or not isinstance(lower, dict):
+            return False
+        if upper.get("dir_xy_sign") != UPPER_LAYER_XY_SIGN or not upper.get("count"):
+            return False
+        if lower.get("dir_xy_sign") != LOWER_LAYER_XY_SIGN or not lower.get("count"):
+            return False
+    return True
+
+
+def cylinder_axes_from_design(design):
+    """Origin and ``dir_z`` of every cylindrical face. Discovery 25.1 geometry."""
+    from ansys.geometry.core.designer.face import SurfaceType
+
+    axes = []
+    for body in design.bodies:
+        if not body.is_alive:
+            continue
+        for face in body.faces:
+            if face.surface_type is not SurfaceType.SURFACETYPE_CYLINDER:
+                continue
+            geometry = face.shape.geometry
+            axes.append(
+                {
+                    "origin": _component_xyz(geometry.origin),
+                    "direction": _component_xyz(geometry.dir_z),
+                }
+            )
+    return axes
+
+
+def _component_xyz(value):
+    return (float(value[0]), float(value[1]), float(value[2]))
+
+
+def pmdb_import_unsupported(exc):
+    """Discovery 25.1 raises this for ``.pmdb``. Import starts at 27.1."""
+    text = f"{type(exc).__name__}: {exc}"
+    return "PMDB import" in text or "27.1" in text
+
+
+def open_design_for_orientation(modeler, cad_path):
+    """Open ``cad_path``. A 25.1 ``.pmdb`` opens the sibling ``.scdocx`` instead.
+
+    Both files are written by the same export. Discovery 25.1 can open the
+    ``.scdocx`` and cannot import the ``.pmdb``.
+    """
+    path = Path(cad_path)
+    try:
+        design = modeler.open_file(str(path), upload_to_server=False)
+        return {"design": design, "opened_path": str(path)}
+    except Exception as exc:
+        if path.suffix.casefold() != ".pmdb" or not pmdb_import_unsupported(exc):
+            raise
+        scdocx = path.with_suffix(".scdocx")
+        if not scdocx.is_file():
+            raise FileNotFoundError(
+                f"Discovery cannot import {path}. Sibling SCDOCX is missing: {scdocx}."
+            ) from exc
+        design = modeler.open_file(str(scdocx), upload_to_server=False)
+        return {"design": design, "opened_path": str(scdocx)}
+
+
+def read_filament_orientation(cad_path, modeler=None):
+    """Read spacer-cylinder layer signs from one CAD file. Launches Discovery if needed."""
+    owns_modeler = modeler is None
+    if owns_modeler:
+        modeler = launch_discovery_modeler()
+    try:
+        opened = open_design_for_orientation(modeler, cad_path)
+        report = filament_layer_report(cylinder_axes_from_design(opened["design"]))
+        report["cad_path"] = str(cad_path)
+        report["opened_path"] = opened["opened_path"]
+        return report
+    finally:
+        if owns_modeler:
+            close_error = None
+            try:
+                modeler.close()
+            except Exception as exc:
+                close_error = exc
+            if close_error is not None and sys.exc_info()[0] is None:
+                raise close_error
+
+
+def launch_discovery_modeler():
+    """Hidden Discovery 25.1. Importing this module does not call this."""
+    from ansys.geometry.core.connection.backend import ApiVersions
+    from ansys.geometry.core.connection.launcher import (
+        launch_modeler_with_discovery,
+    )
+
+    return launch_modeler_with_discovery(
+        version=251,
+        api_version=ApiVersions.V_251,
+        hidden=True,
+    )
 
 
 def run_diamond_reference(args):

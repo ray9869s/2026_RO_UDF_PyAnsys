@@ -80,6 +80,7 @@ def test_unread_volume_is_not_zero_and_a_real_difference_fails():
         "reference": {"return_code": 0, "log": "a"},
         "generate": {"return_code": 0, "log": "b"},
         "compare": {"return_code": 0, "log": "c"},
+        "orientation": {"return_code": 0, "log": "d"},
     }
     summary = driver.aggregate_case(
         geo_id="D2450_a45",
@@ -87,6 +88,7 @@ def test_unread_volume_is_not_zero_and_a_real_difference_fails():
         comparison=None,
         volume=unread,
         face_counts=None,
+        orientation_match=True,
     )
     assert summary["volume_status"] == "unread"
     assert driver.case_failed(summary) is False
@@ -97,8 +99,22 @@ def test_unread_volume_is_not_zero_and_a_real_difference_fails():
         comparison=None,
         volume={"status": "compared", "rel_diff": 0.01, "current_mm3": 1.01, "reference_mm3": 1.0},
         face_counts=None,
+        orientation_match=True,
     )
     assert driver.case_failed(differed) is True
+
+    swapped = dict(steps_ok)
+    swapped["orientation"] = {"return_code": 1, "log": "d"}
+    mismatch = driver.aggregate_case(
+        geo_id="D2450_a45",
+        steps=swapped,
+        comparison=None,
+        volume=unread,
+        face_counts=None,
+        orientation_match=False,
+    )
+    assert mismatch["orientation_match"] is False
+    assert driver.case_failed(mismatch) is True
 
 
 def test_unknown_only_id_raises():

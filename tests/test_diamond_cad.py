@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from helpers import SCRIPTS_DIR, load_module
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.diamond_cad import (
     diamond_layout,
@@ -150,14 +151,17 @@ def test_filaments_are_the_cell_diagonals_and_spheres_sit_on_the_crossings():
         )
         x0 = layout["x_active_0"] + cell * layout["pitch_m"]
         x1 = x0 + layout["pitch_m"]
+        product = direction[0] * direction[1]
         if segment["layer"] == "upper":
-            assert start[1] == pytest.approx(layout["y_min"])
-            assert start[2] == pytest.approx(layout["filament_radius_m"])
-            assert end[1] == pytest.approx(layout["y_max"])
-        else:
             assert start[1] == pytest.approx(layout["y_max"])
-            assert start[2] == pytest.approx(-layout["filament_radius_m"])
+            assert start[2] == pytest.approx(layout["filament_radius_m"])
             assert end[1] == pytest.approx(layout["y_min"])
+            assert product < 0.0
+        else:
+            assert start[1] == pytest.approx(layout["y_min"])
+            assert start[2] == pytest.approx(-layout["filament_radius_m"])
+            assert end[1] == pytest.approx(layout["y_max"])
+            assert product > 0.0
         assert start[0] == pytest.approx(x0)
         assert end[0] == pytest.approx(x1)
         assert end[2] == pytest.approx(start[2])
@@ -170,6 +174,22 @@ def test_filaments_are_the_cell_diagonals_and_spheres_sit_on_the_crossings():
     interior = [center for center in centers if abs(center[1]) < 1e-12]
     assert len(interior) == layout["n_active"]
     assert interior[0][0] == pytest.approx(layout["x_active_0"] + 0.5 * layout["pitch_m"])
+
+
+def test_generated_axes_match_the_manual_layer_signs():
+    probe = load_module(
+        "probe_diamond_orientation_under_test",
+        SCRIPTS_DIR / "_probe_reference_geometry.py",
+    )
+    for geo_id in _diamond_ids():
+        cylinders = [
+            {"origin": segment["start"], "direction": segment["direction"]}
+            for segment in filament_segments(diamond_layout(geo_id))
+        ]
+        report = probe.filament_layer_report(cylinders)
+        assert probe.filament_orientations_match(report, report) is True
+        assert report["upper"]["dir_xy_sign"] == -1
+        assert report["lower"]["dir_xy_sign"] == 1
 
 
 def test_n_active_lengthens_only_the_active_section():

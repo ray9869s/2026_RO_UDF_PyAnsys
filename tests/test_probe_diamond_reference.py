@@ -100,6 +100,80 @@ def test_unread_volume_is_marked_and_not_invented():
         probe._require_volume("12.5", "fluid")
 
 
+def _axis(z_m, xy_sign):
+    """A horizontal cylinder axis. ``xy_sign`` is the sign of dir_x * dir_y."""
+    y_component = 1.0 if xy_sign > 0 else -1.0
+    return {"origin": (0.0, 0.0, z_m), "direction": (1.0, y_component, 0.0)}
+
+
+def test_layer_report_requires_upper_negative_and_lower_positive():
+    probe = load_probe()
+    manual = probe.filament_layer_report(
+        [
+            _axis(0.0002, -1),
+            _axis(0.0002, -1),
+            _axis(-0.0002, 1),
+            {"origin": (1.0, 0.0, -0.0002), "direction": (-1.0, -1.0, 0.0)},
+        ]
+    )
+    assert manual["upper"] == {"count": 2, "dir_xy_sign": -1}
+    assert manual["lower"] == {"count": 2, "dir_xy_sign": 1}
+    assert manual["midplane_count"] == 0
+    assert probe.filament_orientations_match(manual, manual) is True
+
+    swapped = probe.filament_layer_report(
+        [_axis(0.0002, 1), _axis(-0.0002, -1)]
+    )
+    assert probe.filament_orientations_match(manual, swapped) is False
+    assert probe.filament_orientations_match(swapped, swapped) is False
+
+    mixed = probe.filament_layer_report(
+        [_axis(0.0002, -1), _axis(0.0002, 1), _axis(-0.0002, 1)]
+    )
+    assert mixed["upper"]["dir_xy_sign"] is None
+    assert probe.filament_orientations_match(manual, mixed) is False
+
+    midplane = probe.filament_layer_report(
+        [_axis(0.0002, -1), _axis(-0.0002, 1), _axis(0.0, -1)]
+    )
+    assert midplane["midplane_count"] == 1
+    assert probe.filament_orientations_match(manual, midplane) is False
+
+
+def test_pmdb_orientation_open_uses_the_sibling_scdocx_on_25_1(tmp_path):
+    probe = load_probe()
+    assert probe.pmdb_import_unsupported(
+        RuntimeError("PMDB import requires a minimum Ansys release version of 27.1")
+    )
+
+    pmdb = tmp_path / "D2450_a45.pmdb"
+    scdocx = tmp_path / "D2450_a45.scdocx"
+    pmdb.write_bytes(b"pmdb")
+    scdocx.write_bytes(b"scdocx")
+
+    class Modeler:
+        def __init__(self):
+            self.opened = []
+
+        def open_file(self, path, upload_to_server=False):
+            self.opened.append(path)
+            if str(path).casefold().endswith(".pmdb"):
+                raise RuntimeError(
+                    "PMDB import requires a minimum Ansys release version of 27.1"
+                )
+            return {"path": path}
+
+    modeler = Modeler()
+    opened = probe.open_design_for_orientation(modeler, pmdb)
+    assert opened["opened_path"] == str(scdocx)
+    assert modeler.opened == [str(pmdb), str(scdocx)]
+
+    lone = tmp_path / "only.pmdb"
+    lone.write_bytes(b"pmdb")
+    with pytest.raises(FileNotFoundError, match="SCDOCX"):
+        probe.open_design_for_orientation(modeler, lone)
+
+
 def test_diamond_cli_does_not_launch_and_refuses_the_cad_tree(tmp_path):
     probe = load_probe()
     bore = probe.build_parser().parse_args(

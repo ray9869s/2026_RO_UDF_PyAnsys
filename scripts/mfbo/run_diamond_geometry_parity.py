@@ -27,7 +27,7 @@ REFERENCE_JSON_NAME = "reference_geometry.json"
 META_JSON_SUFFIX = "_meta.json"
 AREA_RTOL = 1e-3
 VOLUME_RTOL = 1e-3
-_STEPS = ("reference", "generate", "compare")
+_STEPS = ("reference", "generate", "compare", "orientation")
 
 
 def production_cases():
@@ -130,7 +130,7 @@ def compare_body_volumes(current_bodies, reference_bodies):
     }
 
 
-def aggregate_case(*, geo_id, steps, comparison, volume, face_counts):
+def aggregate_case(*, geo_id, steps, comparison, volume, face_counts, orientation_match=None):
     """One summary row. ``comparison`` is the probe comparison object or None."""
     label_set_match = None
     max_bbox_abs_diff_mm = None
@@ -177,6 +177,7 @@ def aggregate_case(*, geo_id, steps, comparison, volume, face_counts):
         "area_max_rel_diff": area_max_rel_diff,
         "volume_status": volume_status,
         "volume_rel_diff": volume_rel_diff,
+        "orientation_match": orientation_match,
         "generated_face_counts": face_counts,
         "boundary_labels": list(BOUNDARY_LABELS),
         "steps": steps,
@@ -297,7 +298,39 @@ def _probe_cmd(cad_path, work_dir, compare_to=None):
     return cmd
 
 
-def run_case(case, *, out_root):
+def run_orientation_step(*, modeler, dsco_path, pmdb_path, log_path):
+    """Read cylinder axes from the manual file and the generated file.
+
+    A mismatch of ``sign(dir_x * dir_y)`` on either layer fails the case.
+    """
+    probe = _load_probe()
+    try:
+        reference = probe.read_filament_orientation(dsco_path, modeler=modeler)
+        current = probe.read_filament_orientation(pmdb_path, modeler=modeler)
+        match = probe.filament_orientations_match(reference, current)
+    except Exception:
+        traced = traceback.format_exc()
+        _write_log(log_path, traced)
+        print(traced, file=sys.stderr)
+        return 1, None
+    payload = {"match": match, "reference": reference, "current": current}
+    _write_log(log_path, json.dumps(payload, indent=2) + "\n")
+    print(
+        "orientation "
+        f"upper {reference['upper']['dir_xy_sign']} vs {current['upper']['dir_xy_sign']}, "
+        f"lower {reference['lower']['dir_xy_sign']} vs {current['lower']['dir_xy_sign']}, "
+        f"opened {current['opened_path']}"
+    )
+    if not match:
+        print(
+            f"Orientation mismatch: {dsco_path} vs {pmdb_path}.",
+            file=sys.stderr,
+        )
+        return 1, payload
+    return 0, payload
+
+
+def run_case(case, *, out_root, modeler):
     geo_id = case["geo_id"]
     dirs = case_directories(out_root, geo_id)
     log_dir = out_root / "logs" / geo_id
@@ -332,6 +365,28 @@ def run_case(case, *, out_root):
         )
     steps["compare"] = {"return_code": cmp_code, "log": str(cmp_log)}
 
+    orient_log = log_dir / "orientation.log"
+    orientation_match = None
+    if modeler is None or not Path(case["cad_path"]).is_file() or not pmdb.is_file():
+        reason = (
+            "orientation skipped: "
+            f"modeler={modeler is not None}, dsco exists={Path(case['cad_path']).is_file()}, "
+            f"pmdb exists={pmdb.is_file()}.\n"
+        )
+        _write_log(orient_log, reason)
+        print(reason, file=sys.stderr)
+        orient_code = 1
+    else:
+        orient_code, orient_payload = run_orientation_step(
+            modeler=modeler,
+            dsco_path=case["cad_path"],
+            pmdb_path=pmdb,
+            log_path=orient_log,
+        )
+        if isinstance(orient_payload, dict):
+            orientation_match = orient_payload.get("match")
+    steps["orientation"] = {"return_code": orient_code, "log": str(orient_log)}
+
     comparison = None
     face_counts = None
     volume = None
@@ -363,6 +418,7 @@ def run_case(case, *, out_root):
         comparison=comparison,
         volume=volume,
         face_counts=face_counts,
+        orientation_match=orientation_match,
     )
 
 
@@ -376,8 +432,8 @@ def write_summary(out_root, payload):
 def print_summary(cases):
     print(
         f"{'geo_id':<16} {'labels':>8} {'max_|bbox|_mm':>14} "
-        f"{'zones':>8} {'area_rel':>12} {'volume':>10} "
-        f"{'ref':>4} {'gen':>4} {'cmp':>4}"
+        f"{'zones':>8} {'area_rel':>12} {'volume':>10} {'orient':>8} "
+        f"{'ref':>4} {'gen':>4} {'cmp':>4} {'ori':>4}"
     )
     for case in cases:
         area = case["area_max_rel_diff"]
@@ -390,10 +446,11 @@ def print_summary(cases):
         print(
             f"{case['geo_id']:<16} {_flag(case['label_set_match']):>8} "
             f"{bbox_text:>14} {_flag(case['zone_count_match']):>8} "
-            f"{area_text:>12} {volume:>10} "
+            f"{area_text:>12} {volume:>10} {_flag(case['orientation_match']):>8} "
             f"{case['steps']['reference']['return_code']:>4} "
             f"{case['steps']['generate']['return_code']:>4} "
-            f"{case['steps']['compare']['return_code']:>4}"
+            f"{case['steps']['compare']['return_code']:>4} "
+            f"{case['steps']['orientation']['return_code']:>4}"
         )
 
 
@@ -450,10 +507,15 @@ def main(argv=None):
     refuse_existing_case_dirs(out_root, [case["geo_id"] for case in cases])
     out_root.mkdir(parents=True, exist_ok=True)
 
+    probe = _load_probe()
+    modeler = probe.launch_discovery_modeler()
     rows = []
-    for case in cases:
-        print(f"CASE {case['geo_id']}")
-        rows.append(run_case(case, out_root=out_root))
+    try:
+        for case in cases:
+            print(f"CASE {case['geo_id']}")
+            rows.append(run_case(case, out_root=out_root, modeler=modeler))
+    finally:
+        modeler.close()
     payload = {
         "out_root": str(out_root),
         "area_rtol": AREA_RTOL,

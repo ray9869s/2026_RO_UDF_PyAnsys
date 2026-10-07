@@ -11,8 +11,11 @@ stack reaches ``Sigma_d`` and the membrane trim matches the registry.
 A joint sphere of ``bridge_radius_m`` sits at each diagonal crossing, at
 ``z = 0``.
 
-The probe areas are the same if the two families are swapped. This module
-puts the diagonal that runs from ``-y`` to ``+y`` on the upper layer.
+Viewed from above (looking along ``-z``), with ``+x`` to the right and
+``+y`` up, the manual CAD puts the upper layer (``z > 0``) on the diagonal
+from upper-left to lower-right, so ``dy/dx < 0`` along ``+x``. The lower
+layer is the other diagonal, ``dy/dx > 0``. Face areas do not show which
+family is on top; the parity check reads cylinder axes.
 """
 
 from __future__ import annotations
@@ -133,8 +136,9 @@ def diamond_layout(geo_id, n_active=None):
 def filament_segments(layout):
     """One cylinder per cell per layer, extended one pitch past the active box.
 
-    Upper layer: angle ``+atan(span/pitch)`` from ``+x``, axis at ``+radius``.
-    Lower layer: the opposite diagonal, axis at ``-radius``.
+    Upper layer (``z > 0``): ``dir_x * dir_y < 0``, from ``+y`` toward ``-y``
+    as ``x`` increases. Lower layer: ``dir_x * dir_y > 0``. That is the manual
+    CAD orientation.
     """
     phi = layout["filament_angle_from_x_rad"]
     cos_phi = math.cos(phi)
@@ -149,8 +153,8 @@ def filament_segments(layout):
         segments.append(
             _segment(
                 layer="upper",
-                start=(x_m, layout["y_min"], layout["upper_axis_z_m"]),
-                direction=(cos_phi, sin_phi, 0.0),
+                start=(x_m, layout["y_max"], layout["upper_axis_z_m"]),
+                direction=(cos_phi, -sin_phi, 0.0),
                 extension_m=extension_m,
                 length_m=length_m,
             )
@@ -158,8 +162,8 @@ def filament_segments(layout):
         segments.append(
             _segment(
                 layer="lower",
-                start=(x_m, layout["y_max"], layout["lower_axis_z_m"]),
-                direction=(cos_phi, -sin_phi, 0.0),
+                start=(x_m, layout["y_min"], layout["lower_axis_z_m"]),
+                direction=(cos_phi, sin_phi, 0.0),
                 extension_m=extension_m,
                 length_m=length_m,
             )
@@ -186,10 +190,16 @@ def sphere_centers(layout):
 
 
 def nominal_areas_m2(layout):
-    """Areas fixed by the probed domain. Membrane area is the open rectangle.
+    """Fluid-boundary areas for the probed domain.
 
-    The contact band is ``membrane_contact_width`` times one diagonal per
-    cell. Inlet, outlet, and both buffer strips are the full rectangles.
+    Inlet, outlet, and both buffer strips are the full rectangles. Each
+    membrane value is the active rectangle minus one contact strip per cell
+    (``membrane_contact_width`` times the cell diagonal). The filaments cut
+    ``membrane_trim_m`` into the membrane, so those strips are not fluid
+    membrane faces. For production ``D2450_a45`` the two membrane values sum
+    to about ``1.5766e-4`` m², against ``1.6809e-4`` m² for the two full
+    rectangles. Tests compare these values with the manual ``.dsco`` areas.
+    The generator classifies faces by position, not by this area.
     """
     width_m = layout["y_max"] - layout["y_min"]
     band_m = membrane_contact_width_m(layout["filament_d_m"], layout["membrane_trim_m"])
@@ -570,7 +580,7 @@ def _meta_payload(*, layout, segment_count, sphere_count, counts, backend_versio
             "periodic_dy_m": layout["periodic_dy_m"],
             "attack_angle_deg": layout["attack_angle_deg"],
             "filament_angle_from_x_deg": math.degrees(layout["filament_angle_from_x_rad"]),
-            "upper_layer": "+filament_angle, z = +filament_radius",
+            "upper_layer": "dy/dx < 0, z = +filament_radius",
             "filament_d_m": layout["filament_d_m"],
             "sphere_radius_m": layout["sphere_radius_m"],
             "membrane_trim_m": layout["membrane_trim_m"],
