@@ -20,6 +20,7 @@ from ro.manifest import (
     read_mesh_manifest,
     read_run_manifest,
     require_viscous_model,
+    update_run_manifest_fields,
     write_mesh_manifest,
     write_run_manifest,
 )
@@ -377,6 +378,37 @@ def isolate_failed_attempt_write(solver, run_directory, *, as_fluent_path):
     solver.settings.file.write_case_data(file_name=as_fluent_path(dest))
     print(f"Isolated failed-attempt case/data: {dest}")
     return dest
+
+
+def stamp_solver_timing_on_run_manifest(run_directory, wall_time_s, processor_count):
+    """Record solve wall time and the processor count passed to Fluent.
+
+    ``wall_time_s`` is seconds from ``launch_fluent`` until ``write_case_data``
+    returns. Runs that never reach that write keep the fields absent.
+    """
+    if isinstance(wall_time_s, bool) or not isinstance(wall_time_s, (int, float)):
+        raise TypeError(
+            f"solver wall time must be a number, got {wall_time_s!r}."
+        )
+    if not math.isfinite(float(wall_time_s)) or float(wall_time_s) < 0.0:
+        raise ValueError(
+            f"solver wall time must be finite and >= 0, got {wall_time_s!r}."
+        )
+    if isinstance(processor_count, bool) or not isinstance(processor_count, int):
+        raise TypeError(
+            f"processor_count must be an int, got {processor_count!r}."
+        )
+    if processor_count < 1:
+        raise ValueError(
+            f"processor_count must be >= 1, got {processor_count!r}."
+        )
+    return update_run_manifest_fields(
+        run_directory,
+        {
+            "solver_wall_time_s": float(wall_time_s),
+            "processor_count": processor_count,
+        },
+    )
 
 
 def stamp_run_manifest_final_artifact_hashes(
@@ -4256,6 +4288,7 @@ if __name__ == "__main__":
     transcript_is_running = False
     original_working_directory = os.getcwd()
     inlet_profile_g = None
+    fluent_launched_at = None
 
     try:
         os.chdir(case_path)
@@ -4263,6 +4296,7 @@ if __name__ == "__main__":
         if input_mode == "mesh_initialization":
             print("Launching Fluent in meshing mode...", flush=True)
 
+            fluent_launched_at = time.monotonic()
             meshing = pyfluent.launch_fluent(
                 product_version=product_version,
                 mode="meshing",
@@ -4345,6 +4379,7 @@ if __name__ == "__main__":
             # from the mesh workflow instead.
             print("Launching Fluent in meshing mode for restart continuation...", flush=True)
 
+            fluent_launched_at = time.monotonic()
             meshing = pyfluent.launch_fluent(
                 product_version=product_version,
                 mode="meshing",
@@ -5389,6 +5424,14 @@ if __name__ == "__main__":
             inlet_profile_g=inlet_profile_g,
             final_case_file=final_case_file,
             as_fluent_path=as_fluent_path,
+        )
+        if fluent_launched_at is None:
+            raise RuntimeError("solver wall time has no Fluent launch timestamp.")
+        solver_wall_time_s = time.monotonic() - fluent_launched_at
+        stamp_solver_timing_on_run_manifest(
+            case_path,
+            solver_wall_time_s,
+            processor_count,
         )
         if input_mode == "restart_continuation":
             remove_staged_restart_copies(

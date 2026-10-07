@@ -254,6 +254,41 @@ def test_run_manifest_round_trip(monkeypatch, tmp_path):
     assert list(iter_run_manifests()) == [(path, payload)]
 
 
+def test_run_timing_fields_are_optional_and_do_not_change_existing_keys(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = write_test_run()
+    original = read_run_manifest(directory)
+    assert "solver_wall_time_s" not in original
+    assert "extraction_wall_time_s" not in original
+    assert "processor_count" not in original
+
+    timed = dict(original)
+    timed["solver_wall_time_s"] = 12.5
+    timed["extraction_wall_time_s"] = 3.25
+    timed["processor_count"] = 50
+    write_run_manifest(directory, timed)
+    loaded = read_run_manifest(directory)
+    assert loaded["solver_wall_time_s"] == pytest.approx(12.5)
+    assert loaded["extraction_wall_time_s"] == pytest.approx(3.25)
+    assert loaded["processor_count"] == 50
+    for key, value in original.items():
+        assert loaded[key] == value
+
+    for bad in (
+        {"solver_wall_time_s": -1.0},
+        {"extraction_wall_time_s": True},
+        {"processor_count": 0},
+        {"processor_count": 1.5},
+    ):
+        rejected = dict(original)
+        rejected.update(bad)
+        with pytest.raises(ManifestError):
+            write_run_manifest(directory, rejected)
+    assert read_run_manifest(directory)["stop_reason"] == original["stop_reason"]
+
+
 def test_iter_run_manifests_refuses_leaf_without_manifest(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)

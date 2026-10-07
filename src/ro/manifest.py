@@ -31,6 +31,11 @@ Run-only:
   u_mean_ms:                  stored as u_target/G; mislabeled profile
                               coefficient, not physical bulk velocity
                               (see docs/metrics_conventions.md)
+
+Optional, written by the worker after the fact. Absent on older leaves:
+  solver_wall_time_s:         seconds from Fluent launch to final data write
+  extraction_wall_time_s:     seconds for report extraction
+  processor_count:            int >= 1, the count passed to the solver launch
 """
 
 from __future__ import annotations
@@ -516,6 +521,29 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
             f"geo_id {geo_id!r} (expected {expected_family!r})."
         )
     validate_run_geometry_fields(payload)
+    for field in ("solver_wall_time_s", "extraction_wall_time_s"):
+        _optional_nonnegative_number(payload, field, "Run")
+    _optional_processor_count(payload)
+
+
+def _optional_nonnegative_number(
+    payload: Mapping[str, Any],
+    field: str,
+    kind: str,
+) -> None:
+    if field not in payload or payload[field] is None:
+        return
+    _require_number(payload, field, kind)
+    if float(payload[field]) < 0.0:
+        raise ManifestError(
+            f"{kind} manifest field {field!r} must be >= 0, got {payload[field]!r}."
+        )
+
+
+def _optional_processor_count(payload: Mapping[str, Any]) -> None:
+    if "processor_count" not in payload or payload["processor_count"] is None:
+        return
+    _require_integer(payload, "processor_count", "Run", minimum=1)
 
 
 def _validate_mesh_location(directory: Path, payload: Mapping[str, Any]) -> None:

@@ -208,7 +208,29 @@ def _abandon_active_extract_phase() -> None:
     _end_extract_phase(completed=False)
 
 
-def _write_report_extract_timing(report_path: Path) -> None:
+def stamp_extraction_wall_time_on_run_manifest(run_directory, wall_time_s):
+    """Record extraction wall time on the run manifest.
+
+    ``wall_time_s`` is ``report_extract_timing.json`` ``total_seconds``:
+    ``_reset_extract_timing`` starts that clock before the Fluent launch
+    phase, and the timing write stops it after the reports. Older runs
+    stay without the field.
+    """
+    if isinstance(wall_time_s, bool) or not isinstance(wall_time_s, (int, float)):
+        raise TypeError(
+            f"extraction wall time must be a number, got {wall_time_s!r}."
+        )
+    if not math.isfinite(float(wall_time_s)) or float(wall_time_s) < 0.0:
+        raise ValueError(
+            f"extraction wall time must be finite and >= 0, got {wall_time_s!r}."
+        )
+    return update_run_manifest_fields(
+        run_directory,
+        {"extraction_wall_time_s": float(wall_time_s)},
+    )
+
+
+def _write_report_extract_timing(report_path: Path):
     if _active_extract_phase is not None and _failed_extract_phase is None:
         _end_extract_phase()
     timing_path = report_path / "report_extract_timing.json"
@@ -229,6 +251,7 @@ def _write_report_extract_timing(report_path: Path) -> None:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
     print(f"Report extract timing JSON: {timing_path}")
+    return total_seconds
 
 
 def load_python_config(config_path):
@@ -2781,12 +2804,24 @@ if __name__ == "__main__":
 
     finally:
         try:
-            _write_report_extract_timing(report_path)
+            extraction_wall_time_s = _write_report_extract_timing(report_path)
         except Exception as timing_error:
             print(
                 "Warning: could not write report_extract_timing.json: "
                 f"{timing_error}"
             )
+        else:
+            if extraction_wall_time_s is not None:
+                try:
+                    stamp_extraction_wall_time_on_run_manifest(
+                        case_path,
+                        extraction_wall_time_s,
+                    )
+                except Exception as timing_error:
+                    print(
+                        "Warning: could not write extraction_wall_time_s "
+                        f"to the run manifest: {timing_error}"
+                    )
 
         if solver is not None and transcript_is_running:
             try:

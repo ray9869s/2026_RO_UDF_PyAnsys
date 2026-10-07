@@ -89,6 +89,7 @@ _RESULT_FIELDS = (
     "extraction_wall_time_s",
     "solver_time_s",
     "leaf_path",
+    "processor_count",
 )
 
 
@@ -623,7 +624,16 @@ def _finish(
     )
     record["solver_time_s"] = _finite(run_manifest.get("solver_time_s"))
     record["leaf_path"] = leaf_path
+    record["processor_count"] = _optional_processor_count(
+        run_manifest.get("processor_count")
+    )
     return record
+
+
+def _optional_processor_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
 
 
 def _first_finite(*values: Any) -> float | None:

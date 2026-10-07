@@ -298,6 +298,44 @@ def test_field_mapping_uses_summary_columns_and_module_area(tmp_path):
     assert record["failure_reason"] is None
 
 
+def test_absent_solver_timing_stays_null(tmp_path):
+    _write_success_tree(tmp_path)
+    geo_id = "MFP_d0800_h0000_f0400"
+    run_dir = tmp_path / "runs" / "pillar" / geo_id / LF_MESH_ID / RUN_ID
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for key in (
+        "solver_wall_time_s",
+        "extraction_wall_time_s",
+        "solver_time_s",
+        "processor_count",
+    ):
+        manifest.pop(key, None)
+    _write_json(manifest_path, manifest)
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["status"] == "valid"
+    assert record["mesh_wall_time_s"] == pytest.approx(3.0)
+    assert record["solver_wall_time_s"] is None
+    assert record["extraction_wall_time_s"] is None
+    assert record["solver_time_s"] is None
+    assert record["processor_count"] is None
+
+
+def test_processor_count_is_read_when_the_run_manifest_has_it(tmp_path):
+    _write_success_tree(tmp_path)
+    geo_id = "MFP_d0800_h0000_f0400"
+    manifest_path = (
+        tmp_path / "runs" / "pillar" / geo_id / LF_MESH_ID / RUN_ID / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["processor_count"] = 50
+    _write_json(manifest_path, manifest)
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["processor_count"] == 50
+    assert record["solver_wall_time_s"] == pytest.approx(10.0)
+    assert record["extraction_wall_time_s"] == pytest.approx(2.0)
+
+
 def test_module_area_matches_summarize_results():
     summary = load_module(
         "summarize_results_for_adapter",
