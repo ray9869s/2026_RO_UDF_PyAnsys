@@ -1,0 +1,16 @@
+{
+  "ansys_geometry_core_version": "0.15.5",
+  "backend_version": "25.1",
+  "derived": {},
+  "face_counts": {},
+  "geo_id": "MFP_d0900_h0200_f0400",
+  "inputs": {
+    "d_p_mm": 0.9,
+    "d_h_mm": 0.2,
+    "d_f_mm": 0.4,
+    "geo_id": "MFP_d0900_h0200_f0400"
+  },
+  "node_count": 0,
+  "pmdb_sha256": "ef9057cebf848fe8482c98b7c413f76835130e56912921b51b8473fb2759a36b",
+  "registry": {}
+}

@@ -313,9 +313,14 @@ Before CAD, the opening gap
 both in millimetres. `0 < G < m_min` returns status `invalid` and reason
 `opening_gap_sliver`, and no driver is called.
 
-A geometry, mesh, or run leaf is reused only when its manifest records
-success. A leaf that exists without that record returns
-`execution_failed` and the leaf path, and is not run again.
+A leaf is reused only from fields the pipeline writes. Geometry success
+is `{geo_id}_meta.json` whose `geo_id` and `inputs` match the design, and
+a `.pmdb` whose sha256 equals `pmdb_sha256` (`pillar_cad` does not write
+`status`). Mesh success is `mesh_run_record.json` `status` `SUCCESS`
+plus `manifest.json`. Run success is `manifest.json` plus
+`post/reports/summary_metrics_wide.csv`. A missing field is not success.
+A leaf that exists without that record returns `execution_failed` and
+the leaf path, and is not run again.
 
 `lmh` is `lmh_mass_balance` per exposed membrane area.
 `lmh_module_area` rescales it with the same module-area formula as

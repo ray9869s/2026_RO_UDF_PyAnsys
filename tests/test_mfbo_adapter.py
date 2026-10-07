@@ -15,16 +15,24 @@ from ro.mfbo_adapter import (
     EXAMPLE_FIDELITY_TABLE,
     LF_MESH_ID,
     PillarDesign,
+    _geometry_state,
+    _mesh_state,
+    _run_state,
     evaluate,
     lmh_module_area,
     mesh_id_for_settings,
     opening_gap_mm,
     resolve_data_root,
 )
+from ro.solver_common import sha256_file
 
 RUN_ID = "u0p2_p6M"
 WIDE = PillarDesign(d_p_mm=0.8, d_h_mm=0.0, d_f_mm=0.4)
 SLIVER = PillarDesign(d_p_mm=0.8, d_h_mm=0.2, d_f_mm=0.4)
+# Host leaf C:/ro_data_mfbo/e2e/.../MFP_d0900_h0200_f0400, 2026-10-01.
+LIVE = PillarDesign(d_p_mm=0.9, d_h_mm=0.2, d_f_mm=0.4)
+LIVE_GEO_ID = "MFP_d0900_h0200_f0400"
+LIVE_PMDB_SHA256 = "ef9057cebf848fe8482c98b7c413f76835130e56912921b51b8473fb2759a36b"
 
 
 class RecordingDrivers:
@@ -33,9 +41,7 @@ class RecordingDrivers:
 
     def generate(self, *, design, geo_id, out_dir):
         self.calls.append("generate")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{geo_id}.pmdb").write_bytes(b"pmdb")
-        _write_json(out_dir / f"{geo_id}_meta.json", {"status": "success"})
+        _write_geometry(out_dir, geo_id, design)
 
     def mesh(self, *, design, geo_id, mesh_id, mesh_settings, mesh_dir):
         self.calls.append(f"mesh:{mesh_id}")
@@ -74,9 +80,47 @@ def _mesh_manifest() -> dict:
     }
 
 
+def _geometry_meta(geo_id: str, design: PillarDesign, digest: str) -> dict:
+    """Keys written by pillar_cad._meta_payload. There is no status field."""
+    return {
+        "ansys_geometry_core_version": "0.15.5",
+        "backend_version": "25.1",
+        "derived": {},
+        "face_counts": {},
+        "geo_id": geo_id,
+        "inputs": {
+            "d_p_mm": design.d_p_mm,
+            "d_h_mm": design.d_h_mm,
+            "d_f_mm": design.d_f_mm,
+            "geo_id": geo_id,
+        },
+        "node_count": 0,
+        "pmdb_sha256": digest,
+        "registry": {},
+    }
+
+
+def _write_geometry(
+    geo_dir: Path,
+    geo_id: str,
+    design: PillarDesign,
+    *,
+    pmdb_bytes: bytes = b"pmdb",
+    digest: str | None = None,
+) -> None:
+    geo_dir.mkdir(parents=True, exist_ok=True)
+    pmdb = geo_dir / f"{geo_id}.pmdb"
+    pmdb.write_bytes(pmdb_bytes)
+    if digest is None:
+        digest = sha256_file(pmdb)
+    _write_json(geo_dir / f"{geo_id}_meta.json", _geometry_meta(geo_id, design, digest))
+
+
 def _run_manifest(**overrides) -> dict:
+    # Host run manifest has no status. stop_reason and convergence_quality
+    # are the pasted success values.
     payload = {
-        "stop_reason": "qoi_converged",
+        "stop_reason": "residual_converged",
         "convergence_quality": "PASS",
         "solver_wall_time_s": 10.0,
         "extraction_wall_time_s": 2.0,
@@ -111,9 +155,7 @@ def _write_success_tree(root: Path, design: PillarDesign = WIDE) -> tuple[str, P
     geo_dir = root / "geometries" / "pillar" / geo_id
     mesh_dir = root / "meshes" / "pillar" / geo_id / LF_MESH_ID
     run_dir = root / "runs" / "pillar" / geo_id / LF_MESH_ID / RUN_ID
-    geo_dir.mkdir(parents=True)
-    (geo_dir / f"{geo_id}.pmdb").write_bytes(b"pmdb")
-    _write_json(geo_dir / f"{geo_id}_meta.json", {"status": "success"})
+    _write_geometry(geo_dir, geo_id, design)
     _write_json(
         mesh_dir / "mesh_run_record.json",
         {"status": "SUCCESS", "wall_time_seconds": 3.0},
@@ -211,9 +253,7 @@ def test_existing_failed_leaf_is_not_rerun(tmp_path):
 
     geo_id = format_mfbo_pillar_geo_id(WIDE.d_p_mm, WIDE.d_h_mm, WIDE.d_f_mm)
     geo_dir = tmp_path / "geometries" / "pillar" / geo_id
-    geo_dir.mkdir(parents=True)
-    (geo_dir / f"{geo_id}.pmdb").write_bytes(b"pmdb")
-    _write_json(geo_dir / f"{geo_id}_meta.json", {"status": "success"})
+    _write_geometry(geo_dir, geo_id, WIDE)
     mesh_dir = tmp_path / "meshes" / "pillar" / geo_id / LF_MESH_ID
     mesh_dir.mkdir(parents=True)
     _write_json(mesh_dir / "mesh_run_record.json", {"status": "FAILED"})
@@ -323,7 +363,152 @@ def test_adapter_source_does_not_import_fluent():
         "ro.campaign_matrix",
         "ro.geometry_registry",
         "ro.paths",
+        "ro.solver_common",
     ]
     joined = " ".join(imported).casefold()
     assert "fluent" not in joined
     assert "ansys" not in joined
+
+
+FIXTURES = REPO_ROOT / "tests" / "fixtures" / "mfbo_leaves"
+# Archived mesh leaves whose mesh_run_record.json status is FAILED.
+# return_code, attempts, and error are absent on every one of them.
+ARCHIVED_FAILED_MESH_LEAVES = (
+    "meshstudy_failed/20261004_142500/meshes/diamond/D0817_a30/max085_min006_cpg5_bl8s4_peel2",
+    "meshstudy_failed/20261004_142500/meshes/pillar/P_p80_h15/max085_min006_cpg5_bl8s4_peel2",
+    "meshstudy_failed/20261004_144748/meshes/diamond/D0817_a30/max085_min006_cpg5_bl8s4_peel2",
+    "meshstudy_failed/20261004_144748/meshes/pillar/P_p80_h15/max085_min006_cpg5_bl8s4_peel2",
+)
+
+
+def _load_fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def _write_live_geometry(root: Path, *, digest: str | None = None) -> Path:
+    geo_dir = root / "geometries" / "pillar" / LIVE_GEO_ID
+    meta = _load_fixture("geometry_meta_success.json")
+    assert "status" not in meta
+    assert meta["pmdb_sha256"] == LIVE_PMDB_SHA256
+    geo_dir.mkdir(parents=True, exist_ok=True)
+    pmdb = geo_dir / f"{LIVE_GEO_ID}.pmdb"
+    pmdb.write_bytes(b"not-the-host-pmdb")
+    if digest is not None:
+        meta["pmdb_sha256"] = digest
+    _write_json(geo_dir / f"{LIVE_GEO_ID}_meta.json", meta)
+    return geo_dir
+
+
+def _write_live_mesh_and_run(root: Path, *, summary: bool) -> Path:
+    mesh_dir = root / "meshes" / "pillar" / LIVE_GEO_ID / LF_MESH_ID
+    run_dir = root / "runs" / "pillar" / LIVE_GEO_ID / LF_MESH_ID / RUN_ID
+    record = _load_fixture("mesh_run_record_success.json")
+    manifest = _load_fixture("mesh_manifest_success.json")
+    run_manifest = _load_fixture("run_manifest_success.json")
+    assert record["status"] == "SUCCESS"
+    assert "status" not in manifest
+    assert manifest["cell_count"] == 1152606
+    assert "status" not in run_manifest
+    assert run_manifest["stop_reason"] == "residual_converged"
+    assert run_manifest["convergence_quality"] == "PASS"
+    _write_json(mesh_dir / "mesh_run_record.json", record)
+    _write_json(mesh_dir / "manifest.json", manifest)
+    _write_json(run_dir / "manifest.json", run_manifest)
+    if summary:
+        _write_summary(run_dir)
+    return run_dir
+
+
+def test_live_geometry_meta_is_reused_when_pmdb_sha256_matches(tmp_path):
+    _write_live_geometry(tmp_path)
+    pmdb = tmp_path / "geometries" / "pillar" / LIVE_GEO_ID / f"{LIVE_GEO_ID}.pmdb"
+    _write_live_geometry(tmp_path, digest=sha256_file(pmdb))
+    _write_live_mesh_and_run(tmp_path, summary=True)
+    drivers = _drivers()
+    record = _evaluate(tmp_path, LIVE, "LF", drivers)
+    assert drivers.calls == []
+    assert record["status"] == "valid"
+    assert record["geo_id"] == LIVE_GEO_ID
+    assert record["cell_count"] == pytest.approx(1152606)
+
+
+def test_live_geometry_hash_mismatch_is_not_rerun(tmp_path):
+    geo_dir = _write_live_geometry(tmp_path)
+    meta = json.loads((geo_dir / f"{LIVE_GEO_ID}_meta.json").read_text(encoding="utf-8"))
+    assert meta["pmdb_sha256"] == LIVE_PMDB_SHA256
+    assert "status" not in meta
+    drivers = _drivers()
+    record = _evaluate(tmp_path, LIVE, "LF", drivers)
+    assert drivers.calls == []
+    assert record["status"] == "execution_failed"
+    assert record["failure_reason"] == "leaf_not_successful"
+    assert record["leaf_path"] == str(geo_dir)
+
+
+def test_geometry_missing_pmdb_sha256_is_not_success(tmp_path):
+    geo_dir = _write_live_geometry(tmp_path)
+    meta_path = geo_dir / f"{LIVE_GEO_ID}_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    del meta["pmdb_sha256"]
+    _write_json(meta_path, meta)
+    assert _geometry_state(geo_dir, LIVE_GEO_ID, LIVE) == "failed"
+
+
+def test_run_manifest_without_summary_csv_is_not_success(tmp_path):
+    _write_live_geometry(tmp_path)
+    pmdb = tmp_path / "geometries" / "pillar" / LIVE_GEO_ID / f"{LIVE_GEO_ID}.pmdb"
+    _write_live_geometry(tmp_path, digest=sha256_file(pmdb))
+    run_dir = _write_live_mesh_and_run(tmp_path, summary=False)
+    assert _run_state(run_dir) == "needs_extract"
+    drivers = _drivers()
+    record = _evaluate(tmp_path, LIVE, "LF", drivers)
+    assert drivers.calls == ["extract"]
+    assert record["status"] == "valid"
+    assert record["lmh"] == pytest.approx(25.0)
+
+
+def test_run_directory_without_manifest_is_not_rerun(tmp_path):
+    pmdb = tmp_path / "geometries" / "pillar" / LIVE_GEO_ID / f"{LIVE_GEO_ID}.pmdb"
+    _write_live_geometry(tmp_path)
+    _write_live_geometry(tmp_path, digest=sha256_file(pmdb))
+    mesh_dir = tmp_path / "meshes" / "pillar" / LIVE_GEO_ID / LF_MESH_ID
+    record = _load_fixture("mesh_run_record_success.json")
+    _write_json(mesh_dir / "mesh_run_record.json", record)
+    _write_json(mesh_dir / "manifest.json", _load_fixture("mesh_manifest_success.json"))
+    run_dir = tmp_path / "runs" / "pillar" / LIVE_GEO_ID / LF_MESH_ID / RUN_ID
+    run_dir.mkdir(parents=True)
+    drivers = _drivers()
+    result = _evaluate(tmp_path, LIVE, "LF", drivers)
+    assert drivers.calls == []
+    assert result["status"] == "execution_failed"
+    assert result["leaf_path"] == str(run_dir)
+
+
+@pytest.mark.parametrize("relative", ARCHIVED_FAILED_MESH_LEAVES)
+def test_archived_failed_mesh_leaves_are_failed(tmp_path, relative):
+    leaf = tmp_path / relative
+    record = _load_fixture("mesh_run_record_failed.json")
+    assert record["status"] == "FAILED"
+    assert "return_code" not in record
+    assert "attempts" not in record
+    assert "error" not in record
+    _write_json(leaf / "mesh_run_record.json", record)
+    _write_json(leaf / "manifest.json", {"cell_count": 1})
+    assert _mesh_state(leaf) == "failed"
+
+
+def test_mesh_success_requires_status_success_and_a_manifest(tmp_path):
+    leaf = tmp_path / "mesh"
+    record = _load_fixture("mesh_run_record_success.json")
+    manifest = _load_fixture("mesh_manifest_success.json")
+    _write_json(leaf / "mesh_run_record.json", record)
+    assert _mesh_state(leaf) == "failed"
+    _write_json(leaf / "manifest.json", manifest)
+    assert _mesh_state(leaf) == "success"
+    record = dict(record)
+    del record["status"]
+    _write_json(leaf / "mesh_run_record.json", record)
+    assert _mesh_state(leaf) == "failed"
+    record["status"] = "SUCCESS_AFTER_RETRY"
+    _write_json(leaf / "mesh_run_record.json", record)
+    assert _mesh_state(leaf) == "failed"

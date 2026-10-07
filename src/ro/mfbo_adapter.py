@@ -6,9 +6,15 @@ meshing, the solve, and extraction are callables the caller supplies.
 ``"LF"``. It has no high-fidelity entry. A fidelity name that is not in
 the table passed to ``evaluate`` raises.
 
-A leaf is reused only when its manifest records success. A leaf that
-exists without that record returns ``execution_failed`` and is not run
-again. ``convergence_quality`` ``FAIL`` becomes ``diverged`` when
+A leaf is reused only when the files the pipeline actually writes show
+success. Geometry success is a meta object whose ``geo_id`` and ``inputs``
+match the requested design, plus a ``.pmdb`` whose sha256 equals
+``pmdb_sha256``. Mesh success is ``mesh_run_record.json`` ``status``
+``SUCCESS`` and a manifest object. A run leaf is success only when its
+manifest object exists and ``post/reports/summary_metrics_wide.csv``
+exists. A missing field is not success. A leaf that exists without that
+record returns ``execution_failed`` and is not run again.
+``convergence_quality`` ``FAIL`` becomes ``diverged`` when
 ``stop_reason`` is ``diverged``, and ``invalid`` otherwise. Missing
 quantities stay missing; they are not stored as LMH = 0.
 """
@@ -26,6 +32,7 @@ from typing import Any, Callable
 from ro.campaign_matrix import format_production_mesh_id
 from ro.geometry_registry import format_mfbo_pillar_geo_id
 from ro.paths import RUN_ID_RE
+from ro.solver_common import sha256_file
 
 FAMILY = "pillar"
 STATUS_VALID = "valid"
@@ -46,7 +53,10 @@ LF_MESH_SETTINGS = {
 # Documented example only. High fidelity is not defined.
 EXAMPLE_FIDELITY_TABLE = {LF_FIDELITY: dict(LF_MESH_SETTINGS)}
 
-_MESH_SUCCESS = frozenset({"SUCCESS", "SUCCESS_AFTER_RETRY"})
+# Known-good mesh_run_record.json writes this. Archived failures write FAILED.
+# A missing status is not success.
+_MESH_RECORD_SUCCESS = "SUCCESS"
+_SUMMARY_CSV = Path("post") / "reports" / "summary_metrics_wide.csv"
 _COMPLETED_STOP_REASONS = frozenset(
     {"residual_converged", "qoi_converged", "max_iter_reached"}
 )
@@ -236,7 +246,7 @@ def evaluate(
     failed = _ensure_solve(drivers, point, geo_id, mesh_id, checked_run, run_dir)
     if failed is not None:
         return _finish(base, status=STATUS_EXECUTION_FAILED, failure_reason=failed[0], leaf_path=failed[1])
-    summary_path = run_dir / "post" / "reports" / "summary_metrics_wide.csv"
+    summary_path = run_dir / _SUMMARY_CSV
     if not summary_path.is_file():
         drivers.extract(
             design=point,
@@ -347,13 +357,13 @@ def _is_windows_absolute(text: str) -> bool:
 
 
 def _ensure_geometry(drivers: Drivers, design: PillarDesign, geo_id: str, geo_dir: Path):
-    state = _geometry_state(geo_dir, geo_id)
+    state = _geometry_state(geo_dir, geo_id, design)
     if state == "success":
         return None
     if state == "failed":
         return ("leaf_not_successful", str(geo_dir))
     drivers.generate(design=design, geo_id=geo_id, out_dir=geo_dir)
-    if _geometry_state(geo_dir, geo_id) != "success":
+    if _geometry_state(geo_dir, geo_id, design) != "success":
         return ("leaf_not_successful", str(geo_dir))
     return None
 
@@ -378,7 +388,7 @@ def _ensure_mesh(drivers, design, geo_id, mesh_id, settings, mesh_dir: Path):
 
 def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path):
     state = _run_state(run_dir)
-    if state == "success":
+    if state in ("success", "needs_extract"):
         return None
     if state == "failed":
         return ("leaf_not_successful", str(run_dir))
@@ -389,45 +399,78 @@ def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path):
         run_id=run_id,
         run_dir=run_dir,
     )
-    if _run_state(run_dir) != "success":
+    if _run_state(run_dir) not in ("success", "needs_extract"):
         return ("leaf_not_successful", str(run_dir))
     return None
 
 
-def _geometry_state(directory: Path, geo_id: str) -> str:
+def _geometry_state(directory: Path, geo_id: str, design: PillarDesign) -> str:
+    """Success matches ``pillar_cad`` meta: no ``status`` field is written."""
     if not directory.exists():
         return "absent"
     meta = _read_object(directory / f"{geo_id}_meta.json")
     pmdb = directory / f"{geo_id}.pmdb"
-    if meta is not None and meta.get("status") == "success" and pmdb.is_file():
-        return "success"
-    return "failed"
+    if meta is None or not pmdb.is_file():
+        return "failed"
+    if meta.get("geo_id") != geo_id:
+        return "failed"
+    if not _geometry_inputs_match(meta.get("inputs"), geo_id, design):
+        return "failed"
+    digest = meta.get("pmdb_sha256")
+    if not isinstance(digest, str) or not digest:
+        return "failed"
+    if sha256_file(pmdb) != digest:
+        return "failed"
+    return "success"
+
+
+def _geometry_inputs_match(inputs: Any, geo_id: str, design: PillarDesign) -> bool:
+    if not isinstance(inputs, dict):
+        return False
+    if inputs.get("geo_id") != geo_id:
+        return False
+    expected = {
+        "d_p_mm": design.d_p_mm,
+        "d_h_mm": design.d_h_mm,
+        "d_f_mm": design.d_f_mm,
+    }
+    for key, value in expected.items():
+        raw = inputs.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return False
+        if float(raw) != float(value):
+            return False
+    return True
 
 
 def _mesh_state(directory: Path) -> str:
+    """``status`` ``SUCCESS`` plus a manifest object. ``FAILED`` is not success."""
     if not directory.exists():
         return "absent"
     record = _read_object(directory / "mesh_run_record.json")
     manifest = _read_object(directory / "manifest.json")
-    if (
-        record is not None
-        and record.get("status") in _MESH_SUCCESS
-        and manifest is not None
-    ):
-        return "success"
-    return "failed"
+    if record is None or manifest is None:
+        return "failed"
+    if record.get("status") != _MESH_RECORD_SUCCESS:
+        return "failed"
+    return "success"
 
 
 def _run_state(directory: Path) -> str:
+    """Success is a manifest object and the summary CSV. No status field is required.
+
+    A manifest without the CSV is ``needs_extract``: the solve is not run
+    again, and extraction can still write the CSV. A missing manifest on an
+    existing directory is failed.
+    """
     if not directory.exists():
         return "absent"
     manifest = _read_object(directory / "manifest.json")
     if manifest is None:
         return "failed"
-    status = manifest.get("status")
-    if status is None or status in _MESH_SUCCESS:
-        return "success"
-    return "failed"
+    if not (directory / _SUMMARY_CSV).is_file():
+        return "needs_extract"
+    return "success"
 
 
 def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path):
