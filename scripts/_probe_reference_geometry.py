@@ -4,7 +4,9 @@ Launches Fluent Meshing and imports through Watertight Import Geometry.
 The default is one pillar file, ``P_p100_h30.dsco``. ``--family diamond``
 imports the nine production Diamond ``.dsco`` files and prints labels,
 per-label face counts, areas, bounding boxes, body count, and region
-volume. Does not execute any meshing task after Import Geometry.
+volume. ``--family diamond --cad-path`` imports one Diamond file and can
+``--compare-to`` a previous ``reference_geometry.json``. Does not execute
+any meshing task after Import Geometry.
 
 Windows Fluent server only. Do not run from WSL.
 """
@@ -774,11 +776,145 @@ def _import_geometry(meshing, geometry_file):
 
 
 def run_diamond_reference(args):
-    """Import the nine production Diamond files. Read-only on the CAD tree."""
-    if args.cad_path is not None or args.d_h_mm is not None or args.compare_to is not None:
+    """Import Diamond CAD. One file when ``--cad-path`` is set, else all nine."""
+    if args.d_h_mm is not None:
+        raise ValueError("--family diamond does not take --d-h-mm.")
+    if args.cad_path is not None:
+        return _run_diamond_one(args)
+    if args.compare_to is not None:
         raise ValueError(
-            "--family diamond does not take --cad-path, --d-h-mm, or --compare-to."
+            "--family diamond does not take --compare-to unless --cad-path is set."
         )
+    return _run_diamond_batch(args)
+
+
+def _run_diamond_one(args):
+    """Import one Diamond file and optionally compare it. Read-only on the CAD."""
+    geometry_file = args.cad_path
+    if not os.path.isfile(geometry_file):
+        raise FileNotFoundError(f"Geometry file not found: {geometry_file}")
+    work_dir = (
+        "C:/ro_data/geom_smoke/probe_diamond_one"
+        if args.work_dir is None
+        else args.work_dir
+    )
+    if _under_manual_cad(work_dir):
+        raise ValueError(
+            f"work dir {work_dir} is under C:/ro_data/geometries. "
+            "That tree is reserved for the manual CAD."
+        )
+    reference = None
+    if args.compare_to is not None:
+        reference = _load_comparison_reference(args.compare_to)
+
+    cfg = load_run_config()
+    product_version = cfg.product_version
+    graphics_driver = cfg.graphics_driver
+    processor_count = 2
+    print(f"Family: {DIAMOND_FAMILY}")
+    print(f"DSCO: {geometry_file}")
+    print(f"Work dir: {work_dir}")
+    print(
+        "launch_fluent args: "
+        f"product_version={product_version!r}, mode='meshing', dimension=3, "
+        f"precision='double', processor_count={processor_count!r}, "
+        f"ui_mode='gui', graphics_driver={graphics_driver!r}"
+    )
+
+    meshing = None
+    transcript_is_running = False
+    changed_directory = False
+    original_working_directory = os.getcwd()
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+        os.chdir(work_dir)
+        changed_directory = True
+        transcript_path = os.path.join(work_dir, TRANSCRIPT_NAME)
+        meshing = pyfluent.launch_fluent(
+            product_version=product_version,
+            mode="meshing",
+            dimension=3,
+            precision="double",
+            processor_count=processor_count,
+            ui_mode="gui",
+            graphics_driver=graphics_driver,
+        )
+        meshing.transcript.start(file_name=as_fluent_path(transcript_path))
+        transcript_is_running = True
+        print(f"Transcript: {as_fluent_path(transcript_path)}")
+        extracted = _import_geometry(meshing, geometry_file)
+        comparison = None
+        if reference is not None:
+            comparison = compare_reference(
+                extracted,
+                reference,
+                args.bbox_tol_mm,
+                area_rtol=args.area_rtol,
+            )
+        payload = {
+            "family": DIAMOND_FAMILY,
+            "geometry_file": str(geometry_file),
+            "objects": extracted["objects"],
+            "bodies": extracted["bodies"],
+            "body_count": extracted["body_count"],
+            "labels": extracted["labels"],
+            "all_face_zone_ids": extracted["all_face_zone_ids"],
+            "overall_bounding_box_mm": extracted["overall_bounding_box_mm"],
+        }
+        if comparison is not None:
+            payload["comparison"] = comparison
+        write_summary(payload, work_dir)
+        if comparison is not None and (
+            comparison["labels_only_in_current"] or comparison["labels_only_in_reference"]
+        ):
+            raise RuntimeError(
+                "Reference label sets differ. "
+                f"Only in current: {comparison['labels_only_in_current']}. "
+                f"Only in reference: {comparison['labels_only_in_reference']}."
+            )
+        if comparison is not None and not comparison["passed"]:
+            print(
+                "Probe finished after Import Geometry. "
+                "Reference comparison failed."
+            )
+            return 1
+        print(
+            "Probe finished after Import Geometry. "
+            "No meshing task was executed."
+        )
+        return 0
+    finally:
+        cleanup_error = None
+        if meshing is not None and transcript_is_running:
+            try:
+                meshing.transcript.stop()
+                transcript_is_running = False
+            except Exception as stop_error:
+                cleanup_error = stop_error
+        exit_timeout_s = float(getattr(cfg, "fluent_exit_timeout_s", 60.0))
+        teardown_meshing_session(meshing, exit_timeout_s=exit_timeout_s)
+        if changed_directory:
+            try:
+                os.chdir(original_working_directory)
+            except OSError as chdir_error:
+                if cleanup_error is None:
+                    cleanup_error = chdir_error
+                else:
+                    print(
+                        "Warning: could not restore working directory: "
+                        f"{chdir_error}"
+                    )
+        if cleanup_error is not None and sys.exc_info()[0] is None:
+            raise cleanup_error
+        if cleanup_error is not None:
+            print(
+                "Warning: cleanup error while probe was already failing: "
+                f"{cleanup_error}"
+            )
+
+
+def _run_diamond_batch(args):
+    """Import the nine production Diamond files. Read-only on the CAD tree."""
     work_dir = DIAMOND_WORK_DIR if args.work_dir is None else args.work_dir
     if _under_manual_cad(work_dir):
         raise ValueError(

@@ -1,0 +1,691 @@
+"""Build one Diamond fluid body with PyAnsys Geometry.
+
+Discovery 25.1 only. Importing this module does not launch Discovery.
+
+The nine production layouts come from the campaign registry. The probe of
+the manual ``.dsco`` files fixes the domain and the in-plane lattice:
+buffers are 3.465 mm in and 6.93 mm out, the spacer stays inside the
+active window, and each membrane is blocked by one family of diagonals of
+the rectangular cells. Filament axes sit at ``z = ±filament_radius`` so the
+stack reaches ``Sigma_d`` and the membrane trim matches the registry.
+A joint sphere of ``bridge_radius_m`` sits at each diagonal crossing, at
+``z = 0``.
+
+The probe areas are the same if the two families are swapped. This module
+puts the diagonal that runs from ``-y`` to ``+y`` on the upper layer.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+import math
+import sys
+from pathlib import Path
+
+from ro.campaign_geo_ids import family_for_geo_id
+from ro.campaign_geometry import (
+    CAMPAIGN_H_M,
+    geometry_parameters_for_geo_id,
+    membrane_contact_width_m,
+)
+from ro.domain_layout import BUFFER_LENGTH_IN_M, BUFFER_LENGTH_OUT_M
+from ro.solver_common import sha256_file
+
+MM_TO_M = 1.0e-3
+POSITION_TOL_M = 1.0e-9
+DIRECTION_TOL = 1.0e-9
+ANGLE_IDENTITY_RTOL = 1.0e-9
+# Station imprint is extended past the periodic faces so the cut crosses them.
+IMPRINT_MARGIN_M = 0.1e-3
+
+_PRODUCTION_ROOTS = ("c:/ro_data", "/mnt/c/ro_data")
+_PLUS_X = (1.0, 0.0, 0.0)
+_PLUS_Y = (0.0, 1.0, 0.0)
+_PLUS_Z = (0.0, 0.0, 1.0)
+_MINUS_X = (-1.0, 0.0, 0.0)
+_MINUS_Y = (0.0, -1.0, 0.0)
+_MINUS_Z = (0.0, 0.0, -1.0)
+
+BOUNDARY_LABELS = (
+    "inlet",
+    "outlet",
+    "periodic_l",
+    "periodic_r",
+    "wall_top_buffer_in",
+    "wall_top_mem",
+    "wall_top_buffer_out",
+    "wall_bottom_buffer_in",
+    "wall_bottom_mem",
+    "wall_bottom_buffer_out",
+    "wall_spacer",
+)
+
+
+def diamond_layout(geo_id, n_active=None):
+    """Domain, filament axes, and sphere radius for one Diamond design.
+
+    ``n_active`` replaces the registry cell count. The pitch, span, angle,
+    and buffer lengths stay on the production design, so a larger count
+    lengthens only the active section.
+    """
+    geo_id = _require_geo_id(geo_id)
+    if family_for_geo_id(geo_id) != "diamond":
+        raise ValueError(f"geo_id {geo_id!r} is not a Diamond design.")
+    entry = geometry_parameters_for_geo_id(geo_id)
+    pitch_m = _require_real("cell_length_x_m", entry["cell_length_x_m"])
+    periodic_dy_m = _require_real("periodic_shift_y_m", entry["periodic_shift_y_m"])
+    attack_deg = _require_real("attack_angle_deg", entry["attack_angle_deg"])
+    filament_d_m = _require_real("filament_d_m", entry["filament_d_m"])
+    sphere_r_m = _require_real("bridge_radius_m", entry["bridge_radius_m"])
+    trim_m = _require_real("membrane_trim_m", entry["membrane_trim_m"])
+    registry_n = _require_count("n_active_cells", entry["n_active_cells"])
+    if n_active is None:
+        n_active = registry_n
+    else:
+        n_active = _require_count("n_active", n_active)
+    if pitch_m <= 0.0 or periodic_dy_m <= 0.0 or filament_d_m <= 0.0 or sphere_r_m <= 0.0:
+        raise ValueError(
+            f"{geo_id} pitch, span, filament diameter, and sphere radius must be positive."
+        )
+    if trim_m <= 0.0:
+        raise ValueError(f"{geo_id} membrane_trim_m must be positive, got {trim_m}.")
+    _require_angle_identity(pitch_m, periodic_dy_m, attack_deg, geo_id)
+    filament_r_m = 0.5 * filament_d_m
+    half_h_m = 0.5 * CAMPAIGN_H_M
+    # Axes at ±radius: the outer surface is at ±filament_d, and the membrane
+    # at ±h/2 cuts it by membrane_trim_m.
+    penetration_m = filament_d_m - half_h_m
+    if abs(penetration_m - trim_m) > POSITION_TOL_M:
+        raise ValueError(
+            f"{geo_id} filament stack does not meet the membrane by membrane_trim_m: "
+            f"penetration {penetration_m} m, trim {trim_m} m."
+        )
+    x_active_0 = BUFFER_LENGTH_IN_M
+    x_active_1 = x_active_0 + n_active * pitch_m
+    return {
+        "geo_id": geo_id,
+        "pitch_m": pitch_m,
+        "periodic_dy_m": periodic_dy_m,
+        "attack_angle_deg": attack_deg,
+        "filament_d_m": filament_d_m,
+        "filament_radius_m": filament_r_m,
+        "sphere_radius_m": sphere_r_m,
+        "membrane_trim_m": trim_m,
+        "n_active": n_active,
+        "n_active_registry": registry_n,
+        "h_m": CAMPAIGN_H_M,
+        "buffer_in_m": BUFFER_LENGTH_IN_M,
+        "buffer_out_m": BUFFER_LENGTH_OUT_M,
+        "x_active_0": x_active_0,
+        "x_active_1": x_active_1,
+        "x_outlet": x_active_1 + BUFFER_LENGTH_OUT_M,
+        "y_min": -0.5 * periodic_dy_m,
+        "y_max": 0.5 * periodic_dy_m,
+        "z_min": -half_h_m,
+        "z_max": half_h_m,
+        "upper_axis_z_m": filament_r_m,
+        "lower_axis_z_m": -filament_r_m,
+        "filament_angle_from_x_rad": math.atan2(periodic_dy_m, pitch_m),
+    }
+
+
+def filament_segments(layout):
+    """One cylinder per cell per layer, extended one pitch past the active box.
+
+    Upper layer: angle ``+atan(span/pitch)`` from ``+x``, axis at ``+radius``.
+    Lower layer: the opposite diagonal, axis at ``-radius``.
+    """
+    phi = layout["filament_angle_from_x_rad"]
+    cos_phi = math.cos(phi)
+    sin_phi = math.sin(phi)
+    pitch_m = layout["pitch_m"]
+    diagonal_m = math.hypot(pitch_m, layout["periodic_dy_m"])
+    extension_m = pitch_m
+    length_m = diagonal_m + 2.0 * extension_m
+    segments = []
+    for index in range(layout["n_active"]):
+        x_m = layout["x_active_0"] + index * pitch_m
+        segments.append(
+            _segment(
+                layer="upper",
+                start=(x_m, layout["y_min"], layout["upper_axis_z_m"]),
+                direction=(cos_phi, sin_phi, 0.0),
+                extension_m=extension_m,
+                length_m=length_m,
+            )
+        )
+        segments.append(
+            _segment(
+                layer="lower",
+                start=(x_m, layout["y_max"], layout["lower_axis_z_m"]),
+                direction=(cos_phi, -sin_phi, 0.0),
+                extension_m=extension_m,
+                length_m=length_m,
+            )
+        )
+    return segments
+
+
+def sphere_centers(layout):
+    """Crossings of the two diagonals, including the periodic-boundary copies.
+
+    Interior crossings are the cell centres. Boundary crossings lie on
+    ``y = ±span/2`` at every cell station, including the active ends.
+    """
+    pitch_m = layout["pitch_m"]
+    x0 = layout["x_active_0"]
+    centers = []
+    for index in range(layout["n_active"]):
+        centers.append((x0 + (index + 0.5) * pitch_m, 0.0, 0.0))
+    for index in range(layout["n_active"] + 1):
+        x_m = x0 + index * pitch_m
+        centers.append((x_m, layout["y_min"], 0.0))
+        centers.append((x_m, layout["y_max"], 0.0))
+    return centers
+
+
+def nominal_areas_m2(layout):
+    """Areas fixed by the probed domain. Membrane area is the open rectangle.
+
+    The contact band is ``membrane_contact_width`` times one diagonal per
+    cell. Inlet, outlet, and both buffer strips are the full rectangles.
+    """
+    width_m = layout["y_max"] - layout["y_min"]
+    band_m = membrane_contact_width_m(layout["filament_d_m"], layout["membrane_trim_m"])
+    diagonal_m = math.hypot(layout["pitch_m"], layout["periodic_dy_m"])
+    blocked_m2 = layout["n_active"] * diagonal_m * band_m
+    active_m2 = layout["n_active"] * layout["pitch_m"] * width_m
+    full_end_m2 = width_m * layout["h_m"]
+    return {
+        "inlet": full_end_m2,
+        "outlet": full_end_m2,
+        "wall_top_buffer_in": layout["buffer_in_m"] * width_m,
+        "wall_bottom_buffer_in": layout["buffer_in_m"] * width_m,
+        "wall_top_buffer_out": layout["buffer_out_m"] * width_m,
+        "wall_bottom_buffer_out": layout["buffer_out_m"] * width_m,
+        "wall_top_mem": active_m2 - blocked_m2,
+        "wall_bottom_mem": active_m2 - blocked_m2,
+    }
+
+
+def generate_diamond_cad(*, geo_id, out_dir, n_active=None):
+    """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``.
+
+    ``out_dir`` must not be ``C:/ro_data`` or anywhere under it.
+    """
+    layout = diamond_layout(geo_id, n_active=n_active)
+    out_dir = _require_out_dir(out_dir)
+    paths = _output_paths(out_dir, layout["geo_id"])
+    _refuse_existing(paths)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    segments = filament_segments(layout)
+    centers = sphere_centers(layout)
+
+    modeler = None
+    try:
+        _bind_geometry_symbols()
+        modeler = launch_modeler_with_discovery(
+            version=251,
+            api_version=ApiVersions.V_251,
+            hidden=True,
+        )
+        design = modeler.create_design(layout["geo_id"])
+        if design.name != layout["geo_id"]:
+            raise RuntimeError(
+                f"Design name {design.name!r} does not match geo_id {layout['geo_id']!r}."
+            )
+        body = _build_fluid(design, layout, segments, centers)
+        counts = _classify_and_name(design, body, layout)
+        design.export_to_pmdb(out_dir)
+        design.export_to_scdocx(out_dir)
+        if not paths["pmdb"].is_file() or not paths["scdocx"].is_file():
+            raise RuntimeError(
+                "Export did not write the expected files: "
+                f"{paths['pmdb']} and {paths['scdocx']}."
+            )
+        meta = _meta_payload(
+            layout=layout,
+            segment_count=len(segments),
+            sphere_count=len(centers),
+            counts=counts,
+            backend_version=str(modeler.client.backend_version),
+            pmdb_sha256=sha256_file(paths["pmdb"]),
+        )
+        paths["meta"].write_text(
+            json.dumps(meta, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    finally:
+        close_error = None
+        if modeler is not None:
+            try:
+                modeler.close()
+            except Exception as exc:
+                close_error = exc
+        if close_error is not None and sys.exc_info()[0] is None:
+            raise close_error
+        if close_error is not None:
+            body_error = sys.exc_info()[1]
+            raise RuntimeError(
+                "Discovery close failed after "
+                f"{type(body_error).__name__}: {body_error}"
+            ) from close_error
+
+    print("Face counts:")
+    for label in BOUNDARY_LABELS:
+        print(f"  {label}: {counts[label]}")
+    print(f"  total_faces: {sum(counts.values())}")
+    return {"paths": {key: str(path) for key, path in paths.items()}, "face_counts": counts}
+
+
+def _segment(*, layer, start, direction, extension_m, length_m):
+    return {
+        "layer": layer,
+        "origin": (
+            start[0] - extension_m * direction[0],
+            start[1] - extension_m * direction[1],
+            start[2],
+        ),
+        "direction": direction,
+        "length": length_m,
+        "start": start,
+    }
+
+
+def _require_angle_identity(pitch_m, periodic_dy_m, attack_deg, geo_id):
+    theta = math.radians(attack_deg)
+    sine = math.sin(theta)
+    if sine <= 0.0:
+        raise ValueError(f"{geo_id} attack angle must be in (0, 180) degrees.")
+    left = pitch_m * math.cos(theta)
+    right = periodic_dy_m * sine
+    if abs(left - right) > ANGLE_IDENTITY_RTOL * abs(left):
+        raise ValueError(
+            f"{geo_id} does not satisfy pitch*cos(angle) = span*sin(angle): "
+            f"{left} m vs {right} m."
+        )
+
+
+def _bind_geometry_symbols():
+    """Import PyAnsys Geometry when a body is built, not at module import."""
+    global pyansys_geometry, ApiVersions, launch_modeler_with_discovery
+    global CollisionType, SurfaceType, Plane, Point2D, Point3D, UnitVector3D
+    global PlaneSurface, Sketch, Distance
+    pyansys_geometry = importlib.import_module("ansys.geometry.core")
+    ApiVersions = importlib.import_module(
+        "ansys.geometry.core.connection.backend"
+    ).ApiVersions
+    launch_modeler_with_discovery = importlib.import_module(
+        "ansys.geometry.core.connection.launcher"
+    ).launch_modeler_with_discovery
+    CollisionType = importlib.import_module(
+        "ansys.geometry.core.designer.body"
+    ).CollisionType
+    SurfaceType = importlib.import_module(
+        "ansys.geometry.core.designer.face"
+    ).SurfaceType
+    Plane = importlib.import_module("ansys.geometry.core.math.plane").Plane
+    points = importlib.import_module("ansys.geometry.core.math.point")
+    Point2D = points.Point2D
+    Point3D = points.Point3D
+    UnitVector3D = importlib.import_module(
+        "ansys.geometry.core.math.vector"
+    ).UnitVector3D
+    PlaneSurface = importlib.import_module(
+        "ansys.geometry.core.shapes.surfaces.plane"
+    ).PlaneSurface
+    Sketch = importlib.import_module("ansys.geometry.core.sketch.sketch").Sketch
+    Distance = importlib.import_module(
+        "ansys.geometry.core.misc.measurements"
+    ).Distance
+
+
+def _build_fluid(design, layout, segments, centers):
+    if not segments:
+        raise RuntimeError("The layout produced no filament segments.")
+    for index, segment in enumerate(segments):
+        _extrude_cylinder(
+            design,
+            "spacer" if index == 0 else f"filament_{index}",
+            segment["origin"],
+            segment["direction"],
+            layout["filament_radius_m"],
+            segment["length"],
+        )
+    other_names = [f"filament_{index}" for index in range(1, len(segments))]
+    for index, center in enumerate(centers):
+        name = f"sphere_{index}"
+        body = design.create_sphere(
+            name,
+            Point3D(list(center)),
+            Distance(layout["sphere_radius_m"]),
+        )
+        if body is None:
+            raise RuntimeError(f"create_sphere returned None for {name}.")
+        other_names.append(name)
+    _unite_touching(design, "spacer", other_names)
+    _extrude_box(design, "buffer_in", 0.0, layout["x_active_0"], layout)
+    _extrude_box(design, "active", layout["x_active_0"], layout["x_active_1"], layout)
+    _extrude_box(design, "buffer_out", layout["x_active_1"], layout["x_outlet"], layout)
+    _body_named(design, "active").subtract(_body_named(design, "spacer"))
+    _body_named(design, "buffer_in").unite(_body_named(design, "active"))
+    _body_named(design, "buffer_in").unite(_body_named(design, "buffer_out"))
+    fluid = _body_named(design, "buffer_in")
+    fluid.name = f"{layout['geo_id'].lower()}-solid"
+    fluid = _body_named(design, fluid.name)
+    alive = [body for body in design.bodies if body.is_alive]
+    if len(alive) != 1 or alive[0].id != fluid.id:
+        raise RuntimeError(
+            "Boolean construction left "
+            f"{[(body.name, body.id) for body in alive]!r}, expected one body named "
+            f"{fluid.name!r}."
+        )
+    _imprint_membranes(fluid, layout)
+    return fluid
+
+
+def _extrude_box(design, name, x0, x1, layout):
+    if x1 <= x0:
+        raise RuntimeError(f"Box {name} has non-positive length: {x0} to {x1}.")
+    plane = Plane(
+        Point3D([0.0, 0.0, layout["z_min"]]),
+        UnitVector3D(_PLUS_X),
+        UnitVector3D(_PLUS_Y),
+    )
+    sketch = Sketch(plane)
+    sketch.box(
+        Point2D([0.5 * (x0 + x1), 0.0]),
+        x1 - x0,
+        layout["y_max"] - layout["y_min"],
+    )
+    body = design.extrude_sketch(name, sketch, layout["h_m"])
+    if body is None:
+        raise RuntimeError(f"extrude_sketch returned None for {name}.")
+    return body
+
+
+def _extrude_cylinder(design, name, origin, direction, radius, length):
+    if radius <= 0.0 or length <= 0.0:
+        raise RuntimeError(
+            f"{name} radius and length must be positive, got {radius} m and {length} m."
+        )
+    plane = _plane_normal_to(origin, direction)
+    sketch = Sketch(plane)
+    sketch.circle(Point2D([0.0, 0.0]), radius)
+    body = design.extrude_sketch(name, sketch, length)
+    if body is None:
+        raise RuntimeError(f"extrude_sketch returned None for {name}.")
+    return body
+
+
+def _plane_normal_to(origin, direction):
+    if _direction_close(direction, _PLUS_Z) or _direction_close(direction, _MINUS_Z):
+        dir_x, dir_y = _PLUS_X, _PLUS_Y
+    elif _direction_close(direction, _PLUS_X) or _direction_close(direction, _MINUS_X):
+        dir_x, dir_y = _PLUS_Y, _PLUS_Z
+    else:
+        dir_x = (-direction[1], direction[0], 0.0)
+        dir_y = _PLUS_Z
+    return Plane(Point3D(list(origin)), UnitVector3D(dir_x), UnitVector3D(dir_y))
+
+
+def _imprint_membranes(body, layout):
+    """Split each membrane at the active-buffer stations. Ignore the return."""
+    y0 = layout["y_min"] - IMPRINT_MARGIN_M
+    y1 = layout["y_max"] + IMPRINT_MARGIN_M
+    stations = (layout["x_active_0"], layout["x_active_1"])
+    for z_m, normal in ((layout["z_max"], _PLUS_Z), (layout["z_min"], _MINUS_Z)):
+        faces = _faces_on_membrane(body, z_m, normal)
+        if not faces:
+            raise RuntimeError(f"No membrane face at z={z_m} m before imprint.")
+        plane = Plane(
+            Point3D([0.0, 0.0, z_m]),
+            UnitVector3D(_PLUS_X),
+            UnitVector3D(_PLUS_Y),
+        )
+        sketch = Sketch(plane)
+        for x_m in stations:
+            sketch.segment(Point2D([x_m, y0]), Point2D([x_m, y1]))
+        body.imprint_curves(faces=faces, sketch=sketch)
+
+
+def _faces_on_membrane(body, z_m, normal):
+    found = []
+    for face in body.faces:
+        if face.surface_type is not SurfaceType.SURFACETYPE_PLANE:
+            continue
+        geometry = _plane_geometry(face)
+        if not _direction_close(_vector(face.normal()), normal):
+            continue
+        if abs(_point(geometry.origin)[2] - z_m) <= POSITION_TOL_M:
+            found.append(face)
+    return found
+
+
+def _classify_and_name(design, body, layout):
+    groups = {label: [] for label in BOUNDARY_LABELS}
+    seen = set()
+    for face in body.faces:
+        if face.id in seen:
+            raise RuntimeError(f"Face id {face.id!r} was listed twice.")
+        seen.add(face.id)
+        kind = face.surface_type
+        if kind is SurfaceType.SURFACETYPE_PLANE:
+            groups[_plane_label(face, layout)].append(face)
+        elif kind in (
+            SurfaceType.SURFACETYPE_CYLINDER,
+            SurfaceType.SURFACETYPE_SPHERE,
+        ):
+            groups["wall_spacer"].append(face)
+        else:
+            raise RuntimeError(
+                f"Face {face.id!r} has unsupported surface type {kind!r}."
+            )
+    for label, faces in groups.items():
+        if not faces:
+            raise RuntimeError(f"Label {label} has no faces.")
+        design.create_named_selection(label, faces=faces)
+    return {label: len(faces) for label, faces in groups.items()}
+
+
+def _plane_label(face, layout):
+    geometry = _plane_geometry(face)
+    normal = _vector(face.normal())
+    origin = _point(geometry.origin)
+    if _direction_close(normal, _PLUS_X) or _direction_close(normal, _MINUS_X):
+        x_m = origin[0]
+        if abs(x_m - 0.0) <= POSITION_TOL_M:
+            return "inlet"
+        if abs(x_m - layout["x_outlet"]) <= POSITION_TOL_M:
+            return "outlet"
+        return "wall_spacer"
+    if _axis_is_y(normal) and abs(origin[1] - layout["y_min"]) <= POSITION_TOL_M:
+        return "periodic_r"
+    if _axis_is_y(normal) and abs(origin[1] - layout["y_max"]) <= POSITION_TOL_M:
+        return "periodic_l"
+    if _direction_close(normal, _PLUS_Z) and abs(origin[2] - layout["z_max"]) <= POSITION_TOL_M:
+        return _membrane_label(face, "top", layout)
+    if _direction_close(normal, _MINUS_Z) and abs(origin[2] - layout["z_min"]) <= POSITION_TOL_M:
+        return _membrane_label(face, "bottom", layout)
+    raise RuntimeError(
+        f"Plane face {face.id!r} normal={normal} origin={origin} has no label."
+    )
+
+
+def _membrane_label(face, side, layout):
+    box = face.bounding_box
+    xmin = _length_m(box.min_corner.x)
+    xmax = _length_m(box.max_corner.x)
+    if xmax <= layout["x_active_0"] + POSITION_TOL_M:
+        return f"wall_{side}_buffer_in"
+    if xmin >= layout["x_active_1"] - POSITION_TOL_M:
+        return f"wall_{side}_buffer_out"
+    if (
+        xmin >= layout["x_active_0"] - POSITION_TOL_M
+        and xmax <= layout["x_active_1"] + POSITION_TOL_M
+    ):
+        return f"wall_{side}_mem"
+    raise RuntimeError(
+        f"Membrane {side} face x-range [{xmin}, {xmax}] m crosses an active station."
+    )
+
+
+def _unite_touching(design, host_name, other_names):
+    """Unite bodies that touch the growing solid. A disjoint remainder raises."""
+    pending = list(other_names)
+    while pending:
+        host = _body_named(design, host_name)
+        matched = None
+        for name in pending:
+            if host.get_collision(_body_named(design, name)) is not CollisionType.NONE:
+                matched = name
+                break
+        if matched is None:
+            raise RuntimeError(
+                "Spacer union stopped. These bodies do not touch "
+                f"{host_name!r}: {pending}."
+            )
+        _body_named(design, host_name).unite(_body_named(design, matched))
+        pending.remove(matched)
+
+
+def _body_named(design, name):
+    matches = [body for body in design.bodies if body.is_alive and body.name == name]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one live body named {name!r}, found {len(matches)}.")
+    return matches[0]
+
+
+def _meta_payload(*, layout, segment_count, sphere_count, counts, backend_version, pmdb_sha256):
+    return {
+        "status": "success",
+        "geo_id": layout["geo_id"],
+        "inputs": {
+            "geo_id": layout["geo_id"],
+            "n_active": layout["n_active"],
+        },
+        "derived": {
+            "pitch_m": layout["pitch_m"],
+            "periodic_dy_m": layout["periodic_dy_m"],
+            "attack_angle_deg": layout["attack_angle_deg"],
+            "filament_angle_from_x_deg": math.degrees(layout["filament_angle_from_x_rad"]),
+            "upper_layer": "+filament_angle, z = +filament_radius",
+            "filament_d_m": layout["filament_d_m"],
+            "sphere_radius_m": layout["sphere_radius_m"],
+            "membrane_trim_m": layout["membrane_trim_m"],
+            "channel_height_m": layout["h_m"],
+            "buffer_in_m": layout["buffer_in_m"],
+            "buffer_out_m": layout["buffer_out_m"],
+            "n_active_cells": layout["n_active"],
+            "n_active_registry": layout["n_active_registry"],
+            "x_active_m": [layout["x_active_0"], layout["x_active_1"]],
+            "x_outlet_m": layout["x_outlet"],
+            "y_m": [layout["y_min"], layout["y_max"]],
+            "z_m": [layout["z_min"], layout["z_max"]],
+            "filament_segment_count": segment_count,
+            "sphere_count": sphere_count,
+        },
+        "face_counts": counts,
+        "ansys_geometry_core_version": pyansys_geometry.__version__,
+        "backend_version": backend_version,
+        "pmdb_sha256": pmdb_sha256,
+    }
+
+
+def _output_paths(out_dir, geo_id):
+    return {
+        "pmdb": out_dir / f"{geo_id}.pmdb",
+        "scdocx": out_dir / f"{geo_id}.scdocx",
+        "meta": out_dir / f"{geo_id}_meta.json",
+    }
+
+
+def _refuse_existing(paths):
+    existing = [str(path) for path in paths.values() if path.exists()]
+    if existing:
+        raise FileExistsError(f"Refusing to overwrite existing files: {existing}")
+
+
+def _require_out_dir(out_dir):
+    if not isinstance(out_dir, (str, Path)):
+        raise TypeError(f"out_dir must be a path, got {type(out_dir).__name__}.")
+    path = Path(out_dir)
+    if _is_production_data_root(path):
+        raise ValueError(
+            f"out_dir {path} is under C:/ro_data. Write Diamond CAD under an MFBO data root."
+        )
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"out_dir is not a directory: {path}")
+    return path
+
+
+def _is_production_data_root(path):
+    texts = [str(path).replace("\\", "/"), path.as_posix()]
+    try:
+        texts.append(path.resolve().as_posix())
+    except OSError as exc:
+        raise ValueError(f"Could not resolve out_dir {path}: {exc}") from exc
+    for text in texts:
+        folded = text.replace("\\", "/").casefold().rstrip("/")
+        for root in _PRODUCTION_ROOTS:
+            if folded == root or folded.startswith(root + "/"):
+                return True
+    return False
+
+
+def _require_geo_id(geo_id):
+    if not isinstance(geo_id, str) or not geo_id or geo_id.strip() != geo_id:
+        raise ValueError(f"geo_id must be a non-empty string, got {geo_id!r}.")
+    if any(part in geo_id for part in ("/", "\\", "..")):
+        raise ValueError(f"geo_id must not be a path, got {geo_id!r}.")
+    return geo_id
+
+
+def _require_real(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a real number, got {value!r}.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite, got {value!r}.")
+    return number
+
+
+def _require_count(name, value):
+    number = _require_real(name, value)
+    if number < 1.0 or int(number) != number:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    return int(number)
+
+
+def _length_m(value):
+    if hasattr(value, "to"):
+        return float(value.to("meter").magnitude)
+    if hasattr(value, "m"):
+        return float(value.m)
+    return float(value)
+
+
+def _plane_geometry(face):
+    geometry = face.shape.geometry
+    if not isinstance(geometry, PlaneSurface):
+        raise RuntimeError(
+            f"Face {face.id!r} is PLANE but geometry is {type(geometry).__name__}."
+        )
+    return geometry
+
+
+def _point(value):
+    return (float(value[0]), float(value[1]), float(value[2]))
+
+
+def _vector(value):
+    return (float(value[0]), float(value[1]), float(value[2]))
+
+
+def _direction_close(left, right):
+    return all(abs(left[index] - right[index]) <= DIRECTION_TOL for index in range(3))
+
+
+def _axis_is_y(direction):
+    return _direction_close(direction, _PLUS_Y) or _direction_close(direction, _MINUS_Y)

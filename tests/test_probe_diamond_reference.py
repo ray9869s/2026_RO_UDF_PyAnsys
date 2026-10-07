@@ -102,11 +102,45 @@ def test_unread_volume_is_marked_and_not_invented():
 
 def test_diamond_cli_does_not_launch_and_refuses_the_cad_tree(tmp_path):
     probe = load_probe()
-    mixed = probe.build_parser().parse_args(
-        ["--family", "diamond", "--cad-path", "C:/tmp/part.dsco"]
+    bore = probe.build_parser().parse_args(
+        ["--family", "diamond", "--d-h-mm", "0.3"]
     )
-    with pytest.raises(ValueError, match="does not take"):
-        probe.run_diamond_reference(mixed)
+    with pytest.raises(ValueError, match="does not take --d-h-mm"):
+        probe.run_diamond_reference(bore)
+
+    compared = probe.build_parser().parse_args(
+        ["--family", "diamond", "--compare-to", "reference_geometry.json"]
+    )
+    with pytest.raises(ValueError, match="unless --cad-path"):
+        probe.run_diamond_reference(compared)
+
+    missing_one = probe.build_parser().parse_args(
+        [
+            "--family",
+            "diamond",
+            "--cad-path",
+            str(tmp_path / "missing.dsco"),
+            "--work-dir",
+            str(tmp_path),
+        ]
+    )
+    with pytest.raises(FileNotFoundError, match="Geometry file not found"):
+        probe.run_diamond_reference(missing_one)
+
+    present = tmp_path / "present.dsco"
+    present.write_bytes(b"not-a-cad")
+    reserved_one = probe.build_parser().parse_args(
+        [
+            "--family",
+            "diamond",
+            "--cad-path",
+            str(present),
+            "--work-dir",
+            r"C:\ro_data\geometries\diamond",
+        ]
+    )
+    with pytest.raises(ValueError, match="reserved for the manual CAD"):
+        probe.run_diamond_reference(reserved_one)
 
     reserved = probe.build_parser().parse_args(
         ["--family", "diamond", "--work-dir", r"C:\ro_data\geometries\diamond"]
