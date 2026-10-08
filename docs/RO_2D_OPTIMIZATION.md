@@ -359,3 +359,45 @@ does not add a mesh attempt.
 LMH; the reporting note is in `docs/metrics_conventions.md`. 3D MFBO
 is for the AIChE 2026 presentation only. The benchmark paper comes
 first (`docs/AGENTS.md`).
+
+## 3D screen
+
+`scripts/mfbo/run_3d_evaluate.py` runs one pillar design through the
+adapter and prints the result record as JSON.
+`scripts/mfbo/run_3d_fidelity_screen.py` evaluates every design in a
+JSON list at LF and then HF. It writes
+`3d_fidelity_screen.csv` and `3d_fidelity_screen.md`. Relative bias is
+`(LF − HF) / HF`. Pearson, Spearman, and rank reversals use the same
+definitions as the 2D screen (`src/ro_2d_pilot/fidelity_screen.py`):
+correlation needs at least three comparable values, and a reversal is a
+strict disagreement about which design is better. The quantities are
+`lmh`, `lmh_module_area`, `pressure_drop_per_length_pa_per_m`, and
+`cp_average` compared as CP−1. Larger LMH is better. Smaller CP−1 and
+dP/L are better. The cost ratio is LF wall time divided by HF wall time.
+Wall time is `mesh_wall_time_s + solver_wall_time_s +
+extraction_wall_time_s`. The reported cost is the median of that ratio.
+`--emit-queue` writes a `scripts/mfbo/job_queue.py` queue and does not
+evaluate. The host runs that queue one job at a time.
+
+`configs/mfbo_fidelity_table.example.json` sets LF to the production
+mesh `max085_min006_cpg5_bl4_peel2`. HF is the string `TBD` and is
+refused before any driver starts. A screen needs both levels to be mesh
+settings.
+
+Real drivers are `src/ro/mfbo_drivers.py`. They call
+`scripts/generate_pillar_cad.py`, `scripts/mfbo/mesh_mfbo_case.py`,
+`scripts/mfbo/solve_mfbo_case.py`, and `scripts/mfbo/reextract_runs.py`
+as subprocesses. One job runs at a time. `RO_DATA_ROOT` is set on the
+child only. A non-zero exit raises with the child log path.
+
+Mesh knobs (`m_max`, `m_min`, `m_cpg`, `bl_layers`, `spacer_bl_layers`,
+`peel_layers`) belong on the mesh CLI.
+
+- `generate_pillar_cad.py` does not take them. It only writes CAD.
+- `mesh_mfbo_case.py` did not take them. It now accepts those flags.
+  Omitting every flag keeps the previous `--mesh-id` lookup. The default
+  mesh id is still `max085_min006_cpg5_bl4_peel2`.
+- `solve_mfbo_case.py` takes `--mesh-id`, not the knobs. A mesh id that
+  is not in the production solver catalog reuses the default solver case
+  and replaces only `mesh_id`. The default mesh id is unchanged.
+- `reextract_runs.py` takes a run leaf, not the knobs.
