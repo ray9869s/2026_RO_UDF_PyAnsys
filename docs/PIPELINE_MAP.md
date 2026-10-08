@@ -101,8 +101,8 @@ Parity numbers for the nine campaign pillars are in
 `docs/MESH_LANDSCAPE.md`. A 2026-10-08 adapter reuse of this geometry
 at fidelity `LF` and run id `u0p2_p6M` is in
 `docs/RO_2D_OPTIMIZATION.md`. That check names the fidelity and the run
-id. It still does not name the data root, and the 2026-10-04 paste
-still did not print a `mesh_id`.
+id. Its data root is `C:/ro_data_mfbo/e2e` (`1b11ec9` recorded the root
+as unnamed). The 2026-10-04 paste still did not print a `mesh_id`.
 
 **Spawn map**
 
@@ -375,13 +375,19 @@ are `solver_wall_time_s`, `solver_wall_time_attempts`,
 `mesh_wall_time_s` is the sum of the phases that are present.
 
 **Measured (recorded 2026-10-08).** `P_p100_h30` at 1.25–1.60 M cells,
-50 cores: solve 18–20 min, extraction 30–34 min. The paste does not
-name the mesh ids or the data root. Production inventory for this geo
-is 1,055,859 cells, so the band is finer than that campaign mesh. The
-session mesh-study root is `C:/ro_data_mfbo/meshstudy`
-(`docs/MESH_LANDSCAPE.md`). The paste does not say these timed leaves
-are under it. The `REF_empty` extract breakdown stays in
-`docs/POSTPROCESSING_MAP.md`; the 30–34 min figure does not replace it.
+50 cores: solve 18–20 min, extraction 30–34 min. Workstation commit
+`e169321`. Data root `C:/ro_data_mfbo/meshstudy`. The times are on the
+run manifests of:
+
+- `C:/ro_data_mfbo/meshstudy/runs/pillar/P_p100_h30/max085_min006_cpg5_bl8s4_peel2/u0p2_p6M/`
+- `C:/ro_data_mfbo/meshstudy/runs/pillar/P_p100_h30/max085_min006_cpg5_bl12s4_peel2/u0p2_p6M/`
+- `C:/ro_data_mfbo/meshstudy/runs/pillar/P_p100_h30/max085_min006_cpg5_bl16s4_peel2/u0p2_p6M/`
+
+`1b11ec9` recorded the paste as not naming these mesh ids or this root.
+Production inventory for this geo is 1,055,859 cells, so this band is
+finer than that campaign mesh. The `REF_empty` extract breakdown stays
+in `docs/POSTPROCESSING_MAP.md`; the 30–34 min figure does not replace
+it.
 
 ---
 

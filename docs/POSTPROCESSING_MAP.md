@@ -231,11 +231,13 @@ figure is superseded.
 
 **Additional extract timing (recorded 2026-10-08).** `P_p100_h30` at
 1.25–1.60 M cells, 50 cores: extraction 30–34 min. Solve on the same
-band is 18–20 min. The paste does not name the mesh ids. Production
+band is 18–20 min. Workstation commit `e169321`. Data root
+`C:/ro_data_mfbo/meshstudy`, run manifests of
+`max085_min006_cpg5_bl{8,12,16}s4_peel2` / `u0p2_p6M`. `1b11ec9`
+recorded the paste as not naming those mesh ids. Production
 `P_p100_h30` in the inventory is 1,055,859 cells, so this band is finer
 than that campaign mesh. This does not replace the `REF_empty` 38.7 min
-breakdown above. Manifest fields and commits are in
-`docs/PIPELINE_MAP.md`.
+breakdown above. The three leaf paths are in `docs/PIPELINE_MAP.md`.
 
 ### Batch log naming pitfall
 

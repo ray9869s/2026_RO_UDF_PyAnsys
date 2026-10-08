@@ -290,8 +290,9 @@ Data roots named in the paste:
 
 - `C:/ro_data_mfbo/meshstudy` — the mesh rows in this section
 - `C:/ro_data_mfbo/turb` — the realizable k-ε follow-up under Convergence
-- `C:/ro_data_mfbo/campaign_reextract` — the 93-run CP re-extract in
-  `docs/metrics_conventions.md`
+- `C:/ro_data_mfbo/campaign_reextract` — the 93-run CP re-extract and
+  the 30-run \(c_0\) versus \(c_b\) check in
+  `docs/metrics_conventions.md`. `1b11ec9` left the 30-run root unnamed.
 
 Queued workstation commits: q2 on `faf6b2c`, `63326c8`, and `95ffb26`
 (the paste says the driver code was unchanged across those three); q4

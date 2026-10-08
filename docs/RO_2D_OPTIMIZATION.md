@@ -338,7 +338,8 @@ High fidelity is not defined yet.
 ### Host check (recorded 2026-10-08)
 
 The paste reports a check of this adapter on the host, without
-launching drivers. It does not name the machine or the data root.
+launching drivers. It does not name the machine. Data root
+`C:/ro_data_mfbo/e2e`. `1b11ec9` recorded that root as unnamed.
 
 Reuse of `MFP_d0900_h0200_f0400` at fidelity `LF`, run id `u0p2_p6M`,
 returns `valid`. Returned values: LMH 26.532, module-area LMH 23.74,

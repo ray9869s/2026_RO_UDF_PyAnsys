@@ -407,9 +407,10 @@ level.
 
 ### \(c_0\) versus \(c_b\) on 30 PASS runs (recorded 2026-10-08)
 
-Run id `u0p2_p6M`, 30 PASS runs. The paste does not list the leaves or
-name a data root for this check. The session roots are in
-`docs/MESH_LANDSCAPE.md`.
+Run id `u0p2_p6M`, 30 PASS runs. Data root
+`C:/ro_data_mfbo/campaign_reextract`. The 2026-10-08 paste did not list
+the 30 leaves or this root; `1b11ec9` recorded that omission. Individual
+leaf paths are still not listed.
 
 Measured: CP-excess with \(c_0\) is 0–4.3% larger than CP-excess with
 \(c_b\). Rescale \(k\) is 0.998–1.000. Empty and long-wavelength
