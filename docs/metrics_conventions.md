@@ -90,6 +90,12 @@ D2450_a45 at `u0p2_p6M`, varying mesh parameters around the campaign baseline
 
 **Judge grid / mesh convergence on `cm_avg` (and supporting \(c_b\), LMH, ΔP), not on canonical CP.** Canonical CP remains the campaign *comparison* metric once a mesh is fixed; it is a poor *grid-independence* indicator because facet artifacts move it without reflecting global resolution.
 
+The 2026-10-07..08 pillar series in `docs/MESH_LANDSCAPE.md` reports
+CP-excess from cpc flux, not `cm_mol_m3_avg`. The table above is the
+D2450_a45 exploration. The 2026-10-08 meeting adopts the
+concentration-statistics average and `CP_q999` for comparison; see
+**Iteration-robust QoIs**.
+
 ## Averaging order
 
 **Compute \(M\) per face, then area-weight the \(M\) values.**
@@ -244,7 +250,11 @@ the max path as well as the average — do not re-litigate max separately.
 
 For spacer comparison, use **`cp_canon_window_avg`** and
 **`pressure_drop_spacer`** (per length when pitches differ). The p6M
-read that uses those columns is `docs/P6M_COMPARISON.md`. **`cp_canon_window_max` is not usable** for
+read that uses those columns is `docs/P6M_COMPARISON.md`.
+**Superseded for comparison (2026-10-08 meeting).** Spacer comparison
+uses the concentration-statistics average and `CP_q999`. The meeting
+did not choose the area versus flux reference. The sentence above stays
+as the rule those p6M tables were built with. **`cp_canon_window_max` is not usable** for
 that purpose: between the 301-iteration QoI stop and a 2000-iteration solve on
 D2450_a45 u0p1 (p = 6 MPa) it moved \(2.73751 \rightarrow 125.245\)
 (\(+4475\%\)) while `cp_canon_window_avg` moved only \(0.25\%\). The window
@@ -274,13 +284,20 @@ Area averages are biased on contact families: `S_a072_l1733` −0.0014,
 `D1225_a60` +0.0011. UDM-9 remains diagnostic only; the no-feedback
 statement above already covers that. Production mesh for these geos is
 `max085_min006_cpg5_bl4_peel2` except `D0817_a60`
-(`max060_min006_cpg5_bl4_peel2`), under `C:/ro_data`.
+(`max060_min006_cpg5_bl4_peel2`), under `C:/ro_data`. The 93-run
+re-extract below reports the same Sinusoidal old-CP maximum (1794) and
+a Diamond old-CP maximum of 130, which is above this a60 figure of
+4.48. This paragraph stays.
 
 ## Concentration-statistics CP (diagnostic columns)
 
 Extract also writes a second family that does not read UDM-9.
 `cp_canon_window_avg` and `cp_canon_window_max` are unchanged. These
 columns are not the spacer-ranking metric.
+**Superseded as the ranking rule (2026-10-08 meeting).** The meeting
+adopts the average and `CP_q999` from this family. It does not name the
+area versus flux reference, and it does not adopt `CP_q99`. The column
+definitions below are unchanged. `cp_canon_window_avg` is still written.
 
 On the evaluation-window x-clip of both membranes together, each face
 contributes cell-stored `udm-7` (\(c_m\)), `udm-6` (\(J_w\)), and its
@@ -326,6 +343,9 @@ The average form above is a ratio of window aggregates with one
 \(c_{p,\mathrm{ref}}\). It is not the per-face-then-area-weight order
 required for `cp_canon_window_avg`. Do not substitute it for that column
 until a campaign comparison says so.
+**Substitution decided (2026-10-08 meeting).** Comparison uses this
+average and `CP_q999`. The ratio-of-aggregates distinction in the
+previous sentences stays. Area versus flux was not chosen.
 
 **Three-geometry comparison (commit `720ec4c`, session 2026-09-29 ..
 2026-10-02, recorded 2026-10-04).** On `REF_empty`, `P_p100_h30`, and
@@ -343,7 +363,38 @@ paste. Production geometry leaves for the three ids:
 - `C:/ro_data/runs/ml/M_c267/max085_min006_cpg5_bl4_peel2/`
 
 This agreement is those three geometries. The substitution sentence
-above still stands for campaign ranking.
+above still stands as the pre-meeting rule; the 2026-10-08 meeting
+note on that sentence is the later decision. The 93-run survey below
+does not replace these three leaves.
+
+### 93-run re-extract (recorded 2026-10-08)
+
+93 PASS runs, re-extracted. Data root
+`C:/ro_data_mfbo/campaign_reextract`. The paste does not list the 93
+leaf paths, the run ids, or area versus flux. "New" is the
+concentration-statistics average; "old" is the previous window average,
+the same pairing as the three-geometry check above.
+
+Max |average difference|, new versus old:
+
+| family | max \|avg diff\| |
+|---|---:|
+| Pillar | \(1\times10^{-5}\) |
+| empty | 0 |
+| ML | \(5\times10^{-5}\) |
+| Diamond | 0.0061 |
+| Sinusoidal | 0.0024 |
+
+The three-geometry bound of \(1\times10^{-5}\) still describes
+`REF_empty`, `P_p100_h30`, and `M_c267`. It is not the ML family
+maximum: that maximum on these 93 runs is \(5\times10^{-5}\).
+
+Old CP maximum in the same survey: up to 130 on Diamond and 1794 on
+Sinusoidal. The 1794 matches the Sinusoidal facet maximum recorded
+under **Iteration-robust QoIs**. The Diamond 130 is this survey's
+maximum and is above the earlier Diamond a60 figure of 4.48; that
+4.48 line stays. `CP_q999` maximum is printed `2.37 / 2.04` immediately
+after those two family maxima, in that order (Diamond, then Sinusoidal).
 
 ## Why \(c_b\) and not \(c_0\)
 
@@ -353,6 +404,25 @@ Bulk concentration rises along the channel by roughly \(2 J_w L_{\mathrm{active}
 introduces a between-geometry spread that scales with domain length rather than
 spacer performance. A \(c_b\) denominator removes that spread at the definition
 level.
+
+### \(c_0\) versus \(c_b\) on 30 PASS runs (recorded 2026-10-08)
+
+Run id `u0p2_p6M`, 30 PASS runs. The paste does not list the leaves or
+name a data root for this check. The session roots are in
+`docs/MESH_LANDSCAPE.md`.
+
+Measured: CP-excess with \(c_0\) is 0–4.3% larger than CP-excess with
+\(c_b\). Rescale \(k\) is 0.998–1.000. Empty and long-wavelength
+Sinusoidal have \(k = 1.000\).
+
+From the rescale definition already in this file, \(k = 1\) means
+\(c_b = c_0\) at the printed precision. On those two classes the
+mid-plane mixing-cup does not rise above the inlet value.
+
+**Hypothesis (unverified):** \(c_b\) rises only when mixing carries
+rejected salt to the channel core, so \(c_b\) reflects mixing. The
+\(k = 1.000\) rows are the measurement that hypothesis uses. The paste
+does not report a salt-path observation.
 
 ## Evaluation window
 
@@ -604,3 +674,8 @@ at \(u = 0.1\) / \(0.2\) / \(0.3\,\mathrm{m/s}\). At \(u = 0.2\), p100
 is the best pillar on exposed area, and p60 is about 8% higher once the
 same flux is taken per module area. The CP rank tables in
 `docs/P6M_COMPARISON.md` are a different ordering and are unchanged.
+
+**2026-10-08 meeting.** Report both exposed-area LMH and module-area
+LMH. The MFBO objective uses module (installed) area. The exposed-area
+column `lmh_mass_balance` stays what this section measured. The adapter
+field is `lmh_module_area` in `docs/RO_2D_OPTIMIZATION.md`.

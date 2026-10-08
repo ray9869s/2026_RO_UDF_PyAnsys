@@ -229,6 +229,14 @@ Run-to-run variance on the same case: segmented CP phase 1438.7 / 1091.0 /
 Profile before optimising. The older "~33 min/case with 91% unattributed"
 figure is superseded.
 
+**Additional extract timing (recorded 2026-10-08).** `P_p100_h30` at
+1.25–1.60 M cells, 50 cores: extraction 30–34 min. Solve on the same
+band is 18–20 min. The paste does not name the mesh ids. Production
+`P_p100_h30` in the inventory is 1,055,859 cells, so this band is finer
+than that campaign mesh. This does not replace the `REF_empty` 38.7 min
+breakdown above. Manifest fields and commits are in
+`docs/PIPELINE_MAP.md`.
+
 ### Batch log naming pitfall
 
 `batch_postprocess_all_cases.py` log filenames carry `geo_id` and `run_id` but
@@ -314,7 +322,7 @@ Renamed or copied into summary:
 
 - **`cp_canon_window_avg` / `_max`**: area-weighted mean / pointwise max of per-eval-cell canon (max uses facetmax UDM-9 × same \(k_N\)).
 
-- **Concentration-statistics CP** (new columns only; not load-bearing; every run, including laminar): on the evaluation-window clip of both membranes, \(c_{p,\mathrm{face}}=B c_m/(J_w+B)\) from cell-stored `udm-7` and `udm-6`. \(Q_p\) is the smallest \(c_m\) with cumulative area fraction \(\ge p\) on that whole clip. \(c_b\) is `c_b_window_mol_m3`. For \(r\in\{\mathrm{area},\mathrm{flux}\}\), `cpc_window_avg_r` \(=(\overline{c_m}-c_{p,\mathrm{ref},r})/(c_b-c_{p,\mathrm{ref},r})\), and `cp_q999_window_r` / `cp_q99_window_r` use \(Q_{0.999}\) / \(Q_{0.99}\). `cp_ref_flux` uses faces with \(J_w>0\). Per-cell twins (`cpc_cell_{N}_*`, cells 5–8 on the production window) use that cell's mid-plane \(c_b\) and are not averaged into the window quantile. See `docs/metrics_conventions.md`.
+- **Concentration-statistics CP** (new columns only; not load-bearing; every run, including laminar): on the evaluation-window clip of both membranes, \(c_{p,\mathrm{face}}=B c_m/(J_w+B)\) from cell-stored `udm-7` and `udm-6`. \(Q_p\) is the smallest \(c_m\) with cumulative area fraction \(\ge p\) on that whole clip. \(c_b\) is `c_b_window_mol_m3`. For \(r\in\{\mathrm{area},\mathrm{flux}\}\), `cpc_window_avg_r` \(=(\overline{c_m}-c_{p,\mathrm{ref},r})/(c_b-c_{p,\mathrm{ref},r})\), and `cp_q999_window_r` / `cp_q99_window_r` use \(Q_{0.999}\) / \(Q_{0.99}\). `cp_ref_flux` uses faces with \(J_w>0\). Per-cell twins (`cpc_cell_{N}_*`, cells 5–8 on the production window) use that cell's mid-plane \(c_b\) and are not averaged into the window quantile. See `docs/metrics_conventions.md`. The 2026-10-08 meeting adopts the average and `CP_q999` for comparison. These columns stay not load-bearing. The pre-meeting "not a ranking metric" wording in that file is kept, with the meeting note beside it.
 
 - **RANS diagnostics** (not load-bearing): null with status `laminar` or `legacy_manifest_no_viscous_model`. Otherwise volume max/average of `viscosity-ratio` and `diff-nacl`, min/max of `diffl-nacl` (must match `mass_diffusivity` within \(10^{-9}\) relative), then `diff_ratio_*`.
 

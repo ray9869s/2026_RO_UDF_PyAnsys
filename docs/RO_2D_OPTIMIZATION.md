@@ -334,3 +334,27 @@ extraction wall time, and solver time. `convergence_quality` `FAIL` is
 A failed evaluation is not stored as LMH = 0.
 
 High fidelity is not defined yet.
+
+### Host check (recorded 2026-10-08)
+
+The paste reports a check of this adapter on the host, without
+launching drivers. It does not name the machine or the data root.
+
+Reuse of `MFP_d0900_h0200_f0400` at fidelity `LF`, run id `u0p2_p6M`,
+returns `valid`. Returned values: LMH 26.532, module-area LMH 23.74,
+dP 79429, cpc 1.0331 after re-extract. `LF` in the shipped table is
+the production mesh `max085_min006_cpg5_bl4_peel2`. The paste does not
+name the dP column. cpc 1.0331 is a modulus. It is not the CP-excess
+(order \(10^{-2}\)) in `docs/MESH_LANDSCAPE.md`. The geometry note that
+an earlier paste left `mesh_id` and `run_id` unnamed stays in
+`docs/GEOMETRY_DESIGN.md`.
+
+`p80_h20` returns `invalid`, reason `opening_gap_sliver`, \(G = 3.65\,\mu\mathrm{m}\).
+That \(G\) is the gap already in `docs/GEOMETRY_DESIGN.md`. This check
+does not add a mesh attempt.
+
+**2026-10-08 meeting.** The MFBO objective uses module (installed) area
+(`lmh_module_area` above). Report both exposed-area and module-area
+LMH; the reporting note is in `docs/metrics_conventions.md`. 3D MFBO
+is for the AIChE 2026 presentation only. The benchmark paper comes
+first (`docs/AGENTS.md`).

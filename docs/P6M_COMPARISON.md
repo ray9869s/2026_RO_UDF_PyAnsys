@@ -25,6 +25,11 @@ are in `docs/metrics_conventions.md`. The CP rank tables below are
 unchanged. `cp_canon_window_max`, inlet CP, L1, and L2 are not
 ranks.
 
+**2026-10-08 meeting.** Later comparison uses the concentration-statistics
+average and `CP_q999` (`docs/metrics_conventions.md`). These tables stay
+on `cp_canon_window_avg - 1`. The same meeting says to report both
+exposed-area and module-area LMH. These LMH columns stay on exposed area.
+
 `REF_empty` dP/L is 3707.5 Pa/m at 0.2 m/s and 5634.2 Pa/m at 0.3 m/s, the
 same extracts as `docs/metrics_conventions.md`.
 

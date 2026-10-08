@@ -21,6 +21,11 @@ result. The live `pilot` comparison is recorded in that document and does
 not by itself justify a 3D fidelity choice. The production p6M
 geometry comparison is `docs/P6M_COMPARISON.md`.
 
+**2026-10-08 supervisor meeting.** The benchmark paper comes first.
+MFBO is for the AIChE 2026 presentation only. Mesh, \(u = 0.3\), CP,
+and LMH decisions from that meeting are in `docs/MESH_LANDSCAPE.md`,
+`docs/metrics_conventions.md`, and `docs/RO_2D_OPTIMIZATION.md`.
+
 Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 `260816_RO_UDF.c` is a frozen ASCII compile-fix sibling; new runs use 260822.
 `RO_ANALYTIC_CWALL = 1` is the production setting.
@@ -34,7 +39,10 @@ possible; see `docs/metrics_conventions.md`.
 **CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with mid-plane
 mixing-cup \(c_b\) (`surface-massavg`) on the evaluation window. See
 `docs/metrics_conventions.md` (coordinate origin, metric reliability,
-`compute_cp_spread` default).
+`compute_cp_spread` default). The 2026-10-08 meeting adopts the
+concentration-statistics average and `CP_q999` for comparison. The
+modulus above remains the definition of `cp_canon_window_avg`. The
+meeting did not choose the area versus flux reference.
 
 **CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
 \(c_m\) and \(c_p\) when the denominator is face-dependent.
@@ -55,19 +63,25 @@ axis is converged**. Open question: can poly-hexcore reach the near-wall
 resolution Liang et al. use (≥20 prism layers within 2–4% of \(h\), tet core
 at 3–5% of \(h\)), given that `bl` 12 failed at AR 251.9? See
 `docs/MESH_LANDSCAPE.md`. A 2026-10 screening on D0817_a30 and P_p80_h15
-is in that file. It does not close these D2450_a45 axes.
+is in that file. It does not close these D2450_a45 axes. A 2026-10-07..08
+pillar membrane-BL series (spacer BL held at 4) is in the same file and
+also does not close them. The 2026-10-08 meeting treats the campaign
+mesh as too coarse and asks for `m_max` refinement and family-wise
+tests, not BL count alone.
 
 **Mesh / geometry session notes:** `docs/MESH_LANDSCAPE.md` (parameter
 landscape, 31-mesh inventory, convergence gate, meshing determinism,
-2026-10 mesh screening and turbulence check),
+2026-10 mesh screening, 2026-10-07..08 mesh study, turbulence check
+and follow-up, and the 2026-10-08 meeting decisions on mesh refinement
+and the \(u = 0.3\) re-test),
 `docs/GEOMETRY_DESIGN.md` (joint-sphere rule, Pillar bore, Pillar CAD
 generator parity, sinusoidal CAD and curvature gate, REF_empty,
 import-zone counts),
 `docs/POSTPROCESSING_MAP.md` (extract cost, flux decomposition, load-bearing
 guards), `docs/metrics_conventions.md` (`u_mean_ms` label, `G`, blocked-area,
 entrance-window bias, LMH area basis, silent mid-plane fallback),
-`docs/PIPELINE_MAP.md` (manifest schema / backfill / rebuild, Pillar
-`.pmdb` exception).
+`docs/PIPELINE_MAP.md` (manifest schema / backfill / rebuild, manifest
+wall time, Pillar `.pmdb` exception).
 
 The D2450_a45 peel2 remesh matched the archive ledger (796,009 cells, ortho
 0.102087, AR 62.7715, skew 0.67063399). The restructure is physics-neutral.

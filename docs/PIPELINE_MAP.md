@@ -98,7 +98,11 @@ through these drivers. The paste did not name the study data root,
 Parity numbers for the nine campaign pillars are in
 `docs/GEOMETRY_DESIGN.md`. The screening and RANS checks that used
 `mesh_study_case.py` and `solve_campaign_case.py` are in
-`docs/MESH_LANDSCAPE.md`.
+`docs/MESH_LANDSCAPE.md`. A 2026-10-08 adapter reuse of this geometry
+at fidelity `LF` and run id `u0p2_p6M` is in
+`docs/RO_2D_OPTIMIZATION.md`. That check names the fidelity and the run
+id. It still does not name the data root, and the 2026-10-04 paste
+still did not print a `mesh_id`.
 
 **Spawn map**
 
@@ -358,6 +362,26 @@ RO_DATA_ROOT/
 ```
 
 Project tree (not under `RO_DATA_ROOT`): `configs/`, `scripts/`, `templates/`, `udfs/`, `src/ro/`.
+
+### Manifest wall time
+
+Optional fields, absent on older leaves. Written by commits `917d53d`
+(solver and extraction on new run manifests), `0e4a315` (solver total
+summed across Fluent launches, with a fallback to the extract timing
+JSON), and `a5c781c` (per-phase meshing on mesh manifests). Field names
+are `solver_wall_time_s`, `solver_wall_time_attempts`,
+`extraction_wall_time_s`, and `processor_count` on the run manifest, and
+`mesh_wall_time_s` plus `mesh_phase_wall_time_s` on the mesh manifest.
+`mesh_wall_time_s` is the sum of the phases that are present.
+
+**Measured (recorded 2026-10-08).** `P_p100_h30` at 1.25–1.60 M cells,
+50 cores: solve 18–20 min, extraction 30–34 min. The paste does not
+name the mesh ids or the data root. Production inventory for this geo
+is 1,055,859 cells, so the band is finer than that campaign mesh. The
+session mesh-study root is `C:/ro_data_mfbo/meshstudy`
+(`docs/MESH_LANDSCAPE.md`). The paste does not say these timed leaves
+are under it. The `REF_empty` extract breakdown stays in
+`docs/POSTPROCESSING_MAP.md`; the 30–34 min figure does not replace it.
 
 ---
 

@@ -151,6 +151,10 @@ Session 2026-09-29 .. 2026-10-02 restates the gap as
 \(G = R_p(45^\circ - \arcsin(r_f/R_p) - \arcsin(r_h/R_p))\) and the
 meshing rule \(0 < G < m_{\min}\). The p80_h20 row above is that case
 (\(G = 3.65\,\mu\mathrm{m}\)). The table above is that measurement.
+A 2026-10-08 host check of `src/ro/mfbo_adapter.py`, without launching
+drivers, returns `invalid` / `opening_gap_sliver` for `p80_h20` at this
+same \(G\). The returned metrics for an `MFP_d0900_h0200_f0400` reuse
+are in `docs/RO_2D_OPTIMIZATION.md`.
 
 ---
 
@@ -192,7 +196,10 @@ Off-matrix `MFP_d0900_h0200_f0400` (registry token for
 `mesh_id` and `run_id` were not in the paste. The leaf shape the MFBO
 drivers write is
 `<study-root>/runs/pillar/MFP_d0900_h0200_f0400/<mesh_id>/<run_id>/`,
-and that study root is not `C:/ro_data`.
+and that study root is not `C:/ro_data`. A 2026-10-08 adapter reuse
+names fidelity `LF` and run id `u0p2_p6M` for the leaf it read. That
+does not fill in the mesh id or root this paragraph says were absent.
+Numbers are in `docs/RO_2D_OPTIMIZATION.md`.
 
 ---
 

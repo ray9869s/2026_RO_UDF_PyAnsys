@@ -276,6 +276,144 @@ bl4..bl8 range. Mesh quality was normal. The difference grows downstream.
 wedges. The downstream growth and the departure from the bl4..bl8
 bracket are the measurements that conclusion uses.
 
+A 2026-10-08 check on `P_p60_h30` is in the next section. It does not
+change this contact-geometry conclusion.
+
+---
+
+## Mesh study (session 2026-10-07 .. 2026-10-08)
+
+Recorded 2026-10-08 from the workstation paste. This section does not
+replace the 2026-10-04 screening or the D2450_a45 parameter landscape.
+
+Data roots named in the paste:
+
+- `C:/ro_data_mfbo/meshstudy` — the mesh rows in this section
+- `C:/ro_data_mfbo/turb` — the realizable k-ε follow-up under Convergence
+- `C:/ro_data_mfbo/campaign_reextract` — the 93-run CP re-extract in
+  `docs/metrics_conventions.md`
+
+Queued workstation commits: q2 on `faf6b2c`, `63326c8`, and `95ffb26`
+(the paste says the driver code was unchanged across those three); q4
+on `e169321`. The paste does not assign a leaf to a queue. Run id for
+the mesh rows is `u0p2_p6M`. Mesh ids below are what
+`format_production_mesh_id` builds with `m_min` 0.006, `m_cpg` 5, and
+peel 2, except where a knob is named. The paste did not print the path
+strings. Study leaves are
+
+`C:/ro_data_mfbo/meshstudy/runs/{family}/{geo_id}/{mesh_id}/u0p2_p6M/`
+
+`mesh_study_case.py` refuses a `mesh_id` equal to production, so a
+`bl4` number may be the production leaf under `C:/ro_data` rather than
+a study copy. The paste does not say which root supplied `bl4`.
+
+CP-excess here is the paste's cpc-flux excess (order \(10^{-2}\)), not
+the modulus `cpc_window_avg_flux` (order 1).
+
+### Pillar membrane BL, spacer layers held at 4
+
+`m_max` 0.085. Membrane layers 4 / 8 / 12 / 16 with spacer layers 4.
+Unsplit `bl4` is the production id.
+
+| geo_id | mesh_id | CP-excess | \(y_1\) (µm) | AR |
+|---|---|---:|---:|---:|
+| P_p80_h15 | `max085_min006_cpg5_bl4_peel2` | 0.0351 | 5.58 | 29 |
+| P_p80_h15 | `max085_min006_cpg5_bl8s4_peel2` | 0.0376 | 2.73 | 29 |
+| P_p80_h15 | `max085_min006_cpg5_bl12s4_peel2` | 0.0390 | 1.35 | 43 |
+| P_p80_h15 | `max085_min006_cpg5_bl16s4_peel2` | 0.0396 | 0.66 | 88 |
+| P_p100_h30 | `max085_min006_cpg5_bl4_peel2` | 0.0327 | (not stated) | (not stated) |
+| P_p100_h30 | `max085_min006_cpg5_bl8s4_peel2` | 0.0356 | (not stated) | (not stated) |
+| P_p100_h30 | `max085_min006_cpg5_bl12s4_peel2` | 0.0370 | (not stated) | (not stated) |
+| P_p100_h30 | `max085_min006_cpg5_bl16s4_peel2` | 0.0373 | (not stated) | (not stated) |
+
+The `P_p80_h15` `bl4` \(y_1\) 5.58 µm is the same figure as the
+2026-10-04 screening median for that production mesh. Inventory AR for
+that mesh is 29.04.
+
+**Extrapolation reported in the paste, not a solved QoI.** ~0.0400 on
+`P_p80_h15` and ~0.0374 on `P_p100_h30`. The paste does not give the fit.
+
+**Reading of bl4 and bl12s4 against those extrapolations.** Relative to
+~0.0400, `P_p80_h15` bl4 (0.0351) is 12.3% low and bl12s4 (0.0390) is
+2.5% low. Relative to ~0.0374, `P_p100_h30` bl4 (0.0327) is 12.6% low
+and bl12s4 (0.0370) is 1.1% low. The paste's "~12% low on both" and
+"bl12s4 within 1–2.5%" are that comparison. They are not a second
+measurement. The continuum values stay extrapolations.
+
+**Reported, without the per-mesh dP values.** dP across this series is
+within 0.3%. The paste does not name the column.
+
+**Separate knob, `P_p80_h15`.** `m_max` 0.060 with membrane BL 8 and
+spacer BL 4 (`max060_min006_cpg5_bl8s4_peel2`): CP −0.3%, cells ×3.
+The paste does not name the reference mesh for those two relatives.
+
+### Split BL on P_p60_h30
+
+Same run id. Order bl4 / uniform bl8 / bl8s4. The paste does not name
+the dP column or its unit.
+
+| mesh_id | CP-excess | dP |
+|---|---:|---:|
+| `max085_min006_cpg5_bl4_peel2` | 0.0486 | 52157 |
+| `max085_min006_cpg5_bl8_peel2` | 0.0480 | 52536 |
+| `max085_min006_cpg5_bl8s4_peel2` | 0.0495 | 51872 |
+
+**Arithmetic on those three rows.** CP-excess: bl8s4 is +1.9% vs bl4
+and +3.1% vs bl8. dP: bl8s4 is −0.55% vs bl4 and −1.3% vs bl8. The
+paste's "within ~3%" is that CP gap.
+
+**Session reading.** On this pillar, split BL agrees with the uniform
+counts within about 3% on CP-excess. The 2026-10-04 `P_p80_h15` split
+(CP matched bl8, \(\Delta P\) matched bl4) is the other pillar check in
+this file. **Not settled:** that every pillar geometry does this. The
+contact-geometry conclusion above is unchanged. On D0817_a30, split CP
+excess was −20% versus bl8.
+
+### ML M_c267 screening
+
+Same run id. Family directory `ml`. Changes are as printed. The paste
+does not name the reference leaf.
+
+| knob | mesh_id | reported change | outcome |
+|---|---|---|---|
+| `m_max` 0.060 | `max060_min006_cpg5_bl4_peel2` | CP −0.7%, dP +0.8%, cells ×2.9 | solved |
+| BL 8 | `max085_min006_cpg5_bl8_peel2` | CP +9.4%, dP +1.3% | solved |
+| `m_min` 0.004 | `max085_min004_cpg5_bl4_peel2` | — | failed the surface skewness gate (max 1.0 > 0.85) |
+| `m_cpg` 7 | `max085_min006_cpg7_bl4_peel2` | — | failed in Set Up Periodic Boundaries |
+| BL 12 | `max085_min006_cpg5_bl12_peel2` | — | failed; cause not confirmed |
+
+**Reading of the two solved rows against the 2026-10-04 screening.**
+On M_c267, BL 8 moves CP by +9.4% and `m_max` 0.060 moves it by −0.7%.
+On P_p80_h15, BL 8 was +6.4% and `m_max` was +1.2%. On D0817_a30,
+`m_max` 0.060 was +22%, `m_cpg` 7 was +18%, and BL 8 was +4.4%. On
+these three geometries at `u0p2_p6M`, the ML CP move is the
+membrane-layer count, as on Pillar, and the Diamond CP move is
+`m_max` / `m_cpg`. That reading is those three tables.
+
+The BL 12 failure has no cause in the paste. Do not assign it the
+D2450_a45 AR 251.9 failure.
+
+### Meeting decisions (2026-10-08) recorded here
+
+Decisions, not new cell counts. The coarseness figures are the
+meeting's comparison.
+
+- The campaign mesh is too coarse: about 0.1–0.17 M cells per unit
+  cell, against about 1.6 M in the supervisor's earlier single-cell
+  work. Decision: refine cell size (`m_max`), not only BL count, and
+  run family-wise mesh tests. The `P_p80_h15` `m_max` 0.060 row above
+  stays a measurement. It is not this decision.
+- \(u = 0.3\) non-convergence is probably a mesh issue, not strong
+  unsteadiness. **Hypothesis (supervisor, unverified).** Re-test on
+  finer meshes, queued as q5. No q5 result is in this paste. This
+  replaces the working treatment, under Convergence, that those laminar
+  failures have no steady solution because the flow is unsteady. That
+  paragraph stays.
+
+CP, LMH, and the paper scope from the same meeting are in
+`docs/metrics_conventions.md`, `docs/RO_2D_OPTIMIZATION.md`, and
+`docs/AGENTS.md`.
+
 ---
 
 ## Convergence
@@ -373,7 +511,11 @@ RANS attempt:** laminar is appropriate as the production viscous model.
 The 2026-10-04 controls below decide the realizable k-ε `u0p3` field.
 **Hypothesis:** the \(u = 0.3\) laminar failures have no steady
 solution because the flow has become unsteady. They are treated that way.
-The gate metrics of the original rejects stay in
+**Working assumption replaced (2026-10-08 meeting).** The meeting's
+hypothesis is that those failures are a coarse-mesh issue, not strong
+unsteadiness, and it queues a finer-mesh re-test (q5). No q5 result is
+in the paste. This paragraph stays. The decision is in the 2026-10-07..08
+mesh-study section. The gate metrics of the original rejects stay in
 `docs/STATUS_2026-09-22.md`; this check does not replace that table.
 
 Failed at `u0p3`: `D0817_a30`, `D1225_a30`, `D2450_a30`, `P_p100_h15`,
@@ -421,9 +563,43 @@ inferred from these controls and the earlier `u0p3` ratios.
 `u0p2` than on `P_p100_h00` at `u0p1` is a velocity effect. Those leaves
 are different geometries, so the paste does not separate velocity from
 geometry.
+**Superseded as a velocity-only reading (2026-10-08).** The follow-up
+below holds geometry fixed and velocity fixed in turn. This paragraph
+stays. The damping hypothesis under it is not settled by that follow-up.
 **Hypothesis (unverified):** realizable k-ε eddy viscosity damps
 spacer-induced secondary flows near the membrane and weakens convective
 mixing.
+
+#### Follow-up on the same pillar geometries (2026-10-08)
+
+Recorded 2026-10-08 from the workstation paste. Same data root
+`C:/ro_data_mfbo/turb`, same production mesh
+`max085_min006_cpg5_bl4_peel2`, same `_rke` run-id suffix. Workstation
+commits are the q2 / q4 list in the 2026-10-07..08 mesh-study section.
+The paste does not assign this leaf to a queue.
+
+The paste restates two rows already in the table above:
+`P_p100_h30` `u0p2_p6M_rke` (\(\mu_t/\mu\) 1.09, CP-excess +28.8%) and
+`P_p100_h00` `u0p1_p6M_rke` (\(\mu_t/\mu\) 0.07, CP-excess +10%; the
+table's 0.069 and +10.4%). Those rows stay as printed there.
+
+New leaf, laminar reference under `C:/ro_data`:
+
+- `C:/ro_data/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/u0p1_p6M/`
+- `C:/ro_data_mfbo/turb/runs/pillar/P_p100_h30/max085_min006_cpg5_bl4_peel2/u0p1_p6M_rke/`
+
+Measured on that RKE leaf versus its laminar reference: \(\mu_t/\mu\)
+average 0.0063 (maximum 0.18), CP-excess +0.4%. The paste does not give
+LMH, \(\Delta P\), \(D_{\mathrm{eff}}/D\), or `convergence_quality` for
+this leaf.
+
+**Settled by this leaf together with the two restated rows.** On
+`P_p100_h30` alone, \(u = 0.1\) (0.0063, +0.4%) and \(u = 0.2\) (1.09,
++28.8%) both change \(\mu_t/\mu\) and the CP-excess departure. At
+\(u = 0.1\) alone, `P_p100_h30` (0.0063, +0.4%) and `P_p100_h00` (0.069,
++10.4%) both change them. On these three leaves the CP-excess departure
+is larger where \(\mu_t/\mu\) is larger. The laminar production-model
+conclusion above is unchanged. The damping hypothesis stays unverified.
 
 ### \(u = 0.1\) saturation patch
 

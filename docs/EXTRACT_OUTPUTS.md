@@ -331,7 +331,7 @@ reduction이 예외를 내면 `resolve_channel_midplane_z_m`은 올리지 않고
 
 | 열 | 단위 | 범위 | 캠페인 결론 | 비고 |
 |---|---|---|---|---|
-| **`cp_canon_window_avg`** | — | window | **yes** | 캠페인 비교 정의. |
+| **`cp_canon_window_avg`** | — | window | **yes** | 캠페인 비교 정의. 2026-10-08 회의 이후 비교 정의는 농도통계. 이 열의 정의는 유지. |
 | `cp_canon_window_max` | — | window | **no** | metrics: 단일 저-Jw face. iteration에 민감. |
 | `cp_L1_window_avg` / `_max` | — | window | no | Gu 2017. 정의 민감도 표만. |
 | `cp_L2_window_avg` / `_max` | — | window | no | UDM-9 그대로 (inlet `c_0`). |
@@ -354,8 +354,8 @@ reduction이 예외를 내면 `resolve_channel_midplane_z_m`은 올리지 않고
 | `c_inlet_ref_mol_m3` | mol/m3 | — | 상수 | 597.8268309. |
 | `compute_cp_spread` | — | — | 설정 | |
 | `cm_min_*` / `jw_min_*` / `cm_q_*` / `jw_q_*` / `cp_facet_min_rejected_cell_{N}` | 혼재 | cell | diagnostic | |
-| `cpc_window_avg_area` / `_flux` | — | window | **no** | 농도통계. canonical 대체 아님. §6. |
-| `cp_q999_window_area` / `_flux` | — | window | **no** | \(Q_{0.999}(c_m)\). canonical max 대체 아님. |
+| `cpc_window_avg_area` / `_flux` | — | window | **no** | 농도통계. canonical 대체 아님. §6. 2026-10-08 회의가 비교 평균으로 채택. 이 **no**는 그 전 규칙. area/flux는 회의가 정하지 않음. |
+| `cp_q999_window_area` / `_flux` | — | window | **no** | \(Q_{0.999}(c_m)\). canonical max 대체 아님. 2026-10-08 회의가 비교 정의로 채택. 이 **no**는 그 전 규칙. |
 | `cp_q99_window_area` / `_flux` | — | window | **no** | \(Q_{0.99}(c_m)\). |
 | `cm_area_mean_window` / `cm_q999_window` / `cm_q99_window` | mol/m3 | window | diagnostic | §6 입력. |
 | `cp_ref_area` / `cp_ref_flux` | mol/m3 | window | diagnostic | 면적 평균 / \(J_w>0\) 유량 가중 \(c_p\). |
@@ -445,6 +445,12 @@ Spacer 사이 비교는 `cp_canon_window_avg`와 `pressure_drop_spacer`(또는
 `c_b`가 `surface-massavg`인 것은 코드로 확인되고, 그 가중이 z-법선
 질량유량인지 아닌지는 이 코드가 증명하지 않는다.
 `cpc_window_avg_*`와 `cp_q*_window_*`로 ranking하지 않는다.
+
+**2026-10-08 회의가 비교 규칙을 바꾼다.** 스페이서 비교의 CP는 농도통계
+평균과 CP_q999다. area와 flux 중 어느 참조인지는 회의가 정하지 않았다.
+CP_q99는 채택되지 않았다. 바로 위 문장의 `cp_canon_window_avg` 규칙과
+`cpc_*` ranking 금지는 그 전 규칙으로 남긴다. 열 정의는 §6, 근거 숫자는
+`docs/metrics_conventions.md`.
 
 ---
 
