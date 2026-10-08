@@ -680,3 +680,134 @@ same flux is taken per module area. The CP rank tables in
 LMH. The MFBO objective uses module (installed) area. The exposed-area
 column `lmh_mass_balance` stays what this section measured. The adapter
 field is `lmh_module_area` in `docs/RO_2D_OPTIMIZATION.md`.
+
+## Dimensionless groups for literature comparison
+
+Derived only in `scripts/mfbo/summarize_results.py`. Extraction is
+unchanged. A column is `MISSING` when an input below is absent or not
+usable. Schmidt number does not depend on the leaf.
+
+Fluid properties are the campaign constants, not values read back from
+the case: \(\rho = 998.2\,\mathrm{kg\,m^{-3}}\),
+\(\mu = 8.93\times 10^{-4}\,\mathrm{Pa\,s}\),
+\(D = 2.0\times 10^{-9}\,\mathrm{m^2\,s^{-1}}\)
+(`configs/run_config.py` mixture density, viscosity, and
+`mass_diffusivity`; the same density and viscosity are in
+`configs/post_config.py`).
+
+Velocity is the run-manifest superficial speed `u_target_ms` [m/s].
+`u_mean_ms` is not used (see the mislabeled `u_mean_ms` section above).
+
+### Hydraulic diameter
+
+Schock and Miquel, Desalination 64 (1987) 339–352, for a spacer-filled
+flat channel:
+
+\[
+d_h = \frac{4\varepsilon}{2/h + (1-\varepsilon)\,S_{v,\mathrm{sp}}}
+\]
+
+\(\varepsilon\) is porosity, \(h\) is channel height [m], and
+\(S_{v,\mathrm{sp}}\) is spacer wetted area per unit solid volume
+[\(\mathrm{m^{-1}}\)]. An empty channel (\(\varepsilon = 1\)) gives
+\(d_h = 2h\), which is the wide-slit hydraulic diameter. The same
+diameter is the geometric definition
+
+\[
+d_h = \frac{4 V_{\mathrm{fluid}}}{A_{\mathrm{membrane}} + A_{\mathrm{spacer}}}
+\]
+
+when those three measurements are on the leaf. If both input sets are
+present, the summary uses \(4V/A\). **CONFIRM** that precedence.
+
+| Input | Leaf field | Unit |
+| --- | --- | --- |
+| \(\varepsilon\) | mesh manifest `porosity_eps` | — |
+| \(h\) | mesh manifest `domain_extent_z_m` | m |
+| \(S_{v,\mathrm{sp}}\) | mesh manifest `specific_surface_per_solid_volume_1_per_m` | 1/m |
+| \(V_{\mathrm{fluid}}\) | mesh manifest `total_fluid_volume_m3` | m³ |
+| \(A_{\mathrm{membrane}}\) | wide CSV `area_mem` | m² |
+| \(A_{\mathrm{spacer}}\) | mesh manifest or wide CSV `spacer_wetted_area_m2` | m² |
+
+`specific_surface_per_solid_volume_1_per_m`, `spacer_wetted_area_m2`,
+and `total_fluid_volume_m3` are not written by the current extract or
+by the mesh-manifest builder. Spacer leaves therefore stay `MISSING`
+for \(d_h\) until one of those sets is stored. `porosity_eps` alone is
+not enough. Specific surface may be omitted only when `porosity_eps`
+is exactly 1.
+
+**CONFIRM** the porosity that enters the Schock–Miquel formula.
+`porosity_eps` is fluid volume divided by the full-domain bounding box
+(`src/ro/mesh_common.py`), so the empty inlet and outlet buffers pull
+it toward 1. Papers that quote a spacer-region porosity are not using
+this number. **CONFIRM** the height: the column uses the measured
+z-span `domain_extent_z_m`, not the design channel height 0.00077 m.
+
+### Reynolds and Schmidt numbers
+
+\[
+\mathrm{Re}_h = \frac{\rho\, u\, d_h}{\mu}, \qquad
+\mathrm{Sc} = \frac{\mu}{\rho D}
+\]
+
+\(u\) is superficial. Da Costa, Fane, and Wiley, Journal of Membrane
+Science 87 (1994) 79–98, use the same \(d_h\) and the interstitial
+speed \(u/\varepsilon\). This table does not. **CONFIRM** before
+overlaying a Da Costa \(\mathrm{Re}\) series. \(\mathrm{Re}_h\) and
+both friction factors use the same \(u\) and the same \(d_h\).
+
+### Sherwood number
+
+Film theory with permeation (Brian, Industrial & Engineering Chemistry
+Fundamentals 4 (1965) 439–445):
+
+\[
+\frac{c_m - c_p}{c_b - c_p} = \exp(J_w / k)
+\quad\Rightarrow\quad
+k = \frac{J_w}{\ln(\mathrm{CP})}, \qquad
+\mathrm{Sh} = \frac{k\, d_h}{D}
+\]
+
+The summary inserts `cpc_window_avg_flux` as that modulus and converts
+exposed-area `lmh_mass_balance` by \(J_w = \mathrm{LMH} / 3.6\times 10^{6}\)
+[m/s]. \(\mathrm{Sh}\) is `MISSING` when the modulus is not greater
+than 1 or the LMH is negative. The concentration-statistics modulus is
+one number for the whole window; it is not \(\exp(J_w/k)\) evaluated
+face by face. Fimbres-Weihs and Wiley, Chemical Engineering and
+Processing 49 (2010) 759–781, review the \(\mathrm{Sh}\)–\(\mathrm{Re}\)
+comparisons this is meant to join.
+
+**CONFIRM** the LMH basis. Module-area LMH is a different flux and
+would change \(k\). The exposed-area flux is the one paired with the
+membrane CP.
+
+### Friction factors
+
+From the spacer pressure gradient `pressure_drop_spacer_per_m`
+[\(\mathrm{Pa\,m^{-1}}\)] (`docs/PAPER_METHODS_DOSSIER.md`):
+
+\[
+f_{\mathrm{Fanning}}
+  = \frac{(\Delta P/L)\, d_h}{2\rho u^{2}}, \qquad
+f_{\mathrm{Darcy}} = 4\, f_{\mathrm{Fanning}}
+\]
+
+Columns: `fanning_friction_factor`, `darcy_friction_factor`. For plane
+Poiseuille in a wide channel, \(d_h = 2h\) and
+\(\Delta P/L = 12\mu u/h^{2}\) give \(f_{\mathrm{Fanning}} = 24/\mathrm{Re}_h\)
+and \(f_{\mathrm{Darcy}} = 96/\mathrm{Re}_h\). **CONFIRM** which factor
+the comparison series uses; the two differ by 4, and published spacer
+friction factors are not all on the same definition.
+
+### Specific power dissipation
+
+\[
+\phi = \frac{u\,(\Delta P/L)}{\rho}
+\quad [\mathrm{W\,kg^{-1}}]
+\]
+
+Column: `specific_power_dissipation_w_per_kg`. This is pumping power
+per unit mass using the superficial velocity and does not need \(d_h\).
+The dimensionless group \((\Delta P/L)\, d_h/(\rho u^{2})\) is
+\(2 f_{\mathrm{Fanning}}\) and is not given a second column.
+**CONFIRM** if the figure needs a different power number.
