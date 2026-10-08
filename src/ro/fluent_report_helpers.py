@@ -1629,6 +1629,151 @@ def compute_surface_report_value(solution, report_name):
     return value
 
 
+ACTIVE_WINDOW_MEMBRANE_CLIP = "pp_active_window_membrane"
+ACTIVE_WINDOW_SPACER_CLIP = "pp_active_window_spacer"
+ACTIVE_WINDOW_MEMBRANE_AREA_REPORT = "pp_active_window_membrane_area_m2"
+ACTIVE_WINDOW_SPACER_AREA_REPORT = "pp_active_window_spacer_area_m2"
+
+
+def _active_window_surface_area_m2(
+    solver,
+    solution,
+    clip_name,
+    report_name,
+    surface_names,
+    x_min_m,
+    x_max_m,
+):
+    """One x-range iso-clip and one surface-area report."""
+    create_x_range_iso_clip(
+        solver,
+        clip_name,
+        list(surface_names),
+        x_min_m,
+        x_max_m,
+    )
+    try:
+        create_or_update_surface_field_report(
+            solution,
+            report_name,
+            "surface-area",
+            None,
+            [clip_name],
+        )
+        area = float(compute_surface_report_value(solution, report_name))
+    finally:
+        delete_iso_clip(solver, clip_name)
+    if not math.isfinite(area) or area < 0.0:
+        raise RuntimeError(
+            f"{report_name} returned area {area!r} m^2 "
+            f"on x=[{x_min_m!r}, {x_max_m!r}]."
+        )
+    return area
+
+
+def active_window_fluid_volume_m3(reduction, locations, x_min_m, x_max_m):
+    """One conditional volume integral over cell centroids in the active span.
+
+    ``reduction.sum_if(..., weight='Volume')`` is the Fluent 25.1 integral
+    that shares a scale with itself. ``reduction.volume()`` does not.
+    """
+    from ro.active_window_geometry import active_window_x_condition
+
+    if not locations:
+        raise ValueError("Active-window volume needs at least one fluid location.")
+    condition = active_window_x_condition(x_min_m, x_max_m)
+    value = reduction.sum_if(
+        expression="1",
+        condition=condition,
+        weight="Volume",
+        locations=list(locations),
+    )
+    volume = float(value)
+    if not math.isfinite(volume) or volume <= 0.0:
+        raise RuntimeError(
+            "Active-window fluid volume integral returned "
+            f"{value!r} for {condition!r}."
+        )
+    return volume
+
+
+def measure_active_window_geometry(
+    solver,
+    solution,
+    reduction,
+    fluid_locations,
+    membrane_zone_names,
+    spacer_zone_names,
+    x_min_m,
+    x_max_m,
+    active_length_m,
+    periodic_shift_y_m,
+    channel_height_m,
+):
+    """Active-window volume, areas, box, and porosity.
+
+    Cost: one surface-area integral for the membranes, one for the spacer
+    walls when any ``wall_spacer*`` zone exists, and one volume integral.
+    An empty channel records spacer area 0 without a spacer integral.
+    """
+    from ro.active_window_geometry import (
+        active_window_box_volume_m3,
+        active_window_porosity,
+    )
+
+    if not membrane_zone_names:
+        raise ValueError("Active-window membrane area needs membrane zones.")
+    membrane_area = _active_window_surface_area_m2(
+        solver,
+        solution,
+        ACTIVE_WINDOW_MEMBRANE_CLIP,
+        ACTIVE_WINDOW_MEMBRANE_AREA_REPORT,
+        membrane_zone_names,
+        x_min_m,
+        x_max_m,
+    )
+    if membrane_area <= 0.0:
+        raise RuntimeError(
+            "Active-window membrane area is not positive: "
+            f"{membrane_area!r} m^2."
+        )
+    surface_integrals = 1
+    if spacer_zone_names:
+        spacer_area = _active_window_surface_area_m2(
+            solver,
+            solution,
+            ACTIVE_WINDOW_SPACER_CLIP,
+            ACTIVE_WINDOW_SPACER_AREA_REPORT,
+            spacer_zone_names,
+            x_min_m,
+            x_max_m,
+        )
+        surface_integrals = 2
+    else:
+        spacer_area = 0.0
+    fluid_volume = active_window_fluid_volume_m3(
+        reduction,
+        fluid_locations,
+        x_min_m,
+        x_max_m,
+    )
+    box_volume = active_window_box_volume_m3(
+        active_length_m,
+        periodic_shift_y_m,
+        channel_height_m,
+    )
+    porosity = active_window_porosity(fluid_volume, box_volume)
+    return {
+        "active_window_fluid_volume_m3": fluid_volume,
+        "active_window_membrane_area_m2": membrane_area,
+        "active_window_spacer_area_m2": spacer_area,
+        "active_window_box_volume_m3": box_volume,
+        "active_window_porosity": porosity,
+        "fluent_surface_integrals": surface_integrals,
+        "fluent_volume_integrals": 1,
+    }
+
+
 def evaluation_window_midplane_bulk_concentrations(
     solver,
     solution,

@@ -14,9 +14,10 @@ from the mesh manifest. ``area_mem`` and ``lmh_mass_balance`` come from
 
 Dimensionless columns (definitions in ``docs/metrics_conventions.md``)
 are derived here from those same inputs plus the run manifest
-``u_target_ms``. Hydraulic diameter uses wetted area and fluid volume
-when both are on the leaf, otherwise porosity, measured channel height,
-and specific surface. A missing input leaves that column ``MISSING``.
+``u_target_ms``. Hydraulic diameter is ``4 V / (A_mem + A_spacer)``
+from the active-window columns on the wide CSV. The Schock–Miquel
+diameter is a cross-check column only. A missing input leaves that
+column ``MISSING``.
 
 Importing this module does not launch Fluent and does not read a data root.
 """
@@ -31,6 +32,15 @@ import sys
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
+
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from ro.active_window_geometry import (  # noqa: E402
+    geometric_hydraulic_diameter_m,
+    schock_miquel_hydraulic_diameter_m,
+)
 
 MISSING = "MISSING"
 NOT_RECORDED = "not recorded"
@@ -65,6 +75,7 @@ COLUMNS = (
     "cp_q99_window_flux",
     "cp_q999_window_flux",
     "hydraulic_diameter_m",
+    "hydraulic_diameter_schock_miquel_m",
     "re_h",
     "sc",
     "sh_cpc_flux",
@@ -156,60 +167,28 @@ def _nonnegative(value):
     return number
 
 
-def _porosity(value):
-    number = _finite_number(value)
-    if number is None or number <= 0.0 or number > 1.0:
-        return None
-    return number
+def hydraulic_diameter_m(fluid_volume_m3, membrane_area_m2, spacer_area_m2):
+    """d_h = 4 V / (A_membrane + A_spacer) from the active window [m]."""
+    return geometric_hydraulic_diameter_m(
+        fluid_volume_m3,
+        membrane_area_m2,
+        spacer_area_m2,
+    )
 
 
-def _wetted_inputs_ready(fluid_volume_m3, membrane_area_m2, spacer_wetted_area_m2):
-    volume = _positive(fluid_volume_m3)
-    membrane = _positive(membrane_area_m2)
-    spacer = _nonnegative(spacer_wetted_area_m2)
-    if volume is None or membrane is None or spacer is None:
-        return False
-    return membrane + spacer > 0.0
-
-
-def hydraulic_diameter_m(
+def hydraulic_diameter_schock_miquel_m(
     porosity,
     channel_height_m,
-    specific_surface_per_solid_volume_1_per_m,
-    fluid_volume_m3,
-    membrane_area_m2,
-    spacer_wetted_area_m2,
+    spacer_area_m2,
+    box_volume_m3,
 ):
-    """Spacer-channel hydraulic diameter [m], or None.
-
-    Wetted form, used when fluid volume and both areas are present:
-
-        d_h = 4 * V_fluid / (A_membrane + A_spacer)
-
-    Otherwise Schock and Miquel (1987), with specific surface omitted
-    only when porosity is exactly 1 (empty channel, d_h = 2 h):
-
-        d_h = 4 * ε / (2 / h + (1 - ε) * S_v,sp)
-    """
-    if _wetted_inputs_ready(fluid_volume_m3, membrane_area_m2, spacer_wetted_area_m2):
-        volume = _positive(fluid_volume_m3)
-        membrane = _positive(membrane_area_m2)
-        spacer = _nonnegative(spacer_wetted_area_m2)
-        return 4.0 * volume / (membrane + spacer)
-
-    height = _positive(channel_height_m)
-    eps = _porosity(porosity)
-    if height is None or eps is None:
-        return None
-    specific = 0.0 if eps == 1.0 else _nonnegative(
-        specific_surface_per_solid_volume_1_per_m
+    """Schock–Miquel cross-check [m]. Not the primary diameter."""
+    return schock_miquel_hydraulic_diameter_m(
+        porosity,
+        channel_height_m,
+        spacer_area_m2,
+        box_volume_m3,
     )
-    if specific is None:
-        return None
-    denominator = 2.0 / height + (1.0 - eps) * specific
-    if denominator <= 0.0:
-        return None
-    return 4.0 * eps / denominator
 
 
 def reynolds_h(velocity_m_s, hydraulic_diameter, *, rho=RHO_KG_M3, mu=MU_PA_S):
@@ -313,63 +292,62 @@ def _optional(mapping, key):
     return mapping[key]
 
 
-def _hydraulic_diameter_gap(
-    porosity,
-    channel_height_m,
-    specific_surface,
-    fluid_volume_m3,
-    membrane_area_m2,
-    spacer_wetted_area_m2,
-):
-    """Names of inputs still required after both diameter formulas fail."""
-    if _wetted_inputs_ready(fluid_volume_m3, membrane_area_m2, spacer_wetted_area_m2):
-        return []
+def _geometric_diameter_gap(fluid_volume_m3, membrane_area_m2, spacer_area_m2):
     missing = []
-    if _positive(channel_height_m) is None:
-        missing.append("domain_extent_z_m")
-    eps = _porosity(porosity)
-    if eps is None:
-        missing.append("porosity_eps")
-    elif eps < 1.0 and _nonnegative(specific_surface) is None:
-        missing.append("specific_surface_per_solid_volume_1_per_m")
-    area_gap = []
-    if _nonnegative(spacer_wetted_area_m2) is None:
-        area_gap.append("spacer_wetted_area_m2")
     if _positive(fluid_volume_m3) is None:
-        area_gap.append("total_fluid_volume_m3")
+        missing.append("active_window_fluid_volume_m3")
     if _positive(membrane_area_m2) is None:
-        area_gap.append("area_mem")
-    if area_gap and not (
-        eps == 1.0 and _positive(channel_height_m) is not None
-    ):
-        missing.append("or " + ", ".join(area_gap))
+        missing.append("active_window_membrane_area_m2")
+    if _nonnegative(spacer_area_m2) is None:
+        missing.append("active_window_spacer_area_m2")
     return missing
 
 
+def _schock_diameter_m(mesh_manifest, wide):
+    """Schock–Miquel diameter from the stored active-window columns.
+
+    Channel height is the layout box divided by active length times
+    periodic width, so it is the height the extract used for that box.
+    """
+    spacer = _optional(wide, "active_window_spacer_area_m2")
+    box = _optional(wide, "active_window_box_volume_m3")
+    porosity = _optional(wide, "active_window_porosity")
+    n_active = _optional(mesh_manifest, "n_active_cells")
+    pitch = _optional(mesh_manifest, "cell_length_x_m")
+    width = _optional(mesh_manifest, "periodic_shift_y_m")
+    try:
+        length = float(n_active) * float(pitch)
+        width_m = float(width)
+        box_m = float(box)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(length)
+        or not math.isfinite(width_m)
+        or not math.isfinite(box_m)
+        or length <= 0.0
+        or width_m <= 0.0
+        or box_m <= 0.0
+    ):
+        return None
+    height = box_m / (length * width_m)
+    return hydraulic_diameter_schock_miquel_m(porosity, height, spacer, box_m)
+
+
 def _dimensionless_fields(mesh_manifest, wide, run_manifest, notes):
-    porosity = _optional(mesh_manifest, "porosity_eps")
-    height = _optional(mesh_manifest, "domain_extent_z_m")
-    specific = _optional(mesh_manifest, "specific_surface_per_solid_volume_1_per_m")
-    volume = _optional(mesh_manifest, "total_fluid_volume_m3")
-    spacer_area = _optional(mesh_manifest, "spacer_wetted_area_m2")
-    if spacer_area is None:
-        spacer_area = _optional(wide, "spacer_wetted_area_m2")
-    membrane_area = _optional(wide, "area_mem")
+    volume = _optional(wide, "active_window_fluid_volume_m3")
+    membrane_area = _optional(wide, "active_window_membrane_area_m2")
+    spacer_area = _optional(wide, "active_window_spacer_area_m2")
     velocity = _optional(run_manifest, "u_target_ms")
     lmh = _optional(wide, "lmh_mass_balance")
     cp_modulus = _optional(wide, "cpc_window_avg_flux")
     gradient = _optional(wide, "pressure_drop_spacer_per_m")
 
-    diameter = hydraulic_diameter_m(
-        porosity,
-        height,
-        specific,
-        volume,
-        membrane_area,
-        spacer_area,
-    )
+    diameter = hydraulic_diameter_m(volume, membrane_area, spacer_area)
+    schock = _schock_diameter_m(mesh_manifest, wide)
     fields = {
         "hydraulic_diameter_m": _format_metric(diameter),
+        "hydraulic_diameter_schock_miquel_m": _format_metric(schock),
         "re_h": _format_metric(reynolds_h(velocity, diameter)),
         "sc": _format_metric(schmidt_number()),
         "sh_cpc_flux": _format_metric(sherwood_number(lmh, cp_modulus, diameter)),
@@ -384,9 +362,7 @@ def _dimensionless_fields(mesh_manifest, wide, run_manifest, notes):
         ),
     }
     if diameter is None:
-        gap = _hydraulic_diameter_gap(
-            porosity, height, specific, volume, membrane_area, spacer_area
-        )
+        gap = _geometric_diameter_gap(volume, membrane_area, spacer_area)
         detail = ", ".join(gap) if gap else "unusable inputs"
         notes.append(
             "hydraulic_diameter_m missing inputs: "
@@ -394,6 +370,12 @@ def _dimensionless_fields(mesh_manifest, wide, run_manifest, notes):
             "darcy_friction_factor need hydraulic_diameter_m"
         )
     else:
+        if schock is None:
+            notes.append(
+                "hydraulic_diameter_schock_miquel_m missing "
+                "active_window_porosity, active_window_box_volume_m3, "
+                "or the layout pitch"
+            )
         if fields["re_h"] == MISSING:
             notes.append("re_h missing u_target_ms or it is not positive")
         if fields["fanning_friction_factor"] == MISSING:
