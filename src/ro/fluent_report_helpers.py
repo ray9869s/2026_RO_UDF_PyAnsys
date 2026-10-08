@@ -1633,6 +1633,11 @@ ACTIVE_WINDOW_MEMBRANE_CLIP = "pp_active_window_membrane"
 ACTIVE_WINDOW_SPACER_CLIP = "pp_active_window_spacer"
 ACTIVE_WINDOW_MEMBRANE_AREA_REPORT = "pp_active_window_membrane_area_m2"
 ACTIVE_WINDOW_SPACER_AREA_REPORT = "pp_active_window_spacer_area_m2"
+ACTIVE_WINDOW_VOLUME_REPORT = "pp_active_window_fluid_volume_m3"
+ACTIVE_WINDOW_CELL_REGISTER = "pp_active_window_cells"
+# Campaign cross-section is a few millimetres. This y/z envelope selects
+# every fluid cell in the cross-section so the register clips x only.
+_ACTIVE_WINDOW_YZ_ENVELOPE_M = 1.0
 
 
 def _active_window_surface_area_m2(
@@ -1671,37 +1676,74 @@ def _active_window_surface_area_m2(
     return area
 
 
-def active_window_fluid_volume_m3(reduction, locations, x_min_m, x_max_m):
-    """One conditional volume integral over cell centroids in the active span.
+def active_window_fluid_volume_m3(solution, x_min_m, x_max_m):
+    """One volume report on a hexahedron cell register of the active x-span.
 
-    ``reduction.sum_if(..., weight='Volume')`` is the Fluent 25.1 integral
-    that shares a scale with itself. ``reduction.volume()`` does not.
+    ``reduction.sum_if`` is not used. On PyFluent 0.38.0 it ignores
+    ``weight="Area"`` and returns a face count
+    (``docs/RESTRUCTURE_PLAN.md``). ``weight="Volume"`` is not shown to
+    return cubic metres. The number comes from a volume report definition
+    (``report_type="volume"``), the same ``report_definitions.compute``
+    path as the production ``volume-integral`` reports.
     """
-    from ro.active_window_geometry import active_window_x_condition
-
-    if not locations:
-        raise ValueError("Active-window volume needs at least one fluid location.")
-    condition = active_window_x_condition(x_min_m, x_max_m)
-    value = reduction.sum_if(
-        expression="1",
-        condition=condition,
-        weight="Volume",
-        locations=list(locations),
-    )
-    volume = float(value)
-    if not math.isfinite(volume) or volume <= 0.0:
-        raise RuntimeError(
-            "Active-window fluid volume integral returned "
-            f"{value!r} for {condition!r}."
+    x_min = float(x_min_m)
+    x_max = float(x_max_m)
+    if not math.isfinite(x_min) or not math.isfinite(x_max) or x_max <= x_min:
+        raise ValueError(
+            "Active-window x range must be finite and increasing, "
+            f"got [{x_min_m!r}, {x_max_m!r}]."
         )
+    envelope = _ACTIVE_WINDOW_YZ_ENVELOPE_M
+    registers = solution.cell_registers
+    existing = list_named_object_names(registers, "solution.cell_registers")
+    if ACTIVE_WINDOW_CELL_REGISTER in existing:
+        registers.delete(ACTIVE_WINDOW_CELL_REGISTER)
+    register = registers.create(ACTIVE_WINDOW_CELL_REGISTER)
+    register.set_state(
+        {
+            "type": {
+                "option": "hexahedron",
+                "hexahedron": {
+                    "min_point": [x_min, -envelope, -envelope],
+                    "max_point": [x_max, envelope, envelope],
+                    "inside": True,
+                },
+            }
+        }
+    )
+    try:
+        group = solution.report_definitions.volume
+        names = list_named_object_names(
+            group,
+            "solution.report_definitions.volume",
+        )
+        if ACTIVE_WINDOW_VOLUME_REPORT in names:
+            report = group[ACTIVE_WINDOW_VOLUME_REPORT]
+        else:
+            report = group.create(ACTIVE_WINDOW_VOLUME_REPORT)
+        # One zone is a string. A list raises on Fluent 2025 R1.
+        report.set_state(
+            {
+                "report_type": "volume",
+                "cell_zones": ACTIVE_WINDOW_CELL_REGISTER,
+            }
+        )
+        volume = float(
+            compute_surface_report_value(solution, ACTIVE_WINDOW_VOLUME_REPORT)
+        )
+    finally:
+        delete_names = list_named_object_names(
+            registers,
+            "solution.cell_registers",
+        )
+        if ACTIVE_WINDOW_CELL_REGISTER in delete_names:
+            registers.delete(ACTIVE_WINDOW_CELL_REGISTER)
     return volume
 
 
 def measure_active_window_geometry(
     solver,
     solution,
-    reduction,
-    fluid_locations,
     membrane_zone_names,
     spacer_zone_names,
     x_min_m,
@@ -1709,16 +1751,17 @@ def measure_active_window_geometry(
     active_length_m,
     periodic_shift_y_m,
     channel_height_m,
+    family,
 ):
     """Active-window volume, areas, box, and porosity.
 
     Cost: one surface-area integral for the membranes, one for the spacer
-    walls when any ``wall_spacer*`` zone exists, and one volume integral.
+    walls when any ``wall_spacer*`` zone exists, and one volume report.
     An empty channel records spacer area 0 without a spacer integral.
     """
     from ro.active_window_geometry import (
         active_window_box_volume_m3,
-        active_window_porosity,
+        require_active_window_geometry,
     )
 
     if not membrane_zone_names:
@@ -1732,11 +1775,6 @@ def measure_active_window_geometry(
         x_min_m,
         x_max_m,
     )
-    if membrane_area <= 0.0:
-        raise RuntimeError(
-            "Active-window membrane area is not positive: "
-            f"{membrane_area!r} m^2."
-        )
     surface_integrals = 1
     if spacer_zone_names:
         spacer_area = _active_window_surface_area_m2(
@@ -1751,18 +1789,21 @@ def measure_active_window_geometry(
         surface_integrals = 2
     else:
         spacer_area = 0.0
-    fluid_volume = active_window_fluid_volume_m3(
-        reduction,
-        fluid_locations,
-        x_min_m,
-        x_max_m,
-    )
+    fluid_volume = active_window_fluid_volume_m3(solution, x_min_m, x_max_m)
     box_volume = active_window_box_volume_m3(
         active_length_m,
         periodic_shift_y_m,
         channel_height_m,
     )
-    porosity = active_window_porosity(fluid_volume, box_volume)
+    porosity = require_active_window_geometry(
+        fluid_volume_m3=fluid_volume,
+        membrane_area_m2=membrane_area,
+        spacer_area_m2=spacer_area,
+        box_volume_m3=box_volume,
+        active_length_m=active_length_m,
+        periodic_shift_y_m=periodic_shift_y_m,
+        family=family,
+    )
     return {
         "active_window_fluid_volume_m3": fluid_volume,
         "active_window_membrane_area_m2": membrane_area,

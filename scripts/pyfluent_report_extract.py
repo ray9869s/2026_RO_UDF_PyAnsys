@@ -154,13 +154,13 @@ REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
         "Cell 8: compute_one_report loop for all Cell-7 definitions "
         "(includes volume-integral computes)."
     ),
-    "active_window_geometry": (
+        "active_window_geometry": (
         "Active window, both profiles: one surface-area integral of the "
         "membrane walls clipped to the active x-span, one surface-area "
         "integral of wall_spacer_* in that span (area 0 and no integral "
-        "when there are no spacer walls), and one volume integral "
-        "(reduction.sum_if of 1 with weight Volume). Porosity is Python: "
-        "fluid volume divided by the layout box."
+        "when there are no spacer walls), and one volume report "
+        "(report_type volume on a hexahedron cell register of that "
+        "x-span). Porosity is Python: fluid volume divided by the layout box."
     ),
     "cell_8_25_salt_reduction": (
         "Cell 8.25: salt mass-fraction range diagnostics "
@@ -1653,8 +1653,6 @@ if __name__ == "__main__":
         active_window = measure_active_window_geometry(
             solver,
             solution,
-            solver.fields.reduction,
-            fluid_zone_reduction_locations(setup, fluid_zones),
             active_membrane_zones,
             spacer_wall_zones,
             spacer_x_in_m,
@@ -1662,6 +1660,7 @@ if __name__ == "__main__":
             layout.active_length_m,
             run_manifest["periodic_shift_y_m"],
             CAMPAIGN_H_M,
+            run_manifest["family"],
         )
         print(
             "Active-window geometry: "
@@ -1672,7 +1671,7 @@ if __name__ == "__main__":
             f"porosity={active_window['active_window_porosity']:.6g}; "
             f"cost={active_window['fluent_surface_integrals']} surface-area "
             f"integral(s) and {active_window['fluent_volume_integrals']} "
-            "volume integral"
+            "volume report"
         )
         _end_extract_phase()
         _begin_extract_phase("cell_8_25_salt_reduction")
