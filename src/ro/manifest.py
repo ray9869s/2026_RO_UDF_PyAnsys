@@ -38,6 +38,12 @@ Optional, written by the worker after the fact. Absent on older leaves:
                               reached_final_write}; the total above is their sum
   extraction_wall_time_s:     seconds for report extraction
   processor_count:            int >= 1, the count passed to the solver launch
+                              (run) or to the meshing launch (mesh)
+
+Optional mesh timing, absent on older mesh leaves. A phase that did not run
+is omitted; ``mesh_wall_time_s`` is the sum of the phases that are present:
+  mesh_wall_time_s:           seconds
+  mesh_phase_wall_time_s:     {phase: seconds} for phases in MESH_PHASE_NAMES
 """
 
 from __future__ import annotations
@@ -85,6 +91,18 @@ _GEOMETRY_FIELDS = (
     "joint_sphere_count",
     "curvature_margin",
     "spacer_wall_zones",
+)
+
+MESH_PHASE_NAMES = (
+    "launch",
+    "geometry_import",
+    "local_sizing",
+    "surface_mesh",
+    "describe_geometry",
+    "periodic_setup",
+    "boundary_layers_volume_mesh",
+    "quality_checks",
+    "write",
 )
 
 MESH_MANIFEST_REQUIRED_FIELDS = (
@@ -461,6 +479,7 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
             f"geo_id {geo_id!r} (expected {expected_family!r})."
         )
     validate_mesh_geometry_fields(payload)
+    _optional_mesh_wall_times(payload)
 
 
 def _validate_run_payload(payload: Mapping[str, Any]) -> None:
@@ -527,6 +546,67 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
         _optional_nonnegative_number(payload, field, "Run")
     _optional_processor_count(payload)
     _optional_solver_wall_time_attempts(payload)
+
+
+def _optional_mesh_wall_times(payload: Mapping[str, Any]) -> None:
+    has_total = (
+        "mesh_wall_time_s" in payload and payload["mesh_wall_time_s"] is not None
+    )
+    has_phases = (
+        "mesh_phase_wall_time_s" in payload
+        and payload["mesh_phase_wall_time_s"] is not None
+    )
+    if has_phases and not has_total:
+        raise ManifestError(
+            "Mesh manifest mesh_phase_wall_time_s requires mesh_wall_time_s."
+        )
+    if has_total:
+        _optional_nonnegative_number(payload, "mesh_wall_time_s", "Mesh")
+    if not has_phases:
+        _optional_mesh_processor_count(payload)
+        return
+    phases = payload["mesh_phase_wall_time_s"]
+    if not isinstance(phases, Mapping) or isinstance(phases, (str, bytes)) or not phases:
+        raise ManifestError(
+            "Mesh manifest field 'mesh_phase_wall_time_s' must be a non-empty "
+            f"object, got {phases!r}."
+        )
+    unknown = [name for name in phases if name not in MESH_PHASE_NAMES]
+    if unknown:
+        raise ManifestError(
+            "Mesh manifest mesh_phase_wall_time_s has unknown phases: "
+            f"{unknown!r}."
+        )
+    total = 0.0
+    for name, seconds in phases.items():
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(float(seconds))
+            or float(seconds) < 0.0
+        ):
+            raise ManifestError(
+                "Mesh manifest mesh_phase_wall_time_s "
+                f"{name!r} must be finite and >= 0, got {seconds!r}."
+            )
+        total += float(seconds)
+    recorded = payload["mesh_wall_time_s"]
+    if (
+        isinstance(recorded, bool)
+        or not isinstance(recorded, (int, float))
+        or not math.isclose(float(recorded), total, rel_tol=0.0, abs_tol=1e-6)
+    ):
+        raise ManifestError(
+            "Mesh manifest mesh_wall_time_s must equal the sum of "
+            f"mesh_phase_wall_time_s, got {recorded!r} vs {total!r}."
+        )
+    _optional_mesh_processor_count(payload)
+
+
+def _optional_mesh_processor_count(payload: Mapping[str, Any]) -> None:
+    if "processor_count" not in payload or payload["processor_count"] is None:
+        return
+    _require_integer(payload, "processor_count", "Mesh", minimum=1)
 
 
 def _optional_nonnegative_number(

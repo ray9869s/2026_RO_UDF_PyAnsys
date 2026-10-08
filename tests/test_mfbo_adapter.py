@@ -352,6 +352,32 @@ def test_manifest_extraction_time_wins_over_timing_json(tmp_path):
     assert record["extraction_wall_time_source"] == "run_manifest"
 
 
+def test_mesh_wall_time_prefers_the_manifest_then_the_record(tmp_path):
+    _write_success_tree(tmp_path)
+    geo_id = "MFP_d0800_h0000_f0400"
+    mesh_dir = tmp_path / "meshes" / "pillar" / geo_id / LF_MESH_ID
+    manifest_path = mesh_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["mesh_wall_time_s"] = 8.0
+    _write_json(manifest_path, manifest)
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["mesh_wall_time_s"] == pytest.approx(8.0)
+
+    manifest.pop("mesh_wall_time_s")
+    _write_json(manifest_path, manifest)
+    record_path = mesh_dir / "mesh_run_record.json"
+    mesh_record = json.loads(record_path.read_text(encoding="utf-8"))
+    mesh_record["mesh_wall_time_s"] = 4.0
+    _write_json(record_path, mesh_record)
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["mesh_wall_time_s"] == pytest.approx(4.0)
+
+    mesh_record.pop("mesh_wall_time_s")
+    _write_json(record_path, mesh_record)
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["mesh_wall_time_s"] == pytest.approx(3.0)
+
+
 def test_processor_count_is_read_when_the_run_manifest_has_it(tmp_path):
     _write_success_tree(tmp_path)
     geo_id = "MFP_d0800_h0000_f0400"

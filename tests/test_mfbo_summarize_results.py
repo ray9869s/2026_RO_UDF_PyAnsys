@@ -44,6 +44,7 @@ def _mesh(**overrides):
         "n_active_cells": PILLAR_N,
         "cell_length_x_m": PILLAR_CELL_M,
         "periodic_shift_y_m": PILLAR_CELL_M,
+        "mesh_wall_time_s": 100.0,
     }
     payload.update(overrides)
     return payload
@@ -55,6 +56,9 @@ def _run(**overrides):
         "continuity_final": 1.0e-6,
         "convergence_quality": "PASS",
         "solver_settings": {"viscous_model": "laminar"},
+        "solver_wall_time_s": 10.0,
+        "extraction_wall_time_s": 2.0,
+        "processor_count": 50,
     }
     payload.update(overrides)
     return payload
@@ -210,6 +214,10 @@ def test_table_keeps_every_leaf_and_marks_gaps(tmp_path, capsys):
     assert complete["cp_q999_window_flux"] == "1.4"
     assert complete["viscosity_ratio_volavg"] == "1.5"
     assert complete["diff_ratio_volavg"] == "1.6"
+    assert complete["mesh_wall_time_s"] == "100"
+    assert complete["solver_wall_time_s"] == "10"
+    assert complete["extraction_wall_time_s"] == "2"
+    assert complete["processor_count"] == "50"
     assert complete["notes"] == ""
     assert complete["lmh_module_area"] != summarize_results.MISSING
 
@@ -252,6 +260,27 @@ def test_table_keeps_every_leaf_and_marks_gaps(tmp_path, capsys):
     assert printed.startswith("| family | geo_id |")
 
 
+def test_processor_count_falls_back_to_the_mesh_manifest(tmp_path):
+    run = _run()
+    del run["processor_count"]
+    _plant(
+        tmp_path,
+        "diamond",
+        "D2450_a45",
+        "max085_min006_cpg5_bl4_peel2",
+        "u0p2_p6M",
+        mesh=_mesh(processor_count=8),
+        run=run,
+        summary=_summary(),
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    assert rows[0]["processor_count"] == "8"
+    assert rows[0]["mesh_wall_time_s"] == "100"
+    assert "processor_count missing" not in rows[0]["notes"]
+
+
 def test_filters_accept_exact_ids_and_globs(tmp_path):
     _tree(tmp_path)
     out_dir = tmp_path / "filtered"
@@ -283,3 +312,7 @@ def test_leaf_without_manifests_is_still_a_row(tmp_path):
     assert "run manifest.json missing" in row["notes"]
     assert "mesh manifest.json missing" in row["notes"]
     assert "summary_metrics_wide.csv missing" in row["notes"]
+    assert row["mesh_wall_time_s"] == summarize_results.MISSING
+    assert row["solver_wall_time_s"] == summarize_results.MISSING
+    assert row["extraction_wall_time_s"] == summarize_results.MISSING
+    assert row["processor_count"] == summarize_results.MISSING

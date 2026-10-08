@@ -14,6 +14,7 @@ from pathlib import Path
 from ro.domain_layout import DomainLayout, require_layout_matches_measured_x_extent
 from ro.geometry_registry import require_mfp_geometry_sha256
 from ro.manifest import (
+    MESH_PHASE_NAMES,
     assert_mesh_file_overwrite_allowed,
     write_mesh_manifest,
 )
@@ -58,6 +59,7 @@ def write_worker_mesh_manifest(
     mesh_metrics,
     *,
     created_utc=None,
+    timing=None,
 ):
     payload = build_mesh_manifest_payload(
         cfg,
@@ -65,6 +67,8 @@ def write_worker_mesh_manifest(
         _sha256_file(mesh_file),
         created_utc=created_utc,
     )
+    if timing:
+        payload.update(timing)
     layout = DomainLayout(
         n_buffer_in=int(payload["n_buffer_in"]),
         n_active=int(payload["n_active_cells"]),
@@ -443,6 +447,80 @@ def configure_boundary_layers(
         membrane_and_buffer_labels,
         wall_spacer_labels,
     )
+
+
+class MeshPhaseClock:
+    """Wall time for each meshing phase that actually starts.
+
+    A phase that is not entered is omitted. If the body raises, that phase
+    is still stored. ``mesh_wall_time_s`` is the sum of the stored phases.
+    """
+
+    def __init__(self, monotonic=None):
+        self._monotonic = time.monotonic if monotonic is None else monotonic
+        self.phases = {}
+        self._active = None
+        self._started = None
+
+    def phase(self, name):
+        if name not in MESH_PHASE_NAMES:
+            raise ValueError(
+                f"Unknown mesh phase {name!r}. Expected one of {MESH_PHASE_NAMES}."
+            )
+        return _MeshPhase(self, name)
+
+    def timing_fields(self, processor_count):
+        """Manifest fields, or None when no phase has started."""
+        if self._active is not None:
+            self._finish()
+        if not self.phases:
+            return None
+        if isinstance(processor_count, bool) or not isinstance(processor_count, int):
+            raise TypeError(
+                f"processor_count must be an int, got {processor_count!r}."
+            )
+        if processor_count < 1:
+            raise ValueError(
+                f"processor_count must be >= 1, got {processor_count!r}."
+            )
+        phases = dict(self.phases)
+        return {
+            "mesh_wall_time_s": float(sum(phases.values())),
+            "mesh_phase_wall_time_s": phases,
+            "processor_count": processor_count,
+        }
+
+    def _begin(self, name):
+        if self._active is not None:
+            raise RuntimeError(f"Mesh phase {self._active!r} is still open.")
+        if name in self.phases:
+            raise RuntimeError(f"Mesh phase {name!r} was already recorded.")
+        self._active = name
+        self._started = self._monotonic()
+
+    def _finish(self):
+        if self._active is None:
+            return
+        elapsed = float(self._monotonic() - self._started)
+        if elapsed < 0.0:
+            raise RuntimeError(f"Mesh phase {self._active!r} clock went backwards.")
+        self.phases[self._active] = elapsed
+        self._active = None
+        self._started = None
+
+
+class _MeshPhase:
+    def __init__(self, clock, name):
+        self._clock = clock
+        self._name = name
+
+    def __enter__(self):
+        self._clock._begin(self._name)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._clock._finish()
+        return False
 
 
 # ==========================================================
@@ -1086,6 +1164,7 @@ if __name__ == "__main__":
     continuation_log_path = None
     original_working_directory = os.getcwd()
     run_started = time.monotonic()
+    phase_clock = MeshPhaseClock()
     run_status = "FAILED"
     run_error = ""
     mesh_metrics = {name: None for name in MESH_METRIC_NAMES}
@@ -1093,15 +1172,16 @@ if __name__ == "__main__":
     try:
         os.chdir(case_path)
 
-        meshing = pyfluent.launch_fluent(
-            product_version=product_version,
-            mode="meshing",
-            dimension=3,
-            precision="double",
-            processor_count=processor_count,
-            ui_mode="gui",
-            graphics_driver=graphics_driver,
-        )
+        with phase_clock.phase("launch"):
+            meshing = pyfluent.launch_fluent(
+                product_version=product_version,
+                mode="meshing",
+                dimension=3,
+                precision="double",
+                processor_count=processor_count,
+                ui_mode="gui",
+                graphics_driver=graphics_driver,
+            )
 
         workflow = meshing.workflow
 
@@ -1118,17 +1198,18 @@ if __name__ == "__main__":
         # ##### [6] Start Workflow and Load Geometry #####
         # ======================================================
 
-        workflow.InitializeWorkflow(WorkflowType=r"Watertight Geometry")
+        with phase_clock.phase("geometry_import"):
+            workflow.InitializeWorkflow(WorkflowType=r"Watertight Geometry")
 
-        workflow.TaskObject["Import Geometry"].Arguments.set_state({
-            r"FileName": as_fluent_path(geo_full_path),
-            r"ImportCadPreferences": {
-                r"MaxFacetLength": 0,
-            },
-            r"LengthUnit": r"mm",
-        })
+            workflow.TaskObject["Import Geometry"].Arguments.set_state({
+                r"FileName": as_fluent_path(geo_full_path),
+                r"ImportCadPreferences": {
+                    r"MaxFacetLength": 0,
+                },
+                r"LengthUnit": r"mm",
+            })
 
-        workflow.TaskObject["Import Geometry"].Execute()
+            workflow.TaskObject["Import Geometry"].Execute()
 
         print("Active membrane wall labels:", active_membrane_wall_labels)
         print("Buffer wall labels:", buffer_wall_labels)
@@ -1142,249 +1223,252 @@ if __name__ == "__main__":
             *wall_spacer_labels,
         ]
 
-        # Validate local sizing labels after geometry import.
-        validate_requested_labels(
-            workflow.TaskObject["Add Local Sizing"],
-            r"CompleteFaceLabelList",
-            local_sizing_labels,
-            "local sizing face labels",
-        )
-
         # ======================================================
         # ##### [7] Local Sizing #####
         # ======================================================
 
-        workflow.TaskObject["Add Local Sizing"].Arguments.set_state({
-            r"AddChild": r"yes",
-            r"BOICellsPerGap": m_cpg,
-            r"BOIControlName": r"proximity_1",
-            r"BOICurvatureNormalAngle": boi_curvature_normal_angle,
-            r"BOIExecution": r"Proximity",
-            r"BOIFaceLabelList": local_sizing_labels,
-            r"BOIGrowthRate": boi_growth_rate,
-            r"BOIMaxSize": m_max,
-            r"BOIMinSize": m_min,
-            r"BOIZoneorLabel": r"label",
-        })
+        with phase_clock.phase("local_sizing"):
+            validate_requested_labels(
+                workflow.TaskObject["Add Local Sizing"],
+                r"CompleteFaceLabelList",
+                local_sizing_labels,
+                "local sizing face labels",
+            )
 
-        workflow.TaskObject["Add Local Sizing"].AddChildAndUpdate(
-            DeferUpdate=False
-        )
+            workflow.TaskObject["Add Local Sizing"].Arguments.set_state({
+                r"AddChild": r"yes",
+                r"BOICellsPerGap": m_cpg,
+                r"BOIControlName": r"proximity_1",
+                r"BOICurvatureNormalAngle": boi_curvature_normal_angle,
+                r"BOIExecution": r"Proximity",
+                r"BOIFaceLabelList": local_sizing_labels,
+                r"BOIGrowthRate": boi_growth_rate,
+                r"BOIMaxSize": m_max,
+                r"BOIMinSize": m_min,
+                r"BOIZoneorLabel": r"label",
+            })
+
+            workflow.TaskObject["Add Local Sizing"].AddChildAndUpdate(
+                DeferUpdate=False
+            )
 
         # ======================================================
         # ##### [8] Setup Periodic Boundaries (default: before surface mesh) #####
         # ======================================================
 
         if not periodic_after_surface_mesh:
-            ensure_periodic_boundary_task(workflow)
+            with phase_clock.phase("periodic_setup"):
+                ensure_periodic_boundary_task(workflow)
 
-            workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
-                r"LabelList": [periodic_reference_label],
-                r"Method": r"Manual - pick reference side",
-                r"TransShift": {
-                    r"ShiftX": periodic_shift_x,
-                    r"ShiftY": periodic_shift_y,
-                    r"ShiftZ": periodic_shift_z,
-                },
-                r"Type": r"Translational",
-            })
+                workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
+                    r"LabelList": [periodic_reference_label],
+                    r"Method": r"Manual - pick reference side",
+                    r"TransShift": {
+                        r"ShiftX": periodic_shift_x,
+                        r"ShiftY": periodic_shift_y,
+                        r"ShiftZ": periodic_shift_z,
+                    },
+                    r"Type": r"Translational",
+                })
 
-            workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
+                workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
 
         # ======================================================
         # ##### [9] Generate Surface Mesh #####
         # ======================================================
 
-        workflow.TaskObject["Generate the Surface Mesh"].Arguments.set_state({
-            r"CFDSurfaceMeshControls": {
-                r"CellsPerGap": m_cpg,
-                r"MaxSize": m_max,
-                r"MinSize": m_min,
-                r"ScopeProximityTo": r"faces",
-            },
-        })
+        with phase_clock.phase("surface_mesh"):
+            workflow.TaskObject["Generate the Surface Mesh"].Arguments.set_state({
+                r"CFDSurfaceMeshControls": {
+                    r"CellsPerGap": m_cpg,
+                    r"MaxSize": m_max,
+                    r"MinSize": m_min,
+                    r"ScopeProximityTo": r"faces",
+                },
+            })
 
-        workflow.TaskObject["Generate the Surface Mesh"].Execute()
+            workflow.TaskObject["Generate the Surface Mesh"].Execute()
 
-        if save_surface_mesh_checkpoint:
-            write_mesh_file(
-                meshing_session=meshing,
-                output_path=surface_mesh_checkpoint_path,
-                description="Surface mesh checkpoint",
+            if save_surface_mesh_checkpoint:
+                write_mesh_file(
+                    meshing_session=meshing,
+                    output_path=surface_mesh_checkpoint_path,
+                    description="Surface mesh checkpoint",
+                )
+
+            # Flush, refuse a bad surface, then resume onto a sidecar file.
+            # transcript.start(file_name=) deletes its target, so the original
+            # log cannot be reopened for the volume-mesh portion.
+            meshing.transcript.stop()
+            transcript_is_running = False
+            apply_surface_mesh_quality_gate(
+                log_path=mesh_log_path,
+                max_skewness_limit=max_skewness_threshold,
+                skewed_face_fraction_limit=skewed_face_fraction_threshold,
             )
-
-        # Flush, refuse a bad surface, then resume onto a sidecar file.
-        # transcript.start(file_name=) deletes its target, so the original
-        # log cannot be reopened for the volume-mesh portion.
-        meshing.transcript.stop()
-        transcript_is_running = False
-        apply_surface_mesh_quality_gate(
-            log_path=mesh_log_path,
-            max_skewness_limit=max_skewness_threshold,
-            skewed_face_fraction_limit=skewed_face_fraction_threshold,
-        )
-        continuation_log_path = surface_mesh_continuation_log_path(mesh_log_path)
-        meshing.transcript.start(
-            file_name=as_fluent_path(continuation_log_path)
-        )
-        transcript_is_running = True
+            continuation_log_path = surface_mesh_continuation_log_path(mesh_log_path)
+            meshing.transcript.start(
+                file_name=as_fluent_path(continuation_log_path)
+            )
+            transcript_is_running = True
 
         # ======================================================
         # ##### [9b] Setup Periodic Boundaries (optional: after surface mesh) #####
         # ======================================================
 
         if periodic_after_surface_mesh:
-            ensure_periodic_boundary_task_after(
-                workflow, "Generate the Surface Mesh"
-            )
+            with phase_clock.phase("periodic_setup"):
+                ensure_periodic_boundary_task_after(
+                    workflow, "Generate the Surface Mesh"
+                )
 
-            # Probe showed dangerous defaults after insert (Rotational, null
-            # LabelList, TransShift z=1). Override Type/TransShift/LabelList
-            # explicitly; RemeshBoundariesOption default is "auto".
-            after_surface_periodic_labels = [periodic_reference_label] + [
-                label
-                for label in periodic_labels
-                if label != periodic_reference_label
-            ]
+                # Probe showed dangerous defaults after insert (Rotational, null
+                # LabelList, TransShift z=1). Override Type/TransShift/LabelList
+                # explicitly; RemeshBoundariesOption default is "auto".
+                after_surface_periodic_labels = [periodic_reference_label] + [
+                    label
+                    for label in periodic_labels
+                    if label != periodic_reference_label
+                ]
 
-            workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
-                r"LabelList": after_surface_periodic_labels,
-                r"Method": r"Automatic - pick both sides",
-                r"RemeshBoundariesOption": r"auto",
-                r"TransShift": {
-                    r"ShiftX": periodic_shift_x,
-                    r"ShiftY": periodic_shift_y,
-                    r"ShiftZ": periodic_shift_z,
-                },
-                r"Type": r"Translational",
-            })
+                workflow.TaskObject["Set Up Periodic Boundaries"].Arguments.set_state({
+                    r"LabelList": after_surface_periodic_labels,
+                    r"Method": r"Automatic - pick both sides",
+                    r"RemeshBoundariesOption": r"auto",
+                    r"TransShift": {
+                        r"ShiftX": periodic_shift_x,
+                        r"ShiftY": periodic_shift_y,
+                        r"ShiftZ": periodic_shift_z,
+                    },
+                    r"Type": r"Translational",
+                })
 
-            workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
+                workflow.TaskObject["Set Up Periodic Boundaries"].Execute()
 
         # ======================================================
         # ##### [10] Describe Geometry, Boundaries, and Regions #####
         # ======================================================
 
-        workflow.TaskObject["Describe Geometry"].UpdateChildTasks(
-            Arguments={
-                r"v1": True,
-            },
-            SetupTypeChanged=False,
-        )
+        with phase_clock.phase("describe_geometry"):
+            workflow.TaskObject["Describe Geometry"].UpdateChildTasks(
+                Arguments={
+                    r"v1": True,
+                },
+                SetupTypeChanged=False,
+            )
 
-        workflow.TaskObject["Describe Geometry"].Arguments.set_state({
-            r"NonConformal": r"No",
-            r"SetupType": r"The geometry consists of only fluid regions with no voids",
-        })
+            workflow.TaskObject["Describe Geometry"].Arguments.set_state({
+                r"NonConformal": r"No",
+                r"SetupType": r"The geometry consists of only fluid regions with no voids",
+            })
 
-        workflow.TaskObject["Describe Geometry"].UpdateChildTasks(
-            Arguments={
-                r"v1": True,
-            },
-            SetupTypeChanged=True,
-        )
+            workflow.TaskObject["Describe Geometry"].UpdateChildTasks(
+                Arguments={
+                    r"v1": True,
+                },
+                SetupTypeChanged=True,
+            )
 
-        workflow.TaskObject["Describe Geometry"].Execute()
-        workflow.TaskObject["Update Boundaries"].Execute()
-        workflow.TaskObject["Update Regions"].Execute()
-
-        # Validate boundary layer labels after boundary and region updates.
-        validate_requested_labels(
-            workflow.TaskObject["Add Boundary Layers"],
-            r"CompleteFaceLabelList",
-            boundary_layer_labels,
-            "boundary layer face labels",
-        )
+            workflow.TaskObject["Describe Geometry"].Execute()
+            workflow.TaskObject["Update Boundaries"].Execute()
+            workflow.TaskObject["Update Regions"].Execute()
 
         # ======================================================
-        # ##### [11] Add Boundary Layers #####
+        # ##### [11] Boundary Layers and Volume Mesh #####
         # ======================================================
 
-        configure_boundary_layers(
-            workflow,
-            boundary_layer_labels=boundary_layer_labels,
-            membrane_and_buffer_labels=(
-                active_membrane_wall_labels + buffer_wall_labels
-            ),
-            wall_spacer_labels=wall_spacer_labels,
-            bl_height=bl_height,
-            bl_layers=bl_layers,
-            spacer_bl_layers=spacer_bl_layers,
-            bl_offset_method=bl_offset_method,
-            bl_growth_rate=bl_growth_rate,
-            include_spacer_in_boundary_layers=(
-                cfg.include_spacer_in_boundary_layers
-            ),
-        )
+        with phase_clock.phase("boundary_layers_volume_mesh"):
+            validate_requested_labels(
+                workflow.TaskObject["Add Boundary Layers"],
+                r"CompleteFaceLabelList",
+                boundary_layer_labels,
+                "boundary layer face labels",
+            )
 
-        # ======================================================
-        # ##### [12] Generate Volume Mesh #####
-        # ======================================================
+            configure_boundary_layers(
+                workflow,
+                boundary_layer_labels=boundary_layer_labels,
+                membrane_and_buffer_labels=(
+                    active_membrane_wall_labels + buffer_wall_labels
+                ),
+                wall_spacer_labels=wall_spacer_labels,
+                bl_height=bl_height,
+                bl_layers=bl_layers,
+                spacer_bl_layers=spacer_bl_layers,
+                bl_offset_method=bl_offset_method,
+                bl_growth_rate=bl_growth_rate,
+                include_spacer_in_boundary_layers=(
+                    cfg.include_spacer_in_boundary_layers
+                ),
+            )
 
-        workflow.TaskObject["Generate the Volume Mesh"].Arguments.set_state({
-            r"VolumeFill": r"poly-hexcore",
-            r"VolumeFillControls": {
-                r"HexMaxCellLength": vol_hex_max,
-                r"PeelLayers": peel_layers,
-            },
-        })
+            workflow.TaskObject["Generate the Volume Mesh"].Arguments.set_state({
+                r"VolumeFill": r"poly-hexcore",
+                r"VolumeFillControls": {
+                    r"HexMaxCellLength": vol_hex_max,
+                    r"PeelLayers": peel_layers,
+                },
+            })
 
-        workflow.TaskObject["Generate the Volume Mesh"].Execute()
+            workflow.TaskObject["Generate the Volume Mesh"].Execute()
 
         # ======================================================
         # ##### [13] Quality Check and Save Final Mesh #####
         # ======================================================
     
-        meshing.execute_tui(r"/mesh/check")
-        meshing.execute_tui(r"/mesh/check-quality")
+        with phase_clock.phase("quality_checks"):
+            meshing.execute_tui(r"/mesh/check")
+            meshing.execute_tui(r"/mesh/check-quality")
 
-        print("\n" + "=" * 72)
-        print("MESHING OUTPUT SUMMARY MARKER")
-        print("=" * 72)
-        print("Surface mesh face count and skewness are printed above by Fluent Meshing.")
-        print("Volume mesh cell count, minimum orthogonal quality, and aspect ratio are printed above by Fluent Meshing.")
-        print("Input controls repeated for traceability:")
-        print(f"  Max size [mm] = {m_max}")
-        print(f"  Min size [mm] = {m_min}")
-        print(f"  Cells per gap = {m_cpg}")
-        print(f"  Boundary layer labels = {boundary_layer_labels}")
-        print(f"  Boundary layer offset method = {bl_offset_method}")
-        print(f"  Boundary layer first height [mm] = {bl_height}")
-        print(f"  Boundary layer number of layers = {bl_layers}")
-        print(f"  Boundary layer growth rate = {bl_growth_rate}")
-        print("=" * 72 + "\n")
+            print("\n" + "=" * 72)
+            print("MESHING OUTPUT SUMMARY MARKER")
+            print("=" * 72)
+            print("Surface mesh face count and skewness are printed above by Fluent Meshing.")
+            print("Volume mesh cell count, minimum orthogonal quality, and aspect ratio are printed above by Fluent Meshing.")
+            print("Input controls repeated for traceability:")
+            print(f"  Max size [mm] = {m_max}")
+            print(f"  Min size [mm] = {m_min}")
+            print(f"  Cells per gap = {m_cpg}")
+            print(f"  Boundary layer labels = {boundary_layer_labels}")
+            print(f"  Boundary layer offset method = {bl_offset_method}")
+            print(f"  Boundary layer first height [mm] = {bl_height}")
+            print(f"  Boundary layer number of layers = {bl_layers}")
+            print(f"  Boundary layer growth rate = {bl_growth_rate}")
+            print("=" * 72 + "\n")
 
-        # Stop the transcript to flush mesh quality output before parsing the log file.
-        meshing.transcript.stop()
-        transcript_is_running = False
-        if continuation_log_path is not None:
-            append_transcript_continuation(mesh_log_path, continuation_log_path)
-            continuation_log_path = None
+            # Stop the transcript to flush mesh quality output before parsing the log file.
+            meshing.transcript.stop()
+            transcript_is_running = False
+            if continuation_log_path is not None:
+                append_transcript_continuation(mesh_log_path, continuation_log_path)
+                continuation_log_path = None
 
-        mesh_metrics = apply_mesh_quality_gate(
-            log_path=mesh_log_path,
-            min_orthogonal_quality_limit=min_orthogonal_quality_threshold,
-            max_aspect_ratio_limit=max_aspect_ratio_threshold,
-            max_skewness_limit=max_skewness_threshold,
-            skewed_face_fraction_limit=skewed_face_fraction_threshold,
-            fail_if_not_parsed=fail_if_quality_not_parsed,
-        )
+            mesh_metrics = apply_mesh_quality_gate(
+                log_path=mesh_log_path,
+                min_orthogonal_quality_limit=min_orthogonal_quality_threshold,
+                max_aspect_ratio_limit=max_aspect_ratio_threshold,
+                max_skewness_limit=max_skewness_threshold,
+                skewed_face_fraction_limit=skewed_face_fraction_threshold,
+                fail_if_not_parsed=fail_if_quality_not_parsed,
+            )
 
         print(
             f"Writing final mesh to: {mesh_file_path} "
             f"(transcript is already closed after quality parsing)."
         )
 
-        write_mesh_file(
-            meshing_session=meshing,
-            output_path=mesh_file_path,
-            description="Final volume mesh",
-        )
+        with phase_clock.phase("write"):
+            write_mesh_file(
+                meshing_session=meshing,
+                output_path=mesh_file_path,
+                description="Final volume mesh",
+            )
         mesh_manifest_path = write_worker_mesh_manifest(
             cfg,
             case_path,
             mesh_file_path,
             mesh_metrics,
+            timing=phase_clock.timing_fields(processor_count),
         )
         print(f"Mesh manifest written: {mesh_manifest_path}")
         run_status = "SUCCESS"
@@ -1427,6 +1511,9 @@ if __name__ == "__main__":
                 mesh_file_path=mesh_file_path,
                 error_summary=run_error,
             )
+            timing = phase_clock.timing_fields(processor_count)
+            if timing is not None:
+                record.update(timing)
             # Watchdog stderr is usually benign noise; keep it out of
             # error_summary so real failures stay readable.
             watchdog_stderr = read_pyfluent_watchdog_err(case_path)

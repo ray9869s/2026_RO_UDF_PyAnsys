@@ -53,6 +53,10 @@ COLUMNS = (
     "cp_q999_window_flux",
     "viscosity_ratio_volavg",
     "diff_ratio_volavg",
+    "mesh_wall_time_s",
+    "solver_wall_time_s",
+    "extraction_wall_time_s",
+    "processor_count",
     "notes",
 )
 
@@ -62,11 +66,14 @@ _MESH_FIELDS = (
     "ortho_min",
     "AR_max",
     "porosity_eps",
+    "mesh_wall_time_s",
 )
 _RUN_FIELDS = (
     "stop_reason",
     "continuity_final",
     "convergence_quality",
+    "solver_wall_time_s",
+    "extraction_wall_time_s",
 )
 _CSV_FIELDS = (
     "y1_window_median_um",
@@ -248,6 +255,27 @@ def _take(mapping, key, label, notes, *, numeric=False):
     return str(text)
 
 
+def _processor_count(run_manifest, mesh_manifest, notes):
+    """Solver launch count, or the meshing launch count when the run omits it."""
+    for mapping, label in (
+        (run_manifest, "run manifest"),
+        (mesh_manifest, "mesh manifest"),
+    ):
+        if mapping is None or "processor_count" not in mapping or _blank(
+            mapping.get("processor_count")
+        ):
+            continue
+        formatted = _format_number(mapping["processor_count"])
+        if formatted is None:
+            notes.append(f"{label} column processor_count is not a finite number")
+            return MISSING
+        return formatted
+    if run_manifest is None and mesh_manifest is None:
+        return MISSING
+    notes.append("processor_count missing")
+    return MISSING
+
+
 def _viscous_model(run_manifest, notes):
     if run_manifest is None:
         return MISSING
@@ -328,8 +356,13 @@ def row_for_leaf(data_root, family, geo_id, mesh_id, run_id, leaf):
     for key in _CSV_FIELDS:
         row[key] = _take(wide, key, "summary_metrics_wide.csv", notes)
     for key in _RUN_FIELDS:
-        numeric = key == "continuity_final"
+        numeric = key in (
+            "continuity_final",
+            "solver_wall_time_s",
+            "extraction_wall_time_s",
+        )
         row[key] = _take(run_manifest, key, "run manifest", notes, numeric=numeric)
+    row["processor_count"] = _processor_count(run_manifest, mesh_manifest, notes)
     row["viscous_model"] = _viscous_model(run_manifest, notes)
     row["lmh_module_area"] = _module_area_cell(mesh_manifest, wide, notes)
     row["notes"] = "; ".join(notes)

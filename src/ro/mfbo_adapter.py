@@ -615,7 +615,11 @@ def _finish(
     record["status"] = status
     record["failure_reason"] = failure_reason
     record["cell_count"] = _finite(mesh_manifest.get("cell_count"))
-    record["mesh_wall_time_s"] = _finite(mesh_record.get("wall_time_seconds"))
+    record["mesh_wall_time_s"] = _first_finite(
+        mesh_manifest.get("mesh_wall_time_s"),
+        mesh_record.get("mesh_wall_time_s"),
+        mesh_record.get("wall_time_seconds"),
+    )
     record["solver_wall_time_s"] = _first_finite(
         run_manifest.get("solver_wall_time_s"),
         retry.get("wall_time_seconds"),
