@@ -915,8 +915,19 @@ class LoadBearingReportComputeError(RuntimeError):
 def require_load_bearing_report_definitions(
     report_names: Iterable[str],
     failed_report_specs: Iterable[Any],
+    *,
+    required_names: Iterable[str] | None = None,
 ) -> None:
-    """Raise if any load-bearing report definition was not created."""
+    """Raise if any load-bearing report definition was not created.
+
+    ``required_names`` defaults to ``LOAD_BEARING_REPORT_NAMES``. The MFBO
+    profile passes the smaller set it actually creates.
+    """
+    required = (
+        LOAD_BEARING_REPORT_NAMES
+        if required_names is None
+        else required_names
+    )
     created = set(report_names)
     failed = {
         str(spec[0])
@@ -925,7 +936,7 @@ def require_load_bearing_report_definitions(
     }
     missing = sorted(
         name
-        for name in LOAD_BEARING_REPORT_NAMES
+        for name in required
         if name not in created or name in failed
     )
     if missing:
@@ -940,11 +951,20 @@ def require_load_bearing_report_computes(
     raw_results: Mapping[str, Any],
     *,
     report_names: Iterable[str],
+    required_names: Iterable[str] | None = None,
 ) -> None:
-    """Raise if any load-bearing report in ``report_names`` failed to compute."""
+    """Raise if any load-bearing report in ``report_names`` failed to compute.
+
+    ``required_names`` defaults to ``LOAD_BEARING_REPORT_NAMES``.
+    """
+    required = (
+        LOAD_BEARING_REPORT_NAMES
+        if required_names is None
+        else set(required_names)
+    )
     errors: list[str] = []
     for name in report_names:
-        if name not in LOAD_BEARING_REPORT_NAMES:
+        if name not in required:
             continue
         raw = raw_results.get(name)
         if isinstance(raw, dict) and "error" in raw:
@@ -2241,6 +2261,7 @@ def segmented_membrane_cp_metrics(
     midplane_area_by_cell_m2=None,
     wall_surfaces_by_name=None,
     compute_cp_spread=False,
+    include_all_active=True,
     subphase_seconds: MutableMapping[str, float] | None = None,
 ):
     """Compute x-segmented membrane CP metrics (all-active and optional window).
@@ -2255,6 +2276,9 @@ def segmented_membrane_cp_metrics(
     facet-min hygiene + quantile bisection so the scalar-rescale delta guard
     can fire. When False, ``k_N`` is still computed from averages;
     ``cp_canon_rescale_delta_max`` is null and status is ``not_evaluated``.
+
+    ``include_all_active`` (default True): when False, skip the all-active
+    aggregates. The window aggregates still use ``evaluation_cell_numbers``.
     """
     if not wall_surface_names:
         raise ValueError("At least one membrane wall surface name is required.")
@@ -2486,7 +2510,7 @@ def segmented_membrane_cp_metrics(
             for cell_number in spacer_cells
             if cell_number in c_b_by_cell_mol_per_m3
         ]
-        if spacer_with_c_b:
+        if include_all_active and spacer_with_c_b:
             t_py = time.monotonic()
             all_canon_avg: dict[int, float] = {}
             all_canon_max: dict[int, float] = {}

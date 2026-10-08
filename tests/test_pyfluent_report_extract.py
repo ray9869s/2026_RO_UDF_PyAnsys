@@ -650,6 +650,29 @@ def test_segmented_membrane_cp_uses_iso_clip_surface_reports():
     assert not any("pp_expr" in name for name in session.compute_calls)
 
 
+def test_segmented_membrane_cp_can_omit_all_active_scope():
+    session = FakeIsoClipSession()
+    metrics = segmented_membrane_cp_metrics(
+        solver=session.solver,
+        solution=session.solution,
+        wall_surface_names=["wall_top_mem"],
+        unit_cell_boundary_x_m=[0.0, 0.003465, 0.00693, 0.010395],
+        spacer_cells=[3],
+        mixing_cup_mass_fraction_by_boundary={3: 0.036},
+        density_kg_per_m3=998.2,
+        molecular_weight_kg_per_mol=0.05844,
+        c_inlet_ref_mol_per_m3=597.8268309,
+        salt_permeability_m_per_s=2.50e-8,
+        evaluation_cell_numbers=[3],
+        c_b_by_cell_mol_per_m3={3: 615.0},
+        midplane_area_by_cell_m2={3: 1.0},
+        compute_cp_spread=False,
+        include_all_active=False,
+    )
+    assert "cp_canon_window_avg" in metrics
+    assert "cp_canon_all_active_avg" not in metrics
+
+
 def test_segmented_membrane_cp_window_metrics_with_c_b():
     session = FakeIsoClipSession()
     metrics = segmented_membrane_cp_metrics(

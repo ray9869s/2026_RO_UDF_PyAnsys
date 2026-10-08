@@ -43,6 +43,15 @@ from ro.manifest import (  # noqa: E402
     sync_run_manifest_analytic_cwall,
     update_run_manifest_fields,
 )
+from ro.extract_profile import (  # noqa: E402
+    PROFILE_MFBO,
+    filter_mfbo_summary_rows,
+    mfbo_mixing_cup_boundary_indices,
+    mfbo_pressure_boundary_indices,
+    mfbo_required_report_names,
+    parse_extract_profile,
+    require_mfbo_summary_columns,
+)
 from ro.extract_skip import write_extract_source_record  # noqa: E402
 from ro.solver_common import (  # noqa: E402
     FINAL_CASE_SHA256_FIELD,
@@ -230,6 +239,9 @@ def stamp_extraction_wall_time_on_run_manifest(run_directory, wall_time_s):
     )
 
 
+_extract_profile_name = "full"
+
+
 def _write_report_extract_timing(report_path: Path):
     if _active_extract_phase is not None and _failed_extract_phase is None:
         _end_extract_phase()
@@ -247,6 +259,8 @@ def _write_report_extract_timing(report_path: Path):
         ),
         "total_seconds": total_seconds,
     }
+    if _extract_profile_name == PROFILE_MFBO:
+        payload["profile"] = PROFILE_MFBO
     with timing_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
@@ -785,18 +799,27 @@ def collect_concentration_cp_faces(
     wall_surface_names,
     unit_cell_boundary_x_m,
     evaluation_cell_numbers,
+    *,
+    include_cells=True,
+    include_y1=True,
 ):
-    """Window clip of both walls, plus one clip per evaluation cell."""
+    """Window clip of both walls, plus one clip per evaluation cell.
+
+    ``include_cells=False`` skips the per-cell clips. The window metrics
+    are read from the window clip, not from those cells.
+    ``include_y1=False`` omits the y1 field on that window clip.
+    """
     cell_faces = {}
-    for cell_number in evaluation_cell_numbers:
-        x_min_m, x_max_m = cell_x_bounds(unit_cell_boundary_x_m, cell_number)
-        cell_faces[int(cell_number)] = read_membrane_clip_faces(
-            solver,
-            wall_surface_names,
-            x_min_m,
-            x_max_m,
-            f"pp_cpc_cell_{int(cell_number)}",
-        )
+    if include_cells:
+        for cell_number in evaluation_cell_numbers:
+            x_min_m, x_max_m = cell_x_bounds(unit_cell_boundary_x_m, cell_number)
+            cell_faces[int(cell_number)] = read_membrane_clip_faces(
+                solver,
+                wall_surface_names,
+                x_min_m,
+                x_max_m,
+                f"pp_cpc_cell_{int(cell_number)}",
+            )
     x_min_m, x_max_m = window_x_bounds(
         unit_cell_boundary_x_m,
         evaluation_cell_numbers,
@@ -807,7 +830,7 @@ def collect_concentration_cp_faces(
         x_min_m,
         x_max_m,
         "pp_cpc_window",
-        extra_fields=(FIELD_UDM_Y1,),
+        extra_fields=(FIELD_UDM_Y1,) if include_y1 else (),
     )
     return window_faces, cell_faces
 
@@ -972,6 +995,10 @@ def create_z_normal_plane(solver_obj, surface_name, z_value_m):
 # ==========================================================
 
 if __name__ == "__main__":
+    _extract_profile_name = parse_extract_profile()
+    report_profile = _extract_profile_name
+    print(f"extract profile = {report_profile}")
+
     product_version = getattr(cfg, "product_version", "25.1.0")
 
     # For post-processing, 1 core is enough for the first test.
@@ -1267,52 +1294,53 @@ if __name__ == "__main__":
                 lmh_definition,
             )
         )
-        lmh_signed_definition = lmh_mass_balance_expression(
-            m_in_name="pp_m_in",
-            m_out_name="pp_m_out",
-            density_value=rho,
-            area_mem_name="pp_area_mem",
-            membrane_blocked_area_frac=membrane_blocked_area_frac,
-            signed=True,
-        )
-        report_names.append(
-            create_or_update_single_expression_report(
-                solution,
-                "pp_lmh_mass_balance_signed",
-                lmh_signed_definition,
+        if report_profile != PROFILE_MFBO:
+            lmh_signed_definition = lmh_mass_balance_expression(
+                m_in_name="pp_m_in",
+                m_out_name="pp_m_out",
+                density_value=rho,
+                area_mem_name="pp_area_mem",
+                membrane_blocked_area_frac=membrane_blocked_area_frac,
+                signed=True,
             )
-        )
-
-        # Pressure reports.
-        report_names.append(
-            create_or_update_surface_report(
-                solution,
-                "pp_p_in_avg",
-                SURFACE_AREA_WEIGHTED_AVG,
-                FIELD_PRESSURE,
-                inlet_zones,
+            report_names.append(
+                create_or_update_single_expression_report(
+                    solution,
+                    "pp_lmh_mass_balance_signed",
+                    lmh_signed_definition,
+                )
             )
-        )
 
-        report_names.append(
-            create_or_update_surface_report(
-                solution,
-                "pp_p_out_avg",
-                SURFACE_AREA_WEIGHTED_AVG,
-                FIELD_PRESSURE,
-                outlet_zones,
+            # Pressure reports.
+            report_names.append(
+                create_or_update_surface_report(
+                    solution,
+                    "pp_p_in_avg",
+                    SURFACE_AREA_WEIGHTED_AVG,
+                    FIELD_PRESSURE,
+                    inlet_zones,
+                )
             )
-        )
 
-        pressure_drop_definition = "pp_p_in_avg - pp_p_out_avg"
-
-        report_names.append(
-            create_or_update_single_expression_report(
-                solution,
-                "pp_pressure_drop",
-                pressure_drop_definition,
+            report_names.append(
+                create_or_update_surface_report(
+                    solution,
+                    "pp_p_out_avg",
+                    SURFACE_AREA_WEIGHTED_AVG,
+                    FIELD_PRESSURE,
+                    outlet_zones,
+                )
             )
-        )
+
+            pressure_drop_definition = "pp_p_in_avg - pp_p_out_avg"
+
+            report_names.append(
+                create_or_update_single_expression_report(
+                    solution,
+                    "pp_pressure_drop",
+                    pressure_drop_definition,
+                )
+            )
 
         # ----------------------------------------------------------
         # Spacer internal plane surfaces and spacer pressure reports.
@@ -1358,7 +1386,21 @@ if __name__ == "__main__":
         # ----------------------------------------------------------
 
         print("\nCreating unit-cell boundary plane surfaces and reports...")
+        _mfbo_evaluation_cells = evaluation_window.evaluation_cell_numbers(layout)
+        _mfbo_pressure_boundaries = set()
+        _mfbo_mixing_boundaries = set()
+        if report_profile == PROFILE_MFBO:
+            _mfbo_pressure_boundaries = mfbo_pressure_boundary_indices(
+                _mfbo_evaluation_cells
+            )
+            _mfbo_mixing_boundaries = mfbo_mixing_cup_boundary_indices(
+                _mfbo_evaluation_cells
+            )
         for boundary_index, boundary_x_m in enumerate(unit_cell_boundary_x_m):
+            if report_profile == PROFILE_MFBO and boundary_index not in (
+                _mfbo_pressure_boundaries | _mfbo_mixing_boundaries
+            ):
+                continue
             plane_name = unit_cell_plane_name(boundary_index)
             pressure_report_name = unit_cell_pressure_report_name(boundary_index)
             concentration_report_name = unit_cell_concentration_report_name(
@@ -1377,42 +1419,51 @@ if __name__ == "__main__":
             )
 
             create_x_normal_plane(solver, plane_name, boundary_x_m)
-            report_names.append(
-                create_or_update_surface_report(
-                    solution,
-                    pressure_report_name,
-                    SURFACE_AREA_WEIGHTED_AVG,
-                    FIELD_PRESSURE,
-                    [plane_name],
+            if (
+                report_profile != PROFILE_MFBO
+                or boundary_index in _mfbo_pressure_boundaries
+            ):
+                report_names.append(
+                    create_or_update_surface_report(
+                        solution,
+                        pressure_report_name,
+                        SURFACE_AREA_WEIGHTED_AVG,
+                        FIELD_PRESSURE,
+                        [plane_name],
+                    )
                 )
-            )
-            report_names.append(
-                create_or_update_surface_report(
-                    solution,
-                    mixing_cup_report_name,
-                    mixing_cup_report_type,
-                    mixing_cup_field_name,
-                    [plane_name],
+            if (
+                report_profile != PROFILE_MFBO
+                or boundary_index in _mfbo_mixing_boundaries
+            ):
+                report_names.append(
+                    create_or_update_surface_report(
+                        solution,
+                        mixing_cup_report_name,
+                        mixing_cup_report_type,
+                        mixing_cup_field_name,
+                        [plane_name],
+                    )
                 )
-            )
-            report_names.append(
-                create_or_update_surface_report(
-                    solution,
-                    plane_area_report_name,
-                    SURFACE_AREA,
-                    None,
-                    [plane_name],
+            if report_profile != PROFILE_MFBO:
+                report_names.append(
+                    create_or_update_surface_report(
+                        solution,
+                        plane_area_report_name,
+                        SURFACE_AREA,
+                        None,
+                        [plane_name],
+                    )
                 )
-            )
-            report_names.append(
-                create_or_update_surface_report(
-                    solution,
-                    concentration_report_name,
-                    SURFACE_AREA_WEIGHTED_AVG,
-                    FIELD_SALT_MASS_FRACTION,
-                    [plane_name],
+                report_names.append(
+                    create_or_update_surface_report(
+                        solution,
+                        concentration_report_name,
+                        SURFACE_AREA_WEIGHTED_AVG,
+                        FIELD_SALT_MASS_FRACTION,
+                        [plane_name],
+                    )
                 )
-            )
 
         # Membrane UDM and wall shear reports.
         # These are evaluated on active membrane zones only.
@@ -1443,6 +1494,10 @@ if __name__ == "__main__":
             ("pp_wall_shear_max", SURFACE_FACET_MAX, FIELD_WALL_SHEAR),
             ("pp_wall_shear_min", SURFACE_FACET_MIN, FIELD_WALL_SHEAR),
         ]
+        if report_profile == PROFILE_MFBO:
+            surface_report_specs = [
+                ("pp_lmh_udm_avg", SURFACE_AREA_WEIGHTED_AVG, FIELD_UDM_LMH),
+            ]
 
         for report_name, report_type, field_name in surface_report_specs:
             try:
@@ -1465,8 +1520,11 @@ if __name__ == "__main__":
         volume_report_specs = [
             ("pp_volint_salt_mass_source", "volume-integral", FIELD_UDM_SI),
             ("pp_volint_total_mass_source", "volume-integral", FIELD_UDM_TOTAL_S),
-            udm_area_sum_report_spec(FIELD_UDM_MEMBRANE_AREA_ACC),
         ]
+        if report_profile != PROFILE_MFBO:
+            volume_report_specs.append(
+                udm_area_sum_report_spec(FIELD_UDM_MEMBRANE_AREA_ACC)
+            )
 
         for report_name, report_type, field_name in volume_report_specs:
             try:
@@ -1490,9 +1548,15 @@ if __name__ == "__main__":
         print("\nFailed report specs:")
         pprint(failed_report_specs)
 
+        _mfbo_required_reports = (
+            mfbo_required_report_names(_mfbo_evaluation_cells)
+            if report_profile == PROFILE_MFBO
+            else None
+        )
         require_load_bearing_report_definitions(
             report_names,
             failed_report_specs,
+            required_names=_mfbo_required_reports,
         )
 
         _end_extract_phase()
@@ -1545,9 +1609,14 @@ if __name__ == "__main__":
             computed_values,
             raw_results,
             report_names=report_names,
+            required_names=_mfbo_required_reports,
         )
 
-        turbulence_plan = turbulence_extract_plan(run_manifest)
+        if report_profile == PROFILE_MFBO:
+            turbulence_metrics = None
+            turbulence_plan = None
+        else:
+            turbulence_plan = turbulence_extract_plan(run_manifest)
         if turbulence_plan == "compute":
             require_turbulence_scalar_fields(
                 scalar_field_names(
@@ -1563,7 +1632,7 @@ if __name__ == "__main__":
                 mass_diffusivity=mass_diffusivity_m2_s(),
                 **rans_reductions,
             )
-        else:
+        elif turbulence_plan is not None:
             turbulence_metrics = null_turbulence_metrics(turbulence_plan)
 
         print("\nComputed values:")
@@ -1594,29 +1663,30 @@ if __name__ == "__main__":
         concentration_diagnostic_error = ""
         concentration_diagnostic_error_type = ""
         concentration_diagnostic_error_message = ""
-        try:
-            reduction_locations = fluid_zone_reduction_locations(
-                setup,
-                fluid_zones,
-            )
-            concentration_diagnostics.update(
-                concentration_range_diagnostics(
-                    reduction=solver.fields.reduction,
-                    fluid_zone_locations=reduction_locations,
-                    species_name=FIELD_SALT_MASS_FRACTION,
-                    lower_threshold=salt_mass_fraction_lower_threshold,
-                    upper_threshold=salt_mass_fraction_upper_threshold,
+        if report_profile != PROFILE_MFBO:
+            try:
+                reduction_locations = fluid_zone_reduction_locations(
+                    setup,
+                    fluid_zones,
                 )
-            )
-        except Exception as exc:
-            error = exception_details(exc)
-            concentration_diagnostic_error_type = error["type"]
-            concentration_diagnostic_error_message = error["message"]
-            concentration_diagnostic_error = error["combined"]
-            print(
-                "WARNING: salt mass-fraction range diagnostics failed: "
-                f"{concentration_diagnostic_error}"
-            )
+                concentration_diagnostics.update(
+                    concentration_range_diagnostics(
+                        reduction=solver.fields.reduction,
+                        fluid_zone_locations=reduction_locations,
+                        species_name=FIELD_SALT_MASS_FRACTION,
+                        lower_threshold=salt_mass_fraction_lower_threshold,
+                        upper_threshold=salt_mass_fraction_upper_threshold,
+                    )
+                )
+            except Exception as exc:
+                error = exception_details(exc)
+                concentration_diagnostic_error_type = error["type"]
+                concentration_diagnostic_error_message = error["message"]
+                concentration_diagnostic_error = error["combined"]
+                print(
+                    "WARNING: salt mass-fraction range diagnostics failed: "
+                    f"{concentration_diagnostic_error}"
+                )
 
         print("\nSalt mass-fraction range diagnostics:")
         pprint(concentration_diagnostics)
@@ -1673,6 +1743,11 @@ if __name__ == "__main__":
             ) from _e_plane
 
 
+        _midplane_cell_numbers = (
+            list(evaluation_cells)
+            if report_profile == PROFILE_MFBO
+            else spacer_cells
+        )
         midplane_window_error = None
         for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
             try:
@@ -1685,7 +1760,7 @@ if __name__ == "__main__":
                     solution=solution,
                     midplane_surface_names=[_found_center_pname],
                     unit_cell_boundary_x_m=unit_cell_boundary_x_m,
-                    evaluation_cell_numbers=spacer_cells,
+                    evaluation_cell_numbers=_midplane_cell_numbers,
                     salt_field=_salt_field,
                     density_kg_per_m3=rho,
                     molecular_weight_kg_per_mol=(
@@ -1720,7 +1795,7 @@ if __name__ == "__main__":
                         solution=solution,
                         midplane_surface_names=[_found_center_pname],
                         unit_cell_boundary_x_m=unit_cell_boundary_x_m,
-                        evaluation_cell_numbers=spacer_cells,
+                        evaluation_cell_numbers=_midplane_cell_numbers,
                         salt_field=_salt_field,
                         density_kg_per_m3=rho,
                         molecular_weight_kg_per_mol=(
@@ -1799,56 +1874,57 @@ if __name__ == "__main__":
         c_bulk_center_area_avg_units_or_type = None
         c_bulk_center_plane_name = None
         _c_bulk_center_diag = "not_attempted"
-        try:
-            for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
-                try:
-                    create_or_update_surface_report(
-                        solution,
-                        "pp_c_bulk_center",
-                        SURFACE_AREA_WEIGHTED_AVG,
-                        _salt_field,
-                        [_found_center_pname],
-                    )
-                    _val_center, _ = compute_one_report(
-                        solution, "pp_c_bulk_center", verbose=False
-                    )
-                    if _val_center is None:
-                        _c_bulk_center_diag = f"field={_salt_field},val=None"
-                        continue
-                    if 1e-4 <= _val_center <= 0.20:
-                        c_bulk_center_area_avg = _val_center
-                        c_bulk_center_area_avg_source = _salt_field
-                        c_bulk_center_area_avg_units_or_type = "mass_fraction"
-                        c_bulk_center_plane_name = _found_center_pname
-                        _c_bulk_center_diag = (
-                            f"ok,field={_salt_field},z={_found_center_z},"
-                            f"val={_val_center:.6g}; "
-                            "whole-domain only — not for CP c_b"
+        if report_profile != PROFILE_MFBO:
+            try:
+                for _salt_field in _SALT_FIELD_CANDIDATES_CENTER:
+                    try:
+                        create_or_update_surface_report(
+                            solution,
+                            "pp_c_bulk_center",
+                            SURFACE_AREA_WEIGHTED_AVG,
+                            _salt_field,
+                            [_found_center_pname],
                         )
-                        break
-                    elif 50 <= _val_center <= 3000:
-                        c_bulk_center_area_avg = _val_center
-                        c_bulk_center_area_avg_source = _salt_field
-                        c_bulk_center_area_avg_units_or_type = "molar_mol_m3"
-                        c_bulk_center_plane_name = _found_center_pname
-                        _c_bulk_center_diag = (
-                            f"ok,field={_salt_field},z={_found_center_z},"
-                            f"val={_val_center:.6g}; "
-                            "whole-domain only — not for CP c_b"
+                        _val_center, _ = compute_one_report(
+                            solution, "pp_c_bulk_center", verbose=False
                         )
-                        break
-                    else:
-                        _c_bulk_center_diag = (
-                            f"field={_salt_field},val={_val_center:.4g},not_plausible"
-                        )
-                except Exception as _e_salt:
-                    _c_bulk_center_diag = f"field={_salt_field},err:{_e_salt}"
-        except Exception as _e_legacy:
-            _c_bulk_center_diag = f"legacy_exception:{_e_legacy}"
-            print(
-                "WARNING: legacy whole-domain center-plane average failed "
-                f"(canonical c_b already computed): {_e_legacy}"
-            )
+                        if _val_center is None:
+                            _c_bulk_center_diag = f"field={_salt_field},val=None"
+                            continue
+                        if 1e-4 <= _val_center <= 0.20:
+                            c_bulk_center_area_avg = _val_center
+                            c_bulk_center_area_avg_source = _salt_field
+                            c_bulk_center_area_avg_units_or_type = "mass_fraction"
+                            c_bulk_center_plane_name = _found_center_pname
+                            _c_bulk_center_diag = (
+                                f"ok,field={_salt_field},z={_found_center_z},"
+                                f"val={_val_center:.6g}; "
+                                "whole-domain only — not for CP c_b"
+                            )
+                            break
+                        elif 50 <= _val_center <= 3000:
+                            c_bulk_center_area_avg = _val_center
+                            c_bulk_center_area_avg_source = _salt_field
+                            c_bulk_center_area_avg_units_or_type = "molar_mol_m3"
+                            c_bulk_center_plane_name = _found_center_pname
+                            _c_bulk_center_diag = (
+                                f"ok,field={_salt_field},z={_found_center_z},"
+                                f"val={_val_center:.6g}; "
+                                "whole-domain only — not for CP c_b"
+                            )
+                            break
+                        else:
+                            _c_bulk_center_diag = (
+                                f"field={_salt_field},val={_val_center:.4g},not_plausible"
+                            )
+                    except Exception as _e_salt:
+                        _c_bulk_center_diag = f"field={_salt_field},err:{_e_salt}"
+            except Exception as _e_legacy:
+                _c_bulk_center_diag = f"legacy_exception:{_e_legacy}"
+                print(
+                    "WARNING: legacy whole-domain center-plane average failed "
+                    f"(canonical c_b already computed): {_e_legacy}"
+                )
 
         _end_extract_phase()
         _begin_extract_phase("segmented_membrane_cp")
@@ -1868,6 +1944,13 @@ if __name__ == "__main__":
                 for boundary_index in range(n_unit_cells + 1)
             }
             _cp_spread = bool(getattr(cfg, "compute_cp_spread", False))
+            _segment_cells = spacer_cells
+            _segment_walls = wall_surfaces_by_name
+            _include_all_active = True
+            if report_profile == PROFILE_MFBO:
+                _segment_cells = list(evaluation_cells)
+                _segment_walls = None
+                _include_all_active = False
             print(
                 f"\nSegmented membrane CP: compute_cp_spread={_cp_spread}"
             )
@@ -1876,7 +1959,7 @@ if __name__ == "__main__":
                 solution=solution,
                 wall_surface_names=list(active_membrane_zones),
                 unit_cell_boundary_x_m=unit_cell_boundary_x_m,
-                spacer_cells=spacer_cells,
+                spacer_cells=_segment_cells,
                 mixing_cup_mass_fraction_by_boundary=(
                     mixing_cup_mass_fraction_by_boundary
                 ),
@@ -1889,8 +1972,9 @@ if __name__ == "__main__":
                 evaluation_cell_numbers=evaluation_cells,
                 c_b_by_cell_mol_per_m3=c_b_by_cell_mol_per_m3,
                 midplane_area_by_cell_m2=midplane_area_by_cell_m2,
-                wall_surfaces_by_name=wall_surfaces_by_name,
+                wall_surfaces_by_name=_segment_walls,
                 compute_cp_spread=_cp_spread,
+                include_all_active=_include_all_active,
                 subphase_seconds=_segmented_membrane_cp_subphase_seconds,
             )
             print(
@@ -1940,6 +2024,8 @@ if __name__ == "__main__":
             active_membrane_zones,
             unit_cell_boundary_x_m,
             evaluation_cells,
+            include_cells=report_profile != PROFILE_MFBO,
+            include_y1=report_profile != PROFILE_MFBO,
         )
         concentration_cp_metrics = concentration_cp_report(
             window_faces,
@@ -1955,14 +2041,17 @@ if __name__ == "__main__":
             f"cpc_window_avg_flux="
             f"{concentration_cp_metrics['window']['cpc_avg_flux']}"
         )
-        membrane_y1_metrics = y1_window_resolution(window_faces)
-        print(
-            "Membrane y1: "
-            f"areamean_um={membrane_y1_metrics['y1_window_areamean_um']}, "
-            f"q10_um={membrane_y1_metrics['y1_window_q10_um']}, "
-            f"median_um={membrane_y1_metrics['y1_window_median_um']}, "
-            f"q90_um={membrane_y1_metrics['y1_window_q90_um']}"
-        )
+        if report_profile == PROFILE_MFBO:
+            membrane_y1_metrics = None
+        else:
+            membrane_y1_metrics = y1_window_resolution(window_faces)
+            print(
+                "Membrane y1: "
+                f"areamean_um={membrane_y1_metrics['y1_window_areamean_um']}, "
+                f"q10_um={membrane_y1_metrics['y1_window_q10_um']}, "
+                f"median_um={membrane_y1_metrics['y1_window_median_um']}, "
+                f"q90_um={membrane_y1_metrics['y1_window_q90_um']}"
+            )
 
         _end_extract_phase()
         # ==========================================================
@@ -2469,9 +2558,11 @@ if __name__ == "__main__":
             {"metric": "segmented_cp_diagnostic_error_message", "value": segmented_cp_diagnostic_error_message, "unit": "-"},
         ]
         summary_rows.extend(unit_cell_summary_rows)
-        summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
+        if turbulence_metrics is not None:
+            summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
         summary_rows.extend(concentration_cp_summary_rows(concentration_cp_metrics))
-        summary_rows.extend(y1_window_summary_rows(membrane_y1_metrics))
+        if membrane_y1_metrics is not None:
+            summary_rows.extend(y1_window_summary_rows(membrane_y1_metrics))
 
         # ----------------------------------------------------------
         # Mass balance table
@@ -2545,10 +2636,25 @@ if __name__ == "__main__":
         # Create DataFrames
         # ----------------------------------------------------------
 
-        summary_df = pd.DataFrame(summary_rows)
-        mass_balance_df = pd.DataFrame(mass_balance_rows)
-        pressure_df = pd.DataFrame(pressure_rows)
-        shear_df = pd.DataFrame(shear_rows)
+        if report_profile == PROFILE_MFBO:
+            summary_rows.append(
+                {"metric": "profile", "value": PROFILE_MFBO, "unit": "-"}
+            )
+            summary_rows = filter_mfbo_summary_rows(summary_rows)
+            mass_balance_rows = filter_mfbo_summary_rows(mass_balance_rows)
+            pressure_rows = filter_mfbo_summary_rows(pressure_rows)
+            shear_rows = filter_mfbo_summary_rows(shear_rows)
+
+        def _metric_frame(rows):
+            frame = pd.DataFrame(rows)
+            if frame.empty:
+                return pd.DataFrame(columns=["metric", "value", "unit"])
+            return frame
+
+        summary_df = _metric_frame(summary_rows)
+        mass_balance_df = _metric_frame(mass_balance_rows)
+        pressure_df = _metric_frame(pressure_rows)
+        shear_df = _metric_frame(shear_rows)
 
         # ----------------------------------------------------------
         # Display
@@ -2705,6 +2811,9 @@ if __name__ == "__main__":
             "raw_results": raw_results,
         }
 
+        if report_profile == PROFILE_MFBO:
+            raw_save_dict["case_info"]["profile"] = PROFILE_MFBO
+
         with open(raw_report_json_path, "w", encoding="utf-8") as f:
             json.dump(
                 raw_save_dict,
@@ -2717,12 +2826,16 @@ if __name__ == "__main__":
         # Campaign validation gates run after artifacts are written so failed
         # extracts still leave inspectable CSV/JSON (report_compute_errors_json,
         # blank cells, etc.). Non-zero exit marks batch_postprocess FAILED.
-        require_load_bearing_summary_columns(wide_record)
-        require_canonical_cp_summary_columns(wide_record)
-        require_extract_identities(
-            wide_record,
-            active_cell_numbers=layout.active_cell_numbers(),
-        )
+        if report_profile == PROFILE_MFBO:
+            require_mfbo_summary_columns(wide_record)
+            require_canonical_cp_summary_columns(wide_record)
+        else:
+            require_load_bearing_summary_columns(wide_record)
+            require_canonical_cp_summary_columns(wide_record)
+            require_extract_identities(
+                wide_record,
+                active_cell_numbers=layout.active_cell_numbers(),
+            )
 
         try:
             update_run_manifest_fields(

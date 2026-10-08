@@ -13,6 +13,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import batch_report_extract
 import batch_solver_sweep
+from ro.extract_profile import report_extract_argv
 
 
 def call_with_data_root(data_root, fn):
@@ -51,8 +52,21 @@ def extract_child_env(data_root, overrides, base_config):
     return env
 
 
-def launch_extract(data_root, run_directory, case, *, geo_id, mesh_id, run_id):
-    """Run pyfluent_report_extract.py the way batch_report_extract.py does."""
+def launch_extract(
+    data_root,
+    run_directory,
+    case,
+    *,
+    geo_id,
+    mesh_id,
+    run_id,
+    profile=None,
+):
+    """Run pyfluent_report_extract.py the way batch_report_extract.py does.
+
+    ``profile=None`` keeps the worker argv unchanged. ``profile="mfbo"``
+    appends ``--profile mfbo``.
+    """
     run_directory = Path(run_directory)
     worker, base_config = extract_launcher_paths()
     final_case = run_directory / f"{geo_id}_{run_id}_final.cas.h5"
@@ -74,7 +88,7 @@ def launch_extract(data_root, run_directory, case, *, geo_id, mesh_id, run_id):
 
     overrides = call_with_data_root(data_root, _build)
     env = extract_child_env(data_root, overrides, base_config)
-    cmd = [sys.executable, str(worker)]
+    cmd = report_extract_argv(sys.executable, worker, profile)
     print(f"Extract command: {' '.join(cmd)}")
     print(f"RO_DATA_ROOT (child only): {data_root}")
     print(f"Extract overrides: {json.dumps(overrides)}")
