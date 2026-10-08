@@ -723,12 +723,20 @@ bounding box, buffers included, and is not an input to \(d_h\).
 `area_mem` is unchanged.
 
 Both extract profiles write the five columns. The fluid volume is one
-`reduction.sum_if` of 1 with weight `Volume` on cell centroids inside
-the active x-span. Each area is one x-range iso-clip and one
+volume report definition, `report_type` `volume`, on a hexahedron cell
+register of the active x-span. That is the same
+`solution.report_definitions.compute` path as the production
+`volume-integral` reports. `reduction.sum_if` is not used: on PyFluent
+0.38.0 `weight="Area"` is ignored and `expression="1"` returns a face
+count (`docs/RESTRUCTURE_PLAN.md`), and `weight="Volume"` is not shown
+to return cubic metres. Each area is one x-range iso-clip and one
 surface-area integral: the active membrane walls, and `wall_spacer_*`
 in the same span. An empty channel records spacer area 0 and skips
 that surface integral. Porosity is the Python ratio, not another
-Fluent call. The timing bucket is `active_window_geometry`.
+Fluent call. The extract aborts unless `0 < V < V_box`,
+`0 < ε <= 1`, the membrane area is in `(0, 2LW]`, and the spacer area
+is positive for every family other than `empty`. The timing bucket is
+`active_window_geometry`.
 
 Schock and Miquel, Desalination 64 (1987) 339–352, is only the
 cross-check column `hydraulic_diameter_schock_miquel_m`:
