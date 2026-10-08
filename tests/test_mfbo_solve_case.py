@@ -264,3 +264,26 @@ def test_main_returns_worker_code_and_prints_results(monkeypatch, tmp_path, caps
 
     with pytest.raises(FileExistsError, match="run leaf already exists"):
         driver.main(["--data-root", str(tmp_path), "--geo-id", geo_id])
+
+
+def test_unknown_mesh_id_reuses_the_default_solver_case():
+    driver = load_driver()
+    mesh_id = "max045_min006_cpg5_bl8_peel2"
+    case, template, _retries, _settle = driver.solver_template_for_mesh(
+        mesh_id,
+        driver.DEFAULT_CASE,
+    )
+    _source, default_template, _default_retries, _default_settle = driver.load_template(
+        driver.DEFAULT_MESH_ID,
+        driver.DEFAULT_CASE,
+    )
+    assert case["mesh_id"] == driver.DEFAULT_MESH_ID
+    assert template["mesh_id"] == mesh_id
+    assert default_template["mesh_id"] == driver.DEFAULT_MESH_ID
+    assert template["case_name"] == default_template["case_name"]
+    assert template["inlet_velocity_value"] == default_template["inlet_velocity_value"]
+    kept = driver.solver_template_for_mesh(driver.DEFAULT_MESH_ID, driver.DEFAULT_CASE)
+    assert kept[1]["mesh_id"] == driver.DEFAULT_MESH_ID
+    assert kept[0]["mesh_id"] == driver.DEFAULT_MESH_ID
+    with pytest.raises(RuntimeError, match="exactly one"):
+        driver.solver_template_for_mesh(driver.DEFAULT_MESH_ID, "u9p9_p9M")

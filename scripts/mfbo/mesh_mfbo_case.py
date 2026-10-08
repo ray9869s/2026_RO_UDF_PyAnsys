@@ -4,6 +4,11 @@ Reuses ``scripts/batch_meshing.py`` to build overrides from
 ``common_mesh_settings`` plus the production ``P_p100_h30`` case, and to
 launch ``meshing_code_260616.py``. ``RO_DATA_ROOT`` is set on the child. The
 parent sets it only while resolving the MFP registry entry, then restores it.
+
+Optional ``--m-max``, ``--m-min``, ``--m-cpg``, ``--bl-layers``,
+``--spacer-bl-layers``, and ``--peel-layers`` overlay that template and
+set ``mesh_id`` from the knobs. Omitting every one of them keeps the
+``--mesh-id`` lookup, including its default.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import batch_meshing
+from ro.campaign_matrix import format_production_mesh_id
 from ro.geometry_registry import MFBO_PILLAR_GEO_ID_RE, resolve_geometry_parameters
 
 TEMPLATE_GEO_ID = "P_p100_h30"
@@ -297,9 +303,133 @@ def launch_worker(overrides, data_root, mesh_directory, mesh_id, max_retries):
     return result
 
 
+def _positive_float(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a real number, got {value!r}.")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0.0:
+        raise ValueError(f"{name} must be a positive finite number, got {value!r}.")
+    return number
+
+
+def _positive_int(name, value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer, got {value!r}.")
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value!r}.")
+    return value
+
+
+def mesh_settings_from_args(args):
+    """Return mesh knobs, or None when every setting flag was omitted.
+
+    A partial set is refused. Omitting all of them leaves the ``--mesh-id``
+    template lookup unchanged.
+    """
+    raw = {
+        "m_max": args.m_max,
+        "m_min": args.m_min,
+        "m_cpg": args.m_cpg,
+        "bl_layers": args.bl_layers,
+        "peel_layers": args.peel_layers,
+        "spacer_bl_layers": args.spacer_bl_layers,
+    }
+    if all(value is None for value in raw.values()):
+        return None
+    required = ("m_max", "m_min", "m_cpg", "bl_layers", "peel_layers")
+    missing = [key for key in required if raw[key] is None]
+    if missing:
+        raise ValueError(
+            "Mesh settings must be passed together "
+            f"({', '.join(required)}). Missing {missing}. "
+            "--spacer-bl-layers stays optional."
+        )
+    settings = {
+        "m_max": _positive_float("m_max", raw["m_max"]),
+        "m_min": _positive_float("m_min", raw["m_min"]),
+        "m_cpg": _positive_int("m_cpg", raw["m_cpg"]),
+        "bl_layers": _positive_int("bl_layers", raw["bl_layers"]),
+        "peel_layers": _positive_int("peel_layers", raw["peel_layers"]),
+    }
+    if settings["m_min"] > settings["m_max"]:
+        raise ValueError(
+            f"m_min must be <= m_max. m_min={settings['m_min']!r}, "
+            f"m_max={settings['m_max']!r}."
+        )
+    if raw["spacer_bl_layers"] is not None:
+        settings["spacer_bl_layers"] = _positive_int(
+            "spacer_bl_layers",
+            raw["spacer_bl_layers"],
+        )
+    return settings
+
+
+def apply_mesh_settings(template, settings):
+    """Copy ``template`` and replace mesh knobs. Does not mutate ``template``."""
+    if not isinstance(template, dict):
+        raise TypeError(f"template must be a dict, got {type(template).__name__}.")
+    if not isinstance(settings, dict):
+        raise TypeError(f"settings must be a dict, got {type(settings).__name__}.")
+    missing = [
+        key
+        for key in ("m_max", "m_min", "m_cpg", "bl_layers", "peel_layers")
+        if key not in settings
+    ]
+    if missing:
+        raise KeyError(f"mesh settings missing {missing}.")
+    updated = dict(template)
+    old_mesh_id = updated.get("mesh_id")
+    for key in ("m_max", "m_min", "m_cpg", "bl_layers", "peel_layers"):
+        updated[key] = settings[key]
+    if settings.get("spacer_bl_layers") is not None:
+        updated["spacer_bl_layers"] = settings["spacer_bl_layers"]
+    else:
+        updated.pop("spacer_bl_layers", None)
+    mesh_id = format_production_mesh_id(
+        m_max=updated["m_max"],
+        m_min=updated["m_min"],
+        m_cpg=updated["m_cpg"],
+        bl_layers=updated["bl_layers"],
+        peel_layers=updated["peel_layers"],
+        spacer_bl_layers=updated.get("spacer_bl_layers"),
+    )
+    updated["mesh_id"] = mesh_id
+    if updated.get("case_name") == old_mesh_id:
+        updated["case_name"] = mesh_id
+    return updated
+
+
+def mesh_id_for_request(mesh_id_arg, settings):
+    """``--mesh-id`` when settings are omitted, otherwise the id the knobs encode.
+
+    An explicit ``--mesh-id`` that is neither the default nor that encoded
+    id is refused. The default argument may stand in for the encoded id.
+    """
+    if settings is None:
+        return mesh_id_arg
+    computed = format_production_mesh_id(
+        m_max=settings["m_max"],
+        m_min=settings["m_min"],
+        m_cpg=settings["m_cpg"],
+        bl_layers=settings["bl_layers"],
+        peel_layers=settings["peel_layers"],
+        spacer_bl_layers=settings.get("spacer_bl_layers"),
+    )
+    if mesh_id_arg not in (DEFAULT_MESH_ID, computed):
+        raise ValueError(
+            f"--mesh-id {mesh_id_arg!r} does not match the mesh id "
+            f"{computed!r} from the given settings."
+        )
+    return computed
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Mesh one MFP geometry with the production meshing worker.",
+        description=(
+            "Mesh one MFP geometry with the production meshing worker. "
+            "Optional mesh settings overlay the production template. "
+            "Omitting them keeps the --mesh-id lookup."
+        ),
     )
     parser.add_argument(
         "--data-root",
@@ -316,6 +446,12 @@ def build_parser():
         default=DEFAULT_MESH_ID,
         help=f"Production mesh id to copy settings from (default {DEFAULT_MESH_ID}).",
     )
+    parser.add_argument("--m-max", type=float, default=None)
+    parser.add_argument("--m-min", type=float, default=None)
+    parser.add_argument("--m-cpg", type=int, default=None)
+    parser.add_argument("--bl-layers", type=int, default=None)
+    parser.add_argument("--spacer-bl-layers", type=int, default=None)
+    parser.add_argument("--peel-layers", type=int, default=None)
     return parser
 
 
@@ -325,12 +461,23 @@ def main(argv=None):
     geo_id = require_mfbo_geo_id(args.geo_id)
     require_geometry(data_root, geo_id)
     registry = resolve_registry(data_root, geo_id)
-    _case, template, max_retries = load_template(args.mesh_id)
+    settings = mesh_settings_from_args(args)
+    if settings is None:
+        mesh_id = args.mesh_id
+        _case, template, max_retries = load_template(mesh_id)
+    else:
+        _case, base, max_retries = load_template(DEFAULT_MESH_ID)
+        template = apply_mesh_settings(base, settings)
+        mesh_id = mesh_id_for_request(args.mesh_id, settings)
+        if template["mesh_id"] != mesh_id:
+            raise RuntimeError(
+                f"settings mesh id {template['mesh_id']!r} != {mesh_id!r}."
+            )
     overrides = apply_mfbo_overrides(template, geo_id, registry)
     assert_override_delta(template, overrides)
-    leaf = mesh_leaf(data_root, geo_id, args.mesh_id)
+    leaf = mesh_leaf(data_root, geo_id, mesh_id)
     refuse_existing_mesh(leaf)
-    result = launch_worker(overrides, data_root, leaf, args.mesh_id, max_retries)
+    result = launch_worker(overrides, data_root, leaf, mesh_id, max_retries)
     manifest_path = leaf / "manifest.json"
     if result.returncode == 0 and not manifest_path.is_file():
         raise FileNotFoundError(

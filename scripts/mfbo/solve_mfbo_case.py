@@ -5,6 +5,10 @@ Reuses ``scripts/batch_solver_sweep.py`` for overrides and
 extraction call as ``run_parity_solve.py``. ``RO_DATA_ROOT`` is set on the
 child processes. The parent sets it only while resolving the MFP registry
 and while extraction reads the new run manifest, then restores it.
+
+``--mesh-id`` defaults to the production operating mesh. A mesh id that
+is not in the production solver catalog reuses that default solver case
+and replaces only ``mesh_id``.
 """
 
 from __future__ import annotations
@@ -387,6 +391,24 @@ def _exit_code(returncode):
     return 1
 
 
+def solver_template_for_mesh(mesh_id, run_id):
+    """Production solver template for ``mesh_id``.
+
+    The default mesh id is looked up as before. A mesh id with no catalog
+    entry reuses the default production solver case and replaces only
+    ``mesh_id`` on the override dict. The source case dict is unchanged.
+    """
+    try:
+        return load_template(mesh_id, run_id)
+    except RuntimeError as exc:
+        if mesh_id == DEFAULT_MESH_ID or not str(exc).endswith("found 0."):
+            raise
+    case, template, retries, settle = load_template(DEFAULT_MESH_ID, run_id)
+    retargeted = dict(template)
+    retargeted["mesh_id"] = mesh_id
+    return case, retargeted, retries, settle
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Solve and extract one MFP case with the production workers.",
@@ -424,7 +446,10 @@ def main(argv=None):
     refuse_existing_run(run_directory)
 
     registry = resolve_registry(data_root, geo_id)
-    case, template, max_retries, settle_s = load_template(args.mesh_id, args.case)
+    case, template, max_retries, settle_s = solver_template_for_mesh(
+        args.mesh_id,
+        args.case,
+    )
     overrides = apply_mfbo_overrides(template, geo_id, registry)
     assert_override_delta(template, overrides)
 

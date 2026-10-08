@@ -237,3 +237,151 @@ def test_launch_puts_data_root_on_the_child_only(monkeypatch, tmp_path):
     assert captured["env"]["RO_DATA_ROOT"] == str(tmp_path)
     assert "PYFLUENT_RUN_CONFIG" not in captured["env"]
     assert "RO_DATA_ROOT" not in os.environ
+
+
+def test_mesh_setting_flags_default_to_absent():
+    driver = load_driver()
+    geo_id = format_mfbo_pillar_geo_id(1.0, 0.3, 0.4)
+    args = driver.build_parser().parse_args(
+        ["--data-root", "C:/ro_data_mfbo/case", "--geo-id", geo_id]
+    )
+    assert args.mesh_id == driver.DEFAULT_MESH_ID
+    assert args.m_max is None
+    assert args.m_min is None
+    assert args.m_cpg is None
+    assert args.bl_layers is None
+    assert args.spacer_bl_layers is None
+    assert args.peel_layers is None
+    assert driver.mesh_settings_from_args(args) is None
+
+
+def test_partial_mesh_settings_are_refused():
+    driver = load_driver()
+    geo_id = format_mfbo_pillar_geo_id(1.0, 0.3, 0.4)
+    args = driver.build_parser().parse_args(
+        [
+            "--data-root",
+            "C:/ro_data_mfbo/case",
+            "--geo-id",
+            geo_id,
+            "--m-max",
+            "0.045",
+        ]
+    )
+    with pytest.raises(ValueError, match="together"):
+        driver.mesh_settings_from_args(args)
+    spacer_only = driver.build_parser().parse_args(
+        [
+            "--data-root",
+            "C:/ro_data_mfbo/case",
+            "--geo-id",
+            geo_id,
+            "--spacer-bl-layers",
+            "6",
+        ]
+    )
+    with pytest.raises(ValueError, match="together"):
+        driver.mesh_settings_from_args(spacer_only)
+
+
+def test_mesh_settings_overlay_does_not_mutate_the_template():
+    driver = load_driver()
+    geo_id = format_mfbo_pillar_geo_id(1.0, 0.3, 0.4)
+    registry = _registry(geo_id)
+    _case, template, _retries = driver.load_template(driver.DEFAULT_MESH_ID)
+    settings = {
+        "m_max": 0.045,
+        "m_min": 0.006,
+        "m_cpg": 5,
+        "bl_layers": 8,
+        "peel_layers": 2,
+        "spacer_bl_layers": 6,
+    }
+    updated = driver.apply_mesh_settings(template, settings)
+    assert template["mesh_id"] == driver.DEFAULT_MESH_ID
+    assert template["m_max"] == pytest.approx(0.085)
+    assert updated["mesh_id"] == "max045_min006_cpg5_bl8s6_peel2"
+    assert updated["m_max"] == pytest.approx(0.045)
+    assert updated["bl_layers"] == 8
+    assert updated["spacer_bl_layers"] == 6
+    assert updated["case_name"] == updated["mesh_id"]
+    overrides = driver.apply_mfbo_overrides(updated, geo_id, registry)
+    driver.assert_override_delta(updated, overrides)
+    assert driver.mesh_id_for_request(driver.DEFAULT_MESH_ID, settings) == updated["mesh_id"]
+    with pytest.raises(ValueError, match="does not match"):
+        driver.mesh_id_for_request("max060_min006_cpg5_bl4_peel2", settings)
+
+
+def test_explicit_production_settings_keep_the_default_mesh_id():
+    driver = load_driver()
+    _case, template, _retries = driver.load_template(driver.DEFAULT_MESH_ID)
+    settings = {
+        "m_max": template["m_max"],
+        "m_min": template["m_min"],
+        "m_cpg": template["m_cpg"],
+        "bl_layers": template["bl_layers"],
+        "peel_layers": template["peel_layers"],
+    }
+    updated = driver.apply_mesh_settings(template, settings)
+    assert updated["mesh_id"] == driver.DEFAULT_MESH_ID
+    assert updated["m_max"] == template["m_max"]
+    assert "spacer_bl_layers" not in updated
+
+
+def test_main_applies_mesh_settings(monkeypatch, tmp_path):
+    driver = load_driver()
+    geo_id = format_mfbo_pillar_geo_id(1.0, 0.3, 0.4)
+    registry = _registry(geo_id)
+    _write_meta(tmp_path, geo_id, registry)
+    pmdb, _meta = driver.geometry_paths(tmp_path, geo_id)
+    pmdb.write_bytes(b"pmdb")
+    captured = {}
+
+    def fake_launch(overrides, data_root, mesh_directory, mesh_id, max_retries):
+        captured["mesh_id"] = mesh_id
+        captured["overrides"] = overrides
+        manifest = Path(mesh_directory) / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "cell_count": 10,
+                    "skewness_max": 0.2,
+                    "ortho_min": 0.3,
+                    "AR_max": 4.0,
+                    "porosity_eps": 0.9,
+                    "membrane_blocked_area_frac_geometric": 0.1,
+                    "spacer_wall_zones": overrides["wall_spacer_labels"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver, "launch_worker", fake_launch)
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            geo_id,
+            "--m-max",
+            "0.045",
+            "--m-min",
+            "0.006",
+            "--m-cpg",
+            "5",
+            "--bl-layers",
+            "8",
+            "--spacer-bl-layers",
+            "6",
+            "--peel-layers",
+            "2",
+        ]
+    )
+    assert code == 0
+    assert captured["mesh_id"] == "max045_min006_cpg5_bl8s6_peel2"
+    assert captured["overrides"]["m_max"] == pytest.approx(0.045)
+    assert captured["overrides"]["spacer_bl_layers"] == 6
+    assert captured["overrides"]["geo_id"] == geo_id
+    assert "RO_DATA_ROOT" not in os.environ

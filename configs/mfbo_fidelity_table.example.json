@@ -1,0 +1,10 @@
+{
+  "LF": {
+    "m_max": 0.085,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 4,
+    "peel_layers": 2
+  },
+  "HF": "TBD"
+}
