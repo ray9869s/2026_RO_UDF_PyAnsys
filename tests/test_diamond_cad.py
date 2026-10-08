@@ -10,6 +10,8 @@ import pytest
 from helpers import SCRIPTS_DIR, load_module
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.diamond_cad import (
+    _contact_component,
+    check_spacer_contacts,
     diamond_layout,
     filament_segments,
     generate_diamond_cad,
@@ -169,7 +171,7 @@ def test_filaments_are_the_cell_diagonals_and_spheres_sit_on_the_crossings():
         assert segment["origin"][0] < layout["x_active_0"] or cell > 0
 
     centers = sphere_centers(layout)
-    assert len(centers) == layout["n_active"] + 2 * (layout["n_active"] + 1)
+    assert len(centers) == 3 * layout["n_active"] - 2
     assert all(center[2] == 0.0 for center in centers)
     interior = [center for center in centers if abs(center[1]) < 1e-12]
     assert len(interior) == layout["n_active"]
@@ -225,6 +227,53 @@ def test_generate_refuses_production_root_and_existing_files_before_discovery(tm
         generate_diamond_cad(geo_id="D2450_a45", out_dir=tmp_path)
     with pytest.raises(ValueError, match="not a Diamond"):
         generate_diamond_cad(geo_id="P_p100_h30", out_dir=tmp_path)
+
+
+def _centers_at_95ffb26(layout):
+    """Corner-inclusive centres from before crossings were taken from both axes."""
+    pitch = layout["pitch_m"]
+    x0 = layout["x_active_0"]
+    centers = []
+    for index in range(layout["n_active"]):
+        centers.append((x0 + (index + 0.5) * pitch, 0.0, 0.0))
+    for index in range(layout["n_active"] + 1):
+        x_m = x0 + index * pitch
+        centers.append((x_m, layout["y_min"], 0.0))
+        centers.append((x_m, layout["y_max"], 0.0))
+    return centers
+
+
+def test_sphere_centres_lie_on_both_layers_for_every_diamond_id():
+    for geo_id in _diamond_ids():
+        layout = diamond_layout(geo_id)
+        with pytest.raises(RuntimeError, match="not on both filament axes"):
+            check_spacer_contacts(layout, centers=_centers_at_95ffb26(layout))
+        contacts = check_spacer_contacts(layout)
+        assert "spacer" in contacts
+        assert not any(contacts[name] == set() for name in contacts)
+
+
+def test_contact_check_runs_before_any_modeler_call(tmp_path, monkeypatch):
+    def boom():
+        raise AssertionError("Discovery import was reached")
+
+    monkeypatch.setattr("ro.diamond_cad._bind_geometry_symbols", boom)
+    monkeypatch.setattr("ro.diamond_cad.sphere_centers", _centers_at_95ffb26)
+    with pytest.raises(RuntimeError, match="not on both filament axes"):
+        generate_diamond_cad(geo_id="D2450_a45", out_dir=tmp_path)
+
+
+def test_union_order_follows_the_contact_component():
+    contacts = {
+        "spacer": {"filament_1"},
+        "filament_1": {"spacer", "sphere_0"},
+        "sphere_0": {"filament_1", "filament_2"},
+        "filament_2": {"sphere_0"},
+    }
+    order, pending = _contact_component("spacer", contacts)
+    assert pending == []
+    assert order.index("filament_1") < order.index("sphere_0")
+    assert order.index("sphere_0") < order.index("filament_2")
 
 
 def test_import_does_not_launch_discovery():

@@ -172,21 +172,111 @@ def filament_segments(layout):
 
 
 def sphere_centers(layout):
-    """Crossings of the two diagonals, including the periodic-boundary copies.
+    """Crossings of the upper-layer axes with the lower-layer axes.
 
-    Interior crossings are the cell centres. Boundary crossings lie on
-    ``y = ±span/2`` at every cell station, including the active ends.
+    Each centre is an intersection of one finite upper axis and one finite
+    lower axis, at ``z = 0``, inside the periodic span. The four corners of
+    the active window are the end of only one family, so they are not
+    centres. Extension crossings outside ``y = ±span/2`` are not centres.
     """
-    pitch_m = layout["pitch_m"]
-    x0 = layout["x_active_0"]
-    centers = []
-    for index in range(layout["n_active"]):
-        centers.append((x0 + (index + 0.5) * pitch_m, 0.0, 0.0))
-    for index in range(layout["n_active"] + 1):
-        x_m = x0 + index * pitch_m
-        centers.append((x_m, layout["y_min"], 0.0))
-        centers.append((x_m, layout["y_max"], 0.0))
-    return centers
+    uppers = []
+    lowers = []
+    for segment in filament_segments(layout):
+        if segment["layer"] == "upper":
+            uppers.append(segment)
+        else:
+            lowers.append(segment)
+    found = []
+    y_min = layout["y_min"]
+    y_max = layout["y_max"]
+    for upper in uppers:
+        upper_xy = _axis_segment_xy(upper)
+        for lower in lowers:
+            point = _xy_segment_intersection(upper_xy, _axis_segment_xy(lower))
+            if point is None:
+                continue
+            if point[1] < y_min - POSITION_TOL_M or point[1] > y_max + POSITION_TOL_M:
+                continue
+            if any(
+                math.hypot(point[0] - prior[0], point[1] - prior[1]) < POSITION_TOL_M
+                for prior in found
+            ):
+                continue
+            found.append((point[0], point[1], 0.0))
+    if not found:
+        raise RuntimeError(f"{layout['geo_id']} has no upper/lower axis crossings.")
+    found.sort(key=lambda point: (point[0], point[1]))
+    return found
+
+
+def check_spacer_contacts(layout, segments=None, centers=None):
+    """Raise unless every sphere sits on both layers and the solids connect.
+
+    No Discovery session. A sphere fails when its in-plane distance to the
+    nearest upper axis or the nearest lower axis is at least ``1e-9`` m.
+    Two solids overlap when the distance between their axes (a sphere axis
+    is its centre) is less than the sum of the radii. That graph must be
+    one component. Returns the contact map used to grow the union.
+    """
+    if segments is None:
+        segments = filament_segments(layout)
+    if centers is None:
+        centers = sphere_centers(layout)
+    names = _spacer_body_names(len(segments), len(centers))
+    filament_radius = layout["filament_radius_m"]
+    sphere_radius = layout["sphere_radius_m"]
+    upper_axes = [
+        _axis_segment_xy(segment)
+        for segment in segments
+        if segment["layer"] == "upper"
+    ]
+    lower_axes = [
+        _axis_segment_xy(segment)
+        for segment in segments
+        if segment["layer"] == "lower"
+    ]
+    axis_errors = []
+    for index, center in enumerate(centers):
+        point = (center[0], center[1])
+        upper_distance = min(
+            _xy_point_segment_distance(point, axis) for axis in upper_axes
+        )
+        lower_distance = min(
+            _xy_point_segment_distance(point, axis) for axis in lower_axes
+        )
+        if upper_distance < POSITION_TOL_M and lower_distance < POSITION_TOL_M:
+            continue
+        axis_errors.append(
+            f"sphere_{index} upper {upper_distance:.6e} m, "
+            f"lower {lower_distance:.6e} m"
+        )
+    solids = []
+    for index, segment in enumerate(segments):
+        solids.append((_axis_segment_3d(segment), filament_radius))
+    for center in centers:
+        solids.append(((center, center), sphere_radius))
+    contacts = {name: set() for name in names}
+    for left in range(len(names)):
+        for right in range(left + 1, len(names)):
+            gap = _segment_distance_3d(solids[left][0], solids[right][0])
+            if gap < solids[left][1] + solids[right][1]:
+                contacts[names[left]].add(names[right])
+                contacts[names[right]].add(names[left])
+    _absorbed, outside = _contact_component(names[0], contacts)
+    if not axis_errors and not outside:
+        return contacts
+    lines = [f"{layout['geo_id']} spacer contact check failed."]
+    if axis_errors:
+        lines.append(
+            "Spheres not on both filament axes: "
+            + ", ".join(axis_errors)
+        )
+    if outside:
+        lines.append(
+            "Bodies outside the contact component of 'spacer': "
+            + ", ".join(outside)
+        )
+    raise RuntimeError(" ".join(lines))
 
 
 def nominal_areas_m2(layout):
@@ -231,6 +321,7 @@ def generate_diamond_cad(*, geo_id, out_dir, n_active=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     segments = filament_segments(layout)
     centers = sphere_centers(layout)
+    contacts = check_spacer_contacts(layout, segments, centers)
 
     modeler = None
     try:
@@ -245,7 +336,7 @@ def generate_diamond_cad(*, geo_id, out_dir, n_active=None):
             raise RuntimeError(
                 f"Design name {design.name!r} does not match geo_id {layout['geo_id']!r}."
             )
-        body = _build_fluid(design, layout, segments, centers)
+        body = _build_fluid(design, layout, segments, centers, contacts)
         counts = _classify_and_name(design, body, layout)
         design.export_to_pmdb(out_dir)
         design.export_to_scdocx(out_dir)
@@ -320,7 +411,7 @@ def _require_angle_identity(pitch_m, periodic_dy_m, attack_deg, geo_id):
 def _bind_geometry_symbols():
     """Import PyAnsys Geometry when a body is built, not at module import."""
     global pyansys_geometry, ApiVersions, launch_modeler_with_discovery
-    global CollisionType, SurfaceType, Plane, Point2D, Point3D, UnitVector3D
+    global SurfaceType, Plane, Point2D, Point3D, UnitVector3D
     global PlaneSurface, Sketch, Distance
     pyansys_geometry = importlib.import_module("ansys.geometry.core")
     ApiVersions = importlib.import_module(
@@ -329,9 +420,6 @@ def _bind_geometry_symbols():
     launch_modeler_with_discovery = importlib.import_module(
         "ansys.geometry.core.connection.launcher"
     ).launch_modeler_with_discovery
-    CollisionType = importlib.import_module(
-        "ansys.geometry.core.designer.body"
-    ).CollisionType
     SurfaceType = importlib.import_module(
         "ansys.geometry.core.designer.face"
     ).SurfaceType
@@ -351,7 +439,7 @@ def _bind_geometry_symbols():
     ).Distance
 
 
-def _build_fluid(design, layout, segments, centers):
+def _build_fluid(design, layout, segments, centers, contacts):
     if not segments:
         raise RuntimeError("The layout produced no filament segments.")
     for index, segment in enumerate(segments):
@@ -363,7 +451,6 @@ def _build_fluid(design, layout, segments, centers):
             layout["filament_radius_m"],
             segment["length"],
         )
-    other_names = [f"filament_{index}" for index in range(1, len(segments))]
     for index, center in enumerate(centers):
         name = f"sphere_{index}"
         body = design.create_sphere(
@@ -373,8 +460,7 @@ def _build_fluid(design, layout, segments, centers):
         )
         if body is None:
             raise RuntimeError(f"create_sphere returned None for {name}.")
-        other_names.append(name)
-    _unite_touching(design, "spacer", other_names)
+    _unite_touching(design, "spacer", contacts)
     _extrude_box(design, "buffer_in", 0.0, layout["x_active_0"], layout)
     _extrude_box(design, "active", layout["x_active_0"], layout["x_active_1"], layout)
     _extrude_box(design, "buffer_out", layout["x_active_1"], layout["x_outlet"], layout)
@@ -541,23 +627,151 @@ def _membrane_label(face, side, layout):
     )
 
 
-def _unite_touching(design, host_name, other_names):
-    """Unite bodies that touch the growing solid. A disjoint remainder raises."""
-    pending = list(other_names)
-    while pending:
-        host = _body_named(design, host_name)
-        matched = None
+def _unite_touching(design, host_name, contacts):
+    """Unite the contact component of ``host_name``.
+
+    Contacts are the analytical overlaps from ``check_spacer_contacts``.
+    Asking the united solid which bodies it collides with misses solids that
+    only meet a piece already absorbed, so the absorbed set grows to a fixed
+    point of that contact map and each new body is united in that order.
+    """
+    order, pending = _contact_component(host_name, contacts)
+    for name in order:
+        _body_named(design, host_name).unite(_body_named(design, name))
+    if pending:
+        raise RuntimeError(
+            "Spacer union stopped. These bodies do not touch "
+            f"{host_name!r}: {pending}."
+        )
+
+
+def _spacer_body_names(segment_count, sphere_count):
+    names = ["spacer" if index == 0 else f"filament_{index}" for index in range(segment_count)]
+    names.extend(f"sphere_{index}" for index in range(sphere_count))
+    return names
+
+
+def _contact_component(host, contacts):
+    """Return bodies absorbed in unite order, then those still outside."""
+    absorbed = {host}
+    order = []
+    pending = [name for name in contacts if name != host]
+    changed = True
+    while changed and pending:
+        changed = False
+        still = []
         for name in pending:
-            if host.get_collision(_body_named(design, name)) is not CollisionType.NONE:
-                matched = name
-                break
-        if matched is None:
-            raise RuntimeError(
-                "Spacer union stopped. These bodies do not touch "
-                f"{host_name!r}: {pending}."
-            )
-        _body_named(design, host_name).unite(_body_named(design, matched))
-        pending.remove(matched)
+            if contacts[name].isdisjoint(absorbed):
+                still.append(name)
+                continue
+            absorbed.add(name)
+            order.append(name)
+            changed = True
+        pending = still
+    return order, pending
+
+
+def _axis_segment_xy(segment):
+    origin = segment["origin"]
+    direction = segment["direction"]
+    length = segment["length"]
+    start = (origin[0], origin[1])
+    end = (
+        origin[0] + length * direction[0],
+        origin[1] + length * direction[1],
+    )
+    return start, end
+
+
+def _axis_segment_3d(segment):
+    origin = segment["origin"]
+    direction = segment["direction"]
+    length = segment["length"]
+    start = origin
+    end = tuple(origin[axis] + length * direction[axis] for axis in range(3))
+    return start, end
+
+
+def _xy_segment_intersection(first, second):
+    """Return the point where two finite xy segments meet, or None."""
+    ax, ay = first[0]
+    bx, by = first[1]
+    cx, cy = second[0]
+    dx, dy = second[1]
+    rx, ry = bx - ax, by - ay
+    sx, sy = dx - cx, dy - cy
+    denom = rx * sy - ry * sx
+    if abs(denom) <= POSITION_TOL_M * POSITION_TOL_M:
+        return None
+    qx, qy = cx - ax, cy - ay
+    t = (qx * sy - qy * sx) / denom
+    u = (qx * ry - qy * rx) / denom
+    if t < -POSITION_TOL_M or t > 1.0 + POSITION_TOL_M:
+        return None
+    if u < -POSITION_TOL_M or u > 1.0 + POSITION_TOL_M:
+        return None
+    return (ax + t * rx, ay + t * ry)
+
+
+def _xy_point_segment_distance(point, segment):
+    ax, ay = segment[0]
+    bx, by = segment[1]
+    px, py = point
+    vx, vy = bx - ax, by - ay
+    length_sq = vx * vx + vy * vy
+    if length_sq <= POSITION_TOL_M * POSITION_TOL_M:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * vx + (py - ay) * vy) / length_sq
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    return math.hypot(px - (ax + t * vx), py - (ay + t * vy))
+
+
+def _segment_distance_3d(first, second):
+    """Shortest distance between two finite 3D segments."""
+    start_a, end_a = first
+    start_b, end_b = second
+    direction_a = [end_a[axis] - start_a[axis] for axis in range(3)]
+    direction_b = [end_b[axis] - start_b[axis] for axis in range(3)]
+    offset = [start_a[axis] - start_b[axis] for axis in range(3)]
+    aa = sum(value * value for value in direction_a)
+    bb = sum(direction_a[axis] * direction_b[axis] for axis in range(3))
+    cc = sum(value * value for value in direction_b)
+    dd = sum(direction_a[axis] * offset[axis] for axis in range(3))
+    ee = sum(direction_b[axis] * offset[axis] for axis in range(3))
+    denom = aa * cc - bb * bb
+    small = POSITION_TOL_M * POSITION_TOL_M
+    if aa <= small and cc <= small:
+        s_param = 0.0
+        t_param = 0.0
+    elif aa <= small:
+        s_param = 0.0
+        t_param = _clamp_unit(ee / cc) if cc > small else 0.0
+    elif cc <= small:
+        t_param = 0.0
+        s_param = _clamp_unit(-dd / aa)
+    else:
+        s_param = _clamp_unit((bb * ee - cc * dd) / denom) if abs(denom) > small else 0.0
+        t_param = (bb * s_param + ee) / cc
+        if t_param < 0.0:
+            t_param = 0.0
+            s_param = _clamp_unit(-dd / aa)
+        elif t_param > 1.0:
+            t_param = 1.0
+            s_param = _clamp_unit((bb - dd) / aa)
+    nearest_a = [start_a[axis] + s_param * direction_a[axis] for axis in range(3)]
+    nearest_b = [start_b[axis] + t_param * direction_b[axis] for axis in range(3)]
+    return math.dist(nearest_a, nearest_b)
+
+
+def _clamp_unit(value):
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
 
 
 def _body_named(design, name):
