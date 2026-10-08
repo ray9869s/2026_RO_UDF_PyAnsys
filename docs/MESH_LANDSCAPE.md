@@ -610,3 +610,39 @@ iterations it sits entirely in the entrance buffer
 \(Y_i = 0.26\) in evaluation cells 5–8. `n_lead_excluded = 3` excludes it.
 At 301 iterations it appeared in cell 7 — an **under-convergence artifact**,
 not a contact-band feature of the converged field.
+
+---
+
+## Mesh independence (GCI)
+
+`scripts/mfbo/mesh_convergence.py` reads one geo_id and run_id across mesh
+ids given **coarse to fine**. It writes `mesh_convergence.csv` and
+`mesh_convergence.md`. The metrics are `lmh_mass_balance`,
+`lmh_module_area` (same module-area formula as
+`scripts/mfbo/summarize_results.py`), `pressure_drop_spacer_per_m`,
+`cpc_window_avg_flux − 1`, and `cp_q999_window_flux − 1`.
+
+The refinement ratio is an input. `--cell-count` sets
+`r = (N_fine / N_coarse)^(1/3)` from each mesh manifest's `cell_count`.
+`--ratio` sets one constant, for example `2` when a boundary-layer series
+halves `y1`. The script does not choose between them. Cell count must
+increase along a `--cell-count` series.
+
+For each metric the table lists the values, the successive differences
+(finer minus next-coarser), and each difference divided by the previous
+one. Apparent order, the Richardson value, and the fine-grid GCI use only
+the three finest levels and Celik et al., *Journal of Fluids Engineering*
+130 (2008), safety factor 1.25:
+
+- `p` from `|ε_coarse / ε_fine|` and the two ratios `r32`, `r21` (fixed
+  point when the ratios differ; closed form when they are equal)
+- `φ_ext = (r21^p φ_fine − φ_medium) / (r21^p − 1)`
+- `GCI = 1.25 |(φ_fine − φ_medium) / φ_fine| / (r21^p − 1)`
+
+A series is not extrapolated when any step is exactly zero, changes sign
+(oscillatory), grows in magnitude (divergent), or keeps the same magnitude
+(order 0). Differences and ratios are still written. The cell-count ratio
+is a single representative spacing `h ∝ N^(−1/3)`. It is not a substitute
+for a `y1` ratio. The constant-ratio option assumes that same `r` between
+every successive pair. A reported order is the observed order of that
+triplet, not a claim that the whole series is in the asymptotic range.
