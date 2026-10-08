@@ -683,9 +683,9 @@ field is `lmh_module_area` in `docs/RO_2D_OPTIMIZATION.md`.
 
 ## Dimensionless groups for literature comparison
 
-Derived only in `scripts/mfbo/summarize_results.py`. Extraction is
-unchanged. A column is `MISSING` when an input below is absent or not
-usable. Schmidt number does not depend on the leaf.
+`scripts/mfbo/summarize_results.py` derives these columns from the wide
+summary and the run manifest. A column is `MISSING` when an input below
+is absent or not usable. Schmidt number does not depend on the leaf.
 
 Fluid properties are the campaign constants, not values read back from
 the case: \(\rho = 998.2\,\mathrm{kg\,m^{-3}}\),
@@ -700,48 +700,51 @@ Velocity is the run-manifest superficial speed `u_target_ms` [m/s].
 
 ### Hydraulic diameter
 
-Schock and Miquel, Desalination 64 (1987) 339–352, for a spacer-filled
-flat channel:
-
-\[
-d_h = \frac{4\varepsilon}{2/h + (1-\varepsilon)\,S_{v,\mathrm{sp}}}
-\]
-
-\(\varepsilon\) is porosity, \(h\) is channel height [m], and
-\(S_{v,\mathrm{sp}}\) is spacer wetted area per unit solid volume
-[\(\mathrm{m^{-1}}\)]. An empty channel (\(\varepsilon = 1\)) gives
-\(d_h = 2h\), which is the wide-slit hydraulic diameter. The same
-diameter is the geometric definition
+The primary column `hydraulic_diameter_m` is the geometric diameter of
+the active window (every active cell, not the evaluation window that
+drops lead cells):
 
 \[
 d_h = \frac{4 V_{\mathrm{fluid}}}{A_{\mathrm{membrane}} + A_{\mathrm{spacer}}}
 \]
 
-when those three measurements are on the leaf. If both input sets are
-present, the summary uses \(4V/A\). **CONFIRM** that precedence.
-
-| Input | Leaf field | Unit |
+| Input | Wide-summary column | Unit |
 | --- | --- | --- |
-| \(\varepsilon\) | mesh manifest `porosity_eps` | — |
-| \(h\) | mesh manifest `domain_extent_z_m` | m |
-| \(S_{v,\mathrm{sp}}\) | mesh manifest `specific_surface_per_solid_volume_1_per_m` | 1/m |
-| \(V_{\mathrm{fluid}}\) | mesh manifest `total_fluid_volume_m3` | m³ |
-| \(A_{\mathrm{membrane}}\) | wide CSV `area_mem` | m² |
-| \(A_{\mathrm{spacer}}\) | mesh manifest or wide CSV `spacer_wetted_area_m2` | m² |
+| \(V_{\mathrm{fluid}}\) | `active_window_fluid_volume_m3` | m³ |
+| \(A_{\mathrm{membrane}}\) | `active_window_membrane_area_m2` | m² |
+| \(A_{\mathrm{spacer}}\) | `active_window_spacer_area_m2` | m² |
+| layout box | `active_window_box_volume_m3` | m³ |
+| \(\varepsilon = V_{\mathrm{fluid}} / V_{\mathrm{box}}\) | `active_window_porosity` | — |
 
-`specific_surface_per_solid_volume_1_per_m`, `spacer_wetted_area_m2`,
-and `total_fluid_volume_m3` are not written by the current extract or
-by the mesh-manifest builder. Spacer leaves therefore stay `MISSING`
-for \(d_h\) until one of those sets is stored. `porosity_eps` alone is
-not enough. Specific surface may be omitted only when `porosity_eps`
-is exactly 1.
+The box is active length × `periodic_shift_y_m` × the design channel
+height 0.00077 m (`CAMPAIGN_H_M`). It is not the measured mesh extent.
+`porosity_eps` stays the full-domain fluid volume over the full
+bounding box, buffers included, and is not an input to \(d_h\).
+`area_mem` is unchanged.
 
-**CONFIRM** the porosity that enters the Schock–Miquel formula.
-`porosity_eps` is fluid volume divided by the full-domain bounding box
-(`src/ro/mesh_common.py`), so the empty inlet and outlet buffers pull
-it toward 1. Papers that quote a spacer-region porosity are not using
-this number. **CONFIRM** the height: the column uses the measured
-z-span `domain_extent_z_m`, not the design channel height 0.00077 m.
+Both extract profiles write the five columns. The fluid volume is one
+`reduction.sum_if` of 1 with weight `Volume` on cell centroids inside
+the active x-span. Each area is one x-range iso-clip and one
+surface-area integral: the active membrane walls, and `wall_spacer_*`
+in the same span. An empty channel records spacer area 0 and skips
+that surface integral. Porosity is the Python ratio, not another
+Fluent call. The timing bucket is `active_window_geometry`.
+
+Schock and Miquel, Desalination 64 (1987) 339–352, is only the
+cross-check column `hydraulic_diameter_schock_miquel_m`:
+
+\[
+d_h = \frac{4\varepsilon}{2/h + A_{\mathrm{spacer}} / V_{\mathrm{box}}}
+\]
+
+\(h\) is the box divided by active length times periodic width, so it
+is the height used to build that box. \(A_{\mathrm{spacer}} / V_{\mathrm{box}}\)
+is \((1-\varepsilon) S_{v,\mathrm{sp}}\). At \(\varepsilon = 1\) the
+spacer term is omitted and \(d_h = 2h\), which requires
+\(A_{\mathrm{spacer}} = 0\). The two diameters agree for an empty
+channel whose membrane area is the projected area \(2LW\). They differ
+when spacer–membrane contact makes the wetted membrane area smaller
+than \(2LW\), because the Schock \(2/h\) term is that projected area.
 
 ### Reynolds and Schmidt numbers
 
