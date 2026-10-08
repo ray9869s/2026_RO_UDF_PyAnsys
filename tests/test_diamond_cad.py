@@ -10,7 +10,10 @@ import pytest
 from helpers import SCRIPTS_DIR, load_module
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.diamond_cad import (
+    _BooleanDebug,
     _contact_component,
+    _run_boolean,
+    _unite_touching,
     check_spacer_contacts,
     diamond_layout,
     filament_segments,
@@ -274,6 +277,210 @@ def test_union_order_follows_the_contact_component():
     assert pending == []
     assert order.index("filament_1") < order.index("sphere_0")
     assert order.index("sphere_0") < order.index("filament_2")
+
+
+class _FakeBody:
+    def __init__(self, name, ident, volume=1.0e-9):
+        self.name = name
+        self.id = ident
+        self.is_alive = True
+        self._volume = volume
+        self.unite_error = None
+
+    @property
+    def volume(self):
+        if isinstance(self._volume, Exception):
+            raise self._volume
+        return self._volume
+
+    def unite(self, other):
+        if self.unite_error is not None and other.name == self.unite_error[0]:
+            raise self.unite_error[1]
+        other.is_alive = False
+
+    def subtract(self, other):
+        other.is_alive = False
+
+
+class _FakeDesign:
+    def __init__(self, bodies, name="D2450_a45"):
+        self.bodies = bodies
+        self.name = name
+        self.exports = []
+
+    def export_to_pmdb(self, location):
+        path = Path(location) / f"{self.name}.pmdb"
+        path.write_bytes(b"pmdb")
+        self.exports.append(path)
+        return path
+
+    def export_to_scdocx(self, location):
+        path = Path(location) / f"{self.name}.scdocx"
+        path.write_bytes(b"scdocx")
+        self.exports.append(path)
+        return path
+
+
+def _chain_design():
+    bodies = [
+        _FakeBody("spacer", "0:1"),
+        _FakeBody("sphere_0", "0:2"),
+        _FakeBody("filament_1", "0:3"),
+    ]
+    return _FakeDesign(bodies)
+
+
+def _chain_contacts():
+    return {
+        "spacer": {"sphere_0"},
+        "sphere_0": {"spacer", "filament_1"},
+        "filament_1": {"sphere_0"},
+    }
+
+
+def test_boolean_debug_logs_each_unite_without_saving_on_success(tmp_path):
+    design = _chain_design()
+    trace = _BooleanDebug(tmp_path, "D2450_a45")
+    _unite_touching(design, "spacer", _chain_contacts(), trace)
+    text = trace.log_path.read_text(encoding="utf-8")
+    assert "op 1 unite host=spacer tool=sphere_0 raised=no" in text
+    assert "op 2 unite host=spacer tool=filament_1 raised=no" in text
+    assert "body name=sphere_0 id=0:2 alive=False volume=1.000000e-09" in text
+    assert "saved pmdb" not in text
+    assert design.exports == []
+
+
+def test_boolean_debug_saves_the_design_on_the_first_raised_unite(tmp_path):
+    design = _chain_design()
+    design.bodies[0].unite_error = (
+        "filament_1",
+        RuntimeError("geometry service connection terminated"),
+    )
+    trace = _BooleanDebug(tmp_path, "D2450_a45")
+    with pytest.raises(RuntimeError, match="geometry service connection terminated"):
+        _unite_touching(design, "spacer", _chain_contacts(), trace)
+    text = trace.log_path.read_text(encoding="utf-8")
+    assert "op 1 unite host=spacer tool=sphere_0 raised=no" in text
+    assert (
+        "op 2 unite host=spacer tool=filament_1 raised=yes RuntimeError: "
+        "geometry service connection terminated"
+    ) in text
+    assert "save reason: op 2 unite raised" in text
+    assert f"saved pmdb: {tmp_path / 'D2450_a45.pmdb'}" in text
+    assert f"saved scdocx: {tmp_path / 'D2450_a45.scdocx'}" in text
+    assert (tmp_path / "D2450_a45.pmdb").is_file()
+    assert (tmp_path / "D2450_a45.scdocx").is_file()
+    assert trace.saved
+
+
+def test_boolean_debug_records_a_dead_service_and_a_failed_save(tmp_path):
+    host = _FakeBody("spacer", "0:1")
+    tool = _FakeBody("sphere_0", "0:2")
+
+    class _DeadDesign:
+        def __init__(self):
+            self.name = "D2450_a45"
+            self.dead = False
+            self._bodies = [host, tool]
+
+        @property
+        def bodies(self):
+            if self.dead:
+                raise RuntimeError("geometry service connection terminated")
+            return self._bodies
+
+        def export_to_pmdb(self, location):
+            raise RuntimeError("geometry service connection terminated")
+
+        def export_to_scdocx(self, location):
+            raise RuntimeError("geometry service connection terminated")
+
+    design = _DeadDesign()
+
+    def unite(other):
+        design.dead = True
+        raise RuntimeError("geometry service connection terminated")
+
+    host.unite = unite
+    trace = _BooleanDebug(tmp_path, "D2450_a45")
+    with pytest.raises(RuntimeError, match="connection terminated"):
+        _run_boolean(design, "unite", "spacer", "sphere_0", trace)
+    text = trace.log_path.read_text(encoding="utf-8")
+    assert "raised=yes RuntimeError: geometry service connection terminated" in text
+    assert "bodies unavailable: RuntimeError: geometry service connection terminated" in text
+    assert "save pmdb failed: RuntimeError: geometry service connection terminated" in text
+    assert "save scdocx failed: RuntimeError: geometry service connection terminated" in text
+    assert not (tmp_path / "D2450_a45.pmdb").exists()
+
+
+def test_boolean_debug_saves_when_more_than_one_body_remains(tmp_path):
+    spacer = _FakeBody("spacer", "0:1")
+    leftover = _FakeBody("temp", "0:9", volume=RuntimeError("no volume"))
+    solid = _FakeBody("Solid", "0:10", volume=2.5e-8)
+    design = _FakeDesign([spacer, leftover, solid])
+    trace = _BooleanDebug(tmp_path, "D2450_a45")
+    trace.note_final(design, spacer)
+    text = trace.log_path.read_text(encoding="utf-8")
+    assert "end alive=3 ok=no" in text
+    assert "body name=temp id=0:9 alive=True volume=unavailable (RuntimeError)" in text
+    assert "body name=Solid id=0:10 alive=True volume=2.500000e-08" in text
+    assert "save reason: end alive=3 ok=no" in text
+    assert (tmp_path / "D2450_a45.pmdb").is_file()
+    assert (tmp_path / "D2450_a45.scdocx").is_file()
+    trace.note_final(design, spacer)
+    assert trace.log_path.read_text(encoding="utf-8").count("saved pmdb") == 1
+
+
+def test_boolean_debug_log_is_created_before_discovery(tmp_path, monkeypatch):
+    def boom():
+        raise AssertionError("Discovery import was reached")
+
+    monkeypatch.setattr("ro.diamond_cad._bind_geometry_symbols", boom)
+    with pytest.raises(AssertionError, match="Discovery import was reached"):
+        generate_diamond_cad(
+            geo_id="D2450_a45",
+            out_dir=tmp_path,
+            debug_booleans=True,
+        )
+    text = (tmp_path / "D2450_a45_boolean_debug.log").read_text(encoding="utf-8")
+    assert "geo_id=D2450_a45" in text
+    assert not (tmp_path / "D2450_a45.pmdb").exists()
+
+
+def test_debug_booleans_still_refuses_the_production_root(monkeypatch):
+    def boom():
+        raise AssertionError("Discovery import was reached")
+
+    monkeypatch.setattr("ro.diamond_cad._bind_geometry_symbols", boom)
+    with pytest.raises(ValueError, match="C:/ro_data"):
+        generate_diamond_cad(
+            geo_id="D2450_a45",
+            out_dir="C:/ro_data/diamond_debug",
+            debug_booleans=True,
+        )
+
+
+def test_debug_booleans_flag_is_forwarded(monkeypatch):
+    script = load_module(
+        "generate_diamond_cad_script",
+        SCRIPTS_DIR / "generate_diamond_cad.py",
+    )
+    seen = {}
+
+    def fake_generate(**kwargs):
+        seen.update(kwargs)
+        return {"paths": {"pmdb": "D2450_a45.pmdb"}}
+
+    monkeypatch.setattr("ro.diamond_cad.generate_diamond_cad", fake_generate)
+    assert script.main(
+        ["--geo-id", "D2450_a45", "--out-dir", "C:/temp/diamond_debug", "--debug-booleans"]
+    ) == 0
+    assert seen["debug_booleans"] is True
+    assert seen["geo_id"] == "D2450_a45"
+    assert script.main(
+        ["--geo-id", "D2450_a45", "--out-dir", "C:/temp/diamond_debug"]
+    ) == 0
+    assert seen["debug_booleans"] is False
 
 
 def test_import_does_not_launch_discovery():

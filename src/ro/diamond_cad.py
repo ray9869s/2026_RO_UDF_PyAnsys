@@ -309,10 +309,13 @@ def nominal_areas_m2(layout):
     }
 
 
-def generate_diamond_cad(*, geo_id, out_dir, n_active=None):
+def generate_diamond_cad(*, geo_id, out_dir, n_active=None, debug_booleans=False):
     """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``.
 
     ``out_dir`` must not be ``C:/ro_data`` or anywhere under it.
+    ``debug_booleans`` writes ``<geo_id>_boolean_debug.log`` in that directory
+    and, on the first boolean failure or a multi-body result, the design
+    ``.pmdb`` and ``.scdocx`` next to the log.
     """
     layout = diamond_layout(geo_id, n_active=n_active)
     out_dir = _require_out_dir(out_dir)
@@ -322,6 +325,10 @@ def generate_diamond_cad(*, geo_id, out_dir, n_active=None):
     segments = filament_segments(layout)
     centers = sphere_centers(layout)
     contacts = check_spacer_contacts(layout, segments, centers)
+    trace = None
+    if debug_booleans:
+        trace = _BooleanDebug(out_dir, layout["geo_id"])
+        print(f"boolean debug log: {trace.log_path}", flush=True)
 
     modeler = None
     try:
@@ -336,7 +343,7 @@ def generate_diamond_cad(*, geo_id, out_dir, n_active=None):
             raise RuntimeError(
                 f"Design name {design.name!r} does not match geo_id {layout['geo_id']!r}."
             )
-        body = _build_fluid(design, layout, segments, centers, contacts)
+        body = _build_fluid(design, layout, segments, centers, contacts, trace)
         counts = _classify_and_name(design, body, layout)
         design.export_to_pmdb(out_dir)
         design.export_to_scdocx(out_dir)
@@ -439,7 +446,7 @@ def _bind_geometry_symbols():
     ).Distance
 
 
-def _build_fluid(design, layout, segments, centers, contacts):
+def _build_fluid(design, layout, segments, centers, contacts, trace=None):
     if not segments:
         raise RuntimeError("The layout produced no filament segments.")
     for index, segment in enumerate(segments):
@@ -460,16 +467,18 @@ def _build_fluid(design, layout, segments, centers, contacts):
         )
         if body is None:
             raise RuntimeError(f"create_sphere returned None for {name}.")
-    _unite_touching(design, "spacer", contacts)
+    _unite_touching(design, "spacer", contacts, trace)
     _extrude_box(design, "buffer_in", 0.0, layout["x_active_0"], layout)
     _extrude_box(design, "active", layout["x_active_0"], layout["x_active_1"], layout)
     _extrude_box(design, "buffer_out", layout["x_active_1"], layout["x_outlet"], layout)
-    _body_named(design, "active").subtract(_body_named(design, "spacer"))
-    _body_named(design, "buffer_in").unite(_body_named(design, "active"))
-    _body_named(design, "buffer_in").unite(_body_named(design, "buffer_out"))
+    _run_boolean(design, "subtract", "active", "spacer", trace)
+    _run_boolean(design, "unite", "buffer_in", "active", trace)
+    _run_boolean(design, "unite", "buffer_in", "buffer_out", trace)
     fluid = _body_named(design, "buffer_in")
     fluid.name = f"{layout['geo_id'].lower()}-solid"
     fluid = _body_named(design, fluid.name)
+    if trace is not None:
+        trace.note_final(design, fluid)
     alive = [body for body in design.bodies if body.is_alive]
     if len(alive) != 1 or alive[0].id != fluid.id:
         raise RuntimeError(
@@ -627,7 +636,7 @@ def _membrane_label(face, side, layout):
     )
 
 
-def _unite_touching(design, host_name, contacts):
+def _unite_touching(design, host_name, contacts, trace=None):
     """Unite the contact component of ``host_name``.
 
     Contacts are the analytical overlaps from ``check_spacer_contacts``.
@@ -637,12 +646,131 @@ def _unite_touching(design, host_name, contacts):
     """
     order, pending = _contact_component(host_name, contacts)
     for name in order:
-        _body_named(design, host_name).unite(_body_named(design, name))
+        _run_boolean(design, "unite", host_name, name, trace)
     if pending:
         raise RuntimeError(
             "Spacer union stopped. These bodies do not touch "
             f"{host_name!r}: {pending}."
         )
+
+
+def _run_boolean(design, op, host_name, tool_name, trace):
+    """Run one unite or subtract. The trace records the design after it."""
+    error = None
+    try:
+        host = _body_named(design, host_name)
+        tool = _body_named(design, tool_name)
+        if op == "unite":
+            host.unite(tool)
+        elif op == "subtract":
+            host.subtract(tool)
+        else:
+            raise RuntimeError(f"Unknown boolean op {op!r}.")
+    except Exception as exc:
+        error = exc
+    if trace is not None:
+        trace.record(design, op, host_name, tool_name, error)
+    if error is not None:
+        raise error
+
+
+class _BooleanDebug:
+    """Append one block per boolean to ``<geo_id>_boolean_debug.log``.
+
+    The first raised boolean, or a final design that is not a single body,
+    is exported as ``.pmdb`` and ``.scdocx`` in the same directory. ``out_dir``
+    has already been refused when it is under ``C:/ro_data``.
+    """
+
+    def __init__(self, out_dir, geo_id):
+        self.out_dir = Path(out_dir)
+        self.log_path = self.out_dir / f"{geo_id}_boolean_debug.log"
+        self._index = 0
+        self.saved = False
+        self.log_path.write_text(
+            f"geo_id={geo_id}\n"
+            "host and tool are the names requested before the op. "
+            "The body list is the design after the op.\n",
+            encoding="utf-8",
+        )
+
+    def record(self, design, op, host_name, tool_name, error):
+        self._index += 1
+        if error is None:
+            raised = "no"
+        else:
+            raised = f"yes {type(error).__name__}: {error}"
+        self._append(
+            f"op {self._index} {op} host={host_name} tool={tool_name} raised={raised}\n"
+            + _boolean_body_block(design)
+        )
+        if error is not None:
+            self.save(design, f"op {self._index} {op} raised")
+
+    def note_final(self, design, fluid):
+        try:
+            alive = [body for body in design.bodies if body.is_alive]
+            ok = len(alive) == 1 and alive[0].id == fluid.id
+            summary = f"end alive={len(alive)} ok={'yes' if ok else 'no'}"
+        except Exception as exc:
+            ok = False
+            summary = f"end check unavailable: {type(exc).__name__}: {exc}"
+        self._append(summary + "\n" + _boolean_body_block(design))
+        if not ok:
+            self.save(design, summary)
+
+    def save(self, design, reason):
+        if self.saved:
+            self._append(f"save skipped ({reason}); design already saved\n")
+            return
+        self.saved = True
+        self._append(f"save reason: {reason}\n")
+        for label, method in (("pmdb", "export_to_pmdb"), ("scdocx", "export_to_scdocx")):
+            try:
+                path = getattr(design, method)(self.out_dir)
+            except Exception as exc:
+                self._append(f"save {label} failed: {type(exc).__name__}: {exc}\n")
+            else:
+                self._append(f"saved {label}: {path}\n")
+
+    def _append(self, text):
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+
+
+def _boolean_body_block(design):
+    try:
+        bodies = list(design.bodies)
+    except Exception as exc:
+        return f"  bodies unavailable: {type(exc).__name__}: {exc}\n"
+    if not bodies:
+        return "  bodies: none\n"
+    lines = []
+    for body in bodies:
+        name = getattr(body, "name", "?")
+        ident = getattr(body, "id", "?")
+        alive = getattr(body, "is_alive", "?")
+        lines.append(
+            f"  body name={name} id={ident} alive={alive} volume={_volume_text(body)}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _volume_text(body):
+    try:
+        volume = body.volume
+    except Exception as exc:
+        return f"unavailable ({type(exc).__name__})"
+    if isinstance(volume, (int, float)):
+        return f"{float(volume):.6e}"
+    for attr in ("m", "value"):
+        magnitude = getattr(volume, attr, None)
+        if isinstance(magnitude, (int, float)):
+            return f"{float(magnitude):.6e}"
+    if volume is None:
+        return "unavailable"
+    return str(volume)
 
 
 def _spacer_body_names(segment_count, sphere_count):

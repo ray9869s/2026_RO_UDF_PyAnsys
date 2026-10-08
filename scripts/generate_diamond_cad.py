@@ -31,6 +31,15 @@ def build_parser():
         default=None,
         help="Active cell count. Default is the production count for --geo-id.",
     )
+    parser.add_argument(
+        "--debug-booleans",
+        action="store_true",
+        help=(
+            "Log every boolean to <geo-id>_boolean_debug.log in --out-dir. "
+            "On the first failure, or if more than one body remains, save "
+            "the design .pmdb and .scdocx next to that log."
+        ),
+    )
     return parser
 
 
@@ -42,6 +51,7 @@ def main(argv=None):
         geo_id=args.geo_id,
         out_dir=args.out_dir,
         n_active=args.n_active,
+        debug_booleans=args.debug_booleans,
     )
     for kind, path in written["paths"].items():
         print(f"{kind}: {path}")
