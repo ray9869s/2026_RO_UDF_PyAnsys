@@ -14,6 +14,10 @@ default first-height factor. A factor that differs from the template is
 inserted as ``_fNNN`` (``round(factor * 100)``, so 0.40 is ``f040``) before
 ``_peel``, which is the token ``MESH_ID_RE`` already accepts. A spacer
 layer count that differs from ``bl_layers`` is ``bl{membrane}s{spacer}``.
+
+``--reuse-mesh`` skips meshing when that mesh leaf already exists, its
+``mesh_run_record.json`` status is ``SUCCESS``, and the manifest settings
+match the request. The run leaf is still refused when it exists.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from ro.campaign_matrix import format_production_mesh_id
 from ro.convergence_quality import continuity_final_from_case_dir
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
+from ro.solver_common import sha256_file
 
 _FLOAT_REL_TOL = 1.0e-9
 _FLOAT_ABS_TOL = 1.0e-12
@@ -404,6 +409,122 @@ def refuse_existing_directory(path, label):
         )
 
 
+_MISSING = object()
+_REUSE_MANIFEST_FIELDS = (
+    ("m_max", "max_size_mm"),
+    ("m_min", "min_size_mm"),
+    ("m_cpg", "cpg"),
+    ("bl_layers", "bl"),
+    ("peel_layers", "peel"),
+)
+_MESH_RECORD_SUCCESS = "SUCCESS"
+
+
+def _recorded_spacer_layers(manifest):
+    """Spacer layer count stored on the manifest.
+
+    ``spacer_bl`` is written only when it differs from ``bl``. Absence
+    means the spacer count equals the membrane count.
+    """
+    if "spacer_bl" in manifest:
+        return manifest["spacer_bl"]
+    if "bl" in manifest:
+        return manifest["bl"]
+    return _MISSING
+
+
+def _requested_spacer_layers(overrides):
+    if "spacer_bl_layers" in overrides and overrides["spacer_bl_layers"] is not None:
+        return overrides["spacer_bl_layers"]
+    return overrides["bl_layers"]
+
+
+def _setting_text(value):
+    if value is _MISSING:
+        return "missing"
+    return repr(value)
+
+
+def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha256):
+    """Raise unless ``mesh_directory`` is a successful mesh of these settings.
+
+    Success is ``mesh_run_record.json`` status ``SUCCESS`` together with a
+    manifest object. Compared settings are ``m_max``, ``m_min``, ``m_cpg``,
+    ``bl_layers``, ``spacer_bl_layers``, ``peel_layers``, and the geometry
+    SHA-256. ``geometry_sha256`` is the hash this job requires. A manifest
+    field ``geometry_sha256`` is the recorded hash when present; otherwise
+    the hash of ``geometry_file`` is the recorded hash.
+    """
+    directory = Path(mesh_directory)
+    manifest_path = directory / "manifest.json"
+    record_path = directory / "mesh_run_record.json"
+    if not manifest_path.is_file():
+        raise ValueError(
+            f"Refusing to reuse mesh leaf {directory}: "
+            "mesh manifest manifest.json is missing."
+        )
+    manifest = _read_json(manifest_path)
+    record = load_mesh_run_record(record_path)
+    status = None if record is None else record.get("status")
+    if status != _MESH_RECORD_SUCCESS:
+        raise ValueError(
+            f"Refusing to reuse mesh leaf {directory}: "
+            "mesh does not record success "
+            f"(mesh_run_record status={status!r})."
+        )
+    mismatches = []
+    for override_key, manifest_key in _REUSE_MANIFEST_FIELDS:
+        recorded = manifest[manifest_key] if manifest_key in manifest else _MISSING
+        requested = overrides[override_key] if override_key in overrides else _MISSING
+        if (
+            recorded is _MISSING
+            or requested is _MISSING
+            or not _values_equal(recorded, requested)
+        ):
+            mismatches.append(
+                f"{override_key}: recorded {_setting_text(recorded)}, "
+                f"requested {_setting_text(requested)}"
+            )
+    recorded_spacer = _recorded_spacer_layers(manifest)
+    requested_spacer = (
+        _requested_spacer_layers(overrides)
+        if "bl_layers" in overrides
+        else _MISSING
+    )
+    if (
+        recorded_spacer is _MISSING
+        or requested_spacer is _MISSING
+        or not _values_equal(recorded_spacer, requested_spacer)
+    ):
+        mismatches.append(
+            "spacer_bl_layers: recorded "
+            f"{_setting_text(recorded_spacer)}, "
+            f"requested {_setting_text(requested_spacer)}"
+        )
+    on_disk_sha256 = sha256_file(geometry_file)
+    if "geometry_sha256" in manifest:
+        recorded_sha256 = manifest["geometry_sha256"]
+    else:
+        recorded_sha256 = on_disk_sha256
+    if recorded_sha256 != geometry_sha256:
+        mismatches.append(
+            "geometry_sha256: recorded "
+            f"{_setting_text(recorded_sha256)}, "
+            f"requested {_setting_text(geometry_sha256)}"
+        )
+    elif on_disk_sha256 != geometry_sha256:
+        mismatches.append(
+            "geometry_sha256: recorded "
+            f"{_setting_text(on_disk_sha256)}, "
+            f"requested {_setting_text(geometry_sha256)}"
+        )
+    if mismatches:
+        raise ValueError(
+            f"Refusing to reuse mesh leaf {directory}: " + "; ".join(mismatches) + "."
+        )
+    return manifest
+
+
 def launch_meshing(overrides, data_root, mesh_directory, mesh_id, max_retries):
     """Launch the production meshing worker. ``RO_DATA_ROOT`` is child-only."""
     cmd = [sys.executable, str(batch_meshing.MESHING_SCRIPT_PATH)]
@@ -563,6 +684,14 @@ def build_parser():
     parser.add_argument("--bl-layers", type=int, default=None)
     parser.add_argument("--bl-first-height-factor", type=float, default=None)
     parser.add_argument("--spacer-bl-layers", type=int, default=None)
+    parser.add_argument(
+        "--reuse-mesh",
+        action="store_true",
+        help=(
+            "Reuse an existing mesh leaf when its mesh record is SUCCESS "
+            "and the recorded settings match. The run leaf must not exist."
+        ),
+    )
     return parser
 
 
@@ -585,17 +714,27 @@ def main(argv=None):
     print_override_table(override_rows(template, overrides))
     study_id = overrides["mesh_id"]
     leaf = mesh_leaf(data_root, family, args.geo_id, study_id)
-    refuse_existing_directory(leaf, "mesh leaf")
-    ensure_production_geometry_dsco(data_root, family, args.geo_id)
-    mesh_result = launch_meshing(
-        overrides,
-        data_root,
-        leaf,
-        study_id,
-        max_retries,
-    )
-    if mesh_result.returncode != 0:
-        return _exit_code(mesh_result.returncode)
+    if args.reuse_mesh and leaf.exists():
+        geometry = ensure_production_geometry_dsco(data_root, family, args.geo_id)
+        require_reusable_mesh(
+            leaf,
+            overrides,
+            geometry,
+            sha256_file(production_geometry_dsco(family, args.geo_id)),
+        )
+        print(f"Reusing mesh leaf {leaf}")
+    else:
+        refuse_existing_directory(leaf, "mesh leaf")
+        ensure_production_geometry_dsco(data_root, family, args.geo_id)
+        mesh_result = launch_meshing(
+            overrides,
+            data_root,
+            leaf,
+            study_id,
+            max_retries,
+        )
+        if mesh_result.returncode != 0:
+            return _exit_code(mesh_result.returncode)
 
     _entry, solver_template, solver_retries, settle_s = campaign.load_template(
         args.geo_id,

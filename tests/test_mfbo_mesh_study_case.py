@@ -310,3 +310,268 @@ def test_main_meshes_solves_and_extracts_the_study_copy(monkeypatch, tmp_path):
     assert seen["solver_kw_mesh_id"] == seen["mesh_id"]
     assert seen["extract_mesh_id"] == seen["mesh_id"]
     assert "c:/ro_data" not in str(seen["extract_root"]).casefold()
+
+
+def _matching_manifest(digest, **overrides):
+    payload = {
+        "max_size_mm": 0.085,
+        "min_size_mm": 0.003,
+        "cpg": 5,
+        "bl": 4,
+        "peel": 2,
+        "geometry_sha256": digest,
+        "cell_count": 10,
+        "skewness_max": 0.5,
+        "ortho_min": 0.2,
+        "AR_max": 30.0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _plant_successful_mesh(root, mesh_id, manifest):
+    leaf = root / "meshes" / "diamond" / "D2450_a45" / mesh_id
+    leaf.mkdir(parents=True, exist_ok=True)
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (leaf / "mesh_run_record.json").write_text(
+        json.dumps({"status": "SUCCESS", "bl_height": 0.0012}),
+        encoding="utf-8",
+    )
+    (leaf / f"mesh_log_{mesh_id}.txt").write_text(
+        "Boundary layer first height [mm]: 0.0012\n",
+        encoding="utf-8",
+    )
+    return leaf
+
+
+def test_reusable_mesh_rejects_a_setting_mismatch_and_a_failed_record(tmp_path):
+    geometry = tmp_path / "D2450_a45.dsco"
+    geometry.write_bytes(b"diamond-dsco")
+    digest = driver.sha256_file(geometry)
+    leaf = tmp_path / "mesh"
+    leaf.mkdir()
+    manifest = _matching_manifest(digest, min_size_mm=0.006)
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (leaf / "mesh_run_record.json").write_text(
+        json.dumps({"status": "SUCCESS"}),
+        encoding="utf-8",
+    )
+    overrides = {
+        "m_max": 0.085,
+        "m_min": 0.006,
+        "m_cpg": 5,
+        "bl_layers": 4,
+        "peel_layers": 2,
+    }
+    driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+    mismatched = dict(manifest)
+    mismatched["max_size_mm"] = 0.060
+    (leaf / "manifest.json").write_text(json.dumps(mismatched), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"m_max: recorded 0\.06, requested 0\.085"):
+        driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+    split = dict(manifest)
+    (leaf / "manifest.json").write_text(json.dumps(split), encoding="utf-8")
+    with pytest.raises(ValueError, match="spacer_bl_layers: recorded 4, requested 2"):
+        driver.require_reusable_mesh(
+            leaf,
+            {**overrides, "spacer_bl_layers": 2},
+            geometry,
+            digest,
+        )
+
+    wrong_hash = dict(manifest)
+    wrong_hash["geometry_sha256"] = "0" * 64
+    (leaf / "manifest.json").write_text(json.dumps(wrong_hash), encoding="utf-8")
+    with pytest.raises(ValueError, match="geometry_sha256"):
+        driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (leaf / "mesh_run_record.json").write_text(
+        json.dumps({"status": "FAILED"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="does not record success"):
+        driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+
+def _patch_study_main(monkeypatch, tmp_path, seen):
+    template = _template()
+    monkeypatch.setattr(
+        driver,
+        "load_mesh_template",
+        lambda geo_id: (dict(template), dict(template), 0),
+    )
+    solver_template = {
+        "family": "diamond",
+        "geo_id": "D2450_a45",
+        "mesh_id": template["mesh_id"],
+        "case_name": "u0p2_p6M",
+        "run_id": "u0p2_p6M",
+        "inlet_velocity_value": 0.2,
+        "outlet_gauge_pressure": 6.0e6,
+    }
+    def load_template(geo_id, mesh_id, case):
+        entry = dict(solver_template)
+        entry["case_name"] = case
+        entry["run_id"] = case
+        return entry, dict(entry), 0, 0.0
+
+    monkeypatch.setattr(driver.campaign, "load_template", load_template)
+
+    def fake_mesh(overrides, data_root, mesh_directory, mesh_id, max_retries):
+        seen["meshed"] = True
+        seen["mesh_id"] = mesh_id
+        mesh_directory.mkdir(parents=True, exist_ok=True)
+        (mesh_directory / f"mesh_log_{mesh_id}.txt").write_text(
+            "Boundary layer first height [mm]: 0.0012\n",
+            encoding="utf-8",
+        )
+        (mesh_directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "cell_count": 10,
+                    "skewness_max": 0.5,
+                    "ortho_min": 0.2,
+                    "AR_max": 30.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    def fake_solver(overrides, data_root, run_directory, **kwargs):
+        seen["solved"] = True
+        seen["solver_case_name"] = overrides["case_name"]
+        seen["run_id"] = kwargs["run_id"]
+        run_directory.mkdir(parents=True)
+        (run_directory / "manifest.json").write_text(
+            json.dumps({"stop_reason": "residual_converged", "continuity_final": 1.0e-8}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    def fake_extract(data_root, run_directory, case, *, geo_id, mesh_id, run_id):
+        seen["extracted"] = True
+        reports = run_directory / "post" / "reports"
+        reports.mkdir(parents=True)
+        (reports / "summary_metrics_wide.csv").write_text(
+            "lmh_mass_balance,pressure_drop_spacer_per_m,"
+            "cpc_window_avg_flux,cp_q99_window_flux,cp_q999_window_flux\n"
+            "25.0,800.0,1.1,1.2,1.3\n",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver, "launch_meshing", fake_mesh)
+    monkeypatch.setattr(driver.campaign, "launch_solver", fake_solver)
+    monkeypatch.setattr(driver.mfbo_common, "launch_extract", fake_extract)
+    monkeypatch.setattr(
+        driver.batch_report_extract,
+        "validate_summary_wide_csv",
+        lambda path: (True, ""),
+    )
+    prod = tmp_path / "prod"
+    _plant_dsco(prod, "diamond", "D2450_a45", b"diamond-dsco")
+    monkeypatch.setattr(driver, "PRODUCTION_DATA_ROOT", prod)
+    monkeypatch.delenv("RO_DATA_ROOT", raising=False)
+
+
+def test_existing_mesh_leaf_is_still_refused_without_reuse(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    (tmp_path / "meshes" / "diamond" / "D2450_a45" / mesh_id).mkdir(parents=True)
+    with pytest.raises(FileExistsError, match="mesh leaf"):
+        driver.main(
+            [
+                "--data-root",
+                str(tmp_path),
+                "--geo-id",
+                "D2450_a45",
+                "--m-min",
+                "0.003",
+            ]
+        )
+    assert "meshed" not in seen
+    assert "solved" not in seen
+
+
+def test_reuse_mesh_solves_the_new_case_and_skips_meshing(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--case",
+            "u0p3_p6M",
+            "--m-min",
+            "0.003",
+            "--reuse-mesh",
+        ]
+    )
+    assert code == 0
+    assert "meshed" not in seen
+    assert seen["solved"] is True
+    assert seen["extracted"] is True
+    assert seen["solver_case_name"] == "u0p3_p6M"
+    assert seen["run_id"] == "u0p3_p6M"
+
+
+def test_reuse_mesh_raises_the_setting_mismatch_and_still_refuses_the_run_leaf(
+    monkeypatch, tmp_path
+):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(
+        tmp_path,
+        mesh_id,
+        _matching_manifest(digest, max_size_mm=0.060),
+    )
+    with pytest.raises(ValueError, match="m_max"):
+        driver.main(
+            [
+                "--data-root",
+                str(tmp_path),
+                "--geo-id",
+                "D2450_a45",
+                "--case",
+                "u0p2_p6M",
+                "--m-min",
+                "0.003",
+                "--reuse-mesh",
+            ]
+        )
+    assert "solved" not in seen
+
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    run.mkdir(parents=True)
+    with pytest.raises(FileExistsError, match="run leaf"):
+        driver.main(
+            [
+                "--data-root",
+                str(tmp_path),
+                "--geo-id",
+                "D2450_a45",
+                "--case",
+                "u0p2_p6M",
+                "--m-min",
+                "0.003",
+                "--reuse-mesh",
+            ]
+        )
+    assert "solved" not in seen
