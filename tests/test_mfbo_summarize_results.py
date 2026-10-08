@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from datetime import datetime, timezone
 
 import pytest
@@ -218,7 +219,12 @@ def test_table_keeps_every_leaf_and_marks_gaps(tmp_path, capsys):
     assert complete["solver_wall_time_s"] == "10"
     assert complete["extraction_wall_time_s"] == "2"
     assert complete["processor_count"] == "50"
-    assert complete["notes"] == ""
+    assert "lmh_module_area" not in complete["notes"]
+    assert "domain_extent_z_m" in complete["notes"]
+    assert "specific_surface_per_solid_volume_1_per_m" in complete["notes"]
+    assert "u_target_ms" in complete["notes"]
+    assert complete["sc"] != summarize_results.MISSING
+    assert complete["hydraulic_diameter_m"] == summarize_results.MISSING
     assert complete["lmh_module_area"] != summarize_results.MISSING
 
     missing_csv = by_id[("diamond", "D2450_a45", "max085_min006_cpg5_bl4_peel2", "u0p1_p6M")]
@@ -239,7 +245,8 @@ def test_table_keeps_every_leaf_and_marks_gaps(tmp_path, capsys):
     assert float(pillar["lmh_module_area"]) == pytest.approx(LMH * AREA_MEM / area)
     assert pillar["cell_count"] == "796009"
     assert pillar["viscous_model"] == "k-omega-sst"
-    assert pillar["notes"] == ""
+    assert pillar["hydraulic_diameter_m"] == summarize_results.MISSING
+    assert "domain_extent_z_m" in pillar["notes"]
 
     csv_path = out_dir / "summary.csv"
     md_path = out_dir / "summary.md"
@@ -316,3 +323,161 @@ def test_leaf_without_manifests_is_still_a_row(tmp_path):
     assert row["solver_wall_time_s"] == summarize_results.MISSING
     assert row["extraction_wall_time_s"] == summarize_results.MISSING
     assert row["processor_count"] == summarize_results.MISSING
+    assert row["hydraulic_diameter_m"] == summarize_results.MISSING
+    assert row["sc"] != summarize_results.MISSING
+
+
+def test_dimensionless_groups_match_hand_values(tmp_path):
+    """Schock–Miquel diameter and the film, friction, and power groups."""
+    rho = 998.2
+    mu = 8.93e-4
+    diffusivity = 2.0e-9
+    height = 7.7e-4
+    porosity = 0.8
+    specific = 8000.0
+    velocity = 0.2
+    lmh = 25.0
+    cp_modulus = 1.2
+    gradient = 10000.0
+    assert summarize_results.RHO_KG_M3 == rho
+    assert summarize_results.MU_PA_S == mu
+    assert summarize_results.DIFFUSIVITY_M2_S == diffusivity
+
+    diameter = 4.0 * porosity / (2.0 / height + (1.0 - porosity) * specific)
+    reynolds = rho * velocity * diameter / mu
+    schmidt = mu / (rho * diffusivity)
+    coefficient = (lmh / 3.6e6) / math.log(cp_modulus)
+    sherwood = coefficient * diameter / diffusivity
+    fanning = gradient * diameter / (2.0 * rho * velocity * velocity)
+    darcy = 4.0 * fanning
+    power = velocity * gradient / rho
+
+    assert summarize_results.hydraulic_diameter_m(
+        porosity, height, specific, None, None, None
+    ) == pytest.approx(diameter)
+    assert summarize_results.reynolds_h(velocity, diameter) == pytest.approx(reynolds)
+    assert summarize_results.schmidt_number() == pytest.approx(schmidt)
+    assert summarize_results.sherwood_number(
+        lmh, cp_modulus, diameter
+    ) == pytest.approx(sherwood)
+    assert summarize_results.fanning_friction_factor(
+        gradient, diameter, velocity
+    ) == pytest.approx(fanning)
+    assert summarize_results.darcy_friction_factor(
+        gradient, diameter, velocity
+    ) == pytest.approx(darcy)
+    assert summarize_results.specific_power_dissipation_w_per_kg(
+        gradient, velocity
+    ) == pytest.approx(power)
+
+    _plant(
+        tmp_path,
+        "diamond",
+        "D2450_a45",
+        "max085_min006_cpg5_bl4_peel2",
+        "u0p2_p6M",
+        mesh=_mesh(
+            porosity_eps=porosity,
+            domain_extent_z_m=height,
+            specific_surface_per_solid_volume_1_per_m=specific,
+        ),
+        run=_run(u_target_ms=velocity, u_mean_ms=velocity / 1.0036),
+        summary=_summary(
+            lmh_mass_balance=str(lmh),
+            cpc_window_avg_flux=str(cp_modulus),
+            pressure_drop_spacer_per_m=str(gradient),
+        ),
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    row = rows[0]
+    assert float(row["hydraulic_diameter_m"]) == pytest.approx(diameter)
+    assert float(row["re_h"]) == pytest.approx(reynolds)
+    assert float(row["sc"]) == pytest.approx(schmidt)
+    assert float(row["sh_cpc_flux"]) == pytest.approx(sherwood)
+    assert float(row["fanning_friction_factor"]) == pytest.approx(fanning)
+    assert float(row["darcy_friction_factor"]) == pytest.approx(darcy)
+    assert float(row["specific_power_dissipation_w_per_kg"]) == pytest.approx(power)
+    assert row["notes"] == ""
+
+
+def test_empty_channel_friction_factor_is_twenty_four_over_re():
+    rho = 998.2
+    mu = 8.93e-4
+    height = 7.7e-4
+    velocity = 0.2
+    diameter = summarize_results.hydraulic_diameter_m(1.0, height, None, None, None, None)
+    assert diameter == pytest.approx(2.0 * height)
+    gradient = 12.0 * mu * velocity / height**2
+    reynolds = rho * velocity * diameter / mu
+    assert summarize_results.fanning_friction_factor(
+        gradient, diameter, velocity
+    ) == pytest.approx(24.0 / reynolds)
+    assert summarize_results.darcy_friction_factor(
+        gradient, diameter, velocity
+    ) == pytest.approx(96.0 / reynolds)
+
+
+def test_wetted_area_diameter_takes_precedence_over_specific_surface():
+    volume = 1.0e-6
+    membrane = 2.0e-3
+    spacer = 2.0e-3
+    diameter = summarize_results.hydraulic_diameter_m(
+        0.8,
+        7.7e-4,
+        8000.0,
+        volume,
+        membrane,
+        spacer,
+    )
+    assert diameter == pytest.approx(4.0 * volume / (membrane + spacer))
+    schock = 4.0 * 0.8 / (2.0 / 7.7e-4 + 0.2 * 8000.0)
+    assert diameter != pytest.approx(schock)
+
+
+def test_spacer_without_surface_or_wetted_area_leaves_diameter_missing(tmp_path):
+    _plant(
+        tmp_path,
+        "pillar",
+        "P_p80_h15",
+        "max085_min006_cpg5_bl4_peel2",
+        "u0p2_p6M",
+        mesh=_mesh(porosity_eps=0.9, domain_extent_z_m=7.7e-4),
+        run=_run(u_target_ms=0.2, u_mean_ms=0.5),
+        summary=_summary(),
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    row = rows[0]
+    assert row["hydraulic_diameter_m"] == summarize_results.MISSING
+    assert row["re_h"] == summarize_results.MISSING
+    assert row["sh_cpc_flux"] == summarize_results.MISSING
+    assert row["fanning_friction_factor"] == summarize_results.MISSING
+    assert float(row["specific_power_dissipation_w_per_kg"]) == pytest.approx(
+        0.2 * 1000.0 / 998.2
+    )
+    assert "specific_surface_per_solid_volume_1_per_m" in row["notes"]
+    assert "u_mean_ms" not in row["notes"]
+
+
+def test_sherwood_is_missing_when_the_modulus_is_not_above_one(tmp_path):
+    _plant(
+        tmp_path,
+        "empty",
+        "REF_empty",
+        "max085_min006_cpg5_bl4_peel2",
+        "u0p2_p6M",
+        mesh=_mesh(porosity_eps=1.0, domain_extent_z_m=7.7e-4),
+        run=_run(u_target_ms=0.2),
+        summary=_summary(cpc_window_avg_flux="1"),
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    row = rows[0]
+    assert float(row["hydraulic_diameter_m"]) == pytest.approx(2.0 * 7.7e-4)
+    assert row["sh_cpc_flux"] == summarize_results.MISSING
+    assert "sh_cpc_flux undefined" in row["notes"]
+    assert row["re_h"] != summarize_results.MISSING

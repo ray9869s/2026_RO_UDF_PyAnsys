@@ -12,6 +12,12 @@ from the mesh manifest. ``area_mem`` and ``lmh_mass_balance`` come from
 ``post/reports/summary_metrics_wide.csv``. If any input is absent,
 ``lmh_module_area`` is ``MISSING``.
 
+Dimensionless columns (definitions in ``docs/metrics_conventions.md``)
+are derived here from those same inputs plus the run manifest
+``u_target_ms``. Hydraulic diameter uses wetted area and fluid volume
+when both are on the leaf, otherwise porosity, measured channel height,
+and specific surface. A missing input leaves that column ``MISSING``.
+
 Importing this module does not launch Fluent and does not read a data root.
 """
 
@@ -28,6 +34,13 @@ from pathlib import Path
 
 MISSING = "MISSING"
 NOT_RECORDED = "not recorded"
+
+# Campaign fluid properties. The solver records these and does not read
+# them back from the case; see docs/metrics_conventions.md.
+RHO_KG_M3 = 998.2
+MU_PA_S = 8.93e-4
+DIFFUSIVITY_M2_S = 2.0e-9
+MS_TO_LMH = 3.6e6
 
 COLUMNS = (
     "family",
@@ -51,6 +64,13 @@ COLUMNS = (
     "cpc_window_avg_flux",
     "cp_q99_window_flux",
     "cp_q999_window_flux",
+    "hydraulic_diameter_m",
+    "re_h",
+    "sc",
+    "sh_cpc_flux",
+    "fanning_friction_factor",
+    "darcy_friction_factor",
+    "specific_power_dissipation_w_per_kg",
     "viscosity_ratio_volavg",
     "diff_ratio_volavg",
     "mesh_wall_time_s",
@@ -120,6 +140,278 @@ def lmh_per_module_area(
     if area == 0.0:
         raise ZeroDivisionError("A_module is 0.")
     return float(lmh_mass_balance) * float(area_mem) / area
+
+
+def _positive(value):
+    number = _finite_number(value)
+    if number is None or number <= 0.0:
+        return None
+    return number
+
+
+def _nonnegative(value):
+    number = _finite_number(value)
+    if number is None or number < 0.0:
+        return None
+    return number
+
+
+def _porosity(value):
+    number = _finite_number(value)
+    if number is None or number <= 0.0 or number > 1.0:
+        return None
+    return number
+
+
+def _wetted_inputs_ready(fluid_volume_m3, membrane_area_m2, spacer_wetted_area_m2):
+    volume = _positive(fluid_volume_m3)
+    membrane = _positive(membrane_area_m2)
+    spacer = _nonnegative(spacer_wetted_area_m2)
+    if volume is None or membrane is None or spacer is None:
+        return False
+    return membrane + spacer > 0.0
+
+
+def hydraulic_diameter_m(
+    porosity,
+    channel_height_m,
+    specific_surface_per_solid_volume_1_per_m,
+    fluid_volume_m3,
+    membrane_area_m2,
+    spacer_wetted_area_m2,
+):
+    """Spacer-channel hydraulic diameter [m], or None.
+
+    Wetted form, used when fluid volume and both areas are present:
+
+        d_h = 4 * V_fluid / (A_membrane + A_spacer)
+
+    Otherwise Schock and Miquel (1987), with specific surface omitted
+    only when porosity is exactly 1 (empty channel, d_h = 2 h):
+
+        d_h = 4 * ε / (2 / h + (1 - ε) * S_v,sp)
+    """
+    if _wetted_inputs_ready(fluid_volume_m3, membrane_area_m2, spacer_wetted_area_m2):
+        volume = _positive(fluid_volume_m3)
+        membrane = _positive(membrane_area_m2)
+        spacer = _nonnegative(spacer_wetted_area_m2)
+        return 4.0 * volume / (membrane + spacer)
+
+    height = _positive(channel_height_m)
+    eps = _porosity(porosity)
+    if height is None or eps is None:
+        return None
+    specific = 0.0 if eps == 1.0 else _nonnegative(
+        specific_surface_per_solid_volume_1_per_m
+    )
+    if specific is None:
+        return None
+    denominator = 2.0 / height + (1.0 - eps) * specific
+    if denominator <= 0.0:
+        return None
+    return 4.0 * eps / denominator
+
+
+def reynolds_h(velocity_m_s, hydraulic_diameter, *, rho=RHO_KG_M3, mu=MU_PA_S):
+    """Re_h = ρ u d_h / μ with superficial velocity. None if an input is unusable."""
+    velocity = _positive(velocity_m_s)
+    diameter = _positive(hydraulic_diameter)
+    if velocity is None or diameter is None or rho <= 0.0 or mu <= 0.0:
+        return None
+    return rho * velocity * diameter / mu
+
+
+def schmidt_number(*, rho=RHO_KG_M3, mu=MU_PA_S, diffusivity=DIFFUSIVITY_M2_S):
+    """Sc = μ / (ρ D)."""
+    if rho <= 0.0 or mu <= 0.0 or diffusivity <= 0.0:
+        return None
+    return mu / (rho * diffusivity)
+
+
+def film_mass_transfer_coefficient_m_s(lmh, cp_modulus):
+    """k = Jw / ln(CP), with Jw = LMH / 3.6e6. None when CP <= 1 or LMH < 0."""
+    flux = _finite_number(lmh)
+    modulus = _finite_number(cp_modulus)
+    if flux is None or modulus is None or flux < 0.0 or modulus <= 1.0:
+        return None
+    return (flux / MS_TO_LMH) / math.log(modulus)
+
+
+def sherwood_number(
+    lmh,
+    cp_modulus,
+    hydraulic_diameter,
+    *,
+    diffusivity=DIFFUSIVITY_M2_S,
+):
+    """Sh = k d_h / D from the film coefficient."""
+    coefficient = film_mass_transfer_coefficient_m_s(lmh, cp_modulus)
+    diameter = _positive(hydraulic_diameter)
+    if coefficient is None or diameter is None or diffusivity <= 0.0:
+        return None
+    return coefficient * diameter / diffusivity
+
+
+def fanning_friction_factor(
+    pressure_drop_per_m,
+    hydraulic_diameter,
+    velocity_m_s,
+    *,
+    rho=RHO_KG_M3,
+):
+    """f_Fanning = (dP/L) d_h / (2 ρ u^2)."""
+    gradient = _finite_number(pressure_drop_per_m)
+    diameter = _positive(hydraulic_diameter)
+    velocity = _positive(velocity_m_s)
+    if gradient is None or diameter is None or velocity is None or rho <= 0.0:
+        return None
+    return gradient * diameter / (2.0 * rho * velocity * velocity)
+
+
+def darcy_friction_factor(
+    pressure_drop_per_m,
+    hydraulic_diameter,
+    velocity_m_s,
+    *,
+    rho=RHO_KG_M3,
+):
+    """f_Darcy = 4 f_Fanning = (dP/L) d_h / (ρ u^2 / 2)."""
+    fanning = fanning_friction_factor(
+        pressure_drop_per_m,
+        hydraulic_diameter,
+        velocity_m_s,
+        rho=rho,
+    )
+    if fanning is None:
+        return None
+    return 4.0 * fanning
+
+
+def specific_power_dissipation_w_per_kg(
+    pressure_drop_per_m,
+    velocity_m_s,
+    *,
+    rho=RHO_KG_M3,
+):
+    """Pumping power per unit mass, u (dP/L) / ρ, superficial velocity [W/kg]."""
+    gradient = _finite_number(pressure_drop_per_m)
+    velocity = _positive(velocity_m_s)
+    if gradient is None or velocity is None or rho <= 0.0:
+        return None
+    return velocity * gradient / rho
+
+
+def _format_metric(value):
+    if value is None:
+        return MISSING
+    return format(float(value), ".12g")
+
+
+def _optional(mapping, key):
+    if mapping is None or key not in mapping:
+        return None
+    return mapping[key]
+
+
+def _hydraulic_diameter_gap(
+    porosity,
+    channel_height_m,
+    specific_surface,
+    fluid_volume_m3,
+    membrane_area_m2,
+    spacer_wetted_area_m2,
+):
+    """Names of inputs still required after both diameter formulas fail."""
+    if _wetted_inputs_ready(fluid_volume_m3, membrane_area_m2, spacer_wetted_area_m2):
+        return []
+    missing = []
+    if _positive(channel_height_m) is None:
+        missing.append("domain_extent_z_m")
+    eps = _porosity(porosity)
+    if eps is None:
+        missing.append("porosity_eps")
+    elif eps < 1.0 and _nonnegative(specific_surface) is None:
+        missing.append("specific_surface_per_solid_volume_1_per_m")
+    area_gap = []
+    if _nonnegative(spacer_wetted_area_m2) is None:
+        area_gap.append("spacer_wetted_area_m2")
+    if _positive(fluid_volume_m3) is None:
+        area_gap.append("total_fluid_volume_m3")
+    if _positive(membrane_area_m2) is None:
+        area_gap.append("area_mem")
+    if area_gap and not (
+        eps == 1.0 and _positive(channel_height_m) is not None
+    ):
+        missing.append("or " + ", ".join(area_gap))
+    return missing
+
+
+def _dimensionless_fields(mesh_manifest, wide, run_manifest, notes):
+    porosity = _optional(mesh_manifest, "porosity_eps")
+    height = _optional(mesh_manifest, "domain_extent_z_m")
+    specific = _optional(mesh_manifest, "specific_surface_per_solid_volume_1_per_m")
+    volume = _optional(mesh_manifest, "total_fluid_volume_m3")
+    spacer_area = _optional(mesh_manifest, "spacer_wetted_area_m2")
+    if spacer_area is None:
+        spacer_area = _optional(wide, "spacer_wetted_area_m2")
+    membrane_area = _optional(wide, "area_mem")
+    velocity = _optional(run_manifest, "u_target_ms")
+    lmh = _optional(wide, "lmh_mass_balance")
+    cp_modulus = _optional(wide, "cpc_window_avg_flux")
+    gradient = _optional(wide, "pressure_drop_spacer_per_m")
+
+    diameter = hydraulic_diameter_m(
+        porosity,
+        height,
+        specific,
+        volume,
+        membrane_area,
+        spacer_area,
+    )
+    fields = {
+        "hydraulic_diameter_m": _format_metric(diameter),
+        "re_h": _format_metric(reynolds_h(velocity, diameter)),
+        "sc": _format_metric(schmidt_number()),
+        "sh_cpc_flux": _format_metric(sherwood_number(lmh, cp_modulus, diameter)),
+        "fanning_friction_factor": _format_metric(
+            fanning_friction_factor(gradient, diameter, velocity)
+        ),
+        "darcy_friction_factor": _format_metric(
+            darcy_friction_factor(gradient, diameter, velocity)
+        ),
+        "specific_power_dissipation_w_per_kg": _format_metric(
+            specific_power_dissipation_w_per_kg(gradient, velocity)
+        ),
+    }
+    if diameter is None:
+        gap = _hydraulic_diameter_gap(
+            porosity, height, specific, volume, membrane_area, spacer_area
+        )
+        detail = ", ".join(gap) if gap else "unusable inputs"
+        notes.append(
+            "hydraulic_diameter_m missing inputs: "
+            f"{detail}; re_h, sh_cpc_flux, fanning_friction_factor, "
+            "darcy_friction_factor need hydraulic_diameter_m"
+        )
+    else:
+        if fields["re_h"] == MISSING:
+            notes.append("re_h missing u_target_ms or it is not positive")
+        if fields["fanning_friction_factor"] == MISSING:
+            notes.append(
+                "fanning_friction_factor and darcy_friction_factor missing "
+                "u_target_ms or pressure_drop_spacer_per_m"
+            )
+        if fields["sh_cpc_flux"] == MISSING:
+            notes.append(
+                "sh_cpc_flux undefined: cpc_window_avg_flux <= 1 "
+                "or lmh_mass_balance < 0"
+            )
+    if fields["specific_power_dissipation_w_per_kg"] == MISSING:
+        notes.append(
+            "specific_power_dissipation_w_per_kg missing "
+            "u_target_ms or pressure_drop_spacer_per_m"
+        )
+    return fields
 
 
 def default_out_dir(data_root, now=None):
@@ -365,6 +657,7 @@ def row_for_leaf(data_root, family, geo_id, mesh_id, run_id, leaf):
     row["processor_count"] = _processor_count(run_manifest, mesh_manifest, notes)
     row["viscous_model"] = _viscous_model(run_manifest, notes)
     row["lmh_module_area"] = _module_area_cell(mesh_manifest, wide, notes)
+    row.update(_dimensionless_fields(mesh_manifest, wide, run_manifest, notes))
     row["notes"] = "; ".join(notes)
     return row
 
