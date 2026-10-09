@@ -1,9 +1,11 @@
 """Per-geometry evaluation window and the two window LMH bases.
 
 Importing this module does not read a data root, the window table, or Fluent.
-The table is ``configs/evaluation_window_table.json``. A ``geo_id`` that is
-not in it is an error. ``--legacy-3-cell-window`` is the only fixed lead of
-3, and it does not read the table.
+The table is ``configs/evaluation_window_table.json``. A campaign ``geo_id``
+that is not in it is an error. A registered MFBO pillar id may use the
+pillar ``family_defaults`` entry. Diamond, ml, sin, and empty have no
+family default. ``--legacy-3-cell-window`` is the only fixed lead of 3,
+and it does not read the table.
 """
 
 from __future__ import annotations
@@ -15,12 +17,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ro.geometry_registry import is_mfbo_pillar_geo_id
 from ro.lmh_metrics import MS_TO_LMH
 from ro.paths import project_root
 
 LENGTH_TOL_M = 1e-9
 LEGACY_N_LEAD = 3
 LEGACY_WINDOW_TABLE_VERSION = "legacy-3-cell"
+WINDOW_SOURCE_GEO_ID = "geo_id"
+WINDOW_SOURCE_FAMILY_DEFAULT = "family_default"
+WINDOW_SOURCE_LEGACY = "legacy-3-cell"
+_FAMILY_DEFAULTS_KEY = "family_defaults"
+_FAMILY_DEFAULT_ALLOWED = frozenset({"pillar"})
+_FAMILY_DEFAULT_FORBIDDEN = frozenset({"diamond", "ml", "sin", "empty"})
+_FAMILY_DEFAULT_KEYS = (
+    "n_lead_excluded",
+    "excluded_length_m",
+    "basis",
+    "date",
+)
 _TABLE_NAME = "evaluation_window_table.json"
 _RECORD_KEYS = (
     "n_lead_excluded",
@@ -39,6 +54,7 @@ class EvaluationWindowSelection:
     excluded_length_m: float
     window_length_m: float
     window_table_version: str
+    window_source: str
 
     def manifest_fields(self) -> dict[str, Any]:
         return {
@@ -46,6 +62,7 @@ class EvaluationWindowSelection:
             "excluded_length_m": self.excluded_length_m,
             "window_length_m": self.window_length_m,
             "window_table_version": self.window_table_version,
+            "window_source": self.window_source,
         }
 
 
@@ -104,6 +121,7 @@ def legacy_3_cell_selection(
         excluded_length_m=LEGACY_N_LEAD * dx,
         window_length_m=(n_active - LEGACY_N_LEAD) * dx,
         window_table_version=LEGACY_WINDOW_TABLE_VERSION,
+        window_source=WINDOW_SOURCE_LEGACY,
     )
 
 
@@ -117,9 +135,43 @@ def selection_from_table(
 ) -> EvaluationWindowSelection:
     """One geometry's row, checked against this mesh's pitch."""
     table = load_evaluation_window_table(path)
-    if geo_id not in table:
-        raise KeyError(f"geo_id {geo_id!r} is not in {path}.")
-    record = table[geo_id]
+    defaults = _family_defaults(table, path)
+    records = {
+        key: value
+        for key, value in table.items()
+        if key != _FAMILY_DEFAULTS_KEY
+    }
+    if geo_id in records:
+        return _selection_from_geo_record(
+            records[geo_id],
+            geo_id,
+            mesh_id=mesh_id,
+            n_active=n_active,
+            cell_length_x_m=cell_length_x_m,
+        )
+    if is_mfbo_pillar_geo_id(geo_id):
+        if "pillar" not in defaults:
+            raise KeyError(
+                f"geo_id {geo_id!r} is not in {path}, and pillar has no "
+                "family_defaults entry."
+            )
+        return _selection_from_family_default(
+            defaults["pillar"],
+            geo_id,
+            n_active=n_active,
+            cell_length_x_m=cell_length_x_m,
+        )
+    raise KeyError(f"geo_id {geo_id!r} is not in {path}.")
+
+
+def _selection_from_geo_record(
+    record,
+    geo_id,
+    *,
+    mesh_id,
+    n_active,
+    cell_length_x_m,
+):
     if not isinstance(record, dict):
         raise ValueError(
             f"evaluation window record for {geo_id!r} must be an object, "
@@ -159,7 +211,76 @@ def selection_from_table(
         excluded_length_m=excluded,
         window_length_m=window,
         window_table_version=version.strip(),
+        window_source=WINDOW_SOURCE_GEO_ID,
     )
+
+
+def _selection_from_family_default(
+    record,
+    geo_id,
+    *,
+    n_active,
+    cell_length_x_m,
+):
+    if not isinstance(record, dict):
+        raise ValueError(
+            f"pillar family default must be an object, got {type(record).__name__}."
+        )
+    missing = [key for key in _FAMILY_DEFAULT_KEYS if key not in record]
+    if missing:
+        raise ValueError(f"pillar family default is missing {missing}.")
+    n_lead = record["n_lead_excluded"]
+    _require_count("n_lead_excluded", n_lead)
+    _require_count("n_active", n_active)
+    if n_lead >= n_active:
+        raise ValueError(
+            f"n_lead_excluded={n_lead} must be < n_active={n_active} "
+            f"for {geo_id!r}."
+        )
+    basis = record["basis"]
+    if not isinstance(basis, str) or basis.strip() == "":
+        raise ValueError(
+            f"pillar family default basis must be a non-empty string, got {basis!r}."
+        )
+    version = record["date"]
+    if not isinstance(version, str) or version.strip() == "":
+        raise ValueError(
+            f"pillar family default date must be a non-empty string, got {version!r}."
+        )
+    dx = _require_positive_length("cell_length_x_m", cell_length_x_m)
+    excluded = _require_length("excluded_length_m", record["excluded_length_m"])
+    _require_close(geo_id, "excluded_length_m", excluded, n_lead * dx)
+    return EvaluationWindowSelection(
+        n_lead_excluded=n_lead,
+        excluded_length_m=excluded,
+        window_length_m=(n_active - n_lead) * dx,
+        window_table_version=version.strip(),
+        window_source=WINDOW_SOURCE_FAMILY_DEFAULT,
+    )
+
+
+def _family_defaults(table: Mapping[str, Any], path: Path) -> dict[str, Any]:
+    if _FAMILY_DEFAULTS_KEY not in table:
+        return {}
+    raw = table[_FAMILY_DEFAULTS_KEY]
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "family_defaults must be an object, "
+            f"got {type(raw).__name__} in {path}."
+        )
+    refused = [
+        name
+        for name in raw
+        if name in _FAMILY_DEFAULT_FORBIDDEN or name not in _FAMILY_DEFAULT_ALLOWED
+    ]
+    if refused:
+        raise ValueError(
+            "family_defaults has no entry for "
+            + ", ".join(sorted(refused))
+            + ". Campaign diamond, ml, sin, and empty geometries need their own "
+            "geo_id row."
+        )
+    return raw
 
 
 def load_evaluation_window_table(path: Path) -> dict[str, Any]:

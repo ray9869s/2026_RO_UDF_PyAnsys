@@ -57,6 +57,13 @@ RELATIVE_BAND = 0.03
 ROLLING_CELLS = 3
 MIN_REFERENCE_CELLS = 2
 OLD_N_LEAD = 3
+PILLAR_DEVELOPMENT_WITHIN_M = 0.0035
+_FAMILY_DEFAULT_KEYS = (
+    "n_lead_excluded",
+    "excluded_length_m",
+    "basis",
+    "date",
+)
 LENGTH_TOL_M = 1e-9
 OPERATING_RUN_IDS = ("u0p1_p6M", "u0p2_p6M", "u0p3_p6M")
 PRODUCTION_MESH_ID = "max085_min006_cpg5_bl4_peel2"
@@ -549,9 +556,49 @@ def resolve_date(value):
     return value
 
 
+def _campaign_pillar_ids():
+    return [
+        geo_id
+        for geo_id in CAMPAIGN_GEO_ID_ORDER
+        if family_for_geo_id(geo_id) == "pillar"
+    ]
+
+
+def family_default_records(results, date):
+    """Pillar default for registered MFBO ids, from the campaign pillars.
+
+    Written only when every campaign pillar was measured and each
+    development distance is within 3.5 mm. The lead is three reference
+    cells (``L_base``), which covers that distance on the reference pitch.
+    Diamond, ml, sin, and empty are not given a default.
+    """
+    pillars = _campaign_pillar_ids()
+    by_id = {result["geo_id"]: result for result in results}
+    if any(geo_id not in by_id for geo_id in pillars):
+        return {}
+    for geo_id in pillars:
+        distance = by_id[geo_id]["d_max_m"]
+        if distance is None or distance > PILLAR_DEVELOPMENT_WITHIN_M + LENGTH_TOL_M:
+            return {}
+    return {
+        "pillar": {
+            "n_lead_excluded": OLD_N_LEAD,
+            "excluded_length_m": L_BASE_M,
+            "basis": (
+                f"all {len(pillars)} campaign pillars develop within "
+                f"{PILLAR_DEVELOPMENT_WITHIN_M * 1000:.1f} mm"
+            ),
+            "date": date,
+        }
+    }
+
+
 def table_payload(results, date):
-    """geo_id to the generated exclusion record. Field order is fixed."""
+    """geo_id records plus pillar family_defaults when the campaign data supports it."""
     payload = {}
+    defaults = family_default_records(results, date)
+    if defaults:
+        payload["family_defaults"] = defaults
     for result in results:
         payload[result["geo_id"]] = {
             "n_lead_excluded": result["n_lead_excluded"],
@@ -619,6 +666,17 @@ def render_report(results, date):
         "## Flags",
         "",
     ]
+    defaults = family_default_records(results, date)
+    if defaults:
+        pillar = defaults["pillar"]
+        lines.append(
+            "MFBO pillar ids use family default "
+            f"`n_lead_excluded={pillar['n_lead_excluded']}`, "
+            f"`excluded_length_m={pillar['excluded_length_m']}`: "
+            f"{pillar['basis']}. Campaign geo_ids keep their own rows. "
+            "Diamond, ml, sin, and empty have no family default."
+        )
+        lines.append("")
     if flagged:
         lines.append(
             "Window shorter than 9.0 mm: " + ", ".join(f"`{geo}`" for geo in flagged) + "."
@@ -712,7 +770,14 @@ def render_report(results, date):
 
 def write_outputs(table_path, report_path, results, date):
     payload = table_payload(results, date)
-    for record in payload.values():
+    for key, record in payload.items():
+        if key == "family_defaults":
+            for family, default in record.items():
+                if tuple(default) != _FAMILY_DEFAULT_KEYS:
+                    raise RuntimeError(
+                        f"Family default keys drifted for {family}: {tuple(default)!r}."
+                    )
+            continue
         if tuple(record) != _TABLE_KEYS:
             raise RuntimeError(f"Table record keys drifted: {tuple(record)!r}.")
     table = Path(table_path)

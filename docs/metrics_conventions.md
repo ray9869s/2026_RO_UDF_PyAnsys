@@ -478,7 +478,12 @@ does not report a salt-path observation.
 **Paper window (2026-10-09).** Each geometry uses the evaluation window in
 `configs/evaluation_window_table.json`, produced by
 `scripts/mfbo/development_length.py`. Extract (full and `--profile mfbo`)
-reads that table. A `geo_id` that is not in the table is an error.
+reads that table. A campaign `geo_id` that is not in the table is an error.
+Registered MFBO pillar ids (`MFP_d####_h####_f####`) use the table's
+`family_defaults.pillar` entry, written from the campaign pillars, and
+the run manifest `window_source` is `family_default`. Campaign ids,
+including campaign pillars, keep `window_source` `geo_id`. Diamond, ml,
+sin, and empty have no family default.
 `--legacy-3-cell-window` is the only way to score the old fixed lead of 3,
 and it exists to reproduce old extracts. The run manifest and the wide
 summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`,

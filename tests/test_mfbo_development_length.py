@@ -400,3 +400,54 @@ def test_cli_writes_the_table_and_the_report(tmp_path):
     assert "REF_empty" in text
     assert "No geometry has a window shorter than 9.0 mm." in text
     assert "u0p1_p6M" in text and "not used (missing)" in text
+    assert "family_defaults" not in payload
+
+
+def _synthetic_row(geo_id, d_max_m):
+    return {
+        "geo_id": geo_id,
+        "n_lead_excluded": 2,
+        "excluded_length_m": 0.00693,
+        "window_length_m": 0.02,
+        "source_data_root": "/data",
+        "mesh_id": MESH,
+        "short_window": False,
+        "d_max_m": d_max_m,
+    }
+
+
+def _campaign_pillars():
+    return [
+        geo_id
+        for geo_id in dev.CAMPAIGN_GEO_ID_ORDER
+        if dev.family_for_geo_id(geo_id) == "pillar"
+    ]
+
+
+def test_family_default_is_written_only_when_all_pillars_develop_within_3_5_mm():
+    pillars = _campaign_pillars()
+    assert len(pillars) == 9
+    developed = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
+    developed.append(_synthetic_row("D2450_a45", 0.02))
+    payload = dev.table_payload(developed, "2026-10-09")
+    default = payload["family_defaults"]["pillar"]
+    assert tuple(default) == (
+        "n_lead_excluded",
+        "excluded_length_m",
+        "basis",
+        "date",
+    )
+    assert default["n_lead_excluded"] == 3
+    assert default["excluded_length_m"] == pytest.approx(0.010395)
+    assert default["basis"] == "all 9 campaign pillars develop within 3.5 mm"
+    assert default["date"] == "2026-10-09"
+    assert "diamond" not in payload["family_defaults"]
+    assert payload["D2450_a45"]["n_lead_excluded"] == 2
+
+    slow = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
+    slow[0]["d_max_m"] = 0.004
+    assert dev.family_default_records(slow, "2026-10-09") == {}
+    assert dev.family_default_records(slow[1:], "2026-10-09") == {}
+    undeveloped = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
+    undeveloped[0]["d_max_m"] = None
+    assert dev.family_default_records(undeveloped, "2026-10-09") == {}

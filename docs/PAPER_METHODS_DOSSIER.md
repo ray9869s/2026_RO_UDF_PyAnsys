@@ -356,7 +356,7 @@ Mesh-independence reduction (Richardson, GCI, safety factor 1.25) is implemented
 
 ### 6.1 Evaluation window
 
-**Paper window (2026-10-09).** Extract (`scripts/pyfluent_report_extract.py`, full and `--profile mfbo`) reads `configs/evaluation_window_table.json`. The row for the run's `geo_id` sets `n_lead_excluded`. A missing `geo_id` is an error. `--legacy-3-cell-window` scores lead 3 and records `window_table_version` `legacy-3-cell`; it does not read the table. Trail exclusion is 0. The same cells are the CP window (`cpc_window_avg_flux`, `cp_q999_window_flux`) and the LMH window in §6.3. The run manifest and the wide summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`, and `window_table_version`.
+**Paper window (2026-10-09).** Extract (`scripts/pyfluent_report_extract.py`, full and `--profile mfbo`) reads `configs/evaluation_window_table.json`. The row for the run's `geo_id` sets `n_lead_excluded`. A missing campaign `geo_id` is an error. Registered MFBO pillar ids use `family_defaults.pillar` only; diamond, ml, sin, and empty have no family default. The run manifest `window_source` is `geo_id` or `family_default`. `--legacy-3-cell-window` scores lead 3 and records `window_table_version` `legacy-3-cell`; it does not read the table. Trail exclusion is 0. The same cells are the CP window (`cpc_window_avg_flux`, `cp_q999_window_flux`) and the LMH window in §6.3. The run manifest and the wide summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`, and `window_table_version`.
 
 **Superseded 2026-10-09.** The fixed lead of 3 below is not the paper window. Mesh manifests still store lead 3; extract overwrites that with the table unless the legacy flag is set.
 
