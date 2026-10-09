@@ -184,9 +184,11 @@ def measure_fluid_z_bounds_m(solver, setup, fluid_zone_names):
     return z_min, z_max
 
 
-# Campaign channel is centred on z = 0. A live measurement outside this
-# band is not that frame. 1e-9 m is the acceptance band, not a mesh tolerance.
-CAMPAIGN_MIDPLANE_Z_TOL_M = 1e-9
+# Campaign channel is centred on z = 0. 1e-6 m is about 0.1% of the
+# 0.77 mm channel height. Node extrema on a real mesh sit near 4e-8 m,
+# inside this band. A wrong origin is hundreds of um and still raises.
+# The plane is placed at the measured mid-plane; it is not snapped to 0.
+CAMPAIGN_MIDPLANE_Z_TOL_M = 1e-6
 _MEMBRANE_Z_MIN_REPORT = "pp_membrane_z_facetmin_m"
 _MEMBRANE_Z_MAX_REPORT = "pp_membrane_z_facetmax_m"
 
@@ -237,14 +239,28 @@ def measure_membrane_wall_z_bounds_m(solution, membrane_wall_names):
 
 
 def require_campaign_midplane_z(z_mid_m):
-    """Raise unless the measured mid-plane is 0 within 1e-9 m."""
+    """Return the measured mid-plane, or raise if its offset from 0 is too large.
+
+    The returned value is the measurement. It is not replaced with 0.
+    """
     z_mid = float(z_mid_m)
     if not math.isfinite(z_mid) or abs(z_mid) > CAMPAIGN_MIDPLANE_Z_TOL_M:
         raise RuntimeError(
-            f"Measured channel mid-plane z={z_mid!r} m is not 0 within "
-            f"{CAMPAIGN_MIDPLANE_Z_TOL_M} m."
+            f"Measured channel mid-plane z={z_mid!r} m is offset from 0 by "
+            f"more than {CAMPAIGN_MIDPLANE_Z_TOL_M} m."
         )
     return z_mid
+
+
+def campaign_midplane_manifest_fields(z_mid_m):
+    """Measured mid-plane and its offset from the campaign origin at 0."""
+    z_mid = float(z_mid_m)
+    if not math.isfinite(z_mid):
+        raise ValueError(f"channel mid-plane must be finite, got {z_mid_m!r}.")
+    return {
+        "channel_midplane_z_m": z_mid,
+        "channel_midplane_offset_m": z_mid,
+    }
 
 
 def resolve_channel_midplane_z_m(
@@ -264,7 +280,8 @@ def resolve_channel_midplane_z_m(
     Preference order:
       1. Explicit ``z_min_m`` / ``z_max_m`` (caller-measured bounds)
       2. Membrane-wall ``surface-facetmin`` / ``surface-facetmax`` of
-         ``z-coordinate``. The mid-plane must be 0 within 1e-9 m.
+         ``z-coordinate``. The plane is placed at the measured mid-plane.
+         Its offset from 0 must be within 1e-6 m.
       3. Only when ``legacy_fluid_z_reduction`` is true: the old
          ``fields.reduction`` path, then ``fallback_z_m``.
 
@@ -322,6 +339,7 @@ def resolve_channel_midplane_z_m(
         z_min_m=z0,
         z_max_m=z1,
         z_mid_m=z_mid,
+        z_mid_offset_m=z_mid,
     )
     return z_mid, diag
 

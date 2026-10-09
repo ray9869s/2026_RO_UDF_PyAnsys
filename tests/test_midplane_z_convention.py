@@ -12,6 +12,7 @@ from ro.fluent_report_helpers import (
     _MEMBRANE_Z_MAX_REPORT,
     _MEMBRANE_Z_MIN_REPORT,
     assert_midplane_c_b_matches_boundary_mixing_cup,
+    campaign_midplane_manifest_fields,
     resolve_channel_midplane_z_m,
 )
 
@@ -101,9 +102,29 @@ def test_membrane_wall_facets_accept_a_centred_campaign_plane():
     assert maximum["surface_names"] == walls
 
 
-def test_membrane_wall_midplane_outside_1e9_raises():
-    solution = _Solution((-3.85e-4, 3.85e-4 + 4.0e-9))
-    with pytest.raises(RuntimeError, match="1e-09"):
+def test_mesh_check_midpoint_is_kept_inside_1e6():
+    # D2450_a45 mesh-check extrema. Mid-point is about 4.2e-8 m, not 0.
+    z_min = -3.850994e-4
+    z_max = 3.851833e-4
+    measured = 0.5 * (z_min + z_max)
+    assert abs(measured) > 1e-9
+    assert abs(measured) < CAMPAIGN_MIDPLANE_Z_TOL_M
+    solution = _Solution((z_min, z_max))
+    z_mid, diag = resolve_channel_midplane_z_m(
+        solution=solution,
+        membrane_wall_names=["wall_bottom_mem", "wall_top_mem"],
+    )
+    assert z_mid == pytest.approx(measured)
+    assert z_mid != 0.0
+    assert diag["z_mid_offset_m"] == pytest.approx(measured)
+    recorded = campaign_midplane_manifest_fields(z_mid)
+    assert recorded["channel_midplane_z_m"] == pytest.approx(measured)
+    assert recorded["channel_midplane_offset_m"] == pytest.approx(measured)
+
+
+def test_membrane_wall_offset_above_1e6_raises():
+    solution = _Solution((0.0, 7.7e-4))
+    with pytest.raises(RuntimeError, match="1e-06"):
         resolve_channel_midplane_z_m(
             solution=solution,
             membrane_wall_names=["wall_top_mem"],

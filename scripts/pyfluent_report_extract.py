@@ -77,6 +77,7 @@ from ro.fluent_report_helpers import (  # noqa: E402
     MIDPLANE_CB_MIXING_CUP_REL_TOL,
     assert_midplane_c_b_matches_boundary_mixing_cup,
     apply_surface_report_definition,
+    campaign_midplane_manifest_fields,
     create_channel_midplane_plane,
     create_x_normal_plane as _create_x_normal_plane,
     create_x_range_iso_clip,
@@ -2981,6 +2982,7 @@ if __name__ == "__main__":
                 {
                     **manifest_quality_payload(quality_result),
                     **_evaluation_window_selection.manifest_fields(),
+                    **campaign_midplane_manifest_fields(_found_center_z),
                 },
             )
             print(

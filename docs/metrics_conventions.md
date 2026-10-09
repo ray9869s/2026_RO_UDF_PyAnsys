@@ -28,19 +28,24 @@ spheres at \(\pm r_{\mathrm{mid}}\)).
 
 `resolve_channel_midplane_z_m` measures \(z_{\min}\) and \(z_{\max}\) with
 `surface-facetmin` and `surface-facetmax` of `z-coordinate` on the
-membrane walls, then takes \(z = \tfrac{1}{2}(z_{\min}+z_{\max})\). For a
-campaign geometry that value must be 0 within \(1\times10^{-9}\,\mathrm{m}\);
-otherwise the call raises. Those two report types are the production
+membrane walls, then places the iso-surface at the measured
+\(z = \tfrac{1}{2}(z_{\min}+z_{\max})\). That value is not replaced with 0.
+For a campaign geometry the offset from 0 must be within
+\(1\times10^{-6}\,\mathrm{m}\) (about 0.1% of the 0.77 mm channel height);
+a larger offset raises. The run manifest records `channel_midplane_z_m`
+and `channel_midplane_offset_m`. Those two report types are the production
 Fluent 25.1 post path already used for membrane facet extrema
 (`src/ro/fluent_report_helpers.py`, `_SURFACE_FACET_MIN` /
 `_SURFACE_FACET_MAX`). This machine cannot launch Fluent. The unit test
-checks the report definitions and the \(1\times10^{-9}\,\mathrm{m}\) gate
+checks the report definitions and the \(1\times10^{-6}\,\mathrm{m}\) gate
 against a fake solution (`tests/test_midplane_z_convention.py`).
 
 The mesh-check block above has \(z\) from \(-3.850994\times10^{-4}\) to
 \(3.851833\times10^{-4}\,\mathrm{m}\), so the midpoint of those node
-extrema is \(4.2\times10^{-8}\,\mathrm{m}\). A live measurement of those
-extrema fails the \(1\times10^{-9}\,\mathrm{m}\) gate and raises.
+extrema is \(4.2\times10^{-8}\,\mathrm{m}\). That offset is inside
+\(1\times10^{-6}\,\mathrm{m}\), and the plane stays at the measured
+mid-point. An offset of hundreds of micrometres, such as a bottom-origin
+frame, still raises.
 
 **Superseded 2026-10-09.** Until this change,
 `resolve_channel_midplane_z_m` caught any exception from
