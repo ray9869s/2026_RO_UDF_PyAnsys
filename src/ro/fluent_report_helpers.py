@@ -1634,10 +1634,11 @@ ACTIVE_WINDOW_SPACER_CLIP = "pp_active_window_spacer"
 ACTIVE_WINDOW_MEMBRANE_AREA_REPORT = "pp_active_window_membrane_area_m2"
 ACTIVE_WINDOW_SPACER_AREA_REPORT = "pp_active_window_spacer_area_m2"
 ACTIVE_WINDOW_VOLUME_REPORT = "pp_active_window_fluid_volume_m3"
-ACTIVE_WINDOW_CELL_REGISTER = "pp_active_window_cells"
-# Campaign cross-section is a few millimetres. This y/z envelope selects
-# every fluid cell in the cross-section so the register clips x only.
-_ACTIVE_WINDOW_YZ_ENVELOPE_M = 1.0
+# Live Fluent 25.1 refusal of report_type "volume" listed the allowed
+# values, including this one. PyFluent 0.38.0 settings_251.pyi volume_child
+# has report_type, field, and cell_zones. A list for cell_zones raises on
+# 2025 R1, so each fluid zone is its own report and the values are summed.
+ACTIVE_WINDOW_VOLUME_REPORT_TYPE = "volume-zonevol"
 
 
 def _active_window_surface_area_m2(
@@ -1676,69 +1677,71 @@ def _active_window_surface_area_m2(
     return area
 
 
-def active_window_fluid_volume_m3(solution, x_min_m, x_max_m):
-    """One volume report on a hexahedron cell register of the active x-span.
+def _zone_volume_report_name(index, count):
+    if count == 1:
+        return ACTIVE_WINDOW_VOLUME_REPORT
+    return f"{ACTIVE_WINDOW_VOLUME_REPORT}_{index}"
 
-    ``reduction.sum_if`` is not used. On PyFluent 0.38.0 it ignores
-    ``weight="Area"`` and returns a face count
-    (``docs/RESTRUCTURE_PLAN.md``). ``weight="Volume"`` is not shown to
-    return cubic metres. The number comes from a volume report definition
-    (``report_type="volume"``), the same ``report_definitions.compute``
-    path as the production ``volume-integral`` reports.
+
+def fluid_zone_volume_m3(solution, fluid_zone_names):
+    """Sum of ``volume-zonevol`` reports, one string zone per report.
+
+    Verified against the live Fluent 25.1 error
+    ``volume is_not_in (volume-mass ... volume-zonevol volume-average
+    volume-integral volume-sum)`` and PyFluent 0.38.0
+    ``settings_251.pyi`` ``volume_child`` (``report_type``, ``cell_zones``).
+    ``report_type="volume"`` is not in that list. Zone volume is not a
+    field integral, so ``field`` is left unset.
     """
-    x_min = float(x_min_m)
-    x_max = float(x_max_m)
-    if not math.isfinite(x_min) or not math.isfinite(x_max) or x_max <= x_min:
-        raise ValueError(
-            "Active-window x range must be finite and increasing, "
-            f"got [{x_min_m!r}, {x_max_m!r}]."
-        )
-    envelope = _ACTIVE_WINDOW_YZ_ENVELOPE_M
-    registers = solution.cell_registers
-    existing = list_named_object_names(registers, "solution.cell_registers")
-    if ACTIVE_WINDOW_CELL_REGISTER in existing:
-        registers.delete(ACTIVE_WINDOW_CELL_REGISTER)
-    register = registers.create(ACTIVE_WINDOW_CELL_REGISTER)
-    register.set_state(
-        {
-            "type": {
-                "option": "hexahedron",
-                "hexahedron": {
-                    "min_point": [x_min, -envelope, -envelope],
-                    "max_point": [x_max, envelope, envelope],
-                    "inside": True,
-                },
-            }
-        }
-    )
-    try:
-        group = solution.report_definitions.volume
+    if not fluid_zone_names:
+        raise ValueError("Fluid-zone volume needs at least one fluid zone.")
+    zones = [str(name) for name in fluid_zone_names]
+    if any(name == "" for name in zones):
+        raise ValueError(f"Fluid zone names must be non-empty, got {zones!r}.")
+    group = solution.report_definitions.volume
+    total = 0.0
+    for index, zone_name in enumerate(zones):
+        report_name = _zone_volume_report_name(index, len(zones))
         names = list_named_object_names(
             group,
             "solution.report_definitions.volume",
         )
-        if ACTIVE_WINDOW_VOLUME_REPORT in names:
-            report = group[ACTIVE_WINDOW_VOLUME_REPORT]
+        if report_name in names:
+            report = group[report_name]
         else:
-            report = group.create(ACTIVE_WINDOW_VOLUME_REPORT)
-        # One zone is a string. A list raises on Fluent 2025 R1.
-        report.set_state(
-            {
-                "report_type": "volume",
-                "cell_zones": ACTIVE_WINDOW_CELL_REGISTER,
-            }
-        )
-        volume = float(
-            compute_surface_report_value(solution, ACTIVE_WINDOW_VOLUME_REPORT)
-        )
-    finally:
-        delete_names = list_named_object_names(
-            registers,
-            "solution.cell_registers",
-        )
-        if ACTIVE_WINDOW_CELL_REGISTER in delete_names:
-            registers.delete(ACTIVE_WINDOW_CELL_REGISTER)
-    return volume
+            report = group.create(report_name)
+        report.report_type = ACTIVE_WINDOW_VOLUME_REPORT_TYPE
+        report.cell_zones = zone_name
+        total += float(compute_surface_report_value(solution, report_name))
+    return total
+
+
+def active_window_fluid_volume_m3(
+    solution,
+    fluid_zone_names,
+    buffer_length_in_m,
+    buffer_length_out_m,
+    periodic_shift_y_m,
+    channel_height_m,
+):
+    """Active-window fluid volume: zone volume minus the exact buffer boxes.
+
+    ``reduction.sum_if`` is not used. On PyFluent 0.38.0 it ignores
+    ``weight="Area"`` and returns a face count
+    (``docs/RESTRUCTURE_PLAN.md``). The zone volume is a ``volume-zonevol``
+    report. Buffers contain no spacer, so their fluid volume is the layout
+    box ``(L_in + L_out) * periodic_shift_y * h``.
+    """
+    from ro.active_window_geometry import buffer_fluid_volume_m3
+
+    zone_volume = fluid_zone_volume_m3(solution, fluid_zone_names)
+    buffers = buffer_fluid_volume_m3(
+        buffer_length_in_m,
+        buffer_length_out_m,
+        periodic_shift_y_m,
+        channel_height_m,
+    )
+    return zone_volume - buffers
 
 
 def measure_active_window_geometry(
@@ -1746,9 +1749,12 @@ def measure_active_window_geometry(
     solution,
     membrane_zone_names,
     spacer_zone_names,
+    fluid_zone_names,
     x_min_m,
     x_max_m,
     active_length_m,
+    buffer_length_in_m,
+    buffer_length_out_m,
     periodic_shift_y_m,
     channel_height_m,
     family,
@@ -1756,8 +1762,10 @@ def measure_active_window_geometry(
     """Active-window volume, areas, box, and porosity.
 
     Cost: one surface-area integral for the membranes, one for the spacer
-    walls when any ``wall_spacer*`` zone exists, and one volume report.
-    An empty channel records spacer area 0 without a spacer integral.
+    walls when any ``wall_spacer*`` zone exists, and one ``volume-zonevol``
+    report per fluid zone. An empty channel records spacer area 0 without
+    a spacer integral. The active volume is the zone total minus the
+    exact buffer boxes.
     """
     from ro.active_window_geometry import (
         active_window_box_volume_m3,
@@ -1789,7 +1797,14 @@ def measure_active_window_geometry(
         surface_integrals = 2
     else:
         spacer_area = 0.0
-    fluid_volume = active_window_fluid_volume_m3(solution, x_min_m, x_max_m)
+    fluid_volume = active_window_fluid_volume_m3(
+        solution,
+        fluid_zone_names,
+        buffer_length_in_m,
+        buffer_length_out_m,
+        periodic_shift_y_m,
+        channel_height_m,
+    )
     box_volume = active_window_box_volume_m3(
         active_length_m,
         periodic_shift_y_m,
@@ -1811,7 +1826,7 @@ def measure_active_window_geometry(
         "active_window_box_volume_m3": box_volume,
         "active_window_porosity": porosity,
         "fluent_surface_integrals": surface_integrals,
-        "fluent_volume_integrals": 1,
+        "fluent_volume_integrals": len(list(fluid_zone_names)),
     }
 
 

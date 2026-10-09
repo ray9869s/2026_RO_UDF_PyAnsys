@@ -10,18 +10,20 @@ from ro.active_window_geometry import (
     ACTIVE_WINDOW_CHANNEL_HEIGHT_M,
     active_window_box_volume_m3,
     active_window_porosity,
+    buffer_fluid_volume_m3,
     geometric_hydraulic_diameter_m,
     require_active_window_geometry,
     schock_miquel_hydraulic_diameter_m,
 )
 from ro.campaign_geometry import CAMPAIGN_H_M
+from ro.domain_layout import BUFFER_LENGTH_IN_M, BUFFER_LENGTH_OUT_M
 from ro.fluent_report_helpers import (
-    ACTIVE_WINDOW_CELL_REGISTER,
     ACTIVE_WINDOW_MEMBRANE_AREA_REPORT,
     ACTIVE_WINDOW_MEMBRANE_CLIP,
     ACTIVE_WINDOW_SPACER_AREA_REPORT,
     ACTIVE_WINDOW_SPACER_CLIP,
     ACTIVE_WINDOW_VOLUME_REPORT,
+    ACTIVE_WINDOW_VOLUME_REPORT_TYPE,
     measure_active_window_geometry,
 )
 from helpers import REPO_ROOT
@@ -90,7 +92,7 @@ class _Reduction:
         return self.volume
 
 
-def _session(areas, fluid_volume):
+def _session(areas, fluid_volume, zone_volumes=None):
     iso_clip = _Group()
     surface = _Group()
     volume = _Group()
@@ -100,10 +102,16 @@ def _session(areas, fluid_volume):
     def compute(*, report_defs):
         name = report_defs[0]
         calls.append(name)
-        if name == ACTIVE_WINDOW_VOLUME_REPORT:
+        if name == ACTIVE_WINDOW_VOLUME_REPORT or name.startswith(
+            f"{ACTIVE_WINDOW_VOLUME_REPORT}_"
+        ):
             report = volume[name]
-            assert report.report_type == "volume"
-            assert report.cell_zones == ACTIVE_WINDOW_CELL_REGISTER
+            assert report.report_type == ACTIVE_WINDOW_VOLUME_REPORT_TYPE
+            assert isinstance(report.cell_zones, str)
+            assert report.field is None
+            if zone_volumes is not None:
+                return {name: zone_volumes[report.cell_zones]}
+            assert report.cell_zones == "solid"
             return {name: fluid_volume}
         report = surface[name]
         assert report.report_type == "surface-area"
@@ -164,9 +172,12 @@ def _measure(solver, solution, *, spacer_zones, family, x_min=0.003465, x_max=0.
         solution,
         ["wall_top_mem", "wall_bottom_mem"],
         spacer_zones,
+        ["solid"],
         x_min,
         x_max,
         LENGTH,
+        BUFFER_LENGTH_IN_M,
+        BUFFER_LENGTH_OUT_M,
         WIDTH,
         HEIGHT,
         family,
@@ -176,11 +187,12 @@ def _measure(solver, solution, *, spacer_zones, family, x_min=0.003465, x_max=0.
 def test_measure_is_one_volume_report_and_one_surface_integral_per_family():
     box = LENGTH * WIDTH * HEIGHT
     fluid = 0.8 * box
+    buffers = buffer_fluid_volume_m3(BUFFER_LENGTH_IN_M, BUFFER_LENGTH_OUT_M, WIDTH, HEIGHT)
     areas = {
         ACTIVE_WINDOW_MEMBRANE_AREA_REPORT: MEMBRANE_AREA,
         ACTIVE_WINDOW_SPACER_AREA_REPORT: 0.001,
     }
-    solver, solution, iso_clip, registers, computes = _session(areas, fluid)
+    solver, solution, iso_clip, registers, computes = _session(areas, fluid + buffers)
     measured = _measure(
         solver,
         solution,
@@ -193,9 +205,8 @@ def test_measure_is_one_volume_report_and_one_surface_integral_per_family():
         ACTIVE_WINDOW_VOLUME_REPORT,
     ]
     assert "sum_if" not in repr(computes)
-    register = registers.created
-    assert register == [ACTIVE_WINDOW_CELL_REGISTER]
-    assert registers.deleted == register
+    assert registers.created == []
+    assert registers.deleted == []
     assert iso_clip.created == [
         ACTIVE_WINDOW_MEMBRANE_CLIP,
         ACTIVE_WINDOW_SPACER_CLIP,
@@ -210,12 +221,58 @@ def test_measure_is_one_volume_report_and_one_surface_integral_per_family():
     assert measured["active_window_porosity"] == pytest.approx(0.8)
 
 
+def test_two_fluid_zones_are_summed_then_the_buffer_boxes_are_removed():
+    box = LENGTH * WIDTH * HEIGHT
+    buffers = buffer_fluid_volume_m3(
+        BUFFER_LENGTH_IN_M, BUFFER_LENGTH_OUT_M, WIDTH, HEIGHT
+    )
+    fluid = 0.8 * box
+    zone_total = fluid + buffers
+    areas = {
+        ACTIVE_WINDOW_MEMBRANE_AREA_REPORT: MEMBRANE_AREA,
+        ACTIVE_WINDOW_SPACER_AREA_REPORT: 0.001,
+    }
+    solver, solution, _iso_clip, _registers, computes = _session(
+        areas,
+        None,
+        zone_volumes={"solid": 0.4 * zone_total, "fluid-2": 0.6 * zone_total},
+    )
+    measured = measure_active_window_geometry(
+        solver,
+        solution,
+        ["wall_top_mem", "wall_bottom_mem"],
+        ["wall_spacer_1"],
+        ["solid", "fluid-2"],
+        0.003465,
+        0.02772,
+        LENGTH,
+        BUFFER_LENGTH_IN_M,
+        BUFFER_LENGTH_OUT_M,
+        WIDTH,
+        HEIGHT,
+        "pillar",
+    )
+    volume = solution.report_definitions.volume
+    assert volume[f"{ACTIVE_WINDOW_VOLUME_REPORT}_0"].cell_zones == "solid"
+    assert volume[f"{ACTIVE_WINDOW_VOLUME_REPORT}_1"].cell_zones == "fluid-2"
+    assert computes[-2:] == [
+        f"{ACTIVE_WINDOW_VOLUME_REPORT}_0",
+        f"{ACTIVE_WINDOW_VOLUME_REPORT}_1",
+    ]
+    assert measured["fluent_volume_integrals"] == 2
+    assert measured["active_window_fluid_volume_m3"] == pytest.approx(fluid)
+    assert buffers == pytest.approx(
+        (BUFFER_LENGTH_IN_M + BUFFER_LENGTH_OUT_M) * WIDTH * HEIGHT
+    )
+
+
 def test_empty_channel_skips_the_spacer_surface_integral():
     box = LENGTH * WIDTH * HEIGHT
     fluid = 0.5 * box
+    buffers = buffer_fluid_volume_m3(BUFFER_LENGTH_IN_M, BUFFER_LENGTH_OUT_M, WIDTH, HEIGHT)
     solver, solution, iso_clip, _registers, computes = _session(
         {ACTIVE_WINDOW_MEMBRANE_AREA_REPORT: MEMBRANE_AREA},
-        fluid,
+        fluid + buffers,
     )
     measured = _measure(
         solver,
@@ -230,6 +287,7 @@ def test_empty_channel_skips_the_spacer_surface_integral():
         ACTIVE_WINDOW_VOLUME_REPORT,
     ]
     assert iso_clip.created == [ACTIVE_WINDOW_MEMBRANE_CLIP]
+    assert measured["active_window_fluid_volume_m3"] == pytest.approx(fluid)
     assert measured["active_window_spacer_area_m2"] == 0.0
     assert measured["fluent_surface_integrals"] == 1
     assert measured["fluent_volume_integrals"] == 1
@@ -279,7 +337,10 @@ def test_volume_report_that_returns_a_face_count_aborts():
             spacer_zones=["wall_spacer_1"],
             family="pillar",
         )
-    assert registers.deleted == [ACTIVE_WINDOW_CELL_REGISTER]
+    assert registers.created == []
+    report = solution.report_definitions.volume[ACTIVE_WINDOW_VOLUME_REPORT]
+    assert report.report_type == ACTIVE_WINDOW_VOLUME_REPORT_TYPE
+    assert report.cell_zones == "solid"
 
 
 def test_guards_reject_a_full_box_volume_an_oversized_membrane_and_a_missing_spacer():
@@ -343,5 +404,5 @@ def test_extract_runs_the_phase_on_both_profiles():
         )
     ]
     assert "one surface-area integral" in description
-    assert "one volume report" in description
+    assert "volume-zonevol" in description
     assert "sum_if" not in description

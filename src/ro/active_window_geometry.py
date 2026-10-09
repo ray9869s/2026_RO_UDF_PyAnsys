@@ -31,6 +31,28 @@ def active_window_box_volume_m3(active_length_m, periodic_shift_y_m, channel_hei
     return length * width * height
 
 
+def buffer_fluid_volume_m3(
+    buffer_length_in_m,
+    buffer_length_out_m,
+    periodic_shift_y_m,
+    channel_height_m,
+):
+    """Exact inlet plus outlet buffer fluid volume [m^3].
+
+    Both buffers are empty rectangular boxes. Diamond and Pillar subtract
+    the spacer only from the active body (``src/ro/diamond_cad.py`` and
+    ``src/ro/pillar_cad.py``), then unite the buffer boxes. ``wall_spacer_buffer``
+    is the cut face at that plane (``configs/batch_config.py``), including
+    ML and Sin. No family in this repo leaves spacer solid in a buffer.
+    An empty channel has no spacer, so the same boxes still apply.
+    """
+    inlet = _positive(buffer_length_in_m, "buffer_length_in_m")
+    outlet = _positive(buffer_length_out_m, "buffer_length_out_m")
+    width = _positive(periodic_shift_y_m, "periodic_shift_y_m")
+    height = _positive(channel_height_m, "channel_height_m")
+    return (inlet + outlet) * width * height
+
+
 def active_window_porosity(fluid_volume_m3, box_volume_m3):
     """Fluid volume divided by the layout box."""
     fluid = _positive(fluid_volume_m3, "fluid_volume_m3")

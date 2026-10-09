@@ -722,14 +722,16 @@ height 0.00077 m (`CAMPAIGN_H_M`). It is not the measured mesh extent.
 bounding box, buffers included, and is not an input to \(d_h\).
 `area_mem` is unchanged.
 
-Both extract profiles write the five columns. The fluid volume is one
-volume report definition, `report_type` `volume`, on a hexahedron cell
-register of the active x-span. That is the same
-`solution.report_definitions.compute` path as the production
-`volume-integral` reports. `reduction.sum_if` is not used: on PyFluent
-0.38.0 `weight="Area"` is ignored and `expression="1"` returns a face
-count (`docs/RESTRUCTURE_PLAN.md`), and `weight="Volume"` is not shown
-to return cubic metres. Each area is one x-range iso-clip and one
+Both extract profiles write the five columns. The fluid volume is the
+sum of `volume-zonevol` reports on the fluid zones, minus the inlet and
+outlet buffer boxes `(L_in + L_out) * periodic_shift_y * h`. Fluent 25.1
+rejects `report_type` `volume`; the live allowed list includes
+`volume-zonevol`. Buffers contain no spacer: Diamond and Pillar subtract
+the spacer only from the active body, and `wall_spacer_buffer` is the
+cut face for ML, Pillar, and Sin. `reduction.sum_if` is not used: on
+PyFluent 0.38.0 `weight="Area"` is ignored and `expression="1"` returns
+a face count (`docs/RESTRUCTURE_PLAN.md`), and `weight="Volume"` is not
+shown to return cubic metres. Each area is one x-range iso-clip and one
 surface-area integral: the active membrane walls, and `wall_spacer_*`
 in the same span. An empty channel records spacer area 0 and skips
 that surface integral. Porosity is the Python ratio, not another

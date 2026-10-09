@@ -158,9 +158,10 @@ REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES = {
         "Active window, both profiles: one surface-area integral of the "
         "membrane walls clipped to the active x-span, one surface-area "
         "integral of wall_spacer_* in that span (area 0 and no integral "
-        "when there are no spacer walls), and one volume report "
-        "(report_type volume on a hexahedron cell register of that "
-        "x-span). Porosity is Python: fluid volume divided by the layout box."
+        "when there are no spacer walls), and one volume-zonevol report "
+        "per fluid zone. Active fluid volume is that zone total minus the "
+        "exact buffer boxes. Porosity is Python: fluid volume divided by "
+        "the layout box."
     ),
     "cell_8_25_salt_reduction": (
         "Cell 8.25: salt mass-fraction range diagnostics "
@@ -1655,9 +1656,12 @@ if __name__ == "__main__":
             solution,
             active_membrane_zones,
             spacer_wall_zones,
+            fluid_zones,
             spacer_x_in_m,
             spacer_x_out_m,
             layout.active_length_m,
+            layout.buffer_length_in_m,
+            layout.buffer_length_out_m,
             run_manifest["periodic_shift_y_m"],
             CAMPAIGN_H_M,
             run_manifest["family"],
