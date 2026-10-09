@@ -427,6 +427,21 @@ does not report a salt-path observation.
 
 ## Evaluation window
 
+**Paper window (2026-10-09).** Each geometry uses the evaluation window in
+`configs/evaluation_window_table.json`, produced by
+`scripts/mfbo/development_length.py`. Extract (full and `--profile mfbo`)
+reads that table. A `geo_id` that is not in the table is an error.
+`--legacy-3-cell-window` is the only way to score the old fixed lead of 3,
+and it exists to reproduce old extracts. The run manifest and the wide
+summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`,
+and `window_table_version` (the table row's `date`, or `legacy-3-cell`).
+Trail exclusion stays 0. CP metrics, including `cpc_window_avg_flux` and
+`cp_q999_window_flux`, use this same window. `lmh_window_exposed` and
+`lmh_window_module` use it too.
+
+**Superseded 2026-10-09.** The paragraph below is the previous fixed
+lead-exclusion description. It is kept as the record of that rule.
+
 CP is reported over the **evaluation window** (mesh manifest `n_lead_excluded`,
 `n_trail_excluded`), not all active cells. Entrance effects reach +27% excess
 in the first active cell and settle to about 1% by cells 4–7 on D2450_a45;
@@ -584,6 +599,10 @@ dependence. The Diamond growth is spacer-induced.
 
 ## Fixed `n_lead_excluded=3` residual bias (Diamond)
 
+**Superseded 2026-10-09.** The fixed lead of 3 is no longer the paper
+window. `configs/evaluation_window_table.json` sets `n_lead_excluded` per
+geometry. The measurements below stay as the record of that fixed rule.
+
 **Superseded in part (session 2026-09-29 .. 2026-10-02).** The per-cell
 read at the end of this section replaces the extrapolated D0817
 window-mean bias (0.12% on D0817_a45, and the 0.09% / ~0.3% bound on
@@ -680,6 +699,27 @@ same flux is taken per module area. The CP rank tables in
 LMH. The MFBO objective uses module (installed) area. The exposed-area
 column `lmh_mass_balance` stays what this section measured. The adapter
 field is `lmh_module_area` in `docs/RO_2D_OPTIMIZATION.md`.
+
+**Superseded in part 2026-10-09.** The module-area objective is no longer
+`lmh_module_area` rescaled from whole-active `lmh_mass_balance`. The paper
+LMH and the MFBO objective are the window module-area flux
+`lmh_window_module`. Exposed-area window flux `lmh_window_exposed` is
+reported alongside. `lmh_mass_balance` stays the convergence-gate quantity
+only. `lmh_module_area` stays in the summary and the adapter as that
+whole-active reference.
+
+Over the evaluation-window cells, with per-cell UDF flux
+`pp_jw_m_per_s_cell_N` [m/s] and membrane area
+`pp_membrane_area_cell_N_m2` [m²]:
+
+```
+lmh_window_exposed = sum(Jw_i * A_mem_i) / sum(A_mem_i) * 3.6e6
+lmh_window_module  = sum(Jw_i * A_mem_i) / (2 * L_window * periodic_shift_y_m) * 3.6e6
+```
+
+`L_window` is `window_length_m`. The factor `3.6e6` converts m/s to LMH.
+The module denominator is the projected area of both membranes over the
+window, including the contact footprint.
 
 ## Dimensionless groups for literature comparison
 

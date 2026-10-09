@@ -60,6 +60,12 @@ MFBO_BASE_REPORTS = (
 # window columns are checked by require_canonical_cp_summary_columns.
 MFBO_REQUIRED_SUMMARY_COLUMNS = (
     "lmh_mass_balance",
+    "lmh_window_exposed",
+    "lmh_window_module",
+    "n_lead_excluded",
+    "excluded_length_m",
+    "window_length_m",
+    "window_table_version",
     "area_mem",
     "pressure_drop_spacer_per_m",
     "cpc_window_avg_flux",
@@ -100,6 +106,12 @@ _MFBO_SUMMARY_METRICS = frozenset(
         "active_window_box_volume_m3",
         "active_window_porosity",
         "lmh_mass_balance",
+        "lmh_window_exposed",
+        "lmh_window_module",
+        "n_lead_excluded",
+        "excluded_length_m",
+        "window_length_m",
+        "window_table_version",
         "lmh_mass_balance_signed_python",
         "lmh_udm_avg",
         "lmh_difference_mass_balance_minus_udm",
@@ -206,10 +218,13 @@ PARITY_EXCEPTIONS = (
 )
 
 
-def parse_extract_profile(argv: Sequence[str] | None = None) -> str:
-    """Return ``full`` or ``mfbo``. Unknown flags and profiles raise."""
+def parse_extract_options(
+    argv: Sequence[str] | None = None,
+) -> tuple[str, bool]:
+    """Return ``(profile, legacy_3_cell_window)``. Unknown flags raise."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--profile", default=PROFILE_FULL)
+    parser.add_argument("--legacy-3-cell-window", action="store_true")
     args, unknown = parser.parse_known_args(list(argv) if argv is not None else None)
     if unknown:
         raise ValueError(f"Unrecognized extract arguments: {unknown!r}.")
@@ -219,6 +234,12 @@ def parse_extract_profile(argv: Sequence[str] | None = None) -> str:
             f"Unknown extract profile {profile!r}. "
             f"Expected one of {sorted(PROFILES)}."
         )
+    return profile, bool(args.legacy_3_cell_window)
+
+
+def parse_extract_profile(argv: Sequence[str] | None = None) -> str:
+    """Return ``full`` or ``mfbo``. Unknown flags and profiles raise."""
+    profile, _legacy = parse_extract_options(argv)
     return profile
 
 

@@ -50,8 +50,15 @@ from ro.extract_profile import (  # noqa: E402
     mfbo_mixing_cup_boundary_indices,
     mfbo_pressure_boundary_indices,
     mfbo_required_report_names,
+    parse_extract_options,
     parse_extract_profile,
     require_mfbo_summary_columns,
+)
+from ro.evaluation_window_table import (  # noqa: E402
+    apply_selection_to_config,
+    per_cell_flux_and_area,
+    select_evaluation_window,
+    window_lmh,
 )
 from ro.extract_skip import write_extract_source_record  # noqa: E402
 from ro.solver_common import (  # noqa: E402
@@ -251,6 +258,8 @@ def stamp_extraction_wall_time_on_run_manifest(run_directory, wall_time_s):
 
 
 _extract_profile_name = "full"
+_legacy_3_cell_window = False
+_evaluation_window_selection = None
 
 
 def _write_report_extract_timing(report_path: Path):
@@ -418,12 +427,12 @@ if __name__ == "__main__":
         cfg.apply_post_config_overrides(cfg, _overrides)
         print(f"Applied config overrides: {sorted(_overrides)}")
 
-    # Refuse before Fluent if layout or evaluation window were not
-    # explicitly supplied. Stock post_config leaves those keys unset so a
-    # direct run cannot silently score a 1+7+2 mesh as 1+3+1 / lead=1.
+    # Refuse before Fluent if the layout was not explicitly supplied.
+    # Stock post_config leaves those keys unset so a direct run cannot
+    # silently score a 1+7+2 mesh as 1+3+1. The evaluation window is
+    # applied after the run manifest is read.
+    _extract_profile_name, _legacy_3_cell_window = parse_extract_options()
     scoring_layout = require_explicit_scoring_layout(cfg)
-    evaluation_window = require_explicit_evaluation_window(cfg)
-    evaluation_window.evaluation_local_indices(scoring_layout.layout)
 
     print("Config loaded from:")
     print(CONFIG_PATH)
@@ -490,6 +499,31 @@ if __name__ == "__main__":
         )
 
     sync_run_manifest_analytic_cwall(case_path)
+    _run_manifest_for_window = read_run_manifest(case_path)
+    if str(cfg.geo_name) != _run_manifest_for_window["geo_id"]:
+        raise ValueError(
+            "post config geo_name "
+            f"{cfg.geo_name!r} does not match run manifest geo_id "
+            f"{_run_manifest_for_window['geo_id']!r}."
+        )
+    _evaluation_window_selection = select_evaluation_window(
+        geo_id=_run_manifest_for_window["geo_id"],
+        mesh_id=_run_manifest_for_window["mesh_id"],
+        n_active=scoring_layout.layout.n_active,
+        cell_length_x_m=scoring_layout.layout.cell_length_x_m,
+        legacy_3_cell_window=_legacy_3_cell_window,
+    )
+    apply_selection_to_config(cfg, _evaluation_window_selection)
+    evaluation_window = require_explicit_evaluation_window(cfg)
+    evaluation_window.evaluation_local_indices(scoring_layout.layout)
+    print(
+        "Evaluation window:",
+        f"n_lead_excluded={_evaluation_window_selection.n_lead_excluded}",
+        f"excluded_length_m={_evaluation_window_selection.excluded_length_m}",
+        f"window_length_m={_evaluation_window_selection.window_length_m}",
+        "window_table_version="
+        f"{_evaluation_window_selection.window_table_version}",
+    )
 
 def as_fluent_path(path):
     """Convert a path to a Fluent-friendly absolute path."""
@@ -2452,6 +2486,22 @@ if __name__ == "__main__":
 
         expected_outlet_pressure = getattr(cfg, "outlet_gauge_pressure", 6.0e6)
 
+        if _evaluation_window_selection is None:
+            raise RuntimeError(
+                "evaluation window was not selected before the summary "
+                "was built."
+            )
+        _window_fluxes, _window_areas = per_cell_flux_and_area(
+            segmented_cp_values,
+            evaluation_cells,
+        )
+        lmh_window_exposed, lmh_window_module = window_lmh(
+            _window_fluxes,
+            _window_areas,
+            _evaluation_window_selection.window_length_m,
+            run_manifest["periodic_shift_y_m"],
+        )
+
         # ----------------------------------------------------------
         # Summary table
         # ----------------------------------------------------------
@@ -2513,6 +2563,28 @@ if __name__ == "__main__":
             {"metric": "pp_udm_area_sum", "value": udm_area_sum, "unit": "m2"},
 
             {"metric": "lmh_mass_balance", "value": lmh_mass_balance, "unit": "LMH"},
+            {"metric": "lmh_window_exposed", "value": lmh_window_exposed, "unit": "LMH"},
+            {"metric": "lmh_window_module", "value": lmh_window_module, "unit": "LMH"},
+            {
+                "metric": "n_lead_excluded",
+                "value": _evaluation_window_selection.n_lead_excluded,
+                "unit": "-",
+            },
+            {
+                "metric": "excluded_length_m",
+                "value": _evaluation_window_selection.excluded_length_m,
+                "unit": "m",
+            },
+            {
+                "metric": "window_length_m",
+                "value": _evaluation_window_selection.window_length_m,
+                "unit": "m",
+            },
+            {
+                "metric": "window_table_version",
+                "value": _evaluation_window_selection.window_table_version,
+                "unit": "-",
+            },
             {"metric": "lmh_mass_balance_signed", "value": lmh_mass_balance_signed, "unit": "LMH"},
             {
                 "metric": "lmh_mass_balance_signed_python",
@@ -2904,7 +2976,10 @@ if __name__ == "__main__":
         try:
             update_run_manifest_fields(
                 case_path,
-                manifest_quality_payload(quality_result),
+                {
+                    **manifest_quality_payload(quality_result),
+                    **_evaluation_window_selection.manifest_fields(),
+                },
             )
             print(
                 "Convergence quality    :",

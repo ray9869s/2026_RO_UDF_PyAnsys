@@ -314,9 +314,10 @@ CURRENT_LAYOUT = DomainLayout(
 )
 
 # Lead/trail windows: legacy matches the old post_config alias
-# n_inlet_spacer_cells_excluded=1. CURRENT uses lead=3 as a D2450-derived
-# cell-count convention; whether decay follows cell count or an absolute
-# length is still open. layout_post_config_values emits the window; stock
+# n_inlet_spacer_cells_excluded=1. CURRENT_EVALUATION_WINDOW is the
+# superseded 2026-10-09 fixed lead=3 constant, kept for
+# --legacy-3-cell-window. The paper window is the per-geometry table.
+# layout_post_config_values emits the mesh-manifest window; stock
 # post_config leaves it unset so a direct run cannot silently score lead=1.
 LEGACY_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=1, n_trail_excluded=0)
 CURRENT_EVALUATION_WINDOW = EvaluationWindow(n_lead_excluded=3, n_trail_excluded=0)

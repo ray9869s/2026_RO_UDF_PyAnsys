@@ -9,12 +9,14 @@ import pytest
 
 from helpers import SCRIPTS_DIR, load_module
 from ro.extract_profile import (
+    MFBO_REQUIRED_SUMMARY_COLUMNS,
     PROFILE_FULL,
     PROFILE_MFBO,
     compare_shared_summary_columns,
     filter_mfbo_summary_rows,
     mfbo_mixing_cup_boundary_indices,
     mfbo_pressure_boundary_indices,
+    parse_extract_options,
     parse_extract_profile,
     report_extract_argv,
     require_mfbo_summary_columns,
@@ -49,6 +51,20 @@ def test_parse_extract_profile_defaults_to_full():
     assert parse_extract_profile([]) == PROFILE_FULL
     assert parse_extract_profile(["--profile", "mfbo"]) == PROFILE_MFBO
     assert parse_extract_profile(["--profile=full"]) == PROFILE_FULL
+
+
+def test_parse_extract_profile_accepts_legacy_3_cell_window():
+    profile, legacy = parse_extract_options(["--legacy-3-cell-window"])
+    assert profile == PROFILE_FULL
+    assert legacy is True
+    profile, legacy = parse_extract_options(
+        ["--profile", "mfbo", "--legacy-3-cell-window"]
+    )
+    assert profile == PROFILE_MFBO
+    assert legacy is True
+    assert parse_extract_profile([]) == PROFILE_FULL
+    _profile, legacy = parse_extract_options([])
+    assert legacy is False
 
 
 def test_parse_extract_profile_rejects_unknown_profile_and_args():
@@ -102,6 +118,30 @@ def test_filter_drops_reports_the_mfbo_fields_do_not_need():
     assert "cp_membrane_segment_fluent_computes" not in kept
     assert "cp_q999_cell_5" not in kept
     assert "pp_pressure_drop_cell_2" not in kept
+
+
+def test_mfbo_profile_keeps_window_lmh_columns():
+    rows = [
+        {"metric": "lmh_window_exposed", "value": 8.1, "unit": "LMH"},
+        {"metric": "lmh_window_module", "value": 27000.0, "unit": "LMH"},
+        {"metric": "window_table_version", "value": "2026-10-09", "unit": "-"},
+        {"metric": "wall_shear_avg", "value": 1.0, "unit": "Pa"},
+    ]
+    kept = {row["metric"]: row["value"] for row in filter_mfbo_summary_rows(rows)}
+    assert kept["lmh_window_exposed"] == 8.1
+    assert kept["lmh_window_module"] == 27000.0
+    assert kept["window_table_version"] == "2026-10-09"
+    assert "wall_shear_avg" not in kept
+
+
+def test_require_mfbo_summary_columns_requires_window_lmh():
+    row = {column: "1" for column in MFBO_REQUIRED_SUMMARY_COLUMNS}
+    row["profile"] = "mfbo"
+    row["window_table_version"] = "2026-10-09"
+    require_mfbo_summary_columns(row)
+    row["lmh_window_module"] = ""
+    with pytest.raises(RuntimeError, match="lmh_window_module"):
+        require_mfbo_summary_columns(row)
 
 
 def test_require_mfbo_summary_columns_rejects_a_full_looking_row():

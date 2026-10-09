@@ -69,6 +69,12 @@ def _summary(**overrides):
     row = {
         "y1_window_median_um": "12.5",
         "lmh_mass_balance": "25",
+        "lmh_window_exposed": "20",
+        "lmh_window_module": "18",
+        "n_lead_excluded": "3",
+        "excluded_length_m": "0.010395",
+        "window_length_m": "0.01386",
+        "window_table_version": "2026-10-09",
         "area_mem": "0.00012",
         "pressure_drop_spacer_per_m": "1000",
         "cp_canon_window_avg": "1.1",
@@ -525,3 +531,147 @@ def test_sherwood_is_missing_when_the_modulus_is_not_above_one(tmp_path):
     assert row["sh_cpc_flux"] == summarize_results.MISSING
     assert "sh_cpc_flux undefined" in row["notes"]
     assert row["re_h"] != summarize_results.MISSING
+
+
+def _window_table(path, geo_id, mesh_id, n_lead, dx, n_active):
+    path.write_text(
+        json.dumps(
+            {
+                geo_id: {
+                    "n_lead_excluded": n_lead,
+                    "excluded_length_m": n_lead * dx,
+                    "window_length_m": (n_active - n_lead) * dx,
+                    "mesh_id": mesh_id,
+                    "date": "2026-10-09",
+                    "source_data_root": "C:/ro_data",
+                    "short_window": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_stored_window_lmh_is_copied_without_recompute(tmp_path):
+    _plant(
+        tmp_path,
+        "diamond",
+        "D2450_a45",
+        "max085_min006_cpg5_bl4_peel2",
+        "u0p2_p6M",
+        mesh=_mesh(),
+        run=_run(),
+        summary=_summary(),
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path,
+        out_dir=tmp_path / "out",
+        window_table_path=tmp_path / "missing_table.json",
+    )
+    row = rows[0]
+    assert row["lmh_window_exposed"] == "20"
+    assert row["lmh_window_module"] == "18"
+    assert row["n_lead_excluded"] == "3"
+    assert row["window_table_version"] == "2026-10-09"
+    assert "recomputed_from_cells" not in row["notes"]
+
+
+def test_old_leaf_window_lmh_is_recomputed_from_cells(tmp_path):
+    geo_id = "D2450_a45"
+    mesh_id = "max085_min006_cpg5_bl4_peel2"
+    dx = 0.001
+    n_active = 4
+    n_lead = 1
+    table = tmp_path / "evaluation_window_table.json"
+    _window_table(table, geo_id, mesh_id, n_lead, dx, n_active)
+    summary = _summary()
+    for key in (
+        "lmh_window_exposed",
+        "lmh_window_module",
+        "n_lead_excluded",
+        "excluded_length_m",
+        "window_length_m",
+        "window_table_version",
+    ):
+        del summary[key]
+    summary.update(
+        {
+            "pp_jw_m_per_s_cell_3": "1e-6",
+            "pp_jw_m_per_s_cell_4": "2e-6",
+            "pp_jw_m_per_s_cell_5": "3e-6",
+            "pp_membrane_area_cell_3_m2": "0.01",
+            "pp_membrane_area_cell_4_m2": "0.01",
+            "pp_membrane_area_cell_5_m2": "0.02",
+        }
+    )
+    _plant(
+        tmp_path,
+        "diamond",
+        geo_id,
+        mesh_id,
+        "u0p2_p6M",
+        mesh=_mesh(
+            n_active_cells=n_active,
+            n_buffer_in=1,
+            cell_length_x_m=dx,
+            periodic_shift_y_m=0.002,
+        ),
+        run=_run(),
+        summary=summary,
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path,
+        out_dir=tmp_path / "out",
+        window_table_path=table,
+    )
+    row = rows[0]
+    assert float(row["lmh_window_exposed"]) == pytest.approx(8.1)
+    assert float(row["lmh_window_module"]) == pytest.approx(27000.0)
+    assert row["n_lead_excluded"] == "1"
+    assert float(row["excluded_length_m"]) == pytest.approx(0.001)
+    assert float(row["window_length_m"]) == pytest.approx(0.003)
+    assert row["window_table_version"] == "2026-10-09"
+    assert "recomputed_from_cells" in row["notes"]
+
+
+def test_old_leaf_without_a_cell_column_stays_missing(tmp_path):
+    geo_id = "D2450_a45"
+    mesh_id = "max085_min006_cpg5_bl4_peel2"
+    table = tmp_path / "evaluation_window_table.json"
+    _window_table(table, geo_id, mesh_id, 1, 0.001, 4)
+    summary = _summary()
+    for key in (
+        "lmh_window_exposed",
+        "lmh_window_module",
+        "n_lead_excluded",
+        "excluded_length_m",
+        "window_length_m",
+        "window_table_version",
+    ):
+        del summary[key]
+    summary["pp_jw_m_per_s_cell_3"] = "1e-6"
+    _plant(
+        tmp_path,
+        "diamond",
+        geo_id,
+        mesh_id,
+        "u0p2_p6M",
+        mesh=_mesh(
+            n_active_cells=4,
+            n_buffer_in=1,
+            cell_length_x_m=0.001,
+            periodic_shift_y_m=0.002,
+        ),
+        run=_run(),
+        summary=summary,
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path,
+        out_dir=tmp_path / "out",
+        window_table_path=table,
+    )
+    row = rows[0]
+    assert row["lmh_window_exposed"] == summarize_results.MISSING
+    assert row["lmh_window_module"] == summarize_results.MISSING
+    assert "recomputed_from_cells" not in row["notes"]
+    assert "pp_membrane_area_cell_3_m2" in row["notes"]

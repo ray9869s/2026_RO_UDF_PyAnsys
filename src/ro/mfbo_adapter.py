@@ -17,6 +17,9 @@ record returns ``execution_failed`` and is not run again.
 ``convergence_quality`` ``FAIL`` becomes ``diverged`` when
 ``stop_reason`` is ``diverged``, and ``invalid`` otherwise. Missing
 quantities stay missing; they are not stored as LMH = 0.
+The objective ``lmh`` is summary column ``lmh_window_module``.
+``lmh_module_area`` remains the whole-active rescale of
+``lmh_mass_balance`` and is not a fallback for ``lmh``.
 """
 
 from __future__ import annotations
@@ -552,19 +555,24 @@ def _physics_status(run_manifest: Mapping[str, Any]) -> tuple[str, str | None]:
 
 
 def _quantities(summary: Mapping[str, Any] | None, mesh_manifest: Mapping[str, Any]):
-    lmh = _finite(None if summary is None else summary.get("lmh_mass_balance"))
+    lmh = _finite(None if summary is None else summary.get("lmh_window_module"))
+    mass_balance = _finite(
+        None if summary is None else summary.get("lmh_mass_balance")
+    )
     pressure = _finite(
         None if summary is None else summary.get("pressure_drop_spacer_per_m")
     )
     module = None
-    if lmh is not None and summary is not None:
+    if mass_balance is not None and summary is not None:
         area_mem = _finite(summary.get("area_mem"))
         n_active = _finite(mesh_manifest.get("n_active_cells"))
         length = _finite(mesh_manifest.get("cell_length_x_m"))
         shift = _finite(mesh_manifest.get("periodic_shift_y_m"))
         if None not in (area_mem, n_active, length, shift):
             try:
-                module = lmh_module_area(lmh, area_mem, n_active, length, shift)
+                module = lmh_module_area(
+                    mass_balance, area_mem, n_active, length, shift
+                )
             except ZeroDivisionError:
                 module = None
     return {

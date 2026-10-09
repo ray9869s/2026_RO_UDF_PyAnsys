@@ -8,11 +8,11 @@ Paper decisions already fixed, and where the code records them:
 | --- | --- | --- |
 | Flow regime | laminar | `configs/run_config.py:291` |
 | Concentration polarisation | concentration-statistics average and `CP_q999` | `src/ro/cp_concentration_stats.py:201–234` |
-| LMH | both exposed-membrane and module-area bases | `scripts/mfbo/summarize_results.py:3–8` |
+| LMH | window module area `lmh_window_module` is the paper and MFBO value; window exposed area is reported alongside; `lmh_mass_balance` is the gate only | `src/ro/evaluation_window_table.py` |
 | Convergence gate | post-hoc gate, independent of the solver stop | `src/ro/convergence_quality.py:1–32` |
 | Production UDF | `udfs/260822_RO_UDF.c` | `configs/run_config.py:243` |
 | Mesh used in the paper | **OPEN** | user decision; production mesh id is recorded below and is not the paper mesh |
-| Diamond evaluation window | **OPEN** | user decision; current mesh manifests still write lead = 3 |
+| Diamond evaluation window | per-geometry `configs/evaluation_window_table.json` (2026-10-09). The fixed lead of 3 is superseded; mesh manifests still store it | `scripts/mfbo/development_length.py` |
 
 The 2D pilot UDF `udfs/260929_RO_UDF.c` is not the 3D campaign UDF.
 
@@ -356,14 +356,18 @@ Mesh-independence reduction (Richardson, GCI, safety factor 1.25) is implemented
 
 ### 6.1 Evaluation window
 
+**Paper window (2026-10-09).** Extract (`scripts/pyfluent_report_extract.py`, full and `--profile mfbo`) reads `configs/evaluation_window_table.json`. The row for the run's `geo_id` sets `n_lead_excluded`. A missing `geo_id` is an error. `--legacy-3-cell-window` scores lead 3 and records `window_table_version` `legacy-3-cell`; it does not read the table. Trail exclusion is 0. The same cells are the CP window (`cpc_window_avg_flux`, `cp_q999_window_flux`) and the LMH window in §6.3. The run manifest and the wide summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`, and `window_table_version`.
+
+**Superseded 2026-10-09.** The fixed lead of 3 below is not the paper window. Mesh manifests still store lead 3; extract overwrites that with the table unless the legacy flag is set.
+
 | Setting | Status | Source |
 | --- | --- | --- |
 | Stock post_config | `n_lead_excluded = None`, `n_trail_excluded = None`. Extract refuses a missing window. | `configs/post_config.py:125–131` |
 | Value written into current mesh manifests | lead 3, trail 0 | `configs/batch_config.py:147–148` |
-| Named constants | legacy lead 1; `CURRENT_EVALUATION_WINDOW` lead 3, trail 0 | `src/ro/domain_layout.py:321–322` |
-| Paper window, including Diamond | **OPEN** | user decision |
+| Named constants | legacy lead 1; `CURRENT_EVALUATION_WINDOW` lead 3, trail 0 | `src/ro/domain_layout.py:322–323` |
+| Paper window, including Diamond | **Superseded 2026-10-09** by the table above. This row recorded the window as **OPEN** while manifests wrote lead 3. | user decision, closed 2026-10-09 |
 
-`src/ro/domain_layout.py:316–320` says lead = 3 is a D2450 cell-count convention and that whether the exclusion should follow cell count or an absolute length is still open. Evaluation cells are the active cells after dropping `n_lead_excluded` at the inlet end and `n_trail_excluded` at the outlet end (`src/ro/domain_layout.py:267–275`). On 1+7+2 with lead 3 and trail 0 that is global cells 5–8. Do not use that as the paper window until the OPEN item is closed. Hardcoded cells `(4, 5, 6, 7)` are a continuity column only (`src/ro/convergence_quality.py:33`, `:9–13`).
+Until 2026-10-09, `src/ro/domain_layout.py` treated lead = 3 as a D2450 cell-count convention and left open whether the exclusion should follow cell count or an absolute length. Evaluation cells are the active cells after dropping `n_lead_excluded` at the inlet end and `n_trail_excluded` at the outlet end (`src/ro/domain_layout.py:267–275`). On 1+7+2 with lead 3 and trail 0 that is global cells 5–8. That fixed window is superseded. `CURRENT_EVALUATION_WINDOW` remains the lead-3 constant used by `--legacy-3-cell-window`. Hardcoded cells `(4, 5, 6, 7)` are a continuity column only (`src/ro/convergence_quality.py:33`, `:9–13`).
 
 ### 6.2 Bulk concentration `c_b`
 
@@ -372,6 +376,17 @@ Channel mid-plane `z = 0.5 * (z_min + z_max)` from the fluid bounds (`src/ro/flu
 A guard compares each cell’s mid-plane `c_b` with the mean of the mixing-cup concentrations on the two flanking x-normal cell boundaries. Relative tolerance 0.005 (`src/ro/fluent_report_helpers.py:286–299`).
 
 ### 6.3 LMH, both bases
+
+**Paper and MFBO LMH (2026-10-09).** Over the evaluation-window cells, from per-cell UDF flux `pp_jw_m_per_s_cell_N` and `pp_membrane_area_cell_N_m2`:
+
+```
+lmh_window_exposed = sum(Jw_i * A_mem_i) / sum(A_mem_i) * 3.6e6
+lmh_window_module  = sum(Jw_i * A_mem_i) / (2 * L_window * periodic_shift_y_m) * 3.6e6
+```
+
+`L_window` is `window_length_m`. `lmh_window_module` is the paper LMH and the MFBO objective (`src/ro/mfbo_adapter.py`). `lmh_window_exposed` is reported alongside. `lmh_mass_balance` is the convergence-gate quantity only.
+
+**Superseded as the objective 2026-10-09.** The whole-active rescale below remains the reference column `lmh_module_area`. It is not the objective.
 
 Exposed-area (mass balance), blocked fraction 0 so the denominator is `area_mem`:
 

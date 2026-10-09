@@ -133,6 +133,7 @@ def _run_manifest(**overrides) -> dict:
 def _write_summary(run_dir: Path, **overrides) -> None:
     row = {
         "lmh_mass_balance": "25.0",
+        "lmh_window_module": "18.0",
         "area_mem": "1.0e-5",
         "pressure_drop_spacer_per_m": "30000",
         "cpc_window_avg_flux": "1.08",
@@ -245,7 +246,7 @@ def test_reuse_skips_drivers_when_manifests_record_success(tmp_path):
     record = _evaluate(tmp_path, WIDE, "LF", drivers)
     assert drivers.calls == []
     assert record["status"] == "valid"
-    assert record["lmh"] == pytest.approx(25.0)
+    assert record["lmh"] == pytest.approx(18.0)
 
 
 def test_existing_failed_leaf_is_not_rerun(tmp_path):
@@ -279,11 +280,25 @@ def test_geometry_without_manifest_is_execution_failed(tmp_path):
     assert record["leaf_path"] == str(geo_dir)
 
 
+def test_missing_window_module_lmh_is_missing_qoi(tmp_path):
+    _write_success_tree(tmp_path)
+    geo_id = "MFP_d0800_h0000_f0400"
+    run_dir = tmp_path / "runs" / "pillar" / geo_id / LF_MESH_ID / RUN_ID
+    _write_summary(run_dir, lmh_window_module="")
+    record = _evaluate(tmp_path, WIDE, "LF", _drivers())
+    assert record["status"] == "invalid"
+    assert record["failure_reason"] == "missing_qoi"
+    assert record["lmh"] is None
+    assert record["lmh_module_area"] == pytest.approx(
+        lmh_module_area(25.0, 1.0e-5, 7, 0.003465, 0.003465)
+    )
+
+
 def test_field_mapping_uses_summary_columns_and_module_area(tmp_path):
     _write_success_tree(tmp_path)
     record = _evaluate(tmp_path, WIDE, "LF", _drivers())
     expected = lmh_module_area(25.0, 1.0e-5, 7, 0.003465, 0.003465)
-    assert record["lmh"] == pytest.approx(25.0)
+    assert record["lmh"] == pytest.approx(18.0)
     assert record["lmh_module_area"] == pytest.approx(expected)
     assert record["pressure_drop_per_length_pa_per_m"] == pytest.approx(30000.0)
     assert record["cp_average"] == pytest.approx(1.08)
@@ -411,7 +426,7 @@ def test_convergence_fail_diverged_keeps_measured_lmh(tmp_path):
         run_dir / "manifest.json",
         _run_manifest(stop_reason="diverged", convergence_quality="FAIL"),
     )
-    _write_summary(run_dir, lmh_mass_balance="12.5")
+    _write_summary(run_dir, lmh_mass_balance="12.5", lmh_window_module="12.5")
     record = _evaluate(tmp_path, WIDE, "LF", _drivers())
     assert record["status"] == "diverged"
     assert record["failure_reason"] == "diverged"
@@ -430,7 +445,7 @@ def test_convergence_fail_without_divergence_is_invalid(tmp_path):
             convergence_quality_failures=["continuity_final"],
         ),
     )
-    _write_summary(run_dir, lmh_mass_balance="")
+    _write_summary(run_dir, lmh_mass_balance="", lmh_window_module="")
     record = _evaluate(tmp_path, WIDE, "LF", _drivers())
     assert record["status"] == "invalid"
     assert record["failure_reason"] == "continuity_final"
@@ -559,7 +574,7 @@ def test_run_manifest_without_summary_csv_is_not_success(tmp_path):
     record = _evaluate(tmp_path, LIVE, "LF", drivers)
     assert drivers.calls == ["extract"]
     assert record["status"] == "valid"
-    assert record["lmh"] == pytest.approx(25.0)
+    assert record["lmh"] == pytest.approx(18.0)
 
 
 def test_run_directory_without_manifest_is_not_rerun(tmp_path):

@@ -12,6 +12,17 @@ from the mesh manifest. ``area_mem`` and ``lmh_mass_balance`` come from
 ``post/reports/summary_metrics_wide.csv``. If any input is absent,
 ``lmh_module_area`` is ``MISSING``.
 
+``lmh_window_exposed`` and ``lmh_window_module`` are the evaluation-window
+LMH on the exposed-membrane and module-area bases. When a leaf already
+stores them, they are copied. A leaf extracted before those columns
+existed is recomputed from its per-cell ``pp_jw_m_per_s_cell_N`` and
+``pp_membrane_area_cell_N_m2`` columns and
+``configs/evaluation_window_table.json``, and the notes say
+``recomputed_from_cells``. ``n_lead_excluded``, ``excluded_length_m``,
+``window_length_m``, and ``window_table_version`` are copied from the
+wide summary, or filled from that table when the summary does not have
+them. A missing input is ``MISSING``.
+
 Dimensionless columns (definitions in ``docs/metrics_conventions.md``)
 are derived here from those same inputs plus the run manifest
 ``u_target_ms``. Hydraulic diameter is ``4 V / (A_mem + A_spacer)``
@@ -37,6 +48,13 @@ _SRC = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from ro.evaluation_window_table import (  # noqa: E402
+    default_evaluation_window_table_path,
+    per_cell_flux_and_area,
+    selection_from_table,
+    window_global_cell_numbers,
+    window_lmh,
+)
 from ro.active_window_geometry import (  # noqa: E402
     geometric_hydraulic_diameter_m,
     schock_miquel_hydraulic_diameter_m,
@@ -68,7 +86,13 @@ COLUMNS = (
     "convergence_quality",
     "viscous_model",
     "lmh_mass_balance",
+    "lmh_window_exposed",
+    "lmh_window_module",
     "lmh_module_area",
+    "n_lead_excluded",
+    "excluded_length_m",
+    "window_length_m",
+    "window_table_version",
     "pressure_drop_spacer_per_m",
     "cp_canon_window_avg",
     "cpc_window_avg_flux",
@@ -602,7 +626,152 @@ def _module_area_cell(mesh_manifest, wide, notes):
     return format(value, ".12g")
 
 
-def row_for_leaf(data_root, family, geo_id, mesh_id, run_id, leaf):
+_WINDOW_IDENTITY = (
+    "n_lead_excluded",
+    "excluded_length_m",
+    "window_length_m",
+    "window_table_version",
+)
+_WINDOW_LMH = ("lmh_window_exposed", "lmh_window_module")
+_WINDOW_NUMERIC_IDENTITY = (
+    "n_lead_excluded",
+    "excluded_length_m",
+    "window_length_m",
+)
+
+
+def _stored_number(mapping, key):
+    if mapping is None or key not in mapping or _blank(mapping[key]):
+        return None
+    return _format_number(mapping[key])
+
+
+def _stored_text(mapping, key):
+    if mapping is None or key not in mapping or _blank(mapping[key]):
+        return None
+    text = mapping[key]
+    if isinstance(text, str):
+        return text.strip()
+    return str(text)
+
+
+def _whole_int(mapping, key):
+    if mapping is None or key not in mapping:
+        return None
+    number = _finite_number(mapping[key])
+    if number is None or not float(number).is_integer():
+        return None
+    return int(number)
+
+
+def _window_columns(wide, mesh_manifest, geo_id, mesh_id, notes, table_path):
+    """Copy stored window fields, or fill old leaves from the table and cells."""
+    fields = {}
+    identity_stored = all(
+        (
+            _stored_number(wide, key)
+            if key in _WINDOW_NUMERIC_IDENTITY
+            else _stored_text(wide, key)
+        )
+        is not None
+        for key in _WINDOW_IDENTITY
+    )
+    lmh_stored = all(_stored_number(wide, key) is not None for key in _WINDOW_LMH)
+    if identity_stored:
+        for key in _WINDOW_NUMERIC_IDENTITY:
+            fields[key] = _stored_number(wide, key)
+        fields["window_table_version"] = _stored_text(wide, "window_table_version")
+    if lmh_stored:
+        for key in _WINDOW_LMH:
+            fields[key] = _stored_number(wide, key)
+    if identity_stored and lmh_stored:
+        return fields
+    if wide is None:
+        for key in _WINDOW_IDENTITY + _WINDOW_LMH:
+            fields.setdefault(key, MISSING)
+        return fields
+
+    selection = None
+    lookup_error = None
+    try:
+        path = (
+            Path(table_path)
+            if table_path is not None
+            else default_evaluation_window_table_path()
+        )
+        n_active = _whole_int(mesh_manifest, "n_active_cells")
+        cell_length = None if mesh_manifest is None else _finite_number(
+            mesh_manifest.get("cell_length_x_m")
+        )
+        if mesh_manifest is None or n_active is None or cell_length is None:
+            raise ValueError(
+                "mesh manifest is missing n_active_cells or cell_length_x_m"
+            )
+        selection = selection_from_table(
+            path,
+            geo_id,
+            mesh_id=mesh_id,
+            n_active=n_active,
+            cell_length_x_m=cell_length,
+        )
+    except (FileNotFoundError, KeyError, ValueError, TypeError) as exc:
+        lookup_error = exc
+
+    if not identity_stored:
+        if selection is None:
+            notes.append(f"evaluation window: {lookup_error}")
+            for key in _WINDOW_IDENTITY:
+                fields[key] = MISSING
+        else:
+            fields["n_lead_excluded"] = str(selection.n_lead_excluded)
+            fields["excluded_length_m"] = format(selection.excluded_length_m, ".12g")
+            fields["window_length_m"] = format(selection.window_length_m, ".12g")
+            fields["window_table_version"] = selection.window_table_version
+            notes.append("evaluation window fields from the evaluation window table")
+    if lmh_stored:
+        return fields
+    if selection is None:
+        if identity_stored:
+            notes.append(f"evaluation window: {lookup_error}")
+        for key in _WINDOW_LMH:
+            fields[key] = MISSING
+        return fields
+    try:
+        n_buffer = _whole_int(mesh_manifest, "n_buffer_in")
+        shift = _finite_number(mesh_manifest.get("periodic_shift_y_m"))
+        if n_buffer is None or shift is None:
+            raise ValueError(
+                "mesh manifest is missing n_buffer_in or periodic_shift_y_m"
+            )
+        cells = window_global_cell_numbers(
+            n_buffer,
+            n_active,
+            selection.n_lead_excluded,
+        )
+        fluxes, areas = per_cell_flux_and_area(wide, cells)
+        exposed, module = window_lmh(
+            fluxes, areas, selection.window_length_m, shift
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        notes.append(f"lmh_window: {exc}")
+        for key in _WINDOW_LMH:
+            fields[key] = MISSING
+        return fields
+    fields["lmh_window_exposed"] = format(exposed, ".12g")
+    fields["lmh_window_module"] = format(module, ".12g")
+    notes.append("recomputed_from_cells")
+    return fields
+
+
+def row_for_leaf(
+    data_root,
+    family,
+    geo_id,
+    mesh_id,
+    run_id,
+    leaf,
+    window_table_path=None,
+):
     notes = []
     run_path = Path(leaf) / "manifest.json"
     mesh_path = (
@@ -639,6 +808,16 @@ def row_for_leaf(data_root, family, geo_id, mesh_id, run_id, leaf):
     row["processor_count"] = _processor_count(run_manifest, mesh_manifest, notes)
     row["viscous_model"] = _viscous_model(run_manifest, notes)
     row["lmh_module_area"] = _module_area_cell(mesh_manifest, wide, notes)
+    row.update(
+        _window_columns(
+            wide,
+            mesh_manifest,
+            geo_id,
+            mesh_id,
+            notes,
+            window_table_path,
+        )
+    )
     row.update(_dimensionless_fields(mesh_manifest, wide, run_manifest, notes))
     row["notes"] = "; ".join(notes)
     return row
@@ -680,6 +859,7 @@ def summarize(
     run_id=None,
     out_dir=None,
     now=None,
+    window_table_path=None,
 ):
     root = Path(data_root)
     if not root.is_dir():
@@ -693,7 +873,15 @@ def summarize(
         run_id=run_id,
     )
     rows = [
-        row_for_leaf(root, family_name, geo_name, mesh_name, run_name, leaf)
+        row_for_leaf(
+            root,
+            family_name,
+            geo_name,
+            mesh_name,
+            run_name,
+            leaf,
+            window_table_path=window_table_path,
+        )
         for family_name, geo_name, mesh_name, run_name, leaf in leaves
     ]
     _csv_path, _md_path, markdown = write_summary(destination, rows)
@@ -717,6 +905,14 @@ def build_parser():
         default=None,
         help="Output directory. Default: <data-root>/reports/<UTC stamp>/.",
     )
+    parser.add_argument(
+        "--window-table",
+        default=None,
+        help=(
+            "Evaluation window table JSON. Default: "
+            "configs/evaluation_window_table.json."
+        ),
+    )
     return parser
 
 
@@ -729,6 +925,7 @@ def main(argv=None):
         mesh_id=args.mesh_id,
         run_id=args.run_id,
         out_dir=args.out_dir,
+        window_table_path=args.window_table,
     )
     print(markdown, end="")
     return 0
