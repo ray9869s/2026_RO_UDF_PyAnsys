@@ -23,6 +23,14 @@ existed is recomputed from its per-cell ``pp_jw_m_per_s_cell_N`` and
 wide summary, or filled from that table when the summary does not have
 them. A missing input is ``MISSING``.
 
+Monitor columns are read from ``lmh_udm_avg.out`` and
+``pressure_drop_spacer.out`` on the run leaf. They are never written
+into ``lmh_mass_balance``, ``lmh_window_module``, or the other converged
+columns. ``report_status`` is ``converged`` when the gate is PASS,
+``steady_not_converged`` when the gate is FAIL, the LMH monitor has at
+least 1000 iterations, and the last-500 LMH range is under 0.2%, and
+``failed`` otherwise.
+
 Dimensionless columns (definitions in ``docs/metrics_conventions.md``)
 are derived here from those same inputs plus the run manifest
 ``u_target_ms``. Hydraulic diameter is ``4 V / (A_mem + A_spacer)``
@@ -37,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import math
 import sys
@@ -55,6 +64,14 @@ from ro.evaluation_window_table import (  # noqa: E402
     window_global_cell_numbers,
     window_lmh,
 )
+_MONITOR_PATH = Path(__file__).resolve().parent / "monitor_periodicity.py"
+_monitor_spec = importlib.util.spec_from_file_location(
+    "mfbo_monitor_periodicity",
+    _MONITOR_PATH,
+)
+_monitor_periodicity = importlib.util.module_from_spec(_monitor_spec)
+_monitor_spec.loader.exec_module(_monitor_periodicity)
+
 from ro.active_window_geometry import (  # noqa: E402
     geometric_hydraulic_diameter_m,
     schock_miquel_hydraulic_diameter_m,
@@ -69,6 +86,9 @@ RHO_KG_M3 = 998.2
 MU_PA_S = 8.93e-4
 DIFFUSIVITY_M2_S = 2.0e-9
 MS_TO_LMH = 3.6e6
+MONITOR_LAST_N = 500
+STEADY_MIN_ITERATIONS = 1000
+STEADY_LMH_RANGE_PCT_MAX = 0.2
 
 COLUMNS = (
     "family",
@@ -84,6 +104,12 @@ COLUMNS = (
     "stop_reason",
     "continuity_final",
     "convergence_quality",
+    "report_status",
+    "monitor_lmh_udm_mean_last500",
+    "monitor_lmh_udm_range_pct_last500",
+    "monitor_dp_mean_last500",
+    "monitor_dp_range_pct_last500",
+    "monitor_iterations",
     "viscous_model",
     "lmh_mass_balance",
     "lmh_window_exposed",
@@ -763,6 +789,93 @@ def _window_columns(wide, mesh_manifest, geo_id, mesh_id, notes, table_path):
     return fields
 
 
+def _format_monitor(value):
+    if value is None:
+        return MISSING
+    return format(float(value), ".12g")
+
+
+def _read_monitor_series(path, label, notes):
+    """Last-500 mean and percent range, plus the last iteration index."""
+    if not path.is_file():
+        notes.append(f"{label} is not in the run leaf")
+        return None
+    pairs = _monitor_periodicity.read_report_file(path)
+    if not pairs:
+        notes.append(f"{label} has no iteration/value rows")
+        return None
+    full = _monitor_periodicity.last_window(
+        pairs,
+        max(len(pairs), _monitor_periodicity.MIN_POINTS),
+    )
+    window = full[-MONITOR_LAST_N:]
+    values = [value for _iteration, value in window]
+    if not all(math.isfinite(value) for value in values):
+        notes.append(f"{label} last-{MONITOR_LAST_N} values are not finite")
+        return None
+    mean = sum(values) / len(values)
+    if mean == 0.0:
+        notes.append(f"{label} last-{MONITOR_LAST_N} mean is 0")
+        range_pct = None
+    else:
+        range_pct = (max(values) - min(values)) / abs(mean) * 100.0
+    return {
+        "mean": mean,
+        "range_pct": range_pct,
+        "iterations": int(full[-1][0]),
+    }
+
+
+def _report_status(quality, lmh):
+    if quality == "PASS":
+        return "converged"
+    if (
+        quality == "FAIL"
+        and lmh is not None
+        and lmh["iterations"] >= STEADY_MIN_ITERATIONS
+        and lmh["range_pct"] is not None
+        and lmh["range_pct"] < STEADY_LMH_RANGE_PCT_MAX
+    ):
+        return "steady_not_converged"
+    return "failed"
+
+
+def _monitor_fields(leaf, run_manifest, notes):
+    lmh = _read_monitor_series(
+        Path(leaf) / _monitor_periodicity.LMH_REPORT_FILE,
+        _monitor_periodicity.LMH_REPORT_FILE,
+        notes,
+    )
+    pressure = _read_monitor_series(
+        Path(leaf) / _monitor_periodicity.PRESSURE_REPORT_FILE,
+        _monitor_periodicity.PRESSURE_REPORT_FILE,
+        notes,
+    )
+    quality = None
+    if run_manifest is not None and not _blank(
+        run_manifest.get("convergence_quality")
+    ):
+        quality = str(run_manifest["convergence_quality"]).strip()
+    return {
+        "report_status": _report_status(quality, lmh),
+        "monitor_lmh_udm_mean_last500": _format_monitor(
+            None if lmh is None else lmh["mean"]
+        ),
+        "monitor_lmh_udm_range_pct_last500": _format_monitor(
+            None if lmh is None else lmh["range_pct"]
+        ),
+        "monitor_dp_mean_last500": _format_monitor(
+            None if pressure is None else pressure["mean"]
+        ),
+        "monitor_dp_range_pct_last500": _format_monitor(
+            None if pressure is None else pressure["range_pct"]
+        ),
+        "monitor_iterations": _format_monitor(
+            None if lmh is None else lmh["iterations"]
+        ),
+    }
+
+
 def row_for_leaf(
     data_root,
     family,
@@ -819,6 +932,7 @@ def row_for_leaf(
         )
     )
     row.update(_dimensionless_fields(mesh_manifest, wide, run_manifest, notes))
+    row.update(_monitor_fields(leaf, run_manifest, notes))
     row["notes"] = "; ".join(notes)
     return row
 

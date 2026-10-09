@@ -421,6 +421,19 @@ def test_dimensionless_groups_match_hand_values(tmp_path):
             **_active_window(porosity, membrane, spacer, height),
         ),
     )
+    leaf = (
+        tmp_path
+        / "runs"
+        / "diamond"
+        / "D2450_a45"
+        / "max085_min006_cpg5_bl4_peel2"
+        / "u0p2_p6M"
+    )
+    _write_monitor(leaf / "lmh_udm_avg.out", [(i, 27.3) for i in range(1, 21)])
+    _write_monitor(
+        leaf / "pressure_drop_spacer.out",
+        [(i, 1000.0) for i in range(1, 21)],
+    )
     _destination, rows, _markdown = summarize_results.summarize(
         tmp_path, out_dir=tmp_path / "out"
     )
@@ -675,3 +688,86 @@ def test_old_leaf_without_a_cell_column_stays_missing(tmp_path):
     assert row["lmh_window_module"] == summarize_results.MISSING
     assert "recomputed_from_cells" not in row["notes"]
     assert "pp_membrane_area_cell_3_m2" in row["notes"]
+
+
+def _write_monitor(path, rows):
+    lines = ['"iteration" "lmh"']
+    lines.extend(f"{iteration} {value}" for iteration, value in rows)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _plant_monitors(root, *, lmh_rows, dp_rows, quality):
+    geo_id = "D2450_a45"
+    mesh_id = "max085_min006_cpg5_bl4_peel2"
+    leaf = _plant(
+        root,
+        "diamond",
+        geo_id,
+        mesh_id,
+        "u0p2_p6M",
+        mesh=_mesh(),
+        run=_run(convergence_quality=quality),
+        summary=_summary(lmh_mass_balance="25", lmh_window_module="18"),
+    )
+    if lmh_rows is not None:
+        _write_monitor(leaf / "lmh_udm_avg.out", lmh_rows)
+    if dp_rows is not None:
+        _write_monitor(leaf / "pressure_drop_spacer.out", dp_rows)
+    return leaf
+
+
+def test_gate_fail_with_a_stationary_monitor_is_flagged(tmp_path):
+    lmh_rows = [(i, 27.3) for i in range(1, 1001)]
+    lmh_rows[-1] = (1000, 27.3 * 1.0005)
+    _plant_monitors(
+        tmp_path,
+        lmh_rows=lmh_rows,
+        dp_rows=[(i, 30000.0) for i in range(1, 1001)],
+        quality="FAIL",
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    row = rows[0]
+    assert row["report_status"] == "steady_not_converged"
+    assert float(row["monitor_lmh_udm_mean_last500"]) == pytest.approx(27.3, rel=1e-4)
+    assert float(row["monitor_lmh_udm_range_pct_last500"]) < 0.2
+    assert float(row["monitor_dp_mean_last500"]) == pytest.approx(30000.0)
+    assert row["monitor_iterations"] == "1000"
+    assert row["lmh_mass_balance"] == "25"
+    assert row["lmh_window_module"] == "18"
+
+
+def test_gate_pass_keeps_converged_columns_when_the_monitor_moves(tmp_path):
+    _plant_monitors(
+        tmp_path,
+        lmh_rows=[(i, 10.0 + i) for i in range(1, 1001)],
+        dp_rows=[(i, 1.0) for i in range(1, 1001)],
+        quality="PASS",
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    row = rows[0]
+    assert row["report_status"] == "converged"
+    assert float(row["monitor_lmh_udm_range_pct_last500"]) > 0.2
+    assert row["lmh_mass_balance"] == "25"
+    assert row["lmh_window_module"] == "18"
+
+
+def test_short_or_missing_monitor_is_failed(tmp_path):
+    _plant_monitors(
+        tmp_path,
+        lmh_rows=[(i, 27.3) for i in range(1, 501)],
+        dp_rows=None,
+        quality="FAIL",
+    )
+    _destination, rows, _markdown = summarize_results.summarize(
+        tmp_path, out_dir=tmp_path / "out"
+    )
+    row = rows[0]
+    assert row["report_status"] == "failed"
+    assert row["monitor_iterations"] == "500"
+    assert row["monitor_dp_mean_last500"] == summarize_results.MISSING
+    assert row["lmh_mass_balance"] == "25"
+    assert "pressure_drop_spacer.out" in row["notes"]

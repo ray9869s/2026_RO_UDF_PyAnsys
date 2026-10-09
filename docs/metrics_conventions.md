@@ -27,12 +27,39 @@ spheres at \(\pm r_{\mathrm{mid}}\)).
 ### Silent \(z = 0\) fallback (known issue, 2026-10-02)
 
 `resolve_channel_midplane_z_m` in `src/ro/fluent_report_helpers.py`
-(lines 243–248) returns `fallback_z_m` (default 0) when the fluid-zone
-reduction raises. It records `source=fallback_centred_origin` and does
-not raise. On the campaign frame that value is the mid-plane, so
-campaign \(c_b\) sampled this way is still at \(z = 0\). The failure
-itself is silent. It has to become loud. The \(h/2\) candidate-list bug
-above is a different, already-fixed path.
+returns `fallback_z_m` (default 0) when the fluid-zone reduction raises.
+It records `source=fallback_centred_origin` and does not raise. On the
+campaign frame that value is the mid-plane, so campaign \(c_b\) sampled
+this way is still at \(z = 0\). The failure itself is silent. The \(h/2\)
+candidate-list bug above is a different, already-fixed path.
+
+### Steady monitor when the convergence gate fails (2026-10-09)
+
+Some steady runs never pass the convergence gate because continuity
+stalls. The UDF membrane-flux monitor `lmh_udm_avg.out` can still be
+stationary (last-500-iteration range about 0.004–0.05% on the production
+mesh) while `lmh_mass_balance` is contaminated by the mass imbalance
+(values 12–105 LMH, above the about 27.3 LMH physical bound). Those runs
+may be reported only with the monitor statistics and a flag.
+
+`scripts/mfbo/summarize_results.py` reads `lmh_udm_avg.out` and
+`pressure_drop_spacer.out` with the readers in
+`scripts/mfbo/monitor_periodicity.py`. For every leaf it adds:
+
+| column | meaning |
+| --- | --- |
+| `monitor_lmh_udm_mean_last500` | mean of the last 500 LMH-monitor samples |
+| `monitor_lmh_udm_range_pct_last500` | \((\max-\min)/|\mathrm{mean}|\times 100\) over those samples |
+| `monitor_dp_mean_last500` | same mean for `pressure_drop_spacer.out` |
+| `monitor_dp_range_pct_last500` | same percent range for that file |
+| `monitor_iterations` | last iteration index in `lmh_udm_avg.out` |
+| `report_status` | `converged`, `steady_not_converged`, or `failed` |
+
+`report_status` is `converged` when `convergence_quality` is PASS.
+It is `steady_not_converged` when the gate is FAIL, `monitor_iterations`
+is at least 1000, and the LMH range is strictly under 0.2%. Every other
+leaf is `failed`. The monitor numbers are not copied into
+`lmh_mass_balance`, `lmh_window_module`, or any other converged column.
 
 ---
 
