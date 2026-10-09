@@ -25,7 +25,6 @@ from ro.extract_profile import (
     PROFILE_MFBO,
     compare_shared_summary_columns,
 )
-from ro.manifest import read_run_manifest
 from ro.mfbo_fidelity_screen import write_queue
 
 SUMMARY_NAME = "summary_metrics_wide.csv"
@@ -83,20 +82,76 @@ def parity_job_id(run_leaf: Path) -> str:
     return job_id
 
 
-def parity_copy_dir(data_root, run_leaf) -> Path:
-    """Copy destination outside ``runs/`` so campaign scanners skip it."""
-    root = Path(data_root)
+def _run_identity(run_leaf):
+    """``.../runs/<family>/<geo_id>/<mesh_id>/<run_id>`` identity."""
     leaf = Path(run_leaf)
-    try:
-        relative = leaf.resolve().relative_to(root.resolve())
-    except ValueError:
-        relative = Path(leaf.name)
-    return root / "mfbo_profile_parity" / relative
+    if len(leaf.parents) < 5 or leaf.parents[3].name != "runs":
+        raise ValueError(
+            "run leaf must be <data-root>/runs/<family>/<geo_id>/<mesh_id>/<run_id>, "
+            f"got {run_leaf!r}."
+        )
+    return {
+        "run_leaf": leaf,
+        "source_root": leaf.parents[4],
+        "family": leaf.parents[2].name,
+        "geo_id": leaf.parents[1].name,
+        "mesh_id": leaf.parent.name,
+        "run_id": leaf.name,
+    }
+
+
+def _under_production_leaf(run_leaf) -> bool:
+    text = str(run_leaf).strip().replace("\\", "/").casefold().rstrip("/")
+    return (
+        text == "c:/ro_data"
+        or text.startswith("c:/ro_data/")
+        or text == "/mnt/c/ro_data"
+        or text.startswith("/mnt/c/ro_data/")
+    )
+
+
+def parity_copy_dir(data_root, run_leaf) -> Path:
+    """Canonical run leaf under ``data_root``, where ``run_dir()`` expects it."""
+    identity = _run_identity(run_leaf)
+    return (
+        Path(data_root)
+        / "runs"
+        / identity["family"]
+        / identity["geo_id"]
+        / identity["mesh_id"]
+        / identity["run_id"]
+    )
+
+
+def _mesh_leaf(root, identity) -> Path:
+    return (
+        Path(root)
+        / "meshes"
+        / identity["family"]
+        / identity["geo_id"]
+        / identity["mesh_id"]
+    )
+
+
+def _drop_copied_reports(dest):
+    import shutil
+
+    reports = Path(dest) / "post" / "reports"
+    if reports.exists():
+        shutil.rmtree(reports)
 
 
 def prepare_mfbo_profile_copy(run_leaf, data_root) -> Path:
-    """Copy a full-extract leaf and remove the copied reports directory."""
-    import shutil
+    """Copy a full-extract leaf onto ``{data_root}/runs/...``.
+
+    Production leaves use ``copy_production_for_reextract``. Any other leaf
+    is copied, with its mesh leaf, to the same relative place under
+    ``data_root``. ``read_run_manifest`` then matches ``run_dir()`` when
+    ``RO_DATA_ROOT`` is that data root. The reference summary is left in
+    place when the source and the destination are the same path.
+    """
+    from mfbo.diagnose_cp_max_hotspots import copy_or_reuse_tree
+    from mfbo.reextract_runs import copy_production_for_reextract
 
     leaf = Path(run_leaf)
     source = summary_csv(leaf)
@@ -109,13 +164,24 @@ def prepare_mfbo_profile_copy(run_leaf, data_root) -> Path:
             "Reference summary is not a full extract "
             f"(profile={profile!r}): {source}"
         )
-    dest = parity_copy_dir(data_root, leaf)
-    if dest.exists():
-        raise FileExistsError(f"MFBO profile copy already exists: {dest}")
-    shutil.copytree(leaf, dest)
-    reports = dest / "post" / "reports"
-    if reports.exists():
-        shutil.rmtree(reports)
+    if _under_production_leaf(leaf):
+        dest = Path(copy_production_for_reextract(leaf, data_root))
+    else:
+        identity = _run_identity(leaf)
+        dest = parity_copy_dir(data_root, leaf)
+        if dest.resolve() == leaf.resolve():
+            return dest
+        if dest.exists():
+            raise FileExistsError(f"MFBO profile copy already exists: {dest}")
+        mesh_source = _mesh_leaf(identity["source_root"], identity)
+        copy_or_reuse_tree(
+            mesh_source,
+            _mesh_leaf(data_root, identity),
+            label="mesh leaf",
+        )
+        copy_or_reuse_tree(leaf, dest, label="run leaf")
+    if dest.resolve() != leaf.resolve():
+        _drop_copied_reports(dest)
     return dest
 
 
@@ -139,19 +205,23 @@ def build_parity_job(run_leaf, data_root) -> dict:
 
 
 def default_runner(data_root, copy_dir) -> int:
-    """Launch ``pyfluent_report_extract.py --profile mfbo`` on the copy."""
-    payload = read_run_manifest(copy_dir)
-    case = {
-        "inlet_velocity_value": payload["u_target_ms"],
-        "outlet_gauge_pressure": payload["p_gauge_pa"],
-    }
+    """Launch ``pyfluent_report_extract.py --profile mfbo`` on the copy.
+
+    The manifest is read inside ``operating_point_case``, which sets
+    ``RO_DATA_ROOT`` to ``data_root`` first. ``run_dir()`` then matches the
+    canonical copy.
+    """
+    from mfbo.reextract_runs import operating_point_case
+
+    identity = _run_identity(copy_dir)
+    case = operating_point_case(data_root, copy_dir)
     result = mfbo_common.launch_extract(
         data_root,
         copy_dir,
         case,
-        geo_id=payload["geo_id"],
-        mesh_id=payload["mesh_id"],
-        run_id=payload["run_id"],
+        geo_id=identity["geo_id"],
+        mesh_id=identity["mesh_id"],
+        run_id=identity["run_id"],
         profile=PROFILE_MFBO,
     )
     return int(result.returncode)

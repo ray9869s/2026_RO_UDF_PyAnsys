@@ -183,8 +183,18 @@ def test_emit_queue_does_not_copy(tmp_path):
 
 
 def test_run_parity_compares_the_copy(tmp_path):
-    root = tmp_path / "data"
-    leaf = _leaf(root)
+    source_root = tmp_path / "campaign_reextract"
+    data_root = tmp_path / "parity_root"
+    leaf = _leaf(source_root)
+    mesh = (
+        source_root
+        / "meshes"
+        / "pillar"
+        / "P_p100_h30"
+        / "max085_min006_cpg5_bl4_peel2"
+    )
+    mesh.mkdir(parents=True)
+    (mesh / "manifest.json").write_text("{}\n", encoding="utf-8")
     full = {
         "lmh_mass_balance": "12.5",
         "area_mem": "0.001",
@@ -194,8 +204,8 @@ def test_run_parity_compares_the_copy(tmp_path):
     (leaf / "marker.txt").write_text("keep", encoding="utf-8")
     seen = {}
 
-    def runner(data_root, copy_dir):
-        seen["data_root"] = data_root
+    def runner(root, copy_dir):
+        seen["data_root"] = root
         seen["copy"] = copy_dir
         assert (copy_dir / "marker.txt").read_text(encoding="utf-8") == "keep"
         assert not parity.summary_csv(copy_dir).exists()
@@ -209,9 +219,11 @@ def test_run_parity_compares_the_copy(tmp_path):
         )
         return 0
 
-    report = parity.run_parity(leaf, root, runner=runner)
+    report = parity.run_parity(leaf, data_root, runner=runner)
     assert report["ok"]
-    assert seen["copy"] == root / "mfbo_profile_parity" / leaf.relative_to(root)
+    assert seen["data_root"] == data_root
+    assert seen["copy"] == _leaf(data_root)
+    assert (data_root / "meshes" / "pillar" / "P_p100_h30" / "max085_min006_cpg5_bl4_peel2" / "manifest.json").is_file()
     written = json.loads(
         (seen["copy"] / "post" / "reports" / "mfbo_profile_parity.json").read_text(
             encoding="utf-8"
@@ -219,6 +231,7 @@ def test_run_parity_compares_the_copy(tmp_path):
     )
     assert written["ok"]
     assert parity.summary_csv(leaf).is_file()
+    assert not (data_root / "mfbo_profile_parity").exists()
 
 
 def test_run_parity_raises_on_extract_failure(tmp_path):
@@ -234,6 +247,53 @@ def test_run_parity_raises_on_extract_failure(tmp_path):
     with pytest.raises(RuntimeError, match="Child log:") as exc:
         parity.run_parity(leaf, root, runner=runner)
     assert "extract_attempt1.log" in str(exc.value)
+
+
+def test_same_path_keeps_the_reference_summary(tmp_path):
+    root = tmp_path / "data"
+    leaf = _leaf(root)
+    _write_wide(parity.summary_csv(leaf), {"lmh_mass_balance": "1"})
+    assert parity.prepare_mfbo_profile_copy(leaf, root) == leaf
+    assert parity.summary_csv(leaf).is_file()
+
+
+def test_default_runner_reads_the_manifest_under_the_data_root(tmp_path, monkeypatch):
+    data_root = tmp_path / "parity_root"
+    copy_dir = _leaf(data_root)
+    seen = {}
+
+    def fake_case(root, run_leaf):
+        seen["root"] = root
+        seen["run_leaf"] = run_leaf
+        return {"inlet_velocity_value": 0.2, "outlet_gauge_pressure": 6.0e6}
+
+    def fake_launch(root, run_leaf, case, *, geo_id, mesh_id, run_id, profile):
+        seen["launch"] = {
+            "root": root,
+            "run_leaf": run_leaf,
+            "case": case,
+            "geo_id": geo_id,
+            "mesh_id": mesh_id,
+            "run_id": run_id,
+            "profile": profile,
+        }
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr(
+        "mfbo.reextract_runs.operating_point_case",
+        fake_case,
+    )
+    monkeypatch.setattr("mfbo._common.launch_extract", fake_launch)
+    assert parity.default_runner(data_root, copy_dir) == 0
+    assert seen["root"] == data_root
+    assert seen["run_leaf"] == copy_dir
+    assert seen["launch"]["geo_id"] == "P_p100_h30"
+    assert seen["launch"]["run_id"] == "u0p2_p6M_rke"
+    assert seen["launch"]["profile"] == "mfbo"
 
 
 def test_prepare_refuses_a_missing_or_mfbo_summary(tmp_path):
