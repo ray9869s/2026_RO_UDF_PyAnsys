@@ -140,7 +140,13 @@ def compute_c_b_by_cell(
         names = list_named_object_names(
             fluid_group, "setup.cell_zone_conditions.fluid"
         )
-    z_mid, z_diag = resolve_channel_midplane_z_m(solver, setup, names)
+    z_mid, z_diag = resolve_channel_midplane_z_m(
+        solver,
+        setup,
+        names,
+        solution=solution,
+        membrane_wall_names=collect_membrane_walls(setup),
+    )
     plane_name = f"{plane_prefix}_{abs(z_mid):.7f}".replace(".", "p")
     create_z_normal_plane(solver, plane_name, z_mid)
     print(f"  mid-plane z={z_mid!r} diag={z_diag}")

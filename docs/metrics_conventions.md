@@ -24,13 +24,29 @@ Do **not** assume a bottom-origin frame where the mid-plane would be
 derived in that frame (outer axes at \(\pm(r_{\mathrm{mid}}+r_{\mathrm{out}})\),
 spheres at \(\pm r_{\mathrm{mid}}\)).
 
-### Silent \(z = 0\) fallback (known issue, 2026-10-02)
+### Channel mid-plane (2026-10-09)
 
-`resolve_channel_midplane_z_m` in `src/ro/fluent_report_helpers.py`
-returns `fallback_z_m` (default 0) when the fluid-zone reduction raises.
-It records `source=fallback_centred_origin` and does not raise. On the
-campaign frame that value is the mid-plane, so campaign \(c_b\) sampled
-this way is still at \(z = 0\). The failure itself is silent. The \(h/2\)
+`resolve_channel_midplane_z_m` measures \(z_{\min}\) and \(z_{\max}\) with
+`surface-facetmin` and `surface-facetmax` of `z-coordinate` on the
+membrane walls, then takes \(z = \tfrac{1}{2}(z_{\min}+z_{\max})\). For a
+campaign geometry that value must be 0 within \(1\times10^{-9}\,\mathrm{m}\);
+otherwise the call raises. Those two report types are the production
+Fluent 25.1 post path already used for membrane facet extrema
+(`src/ro/fluent_report_helpers.py`, `_SURFACE_FACET_MIN` /
+`_SURFACE_FACET_MAX`). This machine cannot launch Fluent. The unit test
+checks the report definitions and the \(1\times10^{-9}\,\mathrm{m}\) gate
+against a fake solution (`tests/test_midplane_z_convention.py`).
+
+The mesh-check block above has \(z\) from \(-3.850994\times10^{-4}\) to
+\(3.851833\times10^{-4}\,\mathrm{m}\), so the midpoint of those node
+extrema is \(4.2\times10^{-8}\,\mathrm{m}\). A live measurement of those
+extrema fails the \(1\times10^{-9}\,\mathrm{m}\) gate and raises.
+
+**Superseded 2026-10-09.** Until this change,
+`resolve_channel_midplane_z_m` caught any exception from
+`fields.reduction` and returned `fallback_z_m` (default 0) with
+`source=fallback_centred_origin`, without raising. That path remains
+only when the caller passes `legacy_fluid_z_reduction=True`. The \(h/2\)
 candidate-list bug above is a different, already-fixed path.
 
 ### Steady monitor when the convergence gate fails (2026-10-09)

@@ -184,6 +184,69 @@ def measure_fluid_z_bounds_m(solver, setup, fluid_zone_names):
     return z_min, z_max
 
 
+# Campaign channel is centred on z = 0. A live measurement outside this
+# band is not that frame. 1e-9 m is the acceptance band, not a mesh tolerance.
+CAMPAIGN_MIDPLANE_Z_TOL_M = 1e-9
+_MEMBRANE_Z_MIN_REPORT = "pp_membrane_z_facetmin_m"
+_MEMBRANE_Z_MAX_REPORT = "pp_membrane_z_facetmax_m"
+
+
+def measure_membrane_wall_z_bounds_m(solution, membrane_wall_names):
+    """Return (z_min_m, z_max_m) from membrane-wall facet extrema.
+
+    ``surface-facetmin`` and ``surface-facetmax`` of ``z-coordinate`` are
+    the same report types segmented membrane CP already computes on Fluent
+    25.1 (``product_version`` 25.1.0). ``fields.reduction`` is not used.
+    This repository cannot launch Fluent; the call shape is checked by
+    ``tests/test_midplane_z_convention.py`` against a fake solution.
+    """
+    if solution is None:
+        raise ValueError("solution is required to measure membrane-wall z.")
+    if not membrane_wall_names:
+        raise ValueError(
+            "membrane_wall_names must be non-empty to measure z bounds."
+        )
+    walls = list(membrane_wall_names)
+    create_or_update_surface_field_report(
+        solution,
+        _MEMBRANE_Z_MIN_REPORT,
+        _SURFACE_FACET_MIN,
+        "z-coordinate",
+        walls,
+    )
+    create_or_update_surface_field_report(
+        solution,
+        _MEMBRANE_Z_MAX_REPORT,
+        _SURFACE_FACET_MAX,
+        "z-coordinate",
+        walls,
+    )
+    z_min = float(compute_surface_report_value(solution, _MEMBRANE_Z_MIN_REPORT))
+    z_max = float(compute_surface_report_value(solution, _MEMBRANE_Z_MAX_REPORT))
+    if not (math.isfinite(z_min) and math.isfinite(z_max)):
+        raise RuntimeError(
+            f"Non-finite membrane-wall z bounds: z_min={z_min!r}, "
+            f"z_max={z_max!r}."
+        )
+    if z_max <= z_min:
+        raise RuntimeError(
+            f"Degenerate membrane-wall z bounds: z_min={z_min!r}, "
+            f"z_max={z_max!r}."
+        )
+    return z_min, z_max
+
+
+def require_campaign_midplane_z(z_mid_m):
+    """Raise unless the measured mid-plane is 0 within 1e-9 m."""
+    z_mid = float(z_mid_m)
+    if not math.isfinite(z_mid) or abs(z_mid) > CAMPAIGN_MIDPLANE_Z_TOL_M:
+        raise RuntimeError(
+            f"Measured channel mid-plane z={z_mid!r} m is not 0 within "
+            f"{CAMPAIGN_MIDPLANE_Z_TOL_M} m."
+        )
+    return z_mid
+
+
 def resolve_channel_midplane_z_m(
     solver=None,
     setup=None,
@@ -192,17 +255,22 @@ def resolve_channel_midplane_z_m(
     z_min_m=None,
     z_max_m=None,
     fallback_z_m=0.0,
+    solution=None,
+    membrane_wall_names=None,
+    legacy_fluid_z_reduction=False,
 ):
     """Origin-agnostic channel mid-plane z [m].
 
     Preference order:
       1. Explicit ``z_min_m`` / ``z_max_m`` (caller-measured bounds)
-      2. Live ``fields.reduction`` min/max of ``z-coordinate`` on fluid zones
-      3. ``fallback_z_m`` (default 0.0 = campaign channel-centred origin)
+      2. Membrane-wall ``surface-facetmin`` / ``surface-facetmax`` of
+         ``z-coordinate``. The mid-plane must be 0 within 1e-9 m.
+      3. Only when ``legacy_fluid_z_reduction`` is true: the old
+         ``fields.reduction`` path, then ``fallback_z_m``.
 
     Returns ``(z_mid_m, diagnostics_dict)``. Never uses a candidate list of
-    ``h/2`` vs ``0`` — that trap permanently selects the first iso-value that
-    happens to lie inside ``[z_min, z_max]``.
+    ``h/2`` vs ``0``. There is no silent ``z = 0`` fallback unless
+    ``legacy_fluid_z_reduction`` is true.
     """
     diag: dict[str, Any] = {
         "source": None,
@@ -229,22 +297,32 @@ def resolve_channel_midplane_z_m(
         )
         return z_mid, diag
 
-    if solver is not None and setup is not None and fluid_zone_names:
-        try:
-            z0, z1 = measure_fluid_z_bounds_m(solver, setup, fluid_zone_names)
-            z_mid = 0.5 * (z0 + z1)
-            diag.update(
-                source="fluid_reduction",
-                z_min_m=z0,
-                z_max_m=z1,
-                z_mid_m=z_mid,
-            )
-            return z_mid, diag
-        except Exception as exc:
-            diag["measure_error"] = f"{type(exc).__name__}: {exc}"
+    if legacy_fluid_z_reduction:
+        if solver is not None and setup is not None and fluid_zone_names:
+            try:
+                z0, z1 = measure_fluid_z_bounds_m(solver, setup, fluid_zone_names)
+                z_mid = 0.5 * (z0 + z1)
+                diag.update(
+                    source="fluid_reduction",
+                    z_min_m=z0,
+                    z_max_m=z1,
+                    z_mid_m=z_mid,
+                )
+                return z_mid, diag
+            except Exception as exc:
+                diag["measure_error"] = f"{type(exc).__name__}: {exc}"
+        z_mid = float(fallback_z_m)
+        diag.update(source="fallback_centred_origin", z_mid_m=z_mid)
+        return z_mid, diag
 
-    z_mid = float(fallback_z_m)
-    diag.update(source="fallback_centred_origin", z_mid_m=z_mid)
+    z0, z1 = measure_membrane_wall_z_bounds_m(solution, membrane_wall_names)
+    z_mid = require_campaign_midplane_z(0.5 * (z0 + z1))
+    diag.update(
+        source="membrane_wall_facet_bounds",
+        z_min_m=z0,
+        z_max_m=z1,
+        z_mid_m=z_mid,
+    )
     return z_mid, diag
 
 
@@ -257,13 +335,17 @@ def create_channel_midplane_plane(
     z_max_m=None,
     surface_name=None,
     fallback_z_m=0.0,
+    solution=None,
+    membrane_wall_names=None,
+    legacy_fluid_z_reduction=False,
 ):
     """Create the channel mid-plane iso-surface; return (name, z_mid, diag).
 
-    Mid-plane z is ``0.5 * (z_min + z_max)`` from measured fluid bounds when
-    available. Falls back to ``fallback_z_m`` (default 0.0). Pair with
+    Mid-plane z is ``0.5 * (z_min + z_max)`` from membrane-wall facet
+    extrema. The old fluid reduction and ``fallback_z_m`` run only when
+    ``legacy_fluid_z_reduction`` is true. Pair with
     ``assert_midplane_c_b_matches_boundary_mixing_cup`` in report extract so a
-    silent wall-plane sample cannot land in the canonical CP denominator.
+    wall-plane sample cannot land in the canonical CP denominator.
     """
     z_mid, diag = resolve_channel_midplane_z_m(
         solver,
@@ -272,6 +354,9 @@ def create_channel_midplane_plane(
         z_min_m=z_min_m,
         z_max_m=z_max_m,
         fallback_z_m=fallback_z_m,
+        solution=solution,
+        membrane_wall_names=membrane_wall_names,
+        legacy_fluid_z_reduction=legacy_fluid_z_reduction,
     )
     if surface_name is None:
         surface_name = (

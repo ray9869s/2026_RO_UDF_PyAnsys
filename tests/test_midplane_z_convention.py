@@ -7,7 +7,10 @@ import math
 import pytest
 
 from ro.fluent_report_helpers import (
+    CAMPAIGN_MIDPLANE_Z_TOL_M,
     MIDPLANE_CB_MIXING_CUP_REL_TOL,
+    _MEMBRANE_Z_MAX_REPORT,
+    _MEMBRANE_Z_MIN_REPORT,
     assert_midplane_c_b_matches_boundary_mixing_cup,
     resolve_channel_midplane_z_m,
 )
@@ -29,10 +32,82 @@ def test_resolve_midplane_from_explicit_bottom_origin_bounds():
     assert diag["source"] == "explicit_bounds"
 
 
-def test_resolve_midplane_fallback_is_centred_origin_zero():
-    z_mid, diag = resolve_channel_midplane_z_m()
+def test_resolve_midplane_without_a_measurement_raises():
+    with pytest.raises(ValueError, match="required"):
+        resolve_channel_midplane_z_m()
+
+
+def test_legacy_fluid_reduction_keeps_the_centred_origin_fallback():
+    z_mid, diag = resolve_channel_midplane_z_m(legacy_fluid_z_reduction=True)
     assert z_mid == 0.0
     assert diag["source"] == "fallback_centred_origin"
+
+
+class _Report:
+    def __init__(self):
+        self.state = {}
+
+    def set_state(self, state):
+        self.state = dict(state)
+
+
+class _SurfaceGroup:
+    def __init__(self):
+        self.reports = {}
+
+    def get_object_names(self):
+        return list(self.reports)
+
+    def create(self, name):
+        report = _Report()
+        self.reports[name] = report
+        return report
+
+    def __getitem__(self, name):
+        return self.reports[name]
+
+
+class _Solution:
+    def __init__(self, bounds):
+        self.surface = _SurfaceGroup()
+        self.bounds = bounds
+        self.report_definitions = self
+
+    def compute(self, report_defs):
+        state = self.surface.reports[report_defs[0]].state
+        if state["report_type"] == "surface-facetmin":
+            return self.bounds[0]
+        if state["report_type"] == "surface-facetmax":
+            return self.bounds[1]
+        raise AssertionError(state["report_type"])
+
+
+def test_membrane_wall_facets_accept_a_centred_campaign_plane():
+    solution = _Solution((-3.85e-4, 3.85e-4))
+    walls = ["wall_bottom_mem", "wall_top_mem"]
+    z_mid, diag = resolve_channel_midplane_z_m(
+        solution=solution,
+        membrane_wall_names=walls,
+    )
+    assert z_mid == pytest.approx(0.0, abs=CAMPAIGN_MIDPLANE_Z_TOL_M)
+    assert diag["source"] == "membrane_wall_facet_bounds"
+    minimum = solution.surface.reports[_MEMBRANE_Z_MIN_REPORT].state
+    maximum = solution.surface.reports[_MEMBRANE_Z_MAX_REPORT].state
+    assert minimum["report_type"] == "surface-facetmin"
+    assert maximum["report_type"] == "surface-facetmax"
+    assert minimum["field"] == "z-coordinate"
+    assert maximum["field"] == "z-coordinate"
+    assert minimum["surface_names"] == walls
+    assert maximum["surface_names"] == walls
+
+
+def test_membrane_wall_midplane_outside_1e9_raises():
+    solution = _Solution((-3.85e-4, 3.85e-4 + 4.0e-9))
+    with pytest.raises(RuntimeError, match="1e-09"):
+        resolve_channel_midplane_z_m(
+            solution=solution,
+            membrane_wall_names=["wall_top_mem"],
+        )
 
 
 def test_mixing_cup_guard_accepts_close_values():

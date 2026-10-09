@@ -1132,8 +1132,10 @@ def midplane_bulk_for_window(
     geometry = scoring_geometry_from_layout(layout, domain_x_min_m)
     plane_name, z_mid, diag = create_channel_midplane_plane(
         solver,
+        solution=solution,
         setup=setup,
         fluid_zone_names=collect_fluid_zone_names(setup),
+        membrane_wall_names=list(MEMBRANE_WALLS),
     )
     last_error = None
     for salt_field in MIDPLANE_SALT_FIELDS:

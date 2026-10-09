@@ -1801,8 +1801,10 @@ if __name__ == "__main__":
                 _midplane_z_diag,
             ) = create_channel_midplane_plane(
                 solver,
+                solution=solution,
                 setup=setup,
                 fluid_zone_names=fluid_zones,
+                membrane_wall_names=active_membrane_zones,
             )
             print(
                 f"Mid-plane iso-surface: name={_found_center_pname!r} "
