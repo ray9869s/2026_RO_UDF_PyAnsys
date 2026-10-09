@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,6 +91,76 @@ def test_concentration_shares_match_a_hand_count():
     assert top_percent["share"] == pytest.approx(1.0)
     zeros = [_cell(0.0, 0.01) for _ in range(20)]
     assert locate.concentration_fraction(zeros, 0.01)["share"] == 0.0
+
+
+def test_fetch_cells_reads_solution_variables_on_the_cell_zone(capsys):
+    class _Info:
+        def get_variables_info(self, zone_names, domain_name="mixture"):
+            assert list(zone_names) == ["solid"]
+            assert domain_name == "mixture"
+            return SimpleNamespace(
+                solution_variables=[
+                    "SV_P",
+                    "SV_MASS_IMBALANCE",
+                    "SV_VOLUME",
+                    "SV_CENTROID",
+                ]
+            )
+
+    class _Data:
+        def __init__(self):
+            self.calls = []
+
+        def get_data(self, variable_name, zone_names, domain_name="mixture"):
+            assert list(zone_names) == ["solid"]
+            self.calls.append(variable_name)
+            if variable_name == "SV_CENTROID":
+                values = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+            elif variable_name == "SV_VOLUME":
+                values = [0.01, 0.02]
+            else:
+                values = [1.5, -4.0]
+            return {zone_names[0]: values}
+
+    data = _Data()
+    solver = SimpleNamespace(
+        fields=SimpleNamespace(
+            solution_variable_info=_Info(),
+            solution_variable_data=data,
+        ),
+        settings=SimpleNamespace(
+            setup=SimpleNamespace(
+                cell_zone_conditions=SimpleNamespace(
+                    fluid=SimpleNamespace(get_object_names=lambda: ["solid"])
+                )
+            )
+        ),
+    )
+    cells, variables = locate.fetch_cells(solver)
+    printed = capsys.readouterr().out
+    assert "SV_MASS_IMBALANCE" in printed
+    assert "SV_VOLUME" in printed
+    assert "SV_CENTROID" in printed
+    assert printed.index("Solution variables") < printed.index("Using ")
+    assert data.calls == ["SV_MASS_IMBALANCE", "SV_VOLUME", "SV_CENTROID"]
+    assert variables == {
+        "imbalance_variable": "SV_MASS_IMBALANCE",
+        "volume_variable": "SV_VOLUME",
+        "centroid_variable": "SV_CENTROID",
+    }
+    assert len(cells) == 2
+    assert cells[1]["imbalance"] == pytest.approx(-4.0)
+    assert cells[1]["volume_m3"] == pytest.approx(0.02)
+    assert cells[1]["x_m"] == pytest.approx(3.0)
+    assert cells[1]["y_m"] == pytest.approx(4.0)
+    assert cells[1]["z_m"] == pytest.approx(5.0)
+    with pytest.raises(RuntimeError, match="containing 'imbalance'"):
+        locate.choose_solution_variable(["SV_P", "SV_VOLUME"], "imbalance")
+    with pytest.raises(RuntimeError, match="found"):
+        locate.choose_solution_variable(
+            ["SV_VOLUME", "SV_CELL_VOLUME"],
+            "volume",
+        )
 
 
 def test_missing_field_name_is_refused():

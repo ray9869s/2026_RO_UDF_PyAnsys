@@ -5,15 +5,19 @@ read and never written, and the copy is under ``--data-root``. ``C:/ro_data``
 is refused as a data root and as a copy destination. A production leaf is
 only read so it can be copied.
 
-The per-cell field is ``mass-imbalance``. That is the PyFluent scalar name
-for Fluent's "Mass Imbalance" (Ansys Fluent User's Guide 2025 R1, section
-42.3, Table 42.17 Residuals, tag ``seg``; section 36.16 says the
-pressure-based solver stores this cell value by default). PyFluent maps
-``MASS_IMBALANCE`` to ``mass-imbalance`` and ``CELL_VOLUME`` to
-``cell-volume`` in ``ansys/fluent/core/variable_strategies/field.py``.
-Cell centres are ``x-coordinate``, ``y-coordinate``, and ``z-coordinate``
-with node values off. The session lists the scalar fields and raises if
-``mass-imbalance`` is not among them.
+The per-cell value is Fluent's Mass Imbalance (Ansys Fluent User's Guide
+2025 R1, section 42.3, Table 42.17 Residuals, tag ``seg``). A live session
+rejected ``solver.fields.field_data.get_scalar_field_data`` with
+``DisallowedValuesError: solid is not an allowed surface``: that API takes
+surfaces, and the fluid cell zone is named ``solid``. The read uses
+``solver.fields.solution_variable_data.get_data(variable_name, zone_names)``
+(PyFluent 0.38.0 ``solution_variables.py`` lines 634–639; attached at
+``session_solver.py`` line 154). Names come from
+``solution_variable_info.get_variables_info`` (``solution_variables.py``
+lines 241–243 and the ``solution_variables`` property at line 145). They
+are printed first. The unique name containing ``imbalance`` is the
+imbalance; the same rule picks volume and centroid. A fake session can
+lock the call shape only. It does not establish the Fluent name.
 
 ``configs/run_config.py`` ``product_version`` is ``25.1.0``. Unit-cell
 labels come from ``DomainLayout.spans`` with ``domain_x_min_m = 0.0``
@@ -41,7 +45,6 @@ from ro.solver_common import sha256_file
 
 MASS_IMBALANCE_FIELD = "mass-imbalance"
 CELL_VOLUME_FIELD = "cell-volume"
-COORDINATE_FIELDS = ("x-coordinate", "y-coordinate", "z-coordinate")
 DOMAIN_X_MIN_M = 0.0
 DEFAULT_TOP = 50
 TOP_FRACTIONS = (0.001, 0.01)
@@ -516,11 +519,11 @@ def render_markdown(meta, analysis):
         f"Role: {meta['role']}",
         f"Source: `{meta['source']}`",
         f"Copy: `{meta['run_leaf']}`",
-        f"Field: `{MASS_IMBALANCE_FIELD}` "
-        "(Fluent 2025 R1 User's Guide Table 42.17, Mass Imbalance; "
-        "PyFluent scalar name `mass-imbalance`).",
-        f"Cell volume field: `{CELL_VOLUME_FIELD}`. "
-        "Coordinates use node values off.",
+        f"Field: `{meta.get('imbalance_variable', MASS_IMBALANCE_FIELD)}` "
+        "(Fluent 2025 R1 User's Guide Table 42.17, Mass Imbalance). "
+        "Read with solution_variable_data.get_data on the fluid cell zone.",
+        f"Cell volume variable: `{meta.get('volume_variable', CELL_VOLUME_FIELD)}`. "
+        f"Centroid variable: `{meta.get('centroid_variable', 'SV_CENTROID')}`.",
         "",
         f"Cells: {analysis['cell_count']}",
         f"Total |imbalance|: {_format(analysis['total_abs_imbalance'])}",
@@ -599,8 +602,9 @@ def write_analysis(directory, meta, analysis):
         "role": meta["role"],
         "source": meta["source"],
         "run_leaf": str(meta["run_leaf"]),
-        "field": MASS_IMBALANCE_FIELD,
-        "cell_volume_field": CELL_VOLUME_FIELD,
+        "field": meta.get("imbalance_variable", MASS_IMBALANCE_FIELD),
+        "cell_volume_field": meta.get("volume_variable", CELL_VOLUME_FIELD),
+        "centroid_variable": meta.get("centroid_variable"),
         "cell_count": analysis["cell_count"],
         "total_abs_imbalance": analysis["total_abs_imbalance"],
         "fractions": analysis["fractions"],
@@ -659,13 +663,6 @@ def write_queue(path, jobs):
     return destination
 
 
-def _scalar_values(payload):
-    if not isinstance(payload, dict) or not payload:
-        raise RuntimeError("Scalar field payload is empty.")
-    surface_id = sorted(payload, key=str)[0]
-    return [float(value) for value in payload[surface_id]]
-
-
 def _fluid_zone_names(setup):
     try:
         group = setup.cell_zone_conditions.fluid
@@ -680,76 +677,96 @@ def _fluid_zone_names(setup):
     return [str(name) for name in names]
 
 
-def _session_scalar_names(field_data):
-    scalar_fields = getattr(field_data, "scalar_fields", None)
-    if scalar_fields is not None and hasattr(scalar_fields, "allowed_values"):
-        return [str(name) for name in scalar_fields.allowed_values()]
-    info = getattr(field_data, "_field_info", None)
-    getter = getattr(info, "_get_scalar_fields_info", None) if info else None
-    if getter is None:
+def choose_solution_variable(names, token):
+    """Return the one listed name that contains ``token``.
+
+    Zero matches or several matches raise with the full list. The live
+    session prints that list before this choice.
+    """
+    folded = token.casefold()
+    matches = [str(name) for name in names if folded in str(name).casefold()]
+    if len(matches) != 1:
         raise RuntimeError(
-            "This Fluent session does not list scalar fields, so "
-            f"{MASS_IMBALANCE_FIELD!r} cannot be verified."
+            f"Expected one solution variable containing {token!r}, "
+            f"found {matches!r}. Available: {[str(name) for name in names]!r}."
         )
-    payload = getter()
-    names = []
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if isinstance(value, dict) and "name" in value:
-                names.append(str(value["name"]))
-            else:
-                names.append(str(key))
-    elif isinstance(payload, (list, tuple)):
-        for item in payload:
-            if isinstance(item, dict) and "name" in item:
-                names.append(str(item["name"]))
-            else:
-                names.append(str(item))
-    else:
-        raise RuntimeError(
-            f"Unrecognised scalar-field listing: {type(payload).__name__}."
-        )
+    return matches[0]
+
+
+def print_solution_variables(names, zone_names):
+    """Print the SVAR list before any value is read."""
+    zones = ", ".join(str(name) for name in zone_names)
+    print(f"Solution variables on {zones}:")
+    for name in names:
+        print(f"  {name}")
+
+
+def _solution_variable_names(solver, zone_names):
+    info = solver.fields.solution_variable_info.get_variables_info(
+        zone_names=list(zone_names)
+    )
+    names = [str(name) for name in info.solution_variables]
+    print_solution_variables(names, zone_names)
     return names
+
+
+def _zone_values(solver, variable_name, zone_name):
+    data = solver.fields.solution_variable_data.get_data(
+        variable_name=variable_name,
+        zone_names=[zone_name],
+    )
+    values = data[zone_name]
+    if values is None:
+        raise RuntimeError(
+            f"{variable_name} returned no data for cell zone {zone_name!r}."
+        )
+    return [float(value) for value in values]
+
+
+def _centroid_components(values, count):
+    """Split a dimension-3 centroid into x, y, z.
+
+    ``get_data`` returns ``count * dimension`` values
+    (``solution_variables.py`` ``create_empty_array``). Dimension 3 is
+    stored cell by cell as x, y, z.
+    """
+    if len(values) != 3 * count:
+        raise RuntimeError(
+            "Centroid length "
+            f"{len(values)} is not 3 times the cell count {count}."
+        )
+    return values[0::3], values[1::3], values[2::3]
 
 
 def fetch_cells(solver):
     """Per-cell imbalance, volume, and centroid from the open case.
 
-    Reads field data only. Does not iterate and does not write the case.
+    Prints the solution-variable names, then reads cell zones with
+    ``solution_variable_data.get_data``. Does not iterate and does not
+    write the case. The returned mapping names the three variables used.
     """
-    names = _session_scalar_names(solver.fields.field_data)
-    for field_name in (
-        MASS_IMBALANCE_FIELD,
-        CELL_VOLUME_FIELD,
-        *COORDINATE_FIELDS,
-    ):
-        require_scalar_field(names, field_name)
     zones = _fluid_zone_names(solver.settings.setup)
+    names = _solution_variable_names(solver, zones)
+    imbalance_name = choose_solution_variable(names, "imbalance")
+    volume_name = choose_solution_variable(names, "volume")
+    centroid_name = choose_solution_variable(names, "centroid")
+    print(
+        "Using "
+        f"imbalance={imbalance_name} volume={volume_name} "
+        f"centroid={centroid_name}"
+    )
     cells = []
     for zone in zones:
-        columns = {}
-        for field_name in (
-            MASS_IMBALANCE_FIELD,
-            CELL_VOLUME_FIELD,
-            *COORDINATE_FIELDS,
-        ):
-            payload = solver.fields.field_data.get_scalar_field_data(
-                field_name=field_name,
-                surfaces=[zone],
-                node_value=False,
-                boundary_value=False,
-            )
-            columns[field_name] = _scalar_values(payload)
-        cells.extend(
-            assemble_cells(
-                columns[MASS_IMBALANCE_FIELD],
-                columns[CELL_VOLUME_FIELD],
-                columns["x-coordinate"],
-                columns["y-coordinate"],
-                columns["z-coordinate"],
-            )
-        )
-    return cells
+        imbalance = _zone_values(solver, imbalance_name, zone)
+        volume = _zone_values(solver, volume_name, zone)
+        centroid = _zone_values(solver, centroid_name, zone)
+        x_m, y_m, z_m = _centroid_components(centroid, len(imbalance))
+        cells.extend(assemble_cells(imbalance, volume, x_m, y_m, z_m))
+    return cells, {
+        "imbalance_variable": imbalance_name,
+        "volume_variable": volume_name,
+        "centroid_variable": centroid_name,
+    }
 
 
 def _launch_kwargs(cwd, run_config):
@@ -809,7 +826,7 @@ def locate_copy(prepared, *, role, top_n):
         solver.settings.file.read_case_data(
             file_name=os.path.abspath(prepared["case_file"]).replace("\\", "/")
         )
-        cells = fetch_cells(solver)
+        cells, variables = fetch_cells(solver)
     finally:
         if meshing is not None:
             meshing.exit()
@@ -832,6 +849,7 @@ def locate_copy(prepared, *, role, top_n):
         "role": role,
         "source": prepared["identity"]["run_leaf"],
         "run_leaf": prepared["run_leaf"],
+        **variables,
     }
     paths = write_analysis(report_dir, meta, analysis)
     print(render_markdown(meta, analysis))
