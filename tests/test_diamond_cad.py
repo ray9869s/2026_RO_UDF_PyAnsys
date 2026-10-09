@@ -11,9 +11,11 @@ from helpers import SCRIPTS_DIR, load_module
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.diamond_cad import (
     _BooleanDebug,
+    _active_window_corners,
+    _apply_boolean,
     _contact_component,
+    _cutting_operations,
     _run_boolean,
-    _unite_touching,
     check_spacer_contacts,
     diamond_layout,
     filament_segments,
@@ -174,8 +176,13 @@ def test_filaments_are_the_cell_diagonals_and_spheres_sit_on_the_crossings():
         assert segment["origin"][0] < layout["x_active_0"] or cell > 0
 
     centers = sphere_centers(layout)
-    assert len(centers) == 3 * layout["n_active"] - 2
+    assert len(centers) == 3 * layout["n_active"] + 2
     assert all(center[2] == 0.0 for center in centers)
+    for corner in _active_window_corners(layout):
+        assert any(
+            abs(center[0] - corner[0]) < 1e-9 and abs(center[1] - corner[1]) < 1e-9
+            for center in centers
+        )
     interior = [center for center in centers if abs(center[1]) < 1e-12]
     assert len(interior) == layout["n_active"]
     assert interior[0][0] == pytest.approx(layout["x_active_0"] + 0.5 * layout["pitch_m"])
@@ -232,17 +239,11 @@ def test_generate_refuses_production_root_and_existing_files_before_discovery(tm
         generate_diamond_cad(geo_id="P_p100_h30", out_dir=tmp_path)
 
 
-def _centers_at_95ffb26(layout):
-    """Corner-inclusive centres from before crossings were taken from both axes."""
-    pitch = layout["pitch_m"]
-    x0 = layout["x_active_0"]
-    centers = []
-    for index in range(layout["n_active"]):
-        centers.append((x0 + (index + 0.5) * pitch, 0.0, 0.0))
-    for index in range(layout["n_active"] + 1):
-        x_m = x0 + index * pitch
-        centers.append((x_m, layout["y_min"], 0.0))
-        centers.append((x_m, layout["y_max"], 0.0))
+def _centres_shifted_off_both_axes(layout):
+    """Move one crossing off both filaments. The four corners stay put."""
+    centers = list(sphere_centers(layout))
+    x_m, y_m, z_m = centers[0]
+    centers[0] = (x_m, y_m + 0.25 * (layout["y_max"] - layout["y_min"]), z_m)
     return centers
 
 
@@ -250,10 +251,11 @@ def test_sphere_centres_lie_on_both_layers_for_every_diamond_id():
     for geo_id in _diamond_ids():
         layout = diamond_layout(geo_id)
         with pytest.raises(RuntimeError, match="not on both filament axes"):
-            check_spacer_contacts(layout, centers=_centers_at_95ffb26(layout))
+            check_spacer_contacts(layout, centers=_centres_shifted_off_both_axes(layout))
         contacts = check_spacer_contacts(layout)
-        assert "spacer" in contacts
+        assert "filament_0" in contacts
         assert not any(contacts[name] == set() for name in contacts)
+        assert len(sphere_centers(layout)) == 3 * layout["n_active"] + 2
 
 
 def test_contact_check_runs_before_any_modeler_call(tmp_path, monkeypatch):
@@ -261,9 +263,58 @@ def test_contact_check_runs_before_any_modeler_call(tmp_path, monkeypatch):
         raise AssertionError("Discovery import was reached")
 
     monkeypatch.setattr("ro.diamond_cad._bind_geometry_symbols", boom)
-    monkeypatch.setattr("ro.diamond_cad.sphere_centers", _centers_at_95ffb26)
+    monkeypatch.setattr("ro.diamond_cad.sphere_centers", _centres_shifted_off_both_axes)
     with pytest.raises(RuntimeError, match="not on both filament axes"):
         generate_diamond_cad(geo_id="D2450_a45", out_dir=tmp_path)
+
+
+def test_seven_cell_domain_has_23_joint_spheres():
+    layout = diamond_layout("D2450_a45")
+    assert layout["n_active"] == 7
+    centers = sphere_centers(layout)
+    assert len(centers) == 23
+    assert len(_active_window_corners(layout)) == 4
+
+
+def _layer_names(layout):
+    segments = filament_segments(layout)
+    upper = [f"filament_{i}" for i, segment in enumerate(segments) if segment["layer"] == "upper"]
+    lower = [f"filament_{i}" for i, segment in enumerate(segments) if segment["layer"] == "lower"]
+    spheres = [f"sphere_{i}" for i in range(len(sphere_centers(layout)))]
+    return upper, spheres, lower
+
+
+def test_default_subtraction_removes_uppers_then_spheres_then_lowers():
+    layout = diamond_layout("D2450_a45")
+    upper, spheres, lower = _layer_names(layout)
+    ops = _cutting_operations(
+        unite_spacer=False,
+        upper_names=upper,
+        sphere_names=spheres,
+        lower_names=lower,
+        contacts={},
+    )
+    assert [(op, host) for op, host, _tool in ops] == [("subtract", "active")] * len(ops)
+    assert [tool for _op, _host, tool in ops] == upper + spheres + lower
+
+
+def test_unite_spacer_absorbs_spheres_before_any_lower_filament():
+    layout = diamond_layout("D2450_a45")
+    upper, spheres, lower = _layer_names(layout)
+    contacts = check_spacer_contacts(layout)
+    ops = _cutting_operations(
+        unite_spacer=True,
+        upper_names=upper,
+        sphere_names=spheres,
+        lower_names=lower,
+        contacts=contacts,
+    )
+    tools = [tool for _op, _host, tool in ops]
+    last_sphere = max(index for index, name in enumerate(tools) if name in spheres)
+    first_lower = min(index for index, name in enumerate(tools) if name in lower)
+    assert last_sphere < first_lower
+    assert set(tools) == set(spheres + lower + upper[1:])
+    assert all(op == "unite" for op, _host, _tool in ops)
 
 
 def test_union_order_follows_the_contact_component():
@@ -330,18 +381,122 @@ def _chain_design():
     return _FakeDesign(bodies)
 
 
-def _chain_contacts():
-    return {
-        "spacer": {"sphere_0"},
-        "sphere_0": {"spacer", "filament_1"},
-        "filament_1": {"sphere_0"},
-    }
+class _CuttingBody(_FakeBody):
+    def unite(self, other):
+        super().unite(other)
+        self._volume += other._volume
+
+    def subtract(self, other):
+        super().subtract(other)
+        self._volume -= 0.25 * other._volume
+
+
+def test_each_subtract_keeps_one_fluid_body_and_a_smaller_volume():
+    host = _CuttingBody("active", "0:1", volume=1.0e-6)
+    tools = [
+        _CuttingBody("filament_0", "0:2", volume=4.0e-9),
+        _CuttingBody("sphere_0", "0:3", volume=2.0e-9),
+        _CuttingBody("filament_1", "0:4", volume=4.0e-9),
+    ]
+    design = _FakeDesign([host, *tools])
+    counter = [0]
+    for tool in tools:
+        _apply_boolean(
+            design,
+            "subtract",
+            "active",
+            tool.name,
+            None,
+            counter,
+            fluid_body=True,
+            volume_change="decrease",
+        )
+    alive = [body for body in design.bodies if body.is_alive]
+    assert [body.name for body in alive] == ["active"]
+    assert host.volume < 1.0e-6
+    assert counter == [3]
+
+
+def test_subtract_check_raises_with_the_op_index_when_volume_does_not_fall(tmp_path):
+    host = _CuttingBody("active", "0:1", volume=1.0e-6)
+    tool = _CuttingBody("filament_0", "0:2", volume=1.0e-9)
+
+    def subtract(other):
+        other.is_alive = False
+
+    host.subtract = subtract
+    design = _FakeDesign([host, tool])
+    trace = _BooleanDebug(tmp_path, "D2450_a45")
+    with pytest.raises(RuntimeError, match=r"op 1 subtract host=active tool=filament_0: fluid volume"):
+        _apply_boolean(
+            design,
+            "subtract",
+            "active",
+            "filament_0",
+            trace,
+            [0],
+            fluid_body=True,
+            volume_change="decrease",
+        )
+    text = trace.log_path.read_text(encoding="utf-8")
+    assert "op 1 subtract host=active tool=filament_0: fluid volume" in text
+    assert trace.saved
+    assert (tmp_path / "D2450_a45.pmdb").is_file()
+
+
+def test_subtract_check_raises_when_a_separate_body_remains(tmp_path):
+    host = _CuttingBody("active", "0:1", volume=1.0e-6)
+    tool = _CuttingBody("filament_4", "0:4", volume=2.0e-9)
+    leftover = _CuttingBody("temp", "0:9", volume=2.0e-9)
+    leftover.is_alive = False
+
+    def subtract(other):
+        other.is_alive = False
+        host._volume -= 1.0e-12
+        leftover.is_alive = True
+
+    host.subtract = subtract
+    design = _FakeDesign([host, tool, leftover])
+    with pytest.raises(RuntimeError, match=r"op 9 subtract host=active tool=filament_4: alive 2, expected 1"):
+        _apply_boolean(
+            design,
+            "subtract",
+            "active",
+            "filament_4",
+            None,
+            [8],
+            fluid_body=True,
+            volume_change="decrease",
+        )
+
+
+def test_unite_check_raises_when_the_body_count_does_not_fall():
+    host = _CuttingBody("filament_0", "0:1", volume=1.0e-8)
+    tool = _CuttingBody("filament_1", "0:2", volume=1.0e-8)
+
+    def unite(other):
+        return
+
+    host.unite = unite
+    design = _FakeDesign([host, tool])
+    with pytest.raises(RuntimeError, match=r"op 2 unite host=filament_0 tool=filament_1: alive 2, expected 1"):
+        _apply_boolean(
+            design,
+            "unite",
+            "filament_0",
+            "filament_1",
+            None,
+            [1],
+            fluid_body=False,
+            volume_change="increase",
+        )
 
 
 def test_boolean_debug_logs_each_unite_without_saving_on_success(tmp_path):
     design = _chain_design()
     trace = _BooleanDebug(tmp_path, "D2450_a45")
-    _unite_touching(design, "spacer", _chain_contacts(), trace)
+    _run_boolean(design, "unite", "spacer", "sphere_0", trace)
+    _run_boolean(design, "unite", "spacer", "filament_1", trace)
     text = trace.log_path.read_text(encoding="utf-8")
     assert "op 1 unite host=spacer tool=sphere_0 raised=no" in text
     assert "op 2 unite host=spacer tool=filament_1 raised=no" in text
@@ -357,8 +512,9 @@ def test_boolean_debug_saves_the_design_on_the_first_raised_unite(tmp_path):
         RuntimeError("geometry service connection terminated"),
     )
     trace = _BooleanDebug(tmp_path, "D2450_a45")
+    _run_boolean(design, "unite", "spacer", "sphere_0", trace)
     with pytest.raises(RuntimeError, match="geometry service connection terminated"):
-        _unite_touching(design, "spacer", _chain_contacts(), trace)
+        _run_boolean(design, "unite", "spacer", "filament_1", trace)
     text = trace.log_path.read_text(encoding="utf-8")
     assert "op 1 unite host=spacer tool=sphere_0 raised=no" in text
     assert (
@@ -481,6 +637,17 @@ def test_debug_booleans_flag_is_forwarded(monkeypatch):
         ["--geo-id", "D2450_a45", "--out-dir", "C:/temp/diamond_debug"]
     ) == 0
     assert seen["debug_booleans"] is False
+    assert seen["unite_spacer"] is False
+    assert script.main(
+        [
+            "--geo-id",
+            "D2450_a45",
+            "--out-dir",
+            "C:/temp/diamond_debug",
+            "--unite-spacer",
+        ]
+    ) == 0
+    assert seen["unite_spacer"] is True
 
 
 def test_import_does_not_launch_discovery():

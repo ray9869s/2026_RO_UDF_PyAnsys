@@ -40,6 +40,15 @@ def build_parser():
             "the design .pmdb and .scdocx next to that log."
         ),
     )
+    parser.add_argument(
+        "--unite-spacer",
+        action="store_true",
+        help=(
+            "Unite upper filaments with the joint spheres, then the lower "
+            "filaments, and subtract that spacer. The default subtracts "
+            "upper filaments, then spheres, then lower filaments."
+        ),
+    )
     return parser
 
 
@@ -52,6 +61,7 @@ def main(argv=None):
         out_dir=args.out_dir,
         n_active=args.n_active,
         debug_booleans=args.debug_booleans,
+        unite_spacer=args.unite_spacer,
     )
     for kind, path in written["paths"].items():
         print(f"{kind}: {path}")

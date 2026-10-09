@@ -8,8 +8,8 @@ buffers are 3.465 mm in and 6.93 mm out, the spacer stays inside the
 active window, and each membrane is blocked by one family of diagonals of
 the rectangular cells. Filament axes sit at ``z = ±filament_radius`` so the
 stack reaches ``Sigma_d`` and the membrane trim matches the registry.
-A joint sphere of ``bridge_radius_m`` sits at each diagonal crossing, at
-``z = 0``.
+A joint sphere of ``bridge_radius_m`` sits at each diagonal crossing and
+at each of the four active-window corners, at ``z = 0``.
 
 Viewed from above (looking along ``-z``), with ``+x`` to the right and
 ``+y`` up, the manual CAD puts the upper layer (``z > 0``) on the diagonal
@@ -174,10 +174,11 @@ def filament_segments(layout):
 def sphere_centers(layout):
     """Crossings of the upper-layer axes with the lower-layer axes.
 
-    Each centre is an intersection of one finite upper axis and one finite
+    Each crossing is an intersection of one finite upper axis and one finite
     lower axis, at ``z = 0``, inside the periodic span. The four corners of
-    the active window are the end of only one family, so they are not
-    centres. Extension crossings outside ``y = ±span/2`` are not centres.
+    the active window are the end of only one family; the manual CAD still
+    puts a sphere on each of them. A 7-cell domain therefore has 23 spheres.
+    Extension crossings outside ``y = ±span/2`` are not centres.
     """
     uppers = []
     lowers = []
@@ -205,18 +206,36 @@ def sphere_centers(layout):
             found.append((point[0], point[1], 0.0))
     if not found:
         raise RuntimeError(f"{layout['geo_id']} has no upper/lower axis crossings.")
+    for corner in _active_window_corners(layout):
+        if any(
+            math.hypot(corner[0] - prior[0], corner[1] - prior[1]) < POSITION_TOL_M
+            for prior in found
+        ):
+            continue
+        found.append(corner)
     found.sort(key=lambda point: (point[0], point[1]))
     return found
 
 
-def check_spacer_contacts(layout, segments=None, centers=None):
-    """Raise unless every sphere sits on both layers and the solids connect.
+def _active_window_corners(layout):
+    """The four corners of the active window, at ``z = 0``."""
+    return [
+        (layout["x_active_0"], layout["y_min"], 0.0),
+        (layout["x_active_0"], layout["y_max"], 0.0),
+        (layout["x_active_1"], layout["y_min"], 0.0),
+        (layout["x_active_1"], layout["y_max"], 0.0),
+    ]
 
-    No Discovery session. A sphere fails when its in-plane distance to the
+
+def check_spacer_contacts(layout, segments=None, centers=None):
+    """Raise unless the spheres sit on the filaments and the solids connect.
+
+    No Discovery session. A crossing fails when its in-plane distance to the
     nearest upper axis or the nearest lower axis is at least ``1e-9`` m.
-    Two solids overlap when the distance between their axes (a sphere axis
-    is its centre) is less than the sum of the radii. That graph must be
-    one component. Returns the contact map used to grow the union.
+    An active-window corner is the end of one family, so it only has to meet
+    that one axis. Two solids overlap when the distance between their axes
+    (a sphere axis is its centre) is less than the sum of the radii. That
+    graph must be one component.
     """
     if segments is None:
         segments = filament_segments(layout)
@@ -236,6 +255,7 @@ def check_spacer_contacts(layout, segments=None, centers=None):
         if segment["layer"] == "lower"
     ]
     axis_errors = []
+    corners = _active_window_corners(layout)
     for index, center in enumerate(centers):
         point = (center[0], center[1])
         upper_distance = min(
@@ -244,7 +264,11 @@ def check_spacer_contacts(layout, segments=None, centers=None):
         lower_distance = min(
             _xy_point_segment_distance(point, axis) for axis in lower_axes
         )
-        if upper_distance < POSITION_TOL_M and lower_distance < POSITION_TOL_M:
+        on_upper = upper_distance < POSITION_TOL_M
+        on_lower = lower_distance < POSITION_TOL_M
+        if on_upper and on_lower:
+            continue
+        if (on_upper or on_lower) and _is_active_window_corner(point, corners):
             continue
         axis_errors.append(
             f"sphere_{index} upper {upper_distance:.6e} m, "
@@ -273,7 +297,7 @@ def check_spacer_contacts(layout, segments=None, centers=None):
         )
     if outside:
         lines.append(
-            "Bodies outside the contact component of 'spacer': "
+            f"Bodies outside the contact component of {names[0]!r}: "
             + ", ".join(outside)
         )
     raise RuntimeError(" ".join(lines))
@@ -309,13 +333,24 @@ def nominal_areas_m2(layout):
     }
 
 
-def generate_diamond_cad(*, geo_id, out_dir, n_active=None, debug_booleans=False):
+def generate_diamond_cad(
+    *,
+    geo_id,
+    out_dir,
+    n_active=None,
+    debug_booleans=False,
+    unite_spacer=False,
+):
     """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``.
 
     ``out_dir`` must not be ``C:/ro_data`` or anywhere under it.
     ``debug_booleans`` writes ``<geo_id>_boolean_debug.log`` in that directory
     and, on the first boolean failure or a multi-body result, the design
-    ``.pmdb`` and ``.scdocx`` next to the log.
+    ``.pmdb`` and ``.scdocx`` next to the log. The default cuts the active
+    box by every upper filament, then every joint sphere, then every lower
+    filament. ``unite_spacer`` builds one spacer first: upper filaments and
+    joint spheres, then the lower filaments, then the active box minus that
+    spacer.
     """
     layout = diamond_layout(geo_id, n_active=n_active)
     out_dir = _require_out_dir(out_dir)
@@ -343,7 +378,15 @@ def generate_diamond_cad(*, geo_id, out_dir, n_active=None, debug_booleans=False
             raise RuntimeError(
                 f"Design name {design.name!r} does not match geo_id {layout['geo_id']!r}."
             )
-        body = _build_fluid(design, layout, segments, centers, contacts, trace)
+        body = _build_fluid(
+            design,
+            layout,
+            segments,
+            centers,
+            contacts,
+            trace,
+            unite_spacer=unite_spacer,
+        )
         counts = _classify_and_name(design, body, layout)
         design.export_to_pmdb(out_dir)
         design.export_to_scdocx(out_dir)
@@ -446,18 +489,28 @@ def _bind_geometry_symbols():
     ).Distance
 
 
-def _build_fluid(design, layout, segments, centers, contacts, trace=None):
+def _build_fluid(
+    design, layout, segments, centers, contacts, trace=None, unite_spacer=False
+):
     if not segments:
         raise RuntimeError("The layout produced no filament segments.")
+    upper_names = []
+    lower_names = []
     for index, segment in enumerate(segments):
+        name = f"filament_{index}"
         _extrude_cylinder(
             design,
-            "spacer" if index == 0 else f"filament_{index}",
+            name,
             segment["origin"],
             segment["direction"],
             layout["filament_radius_m"],
             segment["length"],
         )
+        if segment["layer"] == "upper":
+            upper_names.append(name)
+        else:
+            lower_names.append(name)
+    sphere_names = []
     for index, center in enumerate(centers):
         name = f"sphere_{index}"
         body = design.create_sphere(
@@ -467,13 +520,60 @@ def _build_fluid(design, layout, segments, centers, contacts, trace=None):
         )
         if body is None:
             raise RuntimeError(f"create_sphere returned None for {name}.")
-    _unite_touching(design, "spacer", contacts, trace)
+        sphere_names.append(name)
     _extrude_box(design, "buffer_in", 0.0, layout["x_active_0"], layout)
     _extrude_box(design, "active", layout["x_active_0"], layout["x_active_1"], layout)
     _extrude_box(design, "buffer_out", layout["x_active_1"], layout["x_outlet"], layout)
-    _run_boolean(design, "subtract", "active", "spacer", trace)
-    _run_boolean(design, "unite", "buffer_in", "active", trace)
-    _run_boolean(design, "unite", "buffer_in", "buffer_out", trace)
+    counter = [0]
+    for op, host_name, tool_name in _cutting_operations(
+        unite_spacer=unite_spacer,
+        upper_names=upper_names,
+        sphere_names=sphere_names,
+        lower_names=lower_names,
+        contacts=contacts,
+    ):
+        _apply_boolean(
+            design,
+            op,
+            host_name,
+            tool_name,
+            trace,
+            counter,
+            fluid_body=(op == "subtract"),
+            volume_change="decrease" if op == "subtract" else "increase",
+        )
+    if unite_spacer:
+        _body_named(design, upper_names[0]).name = "spacer"
+        _apply_boolean(
+            design,
+            "subtract",
+            "active",
+            "spacer",
+            trace,
+            counter,
+            fluid_body=True,
+            volume_change="decrease",
+        )
+    _apply_boolean(
+        design,
+        "unite",
+        "buffer_in",
+        "active",
+        trace,
+        counter,
+        fluid_body=False,
+        volume_change="increase",
+    )
+    _apply_boolean(
+        design,
+        "unite",
+        "buffer_in",
+        "buffer_out",
+        trace,
+        counter,
+        fluid_body=False,
+        volume_change="increase",
+    )
     fluid = _body_named(design, "buffer_in")
     fluid.name = f"{layout['geo_id'].lower()}-solid"
     fluid = _body_named(design, fluid.name)
@@ -636,22 +736,236 @@ def _membrane_label(face, side, layout):
     )
 
 
-def _unite_touching(design, host_name, contacts, trace=None):
-    """Unite the contact component of ``host_name``.
+def _is_active_window_corner(point, corners):
+    return any(
+        math.hypot(point[0] - corner[0], point[1] - corner[1]) < POSITION_TOL_M
+        for corner in corners
+    )
 
-    Contacts are the analytical overlaps from ``check_spacer_contacts``.
-    Asking the united solid which bodies it collides with misses solids that
-    only meet a piece already absorbed, so the absorbed set grows to a fixed
-    point of that contact map and each new body is united in that order.
+
+def _cutting_operations(
+    *, unite_spacer, upper_names, sphere_names, lower_names, contacts
+):
+    """Boolean steps that cut the spacer out of the active box.
+
+    The default subtracts every upper filament, then every joint sphere,
+    then every lower filament. ``unite_spacer`` absorbs each sphere into
+    the filament it touches (an upper when it has one) before any lower
+    filament is united into an upper, then leaves one spacer to subtract.
     """
-    order, pending = _contact_component(host_name, contacts)
-    for name in order:
-        _run_boolean(design, "unite", host_name, name, trace)
-    if pending:
-        raise RuntimeError(
-            "Spacer union stopped. These bodies do not touch "
-            f"{host_name!r}: {pending}."
+    if not unite_spacer:
+        return [
+            ("subtract", "active", name)
+            for name in (*upper_names, *sphere_names, *lower_names)
+        ]
+    pairs = _plan_layer_union(contacts, upper_names, sphere_names, lower_names)
+    return [("unite", host, tool) for host, tool in pairs]
+
+
+def _plan_layer_union(contacts, upper_names, sphere_names, lower_names):
+    """Return ``(host, tool)`` unites that keep the second layer last.
+
+    Spheres that meet an upper filament are absorbed into that upper first.
+    A corner sphere that meets only a lower filament is absorbed into that
+    lower before the lower is united into an upper. The survivor is
+    ``upper_names[0]``.
+    """
+    graph = {name: set(neighbors) for name, neighbors in contacts.items()}
+    host = upper_names[0]
+    uppers = set(upper_names)
+    pairs = []
+
+    def absorb(tool):
+        neighbors = graph[tool]
+        target = next((name for name in upper_names if name in neighbors), None)
+        if target is None:
+            target = next((name for name in lower_names if name in neighbors), None)
+        if target is None:
+            raise RuntimeError(f"{tool} does not touch a filament.")
+        _transfer_contacts(graph, target, tool)
+        pairs.append((target, tool))
+
+    for name in sphere_names:
+        if any(upper in graph[name] for upper in uppers):
+            absorb(name)
+    for name in sphere_names:
+        if name in graph:
+            absorb(name)
+    guard = 0
+    limit = len(contacts) + 1
+    while len(graph) > 1:
+        guard += 1
+        if guard > limit:
+            raise RuntimeError(
+                "Layer union stopped with "
+                + ", ".join(sorted(graph))
+                + "."
+            )
+        choice = _next_layer_unite(graph, host, upper_names, lower_names)
+        _transfer_contacts(graph, choice[0], choice[1])
+        pairs.append(choice)
+    if host not in graph:
+        raise RuntimeError(f"Layer union did not keep {host!r}.")
+    return pairs
+
+
+def _next_layer_unite(graph, host, upper_names, lower_names):
+    for name in lower_names:
+        if name in graph and host in graph[name]:
+            return host, name
+    for name in graph:
+        if name != host and host in graph[name]:
+            return host, name
+    for name in lower_names:
+        if name not in graph:
+            continue
+        for upper in upper_names:
+            if upper in graph and upper in graph[name]:
+                return upper, name
+    raise RuntimeError(
+        "Layer union has no touching pair among " + ", ".join(sorted(graph)) + "."
+    )
+
+
+def _transfer_contacts(graph, host, tool):
+    for other in list(graph[tool]):
+        graph[other].discard(tool)
+        if other != host:
+            graph[other].add(host)
+            graph[host].add(other)
+    graph[host].discard(tool)
+    del graph[tool]
+
+
+def _apply_boolean(
+    design,
+    op,
+    host_name,
+    tool_name,
+    trace,
+    counter,
+    *,
+    fluid_body,
+    volume_change,
+):
+    """Run one boolean, then require the body count and the volume change."""
+    host = _body_named(design, host_name)
+    host_id = host.id
+    volume_before = _volume_m3(host)
+    alive_before = _alive_bodies(design)
+    _run_boolean(design, op, host_name, tool_name, trace)
+    counter[0] += 1
+    op_index = counter[0]
+    _require_boolean_result(
+        design,
+        trace,
+        op_index=op_index,
+        op=op,
+        host_name=host_name,
+        host_id=host_id,
+        tool_name=tool_name,
+        alive_before=alive_before,
+        volume_before=volume_before,
+        fluid_body=fluid_body,
+        volume_change=volume_change,
+    )
+
+
+def _require_boolean_result(
+    design,
+    trace,
+    *,
+    op_index,
+    op,
+    host_name,
+    host_id,
+    tool_name,
+    alive_before,
+    volume_before,
+    fluid_body,
+    volume_change,
+):
+    try:
+        alive = _alive_bodies(design)
+        hosts = [body for body in alive if getattr(body, "id", None) == host_id]
+        volume_after = _volume_m3(hosts[0]) if len(hosts) == 1 else None
+    except Exception as exc:
+        _fail_boolean(
+            trace,
+            design,
+            op_index,
+            f"{op} host={host_name} tool={tool_name}: "
+            f"{type(exc).__name__}: {exc}",
         )
+    expected = len(alive_before) - 1
+    if len(hosts) != 1 or len(alive) != expected:
+        _fail_boolean(
+            trace,
+            design,
+            op_index,
+            f"{op} host={host_name} tool={tool_name}: "
+            f"alive {len(alive)}, expected {expected}; host bodies {len(hosts)}.",
+        )
+    if fluid_body:
+        named = [body for body in alive if getattr(body, "name", None) == host_name]
+        if len(named) != 1:
+            _fail_boolean(
+                trace,
+                design,
+                op_index,
+                f"{op} host={host_name} tool={tool_name}: "
+                f"expected one fluid body, found {len(named)}.",
+            )
+    if any(getattr(body, "name", None) == tool_name for body in alive):
+        _fail_boolean(
+            trace,
+            design,
+            op_index,
+            f"{op} host={host_name} tool={tool_name}: tool is still alive.",
+        )
+    decreased = volume_after < volume_before
+    increased = volume_after > volume_before
+    if volume_change == "decrease" and not decreased:
+        _fail_boolean(
+            trace,
+            design,
+            op_index,
+            f"{op} host={host_name} tool={tool_name}: fluid volume "
+            f"{volume_before:.6e} did not decrease (now {volume_after:.6e}).",
+        )
+    if volume_change == "increase" and not increased:
+        _fail_boolean(
+            trace,
+            design,
+            op_index,
+            f"{op} host={host_name} tool={tool_name}: volume "
+            f"{volume_before:.6e} did not increase (now {volume_after:.6e}).",
+        )
+
+
+def _fail_boolean(trace, design, op_index, detail):
+    message = f"op {op_index} {detail}"
+    if trace is not None:
+        trace._append(message + "\n")
+        trace.save(design, message)
+    raise RuntimeError(message)
+
+
+def _alive_bodies(design):
+    return [body for body in design.bodies if body.is_alive]
+
+
+def _volume_m3(body):
+    volume = body.volume
+    if isinstance(volume, (int, float)):
+        return float(volume)
+    for attr in ("m", "value"):
+        magnitude = getattr(volume, attr, None)
+        if isinstance(magnitude, (int, float)):
+            return float(magnitude)
+    raise RuntimeError(
+        f"Body {getattr(body, 'name', '?')!r} volume is {volume!r}."
+    )
 
 
 def _run_boolean(design, op, host_name, tool_name, trace):
@@ -774,7 +1088,7 @@ def _volume_text(body):
 
 
 def _spacer_body_names(segment_count, sphere_count):
-    names = ["spacer" if index == 0 else f"filament_{index}" for index in range(segment_count)]
+    names = [f"filament_{index}" for index in range(segment_count)]
     names.extend(f"sphere_{index}" for index in range(sphere_count))
     return names
 
