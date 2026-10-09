@@ -5,8 +5,8 @@ The refinement ratio is never inferred from the mesh-id names. Pass
 successive pair, or ``--ratio`` for one constant ratio (2.0 when y1
 halves). Apparent order, the Richardson value, and the fine-grid GCI
 use the three finest levels and Celik et al. (2008) with safety factor
-1.25. An oscillatory or non-contracting series is flagged and those
-three quantities are left blank.
+1.25. An oscillatory, non-contracting, or non-converged order is
+flagged and those three quantities are left blank.
 
 Importing this module does not launch Fluent.
 """
@@ -135,12 +135,21 @@ def sequence_status(differences):
     return "monotone"
 
 
+def _bounded_ratio_power(ratio, order):
+    """``ratio**order`` via ``exp``, or None when that power would overflow."""
+    if order > math.log(1.0e300) / math.log(ratio):
+        return None
+    return math.exp(order * math.log(ratio))
+
+
 def apparent_order(difference_coarse, difference_fine, r32, r21):
     """Celik et al. (2008) apparent order for one monotone triplet.
 
     ``difference_coarse`` is φ_medium − φ_coarse. ``difference_fine`` is
     φ_fine − φ_medium. ``r32`` is h_coarse/h_medium and ``r21`` is
-    h_medium/h_fine. Both ratios are greater than 1.
+    h_medium/h_fine. Both ratios are greater than 1. Returns None when
+    the fixed-point iteration does not converge or a ratio power would
+    overflow. A ratio of 1 or less, or a zero difference, still raises.
     """
     if difference_fine == 0.0:
         raise ValueError("Apparent order needs a non-zero fine-end difference.")
@@ -156,22 +165,20 @@ def apparent_order(difference_coarse, difference_fine, r32, r21):
     if r21 == r32:
         return p
     for _ in range(_ORDER_ITERS):
-        numerator = r21**p - 1.0
-        denominator = r32**p - 1.0
+        powered_21 = _bounded_ratio_power(r21, p)
+        powered_32 = _bounded_ratio_power(r32, p)
+        if powered_21 is None or powered_32 is None:
+            return None
+        numerator = powered_21 - 1.0
+        denominator = powered_32 - 1.0
         if numerator <= 0.0 or denominator <= 0.0:
-            raise RuntimeError(
-                "Apparent-order iteration left the Celik formula domain: "
-                f"p={p!r}, r21={r21!r}, r32={r32!r}."
-            )
+            return None
         correction = math.log(numerator / denominator)
         updated = abs(math.log(magnitude) + correction) / ln_r21
         if abs(updated - p) <= _ORDER_TOL * max(1.0, abs(updated)):
             return updated
         p = updated
-    raise RuntimeError(
-        "Apparent order did not converge for "
-        f"r21={r21!r}, r32={r32!r}, |ε32/ε21|={magnitude!r}."
-    )
+    return None
 
 
 def richardson_extrapolated(value_fine, value_medium, refinement_ratio, order):
@@ -231,6 +238,12 @@ def analyze_series(values, refinement_ratios):
         refinement_ratios[-2],
         refinement_ratios[-1],
     )
+    if order is None:
+        result["status"] = "order_not_converged"
+        result["note"] = (
+            "order_not_converged: order, Richardson value, and GCI are not reported"
+        )
+        return result
     extrapolated = richardson_extrapolated(
         values[-1],
         values[-2],
@@ -474,8 +487,9 @@ def to_markdown(geo_id, run_id, mode, ratio, levels, analyses):
         "finest levels (Celik et al. 2008, safety factor 1.25).",
         "A successive difference is the finer value minus the next-coarser",
         "value. The difference ratio divides that step by the previous one.",
-        "An oscillatory, divergent, zero-difference, or non-contracting",
-        "series is flagged and those three quantities are omitted.",
+        "An oscillatory, divergent, zero-difference, non-contracting,",
+        "or order-not-converged series is flagged and those three",
+        "quantities are omitted.",
         "",
     ]
     for metric in METRICS:

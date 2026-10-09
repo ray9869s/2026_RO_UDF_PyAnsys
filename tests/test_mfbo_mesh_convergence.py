@@ -41,6 +41,19 @@ def test_four_levels_use_the_three_finest():
     assert coarse["richardson_extrapolated"] == pytest.approx(10.0)
 
 
+def test_close_ratios_flag_an_order_that_does_not_converge():
+    report = convergence.analyze_series((2.0, 1.0, 0.9), [1.3, 1.1])
+    assert report["status"] == "order_not_converged"
+    assert report["apparent_order"] is None
+    assert report["richardson_extrapolated"] is None
+    assert report["gci_fine"] is None
+    assert "order_not_converged" in report["note"]
+    with pytest.raises(ValueError, match="> 1"):
+        convergence.apparent_order(-1.0, -0.1, 1.3, 1.0)
+    with pytest.raises(ValueError, match="non-zero"):
+        convergence.apparent_order(-1.0, 0.0, 1.3, 1.1)
+
+
 def test_unequal_ratios_recover_the_prescribed_order():
     # φ = 5 + 0.1 * h^2, r21 = 2, r32 = 1.5.
     report = convergence.analyze_series((5.9, 5.4, 5.1), [1.5, 2.0])
