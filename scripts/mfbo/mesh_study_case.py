@@ -7,7 +7,11 @@ The production baseline is not rebuilt here. Re-extract that leaf with
 Before the meshing worker starts, the production geometry file
 ``C:/ro_data/geometries/<family>/<geo_id>/<geo_id>.dsco`` is copied into
 the study data root. An existing copy is reused only when its sha256
-matches. The source is never moved.
+matches. The source is never moved. ``--geometry-suffix .pmdb`` with
+``--geometry-root`` copies the converted file from that root instead
+(never from ``C:/ro_data``), requires its parity record to have passed,
+and passes ``geometry_suffix`` and ``geometry_root`` to the meshing child.
+The default remains the production ``.dsco``.
 
 ``format_production_mesh_id`` encodes max/min/cpg/bl/peel and omits the
 default first-height factor. A factor that differs from the template is
@@ -348,10 +352,142 @@ def production_geometry_dsco(family, geo_id):
     )
 
 
-def study_geometry_dsco(data_root, family, geo_id):
+def study_geometry_file(data_root, family, geo_id, suffix=".dsco"):
     return (
-        Path(data_root) / "geometries" / family / geo_id / f"{geo_id}.dsco"
+        Path(data_root) / "geometries" / family / geo_id / f"{geo_id}{suffix}"
     )
+
+
+def study_geometry_dsco(data_root, family, geo_id):
+    return study_geometry_file(data_root, family, geo_id, ".dsco")
+
+
+def resolve_geometry_request(suffix, geometry_root):
+    """Default ``.dsco`` with no root keeps the production CAD.
+
+    ``.pmdb`` requires a geometry root that is not under ``C:/ro_data``.
+    """
+    if suffix is None:
+        suffix = ".dsco"
+    if suffix not in (".dsco", ".pmdb"):
+        raise ValueError(
+            f"geometry suffix must be '.dsco' or '.pmdb', got {suffix!r}."
+        )
+    if suffix == ".dsco":
+        if geometry_root not in (None, ""):
+            raise ValueError(
+                "--geometry-root is only valid with --geometry-suffix .pmdb."
+            )
+        return ".dsco", None
+    if geometry_root in (None, ""):
+        raise ValueError("--geometry-suffix .pmdb requires --geometry-root.")
+    return ".pmdb", resolve_geometry_root(geometry_root)
+
+
+def resolve_geometry_root(value):
+    """Absolute converted-CAD root. Refuses ``C:/ro_data``."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("geometry root is required.")
+    text = value.strip().replace("\\", "/")
+    if _under_production_text(text):
+        raise ValueError(
+            f"Refusing to read campaign .pmdb from C:/ro_data: {value}"
+        )
+    if _is_windows_absolute(text):
+        return Path(text)
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"geometry root must be absolute, got {value!r}.")
+    path = path.resolve()
+    if _under_production_tree(path):
+        raise ValueError(
+            f"Refusing to read campaign .pmdb from C:/ro_data: {value}"
+        )
+    return path
+
+
+def _under_production_text(text):
+    folded = str(text).replace("\\", "/").casefold().rstrip("/")
+    return (
+        folded == "c:/ro_data"
+        or folded.startswith("c:/ro_data/")
+        or folded == "/mnt/c/ro_data"
+        or folded.startswith("/mnt/c/ro_data/")
+    )
+
+
+def pmdb_source_file(geometry_root, family, geo_id):
+    return Path(geometry_root) / family / geo_id / f"{geo_id}.pmdb"
+
+
+def parity_record_path(geometry_root, geo_id):
+    """``<geometry-root>_parity/<geo_id>/parity.json``.
+
+    That is where ``parity_campaign_pmdb.py`` writes when ``--pmdb-root``
+    is this geometry root and ``--work-root`` is the default sibling.
+    """
+    text = Path(geometry_root).as_posix().rstrip("/")
+    return Path(text + "_parity") / geo_id / "parity.json"
+
+
+def geometry_meshing_overrides(suffix, geometry_root):
+    """Child overrides. Empty for the production ``.dsco`` default."""
+    if suffix == ".dsco":
+        return {}
+    return {
+        "geometry_suffix": ".pmdb",
+        "geometry_root": Path(geometry_root).as_posix(),
+    }
+
+
+def _read_json_object(path):
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError(f"JSON file must be an object: {path}")
+    return payload
+
+
+def require_converted_pmdb(geometry_root, family, geo_id):
+    """Return the converted ``.pmdb`` after its meta sha256 matches."""
+    source = pmdb_source_file(geometry_root, family, geo_id)
+    if _under_production_tree(source) or _under_production_text(source):
+        raise ValueError(
+            f"Refusing to read campaign .pmdb from C:/ro_data: {source}"
+        )
+    if not source.is_file():
+        raise FileNotFoundError(f"Converted .pmdb not found: {source}")
+    meta_path = source.with_name(f"{geo_id}_meta.json")
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"Conversion meta not found: {meta_path}")
+    meta = _read_json_object(meta_path)
+    digest = sha256_file(source)
+    if meta.get("status") != "converted" or meta.get("pmdb_sha256") != digest:
+        raise RuntimeError(
+            "Converted .pmdb sha256 does not match its meta: "
+            f"file {digest}, meta status {meta.get('status')!r}, "
+            f"meta pmdb_sha256 {meta.get('pmdb_sha256')!r}, path {source}."
+        )
+    return source
+
+
+def require_passed_parity(geometry_root, geo_id):
+    """Raise unless the parity record for this geometry passed."""
+    path = parity_record_path(geometry_root, geo_id)
+    if not path.is_file():
+        raise FileNotFoundError(f"Parity record not found: {path}")
+    payload = _read_json_object(path)
+    passed = (
+        payload.get("geo_id") == geo_id
+        and payload.get("status") == "passed"
+        and payload.get("passed") is True
+    )
+    if not passed:
+        raise RuntimeError(
+            "Parity record did not pass for "
+            f"{geo_id}: status {payload.get('status')!r}, "
+            f"passed {payload.get('passed')!r}, path {path}."
+        )
+    return path
 
 
 def _under_production_tree(path):
@@ -365,7 +501,25 @@ def _under_production_tree(path):
 
 
 def ensure_production_geometry_dsco(data_root, family, geo_id):
-    """Copy the production .dsco, or reuse it when the sha256 matches.
+    """Copy the production .dsco. See ``ensure_study_geometry``."""
+    return ensure_study_geometry(data_root, family, geo_id)
+
+
+def ensure_study_geometry(
+    data_root,
+    family,
+    geo_id,
+    *,
+    suffix=".dsco",
+    geometry_root=None,
+    require_parity=False,
+):
+    """Copy the CAD into the study tree, or reuse it when the sha256 matches.
+
+    The default source is the production ``.dsco``. ``suffix='.pmdb'``
+    reads the converted file from ``geometry_root`` (never ``C:/ro_data``)
+    and checks it against the conversion meta. ``require_parity`` also
+    requires that geometry's parity record to have passed.
 
     Uses ``run_parity_mesh.copy_geometry_file`` (copy only; sha256 checked
     after the copy). An existing destination is not rewritten: the same
@@ -374,12 +528,18 @@ def ensure_production_geometry_dsco(data_root, family, geo_id):
     """
     import mfbo.run_parity_mesh as parity_mesh
 
-    source = production_geometry_dsco(family, geo_id)
-    dest = study_geometry_dsco(data_root, family, geo_id)
+    suffix, root = resolve_geometry_request(suffix, geometry_root)
+    dest = study_geometry_file(data_root, family, geo_id, suffix)
     if _under_production_tree(dest):
         raise ValueError(f"Refusing to copy geometry into C:/ro_data: {dest}")
-    if not source.is_file():
-        raise FileNotFoundError(f"Geometry file not found: {source}")
+    if suffix == ".dsco":
+        source = production_geometry_dsco(family, geo_id)
+        if not source.is_file():
+            raise FileNotFoundError(f"Geometry file not found: {source}")
+    else:
+        source = require_converted_pmdb(root, family, geo_id)
+        if require_parity:
+            require_passed_parity(root, geo_id)
     if dest.exists():
         if not dest.is_file():
             raise FileExistsError(
@@ -692,6 +852,19 @@ def build_parser():
             "and the recorded settings match. The run leaf must not exist."
         ),
     )
+    parser.add_argument(
+        "--geometry-suffix",
+        default=".dsco",
+        help="CAD suffix copied into the study tree. Default .dsco.",
+    )
+    parser.add_argument(
+        "--geometry-root",
+        default=None,
+        help=(
+            "Converted CAD root for --geometry-suffix .pmdb "
+            "(<family>/<geo_id>/<geo_id>.pmdb). Not C:/ro_data."
+        ),
+    )
     return parser
 
 
@@ -710,22 +883,41 @@ def main(argv=None):
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]
     production_mesh_id = case["mesh_id"]
+    suffix, geometry_root = resolve_geometry_request(
+        args.geometry_suffix, args.geometry_root
+    )
     overrides = apply_study_overrides(template, changes)
+    overrides.update(geometry_meshing_overrides(suffix, geometry_root))
     print_override_table(override_rows(template, overrides))
     study_id = overrides["mesh_id"]
     leaf = mesh_leaf(data_root, family, args.geo_id, study_id)
+    geometry_kwargs = {
+        "suffix": suffix,
+        "geometry_root": None if geometry_root is None else geometry_root.as_posix(),
+        "require_parity": suffix == ".pmdb",
+    }
     if args.reuse_mesh and leaf.exists():
-        geometry = ensure_production_geometry_dsco(data_root, family, args.geo_id)
+        geometry = ensure_study_geometry(
+            data_root,
+            family,
+            args.geo_id,
+            **geometry_kwargs,
+        )
         require_reusable_mesh(
             leaf,
             overrides,
             geometry,
-            sha256_file(production_geometry_dsco(family, args.geo_id)),
+            sha256_file(geometry),
         )
         print(f"Reusing mesh leaf {leaf}")
     else:
         refuse_existing_directory(leaf, "mesh leaf")
-        ensure_production_geometry_dsco(data_root, family, args.geo_id)
+        ensure_study_geometry(
+            data_root,
+            family,
+            args.geo_id,
+            **geometry_kwargs,
+        )
         mesh_result = launch_meshing(
             overrides,
             data_root,

@@ -224,3 +224,40 @@ def test_copy_from_production_does_not_launch_on_production_root(monkeypatch, tm
             ]
         )
     assert launched == []
+
+
+def test_copy_from_production_can_take_the_converted_pmdb(monkeypatch, tmp_path):
+    import json
+
+    import mfbo.diagnose_cp_max_hotspots as hotspots
+
+    identity = _production_identity(tmp_path)
+    prod = tmp_path / "prod"
+    _plant_geometry(prod, b"dsco-v1")
+    monkeypatch.setattr(mesh_study, "PRODUCTION_DATA_ROOT", prod)
+    monkeypatch.setattr(hotspots, "parse_production_run_leaf", lambda value: identity)
+    pmdb_root = tmp_path / "geometries_pmdb"
+    source = pmdb_root / "pillar" / "P_p100_h30" / "P_p100_h30.pmdb"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"pmdb-v1")
+    meta = {
+        "geo_id": "P_p100_h30",
+        "status": "converted",
+        "pmdb_sha256": mesh_study.sha256_file(source),
+    }
+    (source.parent / "P_p100_h30_meta.json").write_text(
+        json.dumps(meta), encoding="utf-8"
+    )
+    data = tmp_path / "root"
+    reextract_runs.copy_production_for_reextract(
+        "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M",
+        str(data),
+        geometry_suffix=".pmdb",
+        geometry_root=str(pmdb_root),
+    )
+    copied = data / "geometries" / "pillar" / "P_p100_h30" / "P_p100_h30.pmdb"
+    assert copied.read_bytes() == b"pmdb-v1"
+    assert source.read_bytes() == b"pmdb-v1"
+    assert not (
+        data / "geometries" / "pillar" / "P_p100_h30" / "P_p100_h30.dsco"
+    ).exists()

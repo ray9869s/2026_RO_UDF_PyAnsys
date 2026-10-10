@@ -72,6 +72,9 @@ def test_mesh_argv_passes_fidelity_settings_and_solve_does_not(tmp_path):
     assert mesh_argv[mesh_argv.index("--bl-layers") + 1] == "4"
     assert mesh_argv[mesh_argv.index("--peel-layers") + 1] == "2"
     assert "--spacer-bl-layers" not in mesh_argv
+    assert "--geometry-root" not in mesh_argv
+    assert ".pmdb" in drivers.mesh.__doc__
+    assert "geometry_root" in drivers.mesh.__doc__
 
     with_spacer = dict(SETTINGS)
     with_spacer["spacer_bl_layers"] = 6

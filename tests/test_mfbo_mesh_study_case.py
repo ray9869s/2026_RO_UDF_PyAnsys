@@ -310,6 +310,8 @@ def test_main_meshes_solves_and_extracts_the_study_copy(monkeypatch, tmp_path):
     assert seen["solver_kw_mesh_id"] == seen["mesh_id"]
     assert seen["extract_mesh_id"] == seen["mesh_id"]
     assert "c:/ro_data" not in str(seen["extract_root"]).casefold()
+    assert "geometry_suffix" not in seen["overrides"]
+    assert "geometry_root" not in seen["overrides"]
 
 
 def _matching_manifest(digest, **overrides):
@@ -575,3 +577,119 @@ def test_reuse_mesh_raises_the_setting_mismatch_and_still_refuses_the_run_leaf(
             ]
         )
     assert "solved" not in seen
+
+
+def _plant_converted_pmdb(root, family, geo_id, payload, *, status="passed", passed=True, digest=None):
+    path = root / family / geo_id / f"{geo_id}.pmdb"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    file_digest = driver.sha256_file(path)
+    meta = {
+        "geo_id": geo_id,
+        "status": "converted",
+        "pmdb_sha256": file_digest if digest is None else digest,
+    }
+    (path.parent / f"{geo_id}_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    record = driver.parity_record_path(root, geo_id)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(
+        json.dumps({"geo_id": geo_id, "status": status, "passed": passed}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_pmdb_copy_checks_meta_and_requires_a_passed_parity_record(tmp_path):
+    root = tmp_path / "geometries_pmdb"
+    source = _plant_converted_pmdb(root, "diamond", "D2450_a45", b"pmdb-v1")
+    study = tmp_path / "study"
+    dest = driver.ensure_study_geometry(
+        study,
+        "diamond",
+        "D2450_a45",
+        suffix=".pmdb",
+        geometry_root=str(root),
+        require_parity=True,
+    )
+    assert dest == study / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.pmdb"
+    assert dest.read_bytes() == b"pmdb-v1"
+    assert source.read_bytes() == b"pmdb-v1"
+    assert driver.parity_record_path(
+        "C:/ro_data_mfbo/geometries_pmdb", "D2450_a45"
+    ) == Path("C:/ro_data_mfbo/geometries_pmdb_parity/D2450_a45/parity.json")
+
+    failed = tmp_path / "failed_pmdb"
+    _plant_converted_pmdb(
+        failed, "diamond", "D0817_a30", b"pmdb-v1", status="failed", passed=False
+    )
+    with pytest.raises(RuntimeError, match="did not pass"):
+        driver.ensure_study_geometry(
+            study,
+            "diamond",
+            "D0817_a30",
+            suffix=".pmdb",
+            geometry_root=str(failed),
+            require_parity=True,
+        )
+    assert not (
+        study / "geometries" / "diamond" / "D0817_a30" / "D0817_a30.pmdb"
+    ).exists()
+
+    mismatch = tmp_path / "mismatch"
+    _plant_converted_pmdb(
+        mismatch, "diamond", "D0817_a60", b"pmdb-v1", digest="0" * 64
+    )
+    with pytest.raises(RuntimeError, match="sha256"):
+        driver.ensure_study_geometry(
+            study,
+            "diamond",
+            "D0817_a60",
+            suffix=".pmdb",
+            geometry_root=str(mismatch),
+            require_parity=True,
+        )
+    with pytest.raises(ValueError, match="C:/ro_data"):
+        driver.resolve_geometry_root("C:/ro_data/geometries")
+    with pytest.raises(ValueError, match="only valid"):
+        driver.resolve_geometry_request(".dsco", str(root))
+
+
+def test_pmdb_main_passes_the_geometry_override_to_meshing(monkeypatch, tmp_path):
+    template = _template()
+    monkeypatch.setattr(
+        driver,
+        "load_mesh_template",
+        lambda geo_id: (dict(template), dict(template), 0),
+    )
+    seen = {}
+
+    def fake_mesh(overrides, data_root, mesh_directory, mesh_id, max_retries):
+        seen["overrides"] = overrides
+        copied = (
+            Path(data_root) / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.pmdb"
+        )
+        assert copied.read_bytes() == b"pmdb-body"
+        return SimpleNamespace(returncode=7)
+
+    monkeypatch.setattr(driver, "launch_meshing", fake_mesh)
+    monkeypatch.setattr(driver, "PRODUCTION_DATA_ROOT", tmp_path / "empty-prod")
+    pmdb_root = tmp_path / "geometries_pmdb"
+    _plant_converted_pmdb(pmdb_root, "diamond", "D2450_a45", b"pmdb-body")
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path / "study"),
+            "--geo-id",
+            "D2450_a45",
+            "--m-max",
+            "0.04",
+            "--geometry-suffix",
+            ".pmdb",
+            "--geometry-root",
+            str(pmdb_root),
+        ]
+    )
+    assert code == 7
+    assert seen["overrides"]["geometry_suffix"] == ".pmdb"
+    assert seen["overrides"]["geometry_root"] == pmdb_root.resolve().as_posix()
+    assert not (tmp_path / "empty-prod").exists()

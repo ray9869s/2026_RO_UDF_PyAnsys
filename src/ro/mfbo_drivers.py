@@ -5,6 +5,11 @@ driver runs one existing script and waits for it. A module lock and a
 lock file under the data root keep those jobs from overlapping, including
 across processes. ``RO_DATA_ROOT`` is set on the child environment only.
 A non-zero exit raises ``DriverFailed`` with the child's log path.
+
+MFP ids need no campaign geometry root. ``generate`` writes ``.pmdb`` into
+this data root, and ``mesh`` calls ``mesh_mfbo_case``, which already sets
+``geometry_suffix`` to ``.pmdb``. Campaign ``--geometry-root`` is not applied
+here.
 """
 
 from __future__ import annotations
@@ -93,6 +98,12 @@ class _Worker:
         mesh_settings: Mapping[str, Any],
         mesh_dir: Path,
     ) -> None:
+        """Mesh one MFP id from the ``.pmdb`` already in this data root.
+
+        ``mesh_mfbo_case`` sets ``geometry_suffix`` to ``.pmdb``. Campaign
+        geometries that live under a separate ``geometry_root`` are not
+        selected here.
+        """
         del design, mesh_dir
         script = _script("scripts/mfbo/mesh_mfbo_case.py")
         settings = _mesh_settings(mesh_settings)

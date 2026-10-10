@@ -9,8 +9,9 @@ contains ``runs/``).
 ``--copy-from-production`` copies a production run leaf, its mesh leaf,
 and ``geometries/<family>/<geo_id>/<geo_id>.dsco`` into ``--data-root``
 (sha256 every file, reuse an identical copy, refuse a different one) and
-re-extracts the copy. Fluent is not pointed at ``C:/ro_data``. The
-geometry file is copied, never moved.
+re-extracts the copy. ``--geometry-suffix .pmdb`` with ``--geometry-root``
+copies that converted file instead of the production ``.dsco``. Fluent is
+not pointed at ``C:/ro_data``. The geometry file is copied, never moved.
 """
 
 from __future__ import annotations
@@ -119,10 +120,18 @@ def operating_point_case(data_root, run_leaf):
     return mfbo_common.call_with_data_root(data_root, _read)
 
 
-def copy_production_for_reextract(prod_leaf, data_root):
+def copy_production_for_reextract(
+    prod_leaf,
+    data_root,
+    *,
+    geometry_suffix=".dsco",
+    geometry_root=None,
+):
     """Copy the production run and mesh leaves. Return the copy's run leaf.
 
     Does not open Fluent. The caller re-extracts the returned copy only.
+    The default geometry file is the production ``.dsco``. A ``.pmdb``
+    suffix copies the converted file from ``geometry_root``.
     """
     import mfbo.diagnose_cp_max_hotspots as hotspots
     import mfbo.mesh_study_case as mesh_study
@@ -130,8 +139,12 @@ def copy_production_for_reextract(prod_leaf, data_root):
     root = hotspots.resolve_data_root(data_root)
     identity = hotspots.parse_production_run_leaf(prod_leaf)
     copied = hotspots.copy_source_leaves(root, identity)
-    mesh_study.ensure_production_geometry_dsco(
-        root, identity["family"], identity["geo_id"]
+    mesh_study.ensure_study_geometry(
+        root,
+        identity["family"],
+        identity["geo_id"],
+        suffix=geometry_suffix,
+        geometry_root=geometry_root,
     )
     run_leaf = copied["run_leaf"]
     case_file, data_file = hotspots.final_case_data(
@@ -170,7 +183,20 @@ def main(argv=None) -> int:
         default=None,
         help=(
             "Production run leaf under C:/ro_data. Copied with its mesh leaf "
-            "and geometry .dsco into --data-root; Fluent opens only the copy."
+            "and geometry file into --data-root; Fluent opens only the copy."
+        ),
+    )
+    parser.add_argument(
+        "--geometry-suffix",
+        default=".dsco",
+        help="Geometry file suffix to copy. Default .dsco.",
+    )
+    parser.add_argument(
+        "--geometry-root",
+        default=None,
+        help=(
+            "Converted CAD root for --geometry-suffix .pmdb. "
+            "Not used with the default .dsco copy."
         ),
     )
     parser.add_argument(
@@ -192,7 +218,10 @@ def main(argv=None) -> int:
         if not args.data_root:
             parser.error("--copy-from-production requires --data-root.")
         copied = copy_production_for_reextract(
-            args.copy_from_production, args.data_root
+            args.copy_from_production,
+            args.data_root,
+            geometry_suffix=args.geometry_suffix,
+            geometry_root=args.geometry_root,
         )
         result = reextract_leaf(copied)
         return result.returncode
