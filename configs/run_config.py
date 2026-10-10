@@ -16,6 +16,7 @@
 import os
 import re
 import types
+from pathlib import Path
 
 from ro.mesh_common import (
     boundary_layers_are_split as _boundary_layers_are_split,
@@ -65,6 +66,9 @@ family = REQUIRED
 geo_id = REQUIRED
 # CAD filename under geometry_dir(family, geo_id). Existing batches stay ".dsco".
 geometry_suffix = ".dsco"
+# Empty uses RO_DATA_ROOT/geometries. A path is that geometries root
+# (<family>/<geo_id>/<geo_id><suffix>). Meshes stay under RO_DATA_ROOT.
+geometry_root = ""
 mesh_id = REQUIRED
 run_id = REQUIRED
 geo_name = REQUIRED
@@ -633,6 +637,27 @@ def validate_common():
     _require_positive_number("processor_count", processor_count)
 
 
+def _require_geometry_root(value):
+    """Empty keeps RO_DATA_ROOT/geometries. A set root must be absolute."""
+    if value is None:
+        raise ValueError("run_config.py geometry_root must be a string, got None.")
+    if not isinstance(value, str):
+        raise ValueError(
+            "run_config.py geometry_root must be a string, "
+            f"got {type(value).__name__}."
+        )
+    text = value.strip()
+    if not text:
+        return
+    folded = text.replace("\\", "/")
+    windows_absolute = len(folded) >= 3 and folded[1] == ":" and folded[2] == "/"
+    if windows_absolute or Path(text).is_absolute():
+        return
+    raise ValueError(
+        f"run_config.py geometry_root must be absolute, got {value!r}."
+    )
+
+
 def validate_for_meshing():
     """Validate settings required by meshing automation."""
     validate_common()
@@ -641,6 +666,7 @@ def validate_for_meshing():
             "run_config.py geometry_suffix must be '.dsco' or '.pmdb': "
             f"{geometry_suffix!r}"
         )
+    _require_geometry_root(geometry_root)
     _require_set("mesh_id", mesh_id)
     if not isinstance(mesh_id, str) or ro_paths.MESH_ID_RE.fullmatch(mesh_id) is None:
         raise ValueError(f"run_config.py mesh_id is invalid: {mesh_id!r}")

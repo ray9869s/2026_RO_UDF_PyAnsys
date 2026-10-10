@@ -227,3 +227,17 @@ def test_diamond_cli_does_not_launch_and_refuses_the_cad_tree(tmp_path):
     )
     with pytest.raises(FileNotFoundError, match="Diamond reference CAD is missing"):
         probe.run_diamond_reference(missing)
+
+
+def test_campaign_family_comes_from_the_cad_stem():
+    probe = load_probe()
+    assert probe.campaign_import_family("C:/ro_data/geometries/pillar/P_p100_h30/P_p100_h30.dsco", None) == "pillar"
+    assert probe.campaign_import_family("C:/cad/M_c160.dsco", None) == "ml"
+    with pytest.raises(ValueError, match="--cad-path"):
+        probe.campaign_import_family(None, None)
+    with pytest.raises(ValueError, match="--d-h-mm"):
+        probe.campaign_import_family("C:/cad/REF_empty.dsco", 0.3)
+    parsed = probe.build_parser().parse_args(
+        ["--family", "campaign", "--cad-path", "C:/cad/S_a144_l3465.dsco"]
+    )
+    assert parsed.family == "campaign"

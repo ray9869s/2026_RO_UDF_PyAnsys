@@ -84,7 +84,14 @@ def write_worker_mesh_manifest(
 
 
 def resolve_meshing_paths(cfg):
-    geometry_file = geometry_dir(cfg.family, cfg.geo_id) / f"{cfg.geo_id}{cfg.geometry_suffix}"
+    root = getattr(cfg, "geometry_root", "") or ""
+    if isinstance(root, str):
+        root = root.strip()
+    if root:
+        directory = Path(root) / cfg.family / cfg.geo_id
+    else:
+        directory = geometry_dir(cfg.family, cfg.geo_id)
+    geometry_file = directory / f"{cfg.geo_id}{cfg.geometry_suffix}"
     mesh_directory = mesh_dir(cfg.family, cfg.geo_id, cfg.mesh_id)
     return {
         "geometry_file": geometry_file,

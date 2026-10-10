@@ -752,11 +752,12 @@ def build_parser():
     )
     parser.add_argument(
         "--family",
-        choices=(FAMILY, DIAMOND_FAMILY),
+        choices=(FAMILY, DIAMOND_FAMILY, "campaign"),
         default=FAMILY,
         help=(
             "pillar imports the single reference file. "
-            "diamond imports the nine production Diamond .dsco files."
+            "diamond imports the nine production Diamond .dsco files. "
+            "campaign imports one --cad-path and records that geo_id's family."
         ),
     )
     return parser
@@ -961,8 +962,23 @@ def run_diamond_reference(args):
     return _run_diamond_batch(args)
 
 
-def _run_diamond_one(args):
-    """Import one Diamond file and optionally compare it. Read-only on the CAD."""
+def campaign_import_family(cad_path, d_h_mm):
+    """Family recorded for ``--family campaign``. Does not launch Fluent."""
+    if cad_path is None:
+        raise ValueError("--family campaign requires --cad-path.")
+    if d_h_mm is not None:
+        raise ValueError("--family campaign does not take --d-h-mm.")
+    return family_for_geo_id(Path(cad_path).stem)
+
+
+def _run_campaign_import(args):
+    """Import one campaign CAD file. Same read as one Diamond file."""
+    recorded_family = campaign_import_family(args.cad_path, args.d_h_mm)
+    return _run_diamond_one(args, recorded_family=recorded_family)
+
+
+def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY):
+    """Import one CAD file and optionally compare it. Read-only on the CAD."""
     geometry_file = args.cad_path
     if not os.path.isfile(geometry_file):
         raise FileNotFoundError(f"Geometry file not found: {geometry_file}")
@@ -984,7 +1000,7 @@ def _run_diamond_one(args):
     product_version = cfg.product_version
     graphics_driver = cfg.graphics_driver
     processor_count = 2
-    print(f"Family: {DIAMOND_FAMILY}")
+    print(f"Family: {recorded_family}")
     print(f"DSCO: {geometry_file}")
     print(f"Work dir: {work_dir}")
     print(
@@ -1025,7 +1041,7 @@ def _run_diamond_one(args):
                 area_rtol=args.area_rtol,
             )
         payload = {
-            "family": DIAMOND_FAMILY,
+            "family": recorded_family,
             "geometry_file": str(geometry_file),
             "objects": extracted["objects"],
             "bodies": extracted["bodies"],
@@ -1206,6 +1222,8 @@ def main(argv=None):
         raise ValueError(f"--area-rtol must be finite, got {args.area_rtol!r}.")
     if args.area_rtol < 0.0:
         raise ValueError(f"--area-rtol must be >= 0, got {args.area_rtol}.")
+    if args.family == "campaign":
+        return _run_campaign_import(args)
     if args.family == DIAMOND_FAMILY:
         return run_diamond_reference(args)
     d_h_mm = resolve_d_h_mm(args.cad_path, args.d_h_mm)
