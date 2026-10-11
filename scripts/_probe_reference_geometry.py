@@ -40,6 +40,8 @@ SUMMARY_NAME = "reference_geometry.json"
 TRANSCRIPT_NAME = "probe_reference_geometry_transcript.txt"
 _MANUAL_CAD_ROOT = "c:/ro_data/geometries"
 DEFAULT_BBOX_TOL_MM = 1e-3
+# PyFluent's launch_fluent start_timeout default is 60 s.
+CAMPAIGN_FLUENT_START_TIMEOUT_S = 300
 
 
 def _load_module(module_name, path):
@@ -971,13 +973,39 @@ def campaign_import_family(cad_path, d_h_mm):
     return family_for_geo_id(Path(cad_path).stem)
 
 
+def meshing_launch_kwargs(
+    *,
+    product_version,
+    graphics_driver,
+    processor_count,
+    start_timeout,
+):
+    """Fluent Meshing launch keywords. ``start_timeout`` is omitted when None."""
+    kwargs = {
+        "product_version": product_version,
+        "mode": "meshing",
+        "dimension": 3,
+        "precision": "double",
+        "processor_count": processor_count,
+        "ui_mode": "gui",
+        "graphics_driver": graphics_driver,
+    }
+    if start_timeout is not None:
+        kwargs["start_timeout"] = int(start_timeout)
+    return kwargs
+
+
 def _run_campaign_import(args):
     """Import one campaign CAD file. Same read as one Diamond file."""
     recorded_family = campaign_import_family(args.cad_path, args.d_h_mm)
-    return _run_diamond_one(args, recorded_family=recorded_family)
+    return _run_diamond_one(
+        args,
+        recorded_family=recorded_family,
+        start_timeout=CAMPAIGN_FLUENT_START_TIMEOUT_S,
+    )
 
 
-def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY):
+def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY, start_timeout=None):
     """Import one CAD file and optionally compare it. Read-only on the CAD."""
     geometry_file = args.cad_path
     if not os.path.isfile(geometry_file):
@@ -1003,11 +1031,15 @@ def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY):
     print(f"Family: {recorded_family}")
     print(f"DSCO: {geometry_file}")
     print(f"Work dir: {work_dir}")
+    launch_kwargs = meshing_launch_kwargs(
+        product_version=product_version,
+        graphics_driver=graphics_driver,
+        processor_count=processor_count,
+        start_timeout=start_timeout,
+    )
     print(
         "launch_fluent args: "
-        f"product_version={product_version!r}, mode='meshing', dimension=3, "
-        f"precision='double', processor_count={processor_count!r}, "
-        f"ui_mode='gui', graphics_driver={graphics_driver!r}"
+        + ", ".join(f"{key}={value!r}" for key, value in launch_kwargs.items())
     )
 
     meshing = None
@@ -1019,15 +1051,9 @@ def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY):
         os.chdir(work_dir)
         changed_directory = True
         transcript_path = os.path.join(work_dir, TRANSCRIPT_NAME)
-        meshing = pyfluent.launch_fluent(
-            product_version=product_version,
-            mode="meshing",
-            dimension=3,
-            precision="double",
-            processor_count=processor_count,
-            ui_mode="gui",
-            graphics_driver=graphics_driver,
-        )
+        if start_timeout is not None:
+            pyfluent.config.check_health_timeout = int(start_timeout)
+        meshing = pyfluent.launch_fluent(**launch_kwargs)
         meshing.transcript.start(file_name=as_fluent_path(transcript_path))
         transcript_is_running = True
         print(f"Transcript: {as_fluent_path(transcript_path)}")

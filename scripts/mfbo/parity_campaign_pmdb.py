@@ -5,7 +5,10 @@ per-label face-zone counts, areas, and bounding boxes use the pillar-parity
 tolerances (bbox 1e-3 mm, area relative 1e-3). Per-label ``face_count``
 values must match exactly. Body volume uses the same relative tolerance
 the diamond parity script uses (1e-3); an unread volume fails. A failed
-geometry is recorded and the loop continues.
+geometry is recorded and the loop continues. A probe that writes no dump
+is closed, Discovery and SpaceClaim processes that probe started are
+terminated, and that probe is tried once more. The parity record names
+the probe and the CAD-import text.
 
 Importing this module does not launch Fluent. ``--emit-queue`` writes a
 job-queue JSON file and does not probe.
@@ -23,11 +26,23 @@ from pathlib import Path
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from discovery_processes import (  # noqa: E402
+    list_discovery_processes,
+    process_note,
+    terminate_pid,
+    terminate_started,
+)
+
 PROBE_PATH = Path(__file__).resolve().parents[1] / "_probe_reference_geometry.py"
 DEFAULT_SOURCE_ROOT = "C:/ro_data/geometries"
 DEFAULT_PMDB_ROOT = "C:/ro_data_mfbo/geometries_pmdb"
 DEFAULT_WORK_ROOT = "C:/ro_data_mfbo/geometries_pmdb_parity"
 SUMMARY_NAME = "reference_geometry.json"
+TRANSCRIPT_NAME = "probe_reference_geometry_transcript.txt"
 # scripts/_probe_reference_geometry.py DEFAULT_BBOX_TOL_MM
 BBOX_TOL_MM = 1e-3
 # scripts/mfbo/run_geometry_parity_all.py AREA_RTOL
@@ -269,17 +284,101 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def subprocess_runner(command: list[str]) -> int:
+def subprocess_runner(command: list[str]) -> dict:
     argv = [sys.executable if item == "{python}" else item for item in command]
     completed = subprocess.run(
         argv,
         check=False,
         shell=False,
+        capture_output=True,
+        text=True,
     )
-    return int(completed.returncode)
+    output = (completed.stdout or "") + (completed.stderr or "")
+    if completed.stdout:
+        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+    if completed.stderr:
+        print(
+            completed.stderr,
+            file=sys.stderr,
+            end="" if completed.stderr.endswith("\n") else "\n",
+        )
+    return {"returncode": int(completed.returncode), "output": output}
 
 
-def run_one(geo_id, *, source_root, pmdb_root, work_root, runner, probe=None) -> dict:
+def _probe_result(value) -> dict:
+    if isinstance(value, int):
+        return {"returncode": value, "output": ""}
+    if isinstance(value, dict) and "returncode" in value:
+        return {
+            "returncode": int(value["returncode"]),
+            "output": str(value.get("output") or ""),
+        }
+    raise TypeError(
+        "Probe runner must return an int or a returncode mapping, "
+        f"got {type(value).__name__}."
+    )
+
+
+def _tail(text: str, limit: int = 2000) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[-limit:]
+
+
+def probe_failure_text(label: str, result: dict, work_dir: Path) -> str:
+    """Which probe failed, and the CAD-import or launch text it printed."""
+    parts = [
+        f"{label} probe failed with return code {result['returncode']}."
+    ]
+    output = _tail(result.get("output") or "")
+    if output:
+        parts.append(output)
+    transcript = work_dir / TRANSCRIPT_NAME
+    if transcript.is_file():
+        text = _tail(transcript.read_text(encoding="utf-8", errors="replace"))
+        if text:
+            parts.append(text)
+    dump = work_dir / SUMMARY_NAME
+    if not dump.is_file():
+        parts.append(f"No {SUMMARY_NAME} was written in {work_dir}.")
+    return "\n".join(parts)
+
+
+def _run_probe(label, command, work_dir, runner, lister, killer) -> tuple[dict | None, dict, str | None]:
+    """Run one probe. On failure, stop processes this attempt started and retry once."""
+    failure = None
+    note = None
+    started_before = None
+    terminated_all = []
+    for attempt in (1, 2):
+        before = lister()
+        if started_before is None:
+            started_before = before
+        result = _probe_result(runner(command))
+        after = lister()
+        terminated_all.extend(terminate_started(before, after, killer))
+        note = process_note(started_before, after, terminated_all, attempt)
+        note["returncode"] = result["returncode"]
+        dump = _read_dump(work_dir / SUMMARY_NAME)
+        if dump is not None:
+            return dump, note, None
+        failure = probe_failure_text(label, result, work_dir)
+        print(failure, file=sys.stderr)
+    return None, note, failure
+
+
+def run_one(
+    geo_id,
+    *,
+    source_root,
+    pmdb_root,
+    work_root,
+    runner,
+    probe=None,
+    process_lister=None,
+    process_killer=None,
+) -> dict:
     family = family_for_geo_id(geo_id)
     dsco = source_root / family / geo_id / f"{geo_id}.dsco"
     pmdb = pmdb_root / family / geo_id / f"{geo_id}.pmdb"
@@ -298,19 +397,33 @@ def run_one(geo_id, *, source_root, pmdb_root, work_root, runner, probe=None) ->
         )
         _write_json(work_root / geo_id / "parity.json", record)
         return record
-    dsco_dump_path = dsco_work / SUMMARY_NAME
-    pmdb_dump_path = pmdb_work / SUMMARY_NAME
-    dsco_code = runner(probe_command(dsco, dsco_work))
-    pmdb_code = runner(probe_command(pmdb, pmdb_work, compare_to=dsco_dump_path))
-    reference = _read_dump(dsco_dump_path)
-    current = _read_dump(pmdb_dump_path)
-    record["probe_return_codes"] = {"dsco": dsco_code, "pmdb": pmdb_code}
-    if reference is None or current is None:
+    lister = list_discovery_processes if process_lister is None else process_lister
+    killer = terminate_pid if process_killer is None else process_killer
+    reference, dsco_note, dsco_error = _run_probe(
+        "dsco",
+        probe_command(dsco, dsco_work),
+        dsco_work,
+        runner,
+        lister,
+        killer,
+    )
+    current, pmdb_note, pmdb_error = _run_probe(
+        "pmdb",
+        probe_command(pmdb, pmdb_work, compare_to=dsco_work / SUMMARY_NAME),
+        pmdb_work,
+        runner,
+        lister,
+        killer,
+    )
+    record["probes"] = {"dsco": dsco_note, "pmdb": pmdb_note}
+    record["probe_return_codes"] = {
+        "dsco": dsco_note["returncode"],
+        "pmdb": pmdb_note["returncode"],
+    }
+    failures = [text for text in (dsco_error, pmdb_error) if text]
+    if failures:
         record["status"] = "failed"
-        record["error"] = (
-            f"Probe dump missing: dsco={dsco_dump_path.is_file()} "
-            f"pmdb={pmdb_dump_path.is_file()}."
-        )
+        record["error"] = "\n".join(failures)
         _write_json(work_root / geo_id / "parity.json", record)
         return record
     judgement = judge_dumps(reference, current, probe=probe)
@@ -323,7 +436,17 @@ def run_one(geo_id, *, source_root, pmdb_root, work_root, runner, probe=None) ->
     return record
 
 
-def run_all(geo_ids, *, source_root, pmdb_root, work_root, runner, probe=None) -> list[dict]:
+def run_all(
+    geo_ids,
+    *,
+    source_root,
+    pmdb_root,
+    work_root,
+    runner,
+    probe=None,
+    process_lister=None,
+    process_killer=None,
+) -> list[dict]:
     return [
         run_one(
             geo_id,
@@ -332,6 +455,8 @@ def run_all(geo_ids, *, source_root, pmdb_root, work_root, runner, probe=None) -
             work_root=work_root,
             runner=runner,
             probe=probe,
+            process_lister=process_lister,
+            process_killer=process_killer,
         )
         for geo_id in geo_ids
     ]

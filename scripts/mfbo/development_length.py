@@ -28,7 +28,8 @@ about 1e-18 m above the decimal. When that boundary is at or beyond
 boundary at or beyond ``max(L_base, d)``. The lead is then extended so
 the remaining window is a whole number of spacer periods.
 ``d`` is the maximum over the PASS operating points that exist. A
-window shorter than 9.0 mm is flagged.
+window of fewer than 3 spacer periods is flagged. The window length
+is still reported.
 
 Importing this module does not launch Fluent and does not read a data root.
 """
@@ -59,7 +60,7 @@ from ro.paths import MESH_ID_RE  # noqa: E402
 REFERENCE_CELL_M = 0.003465
 L_REF_M = 0.00693
 L_BASE_M = 0.010395
-SHORT_WINDOW_M = 0.009
+MIN_WINDOW_PERIODS = 3
 RELATIVE_BAND = 0.03
 ROLLING_CELLS = 3
 MIN_REFERENCE_CELLS = 2
@@ -353,11 +354,12 @@ def exclusion_for_distance(n_active, cell_length_m, d_m, period_cells=1):
     n_lead = aligned
     excluded = n_lead * dx
     window = (n_cells - n_lead) * dx
+    window_cells = n_cells - n_lead
     return {
         "n_lead_excluded": n_lead,
         "excluded_length_m": excluded,
         "window_length_m": window,
-        "short_window": window < SHORT_WINDOW_M - LENGTH_TOL_M,
+        "short_window": window_cells < MIN_WINDOW_PERIODS * period,
         "rule": rule,
     }
 
@@ -793,7 +795,8 @@ def render_report(results, date):
         "one mesh unit cell. The rolling window is the smallest multiple of",
         "that period which is at least 3 cells.",
         "The evaluation window is the remaining active cells.",
-        f"A window shorter than {SHORT_WINDOW_M * 1000:.1f} mm is flagged.",
+        f"A window of fewer than {MIN_WINDOW_PERIODS} spacer periods is flagged.",
+        "The window length in millimetres is still reported.",
         "",
         "Production mesh id is `max085_min006_cpg5_bl4_peel2`.",
         "`D0817_a60` uses `max060_min006_cpg5_bl4_peel2`.",
@@ -817,10 +820,12 @@ def render_report(results, date):
         lines.append("")
     if flagged:
         lines.append(
-            "Window shorter than 9.0 mm: " + ", ".join(f"`{geo}`" for geo in flagged) + "."
+            "Window shorter than 3 spacer periods: "
+            + ", ".join(f"`{geo}`" for geo in flagged)
+            + "."
         )
     else:
-        lines.append("No geometry has a window shorter than 9.0 mm.")
+        lines.append("No geometry has a window shorter than 3 spacer periods.")
     lines.append("")
     if undeveloped:
         lines.append(

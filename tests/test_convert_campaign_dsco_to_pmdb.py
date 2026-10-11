@@ -10,6 +10,11 @@ import pytest
 from helpers import SCRIPTS_DIR, load_module
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 
+processes = load_module(
+    "discovery_processes_under_test",
+    SCRIPTS_DIR / "mfbo" / "discovery_processes.py",
+)
+
 convert = load_module(
     "convert_campaign_dsco_to_pmdb_under_test",
     SCRIPTS_DIR / "mfbo" / "convert_campaign_dsco_to_pmdb.py",
@@ -115,9 +120,12 @@ def test_a_failed_geometry_is_recorded_and_the_next_runs(tmp_path):
         path.parent.mkdir(parents=True)
         path.write_bytes(geo_id.encode("ascii"))
 
+    remaining = {"failures": 2}
+
     def launch():
         events.append("launch")
-        if events.count("launch") == 1:
+        if remaining["failures"]:
+            remaining["failures"] -= 1
             raise RuntimeError("AttachAssembly failed")
         return _Modeler(events, "D0817_a30", b"diamond-pmdb")
 
@@ -129,6 +137,7 @@ def test_a_failed_geometry_is_recorded_and_the_next_runs(tmp_path):
     )
 
     assert records[0]["status"] == "failed"
+    assert records[0]["attempts"] == 2
     assert "AttachAssembly" in records[0]["error"]
     assert records[1]["status"] == "converted"
     assert events[0] == "launch"
@@ -178,3 +187,78 @@ def test_emit_queue_lists_every_campaign_geometry(tmp_path):
         "geometry_suffix": ".pmdb",
         "geometry_root": "C:/ro_data_mfbo/geometries_pmdb",
     }
+
+
+def test_backend_timeout_is_longer_than_the_library_default():
+    arguments = convert.discovery_launch_arguments("V_251")
+    assert arguments["timeout"] == 300
+    assert arguments["timeout"] > 150
+    assert arguments["hidden"] is True
+    assert arguments["version"] == 251
+
+
+def test_timeout_retries_once_and_kills_only_the_process_this_job_started(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "pmdb"
+    path = source / "empty" / "REF_empty" / "REF_empty.dsco"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"empty-dsco")
+    events = []
+    calls = {"n": 0}
+    killed = []
+
+    def launch():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("Timeout while waiting for backend to be ready")
+        return _Modeler(events, "REF_empty", b"empty-pmdb")
+
+    listings = {"n": 0}
+
+    def lister():
+        listings["n"] += 1
+        if listings["n"] == 2:
+            return [
+                {"pid": 7, "line": "Discovery.exe,7"},
+                {"pid": 99, "line": "Discovery.exe,99"},
+            ]
+        return [{"pid": 7, "line": "Discovery.exe,7"}]
+
+    records = convert.convert_all(
+        ["REF_empty"],
+        source_root=source,
+        output_root=output,
+        launch=launch,
+        process_lister=lister,
+        process_killer=killed.append,
+    )
+    assert records[0]["status"] == "converted"
+    assert records[0]["attempts"] == 2
+    assert records[0]["backend_start_timeout_s"] == 300
+    assert killed == [99]
+    assert records[0]["terminated_pids"] == [99]
+    assert records[0]["processes_before"] == ["Discovery.exe,7"]
+    assert 7 not in records[0]["terminated_pids"]
+
+
+def test_process_listings_keep_discovery_and_spaceclaim_only():
+    tasklist = (
+        '"fluent.exe","10","Console","1","1 K"\n'
+        '"Discovery.exe","99","Console","1","1 K"\n'
+        '"SpaceClaim.exe","7","Console","1","1 K"\n'
+    )
+    parsed = processes.processes_from_tasklist(tasklist)
+    assert [item["pid"] for item in parsed] == [99, 7]
+    ps_text = "10 fluent.exe meshing\n55 Discovery.exe -hidden\n4 SpaceClaim.exe\n"
+    assert [item["pid"] for item in processes.processes_from_ps(ps_text)] == [55, 4]
+    killed = []
+    terminated = processes.terminate_started(
+        [{"pid": 7, "line": "SpaceClaim.exe,7"}],
+        [
+            {"pid": 7, "line": "SpaceClaim.exe,7"},
+            {"pid": 99, "line": "Discovery.exe,99"},
+        ],
+        killer=killed.append,
+    )
+    assert terminated == [99]
+    assert killed == [99]

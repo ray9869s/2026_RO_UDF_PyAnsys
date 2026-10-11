@@ -241,3 +241,18 @@ def test_campaign_family_comes_from_the_cad_stem():
         ["--family", "campaign", "--cad-path", "C:/cad/S_a144_l3465.dsco"]
     )
     assert parsed.family == "campaign"
+    assert probe.CAMPAIGN_FLUENT_START_TIMEOUT_S == 300
+    campaign = probe.meshing_launch_kwargs(
+        product_version="25.1.0",
+        graphics_driver="opengl",
+        processor_count=2,
+        start_timeout=probe.CAMPAIGN_FLUENT_START_TIMEOUT_S,
+    )
+    assert campaign["start_timeout"] == 300
+    plain = probe.meshing_launch_kwargs(
+        product_version="25.1.0",
+        graphics_driver="opengl",
+        processor_count=2,
+        start_timeout=None,
+    )
+    assert "start_timeout" not in plain

@@ -145,7 +145,7 @@ def test_noisy_spike_after_l_base_pushes_exclusion_past_it():
     assert exclusion["rule"] == "at_least_max_l_base_d"
     assert exclusion["n_lead_excluded"] == 12
     assert exclusion["window_length_m"] == pytest.approx(0.008)
-    assert exclusion["short_window"] is True
+    assert exclusion["short_window"] is False
     assert dev.relative_bias(excess, 3, 1.0) == pytest.approx(0.5 / 17.0)
     assert dev.relative_bias(excess, 12, 1.0) == pytest.approx(0.0)
 
@@ -190,13 +190,16 @@ def test_coarse_flat_profile_excludes_two_cells_not_three():
     assert exclusion["short_window"] is False
 
 
-def test_window_of_exactly_9_mm_is_not_short():
-    at_limit = dev.exclusion_for_distance(19, 0.001, 0.001)
-    assert at_limit["window_length_m"] == pytest.approx(0.009)
-    assert at_limit["short_window"] is False
-    under = dev.exclusion_for_distance(18, 0.001, 0.001)
-    assert under["window_length_m"] == pytest.approx(0.008)
-    assert under["short_window"] is True
+def test_window_shorter_than_three_spacer_periods_is_flagged():
+    three = dev.exclusion_for_distance(13, 0.001, 0.001)
+    assert three["window_length_m"] == pytest.approx(0.003)
+    assert three["short_window"] is False
+    two = dev.exclusion_for_distance(12, 0.001, 0.001)
+    assert two["window_length_m"] == pytest.approx(0.002)
+    assert two["short_window"] is True
+    two_periods = dev.exclusion_for_distance(7, 0.003465, 0.0, period_cells=2)
+    assert two_periods["window_length_m"] == pytest.approx(4 * 0.003465)
+    assert two_periods["short_window"] is True
 
 
 def test_reference_pitch_flat_profile_excludes_the_boundary_on_l_base():
@@ -273,7 +276,8 @@ def test_d_max_uses_pass_runs_only_and_records_both_biases(tmp_path):
     result = results[0]
     assert result["d_max_m"] == pytest.approx(0.012)
     assert result["n_lead_excluded"] == 12
-    assert result["short_window"] is True
+    assert result["window_length_m"] == pytest.approx(0.008)
+    assert result["short_window"] is False
     assert result["excluded_global_cells"] == list(range(2, 14))
     assert result["window_global_cells"] == list(range(14, 22))
     by_run = {point["run_id"]: point for point in result["operating_points"]}
@@ -453,7 +457,7 @@ def test_cli_writes_the_table_and_the_report(tmp_path):
     text = report.read_text(encoding="utf-8")
     assert "do not hand-edit" in text
     assert "REF_empty" in text
-    assert "No geometry has a window shorter than 9.0 mm." in text
+    assert "No geometry has a window shorter than 3 spacer periods." in text
     assert "u0p1_p6M" in text and "not used (missing)" in text
     assert "family_defaults" not in payload
 

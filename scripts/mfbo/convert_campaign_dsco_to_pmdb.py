@@ -4,6 +4,8 @@ One geometry per Discovery session, same launch as ``pillar_cad``. Writes
 ``<family>/<geo_id>/<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under
 the output root (default ``C:/ro_data_mfbo/geometries_pmdb``). Never writes
 into ``C:/ro_data``. A failed geometry is recorded and the loop continues.
+A session that fails is closed, Discovery and SpaceClaim processes that
+session started are terminated, and the geometry is tried once more.
 
 Importing this module does not launch Discovery. ``--emit-queue`` writes a
 job-queue JSON file and does not convert.
@@ -26,8 +28,21 @@ from pathlib import Path
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.solver_common import sha256_file
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from discovery_processes import (  # noqa: E402
+    list_discovery_processes,
+    process_note,
+    terminate_pid,
+    terminate_started,
+)
+
 DEFAULT_SOURCE_ROOT = "C:/ro_data/geometries"
 DEFAULT_OUTPUT_ROOT = "C:/ro_data_mfbo/geometries_pmdb"
+# ansys-geometry-core 0.15 launch_modeler_with_discovery defaults to 150 s.
+BACKEND_START_TIMEOUT_S = 300
 _META_NAME = "_meta.json"
 _ERROR_NAME = "_convert_error.json"
 
@@ -151,18 +166,24 @@ def write_queue(path, jobs) -> Path:
     return destination
 
 
+def discovery_launch_arguments(api_version) -> dict:
+    """Keywords for one hidden Discovery 25.1 session. Does not launch it."""
+    return {
+        "version": 251,
+        "api_version": api_version,
+        "hidden": True,
+        "timeout": BACKEND_START_TIMEOUT_S,
+    }
+
+
 def launch_discovery_modeler():
-    """Hidden Discovery 25.1. Same keywords as ``pillar_cad``."""
+    """Hidden Discovery 25.1. Same keywords as ``pillar_cad``, plus timeout."""
     from ansys.geometry.core.connection.backend import ApiVersions
     from ansys.geometry.core.connection.launcher import (
         launch_modeler_with_discovery,
     )
 
-    return launch_modeler_with_discovery(
-        version=251,
-        api_version=ApiVersions.V_251,
-        hidden=True,
-    )
+    return launch_modeler_with_discovery(**discovery_launch_arguments(ApiVersions.V_251))
 
 
 def _exported_path(returned, out_dir: Path, design_name: str, suffix: str) -> Path:
@@ -191,30 +212,69 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def convert_one(geo_id: str, *, source_root: Path, output_root: Path, launch) -> dict:
-    """Convert one geometry. Exceptions become a failed record."""
+def _retryable(exc: BaseException) -> bool:
+    """A missing file or an existing output will fail the same way again."""
+    return not isinstance(exc, (FileNotFoundError, FileExistsError))
+
+
+def convert_one(
+    geo_id: str,
+    *,
+    source_root: Path,
+    output_root: Path,
+    launch,
+    process_lister=None,
+    process_killer=None,
+) -> dict:
+    """Convert one geometry. A failed session is cleaned up and retried once."""
     family = family_for_geo_id(geo_id)
     source = source_dsco(source_root, geo_id)
     out_dir = output_dir(output_root, geo_id)
-    try:
-        return _convert_session(
-            geo_id=geo_id,
-            family=family,
-            source=source,
-            out_dir=out_dir,
-            launch=launch,
-        )
-    except Exception as exc:
-        record = {
-            "geo_id": geo_id,
-            "family": family,
-            "status": "failed",
-            "source_dsco": str(source),
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-        _write_json(out_dir / f"{geo_id}{_ERROR_NAME}", record)
-        print(traceback.format_exc(), file=sys.stderr)
+    lister = list_discovery_processes if process_lister is None else process_lister
+    killer = terminate_pid if process_killer is None else process_killer
+    errors = []
+    note = None
+    started_before = None
+    terminated_all = []
+    for attempt in (1, 2):
+        before = lister()
+        if started_before is None:
+            started_before = before
+        try:
+            record = _convert_session(
+                geo_id=geo_id,
+                family=family,
+                source=source,
+                out_dir=out_dir,
+                launch=launch,
+            )
+        except Exception as exc:
+            after = lister()
+            terminated_all.extend(terminate_started(before, after, killer))
+            note = process_note(started_before, after, terminated_all, attempt)
+            errors.append(f"{type(exc).__name__}: {exc}")
+            print(traceback.format_exc(), file=sys.stderr)
+            if attempt == 2 or not _retryable(exc):
+                break
+            continue
+        after = lister()
+        terminated_all.extend(terminate_started(before, after, killer))
+        record.update(process_note(started_before, after, terminated_all, attempt))
+        record["backend_start_timeout_s"] = BACKEND_START_TIMEOUT_S
+        _write_json(out_dir / f"{geo_id}{_META_NAME}", record)
         return record
+    record = {
+        "geo_id": geo_id,
+        "family": family,
+        "status": "failed",
+        "source_dsco": str(source),
+        "error": "; ".join(errors),
+        "backend_start_timeout_s": BACKEND_START_TIMEOUT_S,
+    }
+    if note is not None:
+        record.update(note)
+    _write_json(out_dir / f"{geo_id}{_ERROR_NAME}", record)
+    return record
 
 
 def _convert_session(*, geo_id, family, source, out_dir, launch):
@@ -263,13 +323,23 @@ def _convert_session(*, geo_id, family, source, out_dir, launch):
     return record
 
 
-def convert_all(geo_ids, *, source_root, output_root, launch) -> list[dict]:
+def convert_all(
+    geo_ids,
+    *,
+    source_root,
+    output_root,
+    launch,
+    process_lister=None,
+    process_killer=None,
+) -> list[dict]:
     return [
         convert_one(
             geo_id,
             source_root=source_root,
             output_root=output_root,
             launch=launch,
+            process_lister=process_lister,
+            process_killer=process_killer,
         )
         for geo_id in geo_ids
     ]

@@ -116,3 +116,66 @@ def test_emit_queue_lists_every_campaign_geometry(tmp_path):
 def test_work_root_under_manual_cad_is_refused():
     with pytest.raises(ValueError, match="manual CAD"):
         parity.resolve_work_root("C:/ro_data/geometries/pillar")
+
+
+def test_a_failed_dsco_probe_names_the_cad_import_error_and_retries_once(tmp_path):
+    source = tmp_path / "source"
+    pmdb_root = tmp_path / "pmdb"
+    work = tmp_path / "work"
+    geo_id = "P_p100_h30"
+    dsco = source / "pillar" / geo_id / f"{geo_id}.dsco"
+    pmdb = pmdb_root / "pillar" / geo_id / f"{geo_id}.pmdb"
+    dsco.parent.mkdir(parents=True)
+    pmdb.parent.mkdir(parents=True)
+    dsco.write_bytes(b"dsco")
+    pmdb.write_bytes(b"pmdb")
+    calls = {"dsco": 0}
+    killed = []
+    listings = {"n": 0}
+
+    def lister():
+        listings["n"] += 1
+        if listings["n"] == 2:
+            return [
+                {"pid": 4, "line": "SpaceClaim.exe,4"},
+                {"pid": 55, "line": "Discovery.exe,55"},
+            ]
+        return [{"pid": 4, "line": "SpaceClaim.exe,4"}]
+
+    def runner(command):
+        cad = command[command.index("--cad-path") + 1]
+        work_dir = __import__("pathlib").Path(command[command.index("--work-dir") + 1])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        if cad.endswith(".dsco"):
+            calls["dsco"] += 1
+            (work_dir / parity.TRANSCRIPT_NAME).write_text(
+                "Error in CAD Import: Discovery plug-in could not open the file\n",
+                encoding="utf-8",
+            )
+            return {
+                "returncode": 1,
+                "output": "PROBE FAILED: RuntimeError: Error in CAD Import",
+            }
+        payload = _dump()
+        (work_dir / parity.SUMMARY_NAME).write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        return 0
+
+    record = parity.run_one(
+        geo_id,
+        source_root=source,
+        pmdb_root=pmdb_root,
+        work_root=work,
+        runner=runner,
+        process_lister=lister,
+        process_killer=killed.append,
+    )
+    assert record["status"] == "failed"
+    assert calls["dsco"] == 2
+    assert "dsco probe failed" in record["error"]
+    assert "Error in CAD Import" in record["error"]
+    assert "Probe dump missing" not in record["error"]
+    assert killed == [55]
+    assert record["probes"]["dsco"]["attempts"] == 2
+    assert record["probes"]["dsco"]["processes_before"] == ["SpaceClaim.exe,4"]
