@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -179,3 +180,60 @@ def test_a_failed_dsco_probe_names_the_cad_import_error_and_retries_once(tmp_pat
     assert killed == [55]
     assert record["probes"]["dsco"]["attempts"] == 2
     assert record["probes"]["dsco"]["processes_before"] == ["SpaceClaim.exe,4"]
+
+
+def test_failed_parity_is_archived_and_passed_parity_is_kept(tmp_path):
+    now = datetime(2026, 10, 11, 4, 1, tzinfo=timezone.utc)
+    source = tmp_path / "source"
+    pmdb_root = tmp_path / "pmdb"
+    work = tmp_path / "work"
+    geo_id = "P_p100_h30"
+    dsco = source / "pillar" / geo_id / f"{geo_id}.dsco"
+    pmdb = pmdb_root / "pillar" / geo_id / f"{geo_id}.pmdb"
+    dsco.parent.mkdir(parents=True)
+    pmdb.parent.mkdir(parents=True)
+    dsco.write_bytes(b"dsco")
+    pmdb.write_bytes(b"pmdb")
+    previous = work / geo_id / "parity.json"
+    previous.parent.mkdir(parents=True)
+    previous.write_text(
+        json.dumps({"geo_id": geo_id, "status": "failed", "error": "Error in CAD Import"}),
+        encoding="utf-8",
+    )
+    calls = {"n": 0}
+
+    def runner(command):
+        calls["n"] += 1
+        work_dir = __import__("pathlib").Path(command[command.index("--work-dir") + 1])
+        destination = work_dir / parity.SUMMARY_NAME
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(_dump()), encoding="utf-8")
+        return 0
+
+    record = parity.run_one(
+        geo_id,
+        source_root=source,
+        pmdb_root=pmdb_root,
+        work_root=work,
+        runner=runner,
+        process_lister=lambda: [],
+        process_killer=lambda pid: None,
+        now=now,
+    )
+    archived = work / geo_id / "parity_failed_20261011T040100Z.json"
+    assert json.loads(archived.read_text(encoding="utf-8"))["error"] == "Error in CAD Import"
+    assert record["status"] == "passed"
+    assert json.loads(previous.read_text(encoding="utf-8"))["status"] == "passed"
+    calls["n"] = 0
+    with pytest.raises(FileExistsError, match="passed"):
+        parity.run_one(
+            geo_id,
+            source_root=source,
+            pmdb_root=pmdb_root,
+            work_root=work,
+            runner=runner,
+            process_lister=lambda: [],
+            process_killer=lambda pid: None,
+            now=now,
+        )
+    assert calls["n"] == 0

@@ -23,6 +23,7 @@ import argparse
 import json
 import sys
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
@@ -212,6 +213,72 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _utc_stamp(now) -> str:
+    moment = datetime.now(timezone.utc) if now is None else now
+    if moment.tzinfo is None:
+        raise ValueError("archive timestamp must be timezone-aware.")
+    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def archive_failed_record(path: Path, prefix: str, now=None) -> Path:
+    """Move ``path`` to ``<prefix>_<UTC>.json`` beside it."""
+    destination = path.with_name(f"{prefix}_{_utc_stamp(now)}.json")
+    if destination.exists():
+        raise FileExistsError(f"Refusing to overwrite {destination}.")
+    path.replace(destination)
+    return destination
+
+
+def _read_record(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} is not a JSON object.")
+    return payload
+
+
+def clear_failed_conversion(out_dir: Path, geo_id: str, now=None) -> Path | None:
+    """Archive a failed attempt so a re-run can write. A converted meta is kept.
+
+    Partial ``.pmdb`` and ``.scdocx`` files that sit with the failed record
+    are removed. Outputs with no failed record and no converted meta are
+    refused.
+    """
+    meta_path = out_dir / f"{geo_id}{_META_NAME}"
+    error_path = out_dir / f"{geo_id}{_ERROR_NAME}"
+    outputs = (
+        out_dir / f"{geo_id}.pmdb",
+        out_dir / f"{geo_id}.scdocx",
+    )
+    if meta_path.is_file():
+        payload = _read_record(meta_path)
+        if payload.get("status") == "converted":
+            raise FileExistsError(
+                f"Refusing to overwrite converted {geo_id}: {meta_path}"
+            )
+        raise ValueError(
+            f"{meta_path} status {payload.get('status')!r} is not a "
+            "converted record or a failed attempt."
+        )
+    if error_path.is_file():
+        payload = _read_record(error_path)
+        if payload.get("status") != "failed":
+            raise ValueError(
+                f"{error_path} status {payload.get('status')!r} is not a "
+                "failed conversion record."
+            )
+        archived = archive_failed_record(error_path, "convert_failed", now)
+        for path in outputs:
+            if path.exists():
+                path.unlink()
+        return archived
+    existing = [str(path) for path in outputs if path.exists()]
+    if existing:
+        raise FileExistsError(
+            "Refusing to overwrite existing files: " + ", ".join(existing)
+        )
+    return None
+
+
 def _retryable(exc: BaseException) -> bool:
     """A missing file or an existing output will fail the same way again."""
     return not isinstance(exc, (FileNotFoundError, FileExistsError))
@@ -225,6 +292,7 @@ def convert_one(
     launch,
     process_lister=None,
     process_killer=None,
+    now=None,
 ) -> dict:
     """Convert one geometry. A failed session is cleaned up and retried once."""
     family = family_for_geo_id(geo_id)
@@ -247,7 +315,10 @@ def convert_one(
                 source=source,
                 out_dir=out_dir,
                 launch=launch,
+                now=now,
             )
+        except FileExistsError:
+            raise
         except Exception as exc:
             after = lister()
             terminated_all.extend(terminate_started(before, after, killer))
@@ -256,6 +327,12 @@ def convert_one(
             print(traceback.format_exc(), file=sys.stderr)
             if attempt == 2 or not _retryable(exc):
                 break
+            meta_path = out_dir / f"{geo_id}{_META_NAME}"
+            if not meta_path.is_file():
+                for suffix in (".pmdb", ".scdocx"):
+                    partial = out_dir / f"{geo_id}{suffix}"
+                    if partial.exists():
+                        partial.unlink()
             continue
         after = lister()
         terminated_all.extend(terminate_started(before, after, killer))
@@ -277,15 +354,11 @@ def convert_one(
     return record
 
 
-def _convert_session(*, geo_id, family, source, out_dir, launch):
+def _convert_session(*, geo_id, family, source, out_dir, launch, now=None):
     pmdb_path = out_dir / f"{geo_id}.pmdb"
     scdocx_path = out_dir / f"{geo_id}.scdocx"
     meta_path = out_dir / f"{geo_id}{_META_NAME}"
-    existing = [str(path) for path in (pmdb_path, scdocx_path, meta_path) if path.exists()]
-    if existing:
-        raise FileExistsError(
-            "Refusing to overwrite existing files: " + ", ".join(existing)
-        )
+    clear_failed_conversion(out_dir, geo_id, now)
     if not source.is_file():
         raise FileNotFoundError(f"Campaign .dsco not found: {source}")
     source_sha = sha256_file(source)
@@ -331,6 +404,7 @@ def convert_all(
     launch,
     process_lister=None,
     process_killer=None,
+    now=None,
 ) -> list[dict]:
     return [
         convert_one(
@@ -340,6 +414,7 @@ def convert_all(
             launch=launch,
             process_lister=process_lister,
             process_killer=process_killer,
+            now=now,
         )
         for geo_id in geo_ids
     ]

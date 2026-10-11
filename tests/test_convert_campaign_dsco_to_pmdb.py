@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -262,3 +263,50 @@ def test_process_listings_keep_discovery_and_spaceclaim_only():
     )
     assert terminated == [99]
     assert killed == [99]
+
+
+def test_failed_conversion_is_archived_and_converted_output_is_kept(tmp_path):
+    now = datetime(2026, 10, 11, 4, 1, tzinfo=timezone.utc)
+    source = tmp_path / "source"
+    output = tmp_path / "pmdb"
+    geo_id = "REF_empty"
+    dsco = source / "empty" / geo_id / f"{geo_id}.dsco"
+    dsco.parent.mkdir(parents=True)
+    dsco.write_bytes(b"empty-dsco")
+    out = output / "empty" / geo_id
+    out.mkdir(parents=True)
+    (out / f"{geo_id}.pmdb").write_bytes(b"partial")
+    (out / f"{geo_id}_convert_error.json").write_text(
+        json.dumps({"geo_id": geo_id, "status": "failed", "error": "Timeout"}),
+        encoding="utf-8",
+    )
+    events = []
+    records = convert.convert_all(
+        [geo_id],
+        source_root=source,
+        output_root=output,
+        launch=_launch_factory(events, [(geo_id, b"empty-pmdb")]),
+        process_lister=lambda: [],
+        process_killer=lambda pid: None,
+        now=now,
+    )
+    assert records[0]["status"] == "converted"
+    archived = out / "convert_failed_20261011T040100Z.json"
+    assert json.loads(archived.read_text(encoding="utf-8"))["error"] == "Timeout"
+    assert not (out / f"{geo_id}_convert_error.json").exists()
+    assert (out / f"{geo_id}.pmdb").read_bytes() == b"empty-pmdb"
+    assert events[0] == "launch"
+
+    def launch():
+        raise AssertionError("Discovery must not launch")
+
+    with pytest.raises(FileExistsError, match="converted"):
+        convert.convert_one(
+            geo_id,
+            source_root=source,
+            output_root=output,
+            launch=launch,
+            process_lister=lambda: [],
+            process_killer=lambda pid: None,
+            now=now,
+        )

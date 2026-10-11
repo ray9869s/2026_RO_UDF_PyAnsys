@@ -22,6 +22,7 @@ import json
 import math
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
@@ -284,6 +285,43 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _utc_stamp(now) -> str:
+    moment = datetime.now(timezone.utc) if now is None else now
+    if moment.tzinfo is None:
+        raise ValueError("archive timestamp must be timezone-aware.")
+    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def archive_failed_record(path: Path, prefix: str, now=None) -> Path:
+    """Move ``path`` to ``<prefix>_<UTC>.json`` beside it."""
+    destination = path.with_name(f"{prefix}_{_utc_stamp(now)}.json")
+    if destination.exists():
+        raise FileExistsError(f"Refusing to overwrite {destination}.")
+    path.replace(destination)
+    return destination
+
+
+def write_parity_record(path: Path, record: dict, now=None) -> Path | None:
+    """Write ``parity.json``. A failed record is archived. A passed record is kept."""
+    archived = None
+    if path.is_file():
+        previous = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(previous, dict):
+            raise ValueError(f"{path} is not a JSON object.")
+        status = previous.get("status")
+        if status == "passed":
+            raise FileExistsError(
+                f"Refusing to overwrite passed parity record: {path}"
+            )
+        if status != "failed":
+            raise ValueError(
+                f"{path} status {status!r} is not passed or failed."
+            )
+        archived = archive_failed_record(path, "parity_failed", now)
+    _write_json(path, record)
+    return archived
+
+
 def subprocess_runner(command: list[str]) -> dict:
     argv = [sys.executable if item == "{python}" else item for item in command]
     completed = subprocess.run(
@@ -378,6 +416,7 @@ def run_one(
     probe=None,
     process_lister=None,
     process_killer=None,
+    now=None,
 ) -> dict:
     family = family_for_geo_id(geo_id)
     dsco = source_root / family / geo_id / f"{geo_id}.dsco"
@@ -390,12 +429,19 @@ def run_one(
         "source_dsco": str(dsco),
         "pmdb": str(pmdb),
     }
+    parity_path = work_root / geo_id / "parity.json"
+    if parity_path.is_file():
+        previous = json.loads(parity_path.read_text(encoding="utf-8"))
+        if isinstance(previous, dict) and previous.get("status") == "passed":
+            raise FileExistsError(
+                f"Refusing to overwrite passed parity record: {parity_path}"
+            )
     if not dsco.is_file() or not pmdb.is_file():
         record["status"] = "failed"
         record["error"] = (
             f"dsco exists={dsco.is_file()} pmdb exists={pmdb.is_file()}."
         )
-        _write_json(work_root / geo_id / "parity.json", record)
+        write_parity_record(work_root / geo_id / "parity.json", record, now)
         return record
     lister = list_discovery_processes if process_lister is None else process_lister
     killer = terminate_pid if process_killer is None else process_killer
@@ -424,7 +470,7 @@ def run_one(
     if failures:
         record["status"] = "failed"
         record["error"] = "\n".join(failures)
-        _write_json(work_root / geo_id / "parity.json", record)
+        write_parity_record(work_root / geo_id / "parity.json", record, now)
         return record
     judgement = judge_dumps(reference, current, probe=probe)
     record["status"] = "passed" if judgement["passed"] else "failed"
@@ -432,7 +478,7 @@ def run_one(
     record["volume"] = judgement["volume"]
     record["face_counts"] = judgement["face_counts"]
     record["comparison_passed"] = judgement["comparison_passed"]
-    _write_json(work_root / geo_id / "parity.json", record)
+    write_parity_record(work_root / geo_id / "parity.json", record, now)
     return record
 
 
@@ -446,6 +492,7 @@ def run_all(
     probe=None,
     process_lister=None,
     process_killer=None,
+    now=None,
 ) -> list[dict]:
     return [
         run_one(
@@ -457,6 +504,7 @@ def run_all(
             probe=probe,
             process_lister=process_lister,
             process_killer=process_killer,
+            now=now,
         )
         for geo_id in geo_ids
     ]

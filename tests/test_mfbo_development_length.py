@@ -462,16 +462,29 @@ def test_cli_writes_the_table_and_the_report(tmp_path):
     assert "family_defaults" not in payload
 
 
-def _synthetic_row(geo_id, d_max_m):
+def _synthetic_row(
+    geo_id,
+    d_max_m,
+    n_lead=2,
+    excluded=0.00693,
+    speed="u0p2_p6M",
+):
     return {
         "geo_id": geo_id,
-        "n_lead_excluded": 2,
-        "excluded_length_m": 0.00693,
+        "n_lead_excluded": n_lead,
+        "excluded_length_m": excluded,
         "window_length_m": 0.02,
         "source_data_root": "/data",
         "mesh_id": MESH,
         "short_window": False,
         "d_max_m": d_max_m,
+        "operating_points": [
+            {
+                "run_id": speed,
+                "d_m": d_max_m,
+                "sets_d_max": d_max_m is not None,
+            }
+        ],
     }
 
 
@@ -483,11 +496,20 @@ def _campaign_pillars():
     ]
 
 
-def test_family_default_is_written_only_when_all_pillars_develop_within_3_5_mm():
+def test_family_default_is_the_most_conservative_campaign_pillar():
     pillars = _campaign_pillars()
     assert len(pillars) == 9
     developed = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
-    developed.append(_synthetic_row("D2450_a45", 0.02))
+    for row in developed:
+        if row["geo_id"] == "P_p60_h00":
+            row["n_lead_excluded"] = 4
+            row["excluded_length_m"] = 0.01386
+            row["d_max_m"] = 0.01386
+            row["operating_points"] = [
+                {"run_id": "u0p1_p6M", "d_m": 0.01386, "sets_d_max": True},
+                {"run_id": "u0p2_p6M", "d_m": 0.003465, "sets_d_max": False},
+            ]
+    developed.append(_synthetic_row("D2450_a45", 0.02, n_lead=6, excluded=0.02))
     payload = dev.table_payload(developed, "2026-10-09")
     default = payload["family_defaults"]["pillar"]
     assert tuple(default) == (
@@ -496,19 +518,20 @@ def test_family_default_is_written_only_when_all_pillars_develop_within_3_5_mm()
         "basis",
         "date",
     )
-    assert default["n_lead_excluded"] == 3
-    assert default["excluded_length_m"] == pytest.approx(0.010395)
-    assert default["basis"] == "all 9 campaign pillars develop within 3.5 mm"
+    assert default["n_lead_excluded"] == 4
+    assert default["excluded_length_m"] == pytest.approx(0.01386)
+    assert default["basis"] == "most conservative campaign pillar P_p60_h00 at u0p1_p6M"
     assert default["date"] == "2026-10-09"
     assert "diamond" not in payload["family_defaults"]
-    assert payload["D2450_a45"]["n_lead_excluded"] == 2
+    assert payload["D2450_a45"]["n_lead_excluded"] == 6
+    assert payload["P_p60_h00"]["n_lead_excluded"] == 4
 
-    slow = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
-    slow[0]["d_max_m"] = 0.004
+    missing_one = [_synthetic_row(geo_id, 0.003) for geo_id in pillars[1:]]
     with pytest.raises(RuntimeError, match=pillars[0]):
-        dev.family_default_records(slow, "2026-10-09")
-    assert dev.family_default_records(slow[1:], "2026-10-09") == {}
+        dev.family_default_records(missing_one, "2026-10-09")
+    assert dev.family_default_records([], "2026-10-09") == {}
     undeveloped = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
     undeveloped[0]["d_max_m"] = None
+    undeveloped[0]["operating_points"][0]["sets_d_max"] = False
     with pytest.raises(RuntimeError, match="did not develop"):
         dev.family_default_records(undeveloped, "2026-10-09")

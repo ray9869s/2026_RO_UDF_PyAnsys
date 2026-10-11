@@ -65,7 +65,6 @@ RELATIVE_BAND = 0.03
 ROLLING_CELLS = 3
 MIN_REFERENCE_CELLS = 2
 OLD_N_LEAD = 3
-PILLAR_DEVELOPMENT_WITHIN_M = 0.0035
 _FAMILY_DEFAULT_KEYS = (
     "n_lead_excluded",
     "excluded_length_m",
@@ -688,40 +687,70 @@ def _campaign_pillar_ids():
     ]
 
 
+def _speeds_that_set_max(result):
+    points = result.get("operating_points")
+    if not isinstance(points, list) or not points:
+        raise RuntimeError(
+            f"{result['geo_id']} has no operating points, so the speed "
+            "that sets the pillar default is unknown."
+        )
+    speeds = [
+        point["run_id"]
+        for point in points
+        if isinstance(point, dict) and point.get("sets_d_max")
+    ]
+    if not speeds:
+        raise RuntimeError(
+            f"{result['geo_id']} developed but no operating point sets d_max."
+        )
+    return speeds
+
+
 def family_default_records(results, date):
     """Pillar default for registered MFBO ids, from the campaign pillars.
 
-    Written only when every campaign pillar was measured and each
-    development distance is within 3.5 mm. The lead is three reference
-    cells (``L_base``), which covers that distance on the reference pitch.
-    Diamond, ml, sin, and empty are not given a default.
+    The default is the campaign pillar with the longest lead exclusion
+    after the period and boundary rules. Its basis names that geometry
+    and the speed that set ``d_max``. A run with no campaign pillar omits
+    the default. A partial pillar set, or a pillar that never develops,
+    raises. Diamond, ml, sin, and empty are not given a default.
     """
     pillars = _campaign_pillar_ids()
     by_id = {result["geo_id"]: result for result in results}
-    if any(geo_id not in by_id for geo_id in pillars):
+    present = [geo_id for geo_id in pillars if geo_id in by_id]
+    if not present:
         return {}
-    problems = []
-    for geo_id in pillars:
-        distance = by_id[geo_id]["d_max_m"]
-        if distance is None:
-            problems.append(f"{geo_id} did not develop")
-        elif distance > PILLAR_DEVELOPMENT_WITHIN_M + LENGTH_TOL_M:
-            problems.append(
-                f"{geo_id} d_max_m={distance} m is past "
-                f"{PILLAR_DEVELOPMENT_WITHIN_M} m"
-            )
-    if problems:
+    missing = [geo_id for geo_id in pillars if geo_id not in by_id]
+    if missing:
         raise RuntimeError(
-            "Cannot derive the pillar family default: " + "; ".join(problems) + "."
+            "Cannot derive the pillar family default: fewer than "
+            f"{len(pillars)} campaign pillars are present. Missing: "
+            + ", ".join(missing)
+            + "."
         )
+    undeveloped = [
+        geo_id for geo_id in pillars if by_id[geo_id]["d_max_m"] is None
+    ]
+    if undeveloped:
+        raise RuntimeError(
+            "Cannot derive the pillar family default: "
+            + ", ".join(f"{geo_id} did not develop" for geo_id in undeveloped)
+            + "."
+        )
+    winner_id = max(
+        pillars,
+        key=lambda geo_id: (
+            float(by_id[geo_id]["excluded_length_m"]),
+            int(by_id[geo_id]["n_lead_excluded"]),
+        ),
+    )
+    winner = by_id[winner_id]
+    speeds = ", ".join(_speeds_that_set_max(winner))
     return {
         "pillar": {
-            "n_lead_excluded": OLD_N_LEAD,
-            "excluded_length_m": L_BASE_M,
-            "basis": (
-                f"all {len(pillars)} campaign pillars develop within "
-                f"{PILLAR_DEVELOPMENT_WITHIN_M * 1000:.1f} mm"
-            ),
+            "n_lead_excluded": winner["n_lead_excluded"],
+            "excluded_length_m": winner["excluded_length_m"],
+            "basis": f"most conservative campaign pillar {winner_id} at {speeds}",
             "date": date,
         }
     }
