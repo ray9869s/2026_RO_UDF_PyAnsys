@@ -28,8 +28,11 @@ about 1e-18 m above the decimal. When that boundary is at or beyond
 boundary at or beyond ``max(L_base, d)``. The lead is then extended so
 the remaining window is a whole number of spacer periods.
 ``d`` is the maximum over the PASS operating points that exist. A
-window of fewer than 3 spacer periods is flagged. The window length
-is still reported.
+geometry that is not developed at every speed still excludes only to
+the boundary at or just above ``L_base``, and the rule is
+``not_developed_fallback``. The window is never empty. A window of
+fewer than 3 spacer periods is flagged. The window length is still
+reported.
 
 Importing this module does not launch Fluent and does not read a data root.
 """
@@ -86,6 +89,7 @@ _TABLE_KEYS = (
     "mesh_id",
     "date",
     "short_window",
+    "rule",
 )
 
 
@@ -308,20 +312,44 @@ def _whole_period_lead(n_lead, n_cells, period_cells):
     return n_lead + remainder
 
 
+def _lead_at_or_above(n_cells, dx, target):
+    """First cell boundary at or beyond ``target``, within 1e-9 m."""
+    for k in range(0, n_cells + 1):
+        if _at_least(k * dx, target):
+            return k
+    return n_cells
+
+
+def _nonempty_window_lead(n_lead, n_cells, period):
+    """Pull the lead back so the window keeps at least one spacer period."""
+    if n_lead < n_cells:
+        return n_lead
+    if n_cells >= period:
+        return n_cells - period
+    return 0
+
+
 def exclusion_for_distance(n_active, cell_length_m, d_m, period_cells=1):
     """Lead exclusion for one development distance.
 
-    ``d_m is None`` means the profile never stayed in band. The whole
-    active zone is excluded and the window is empty. A boundary within
-    1e-9 m of ``L_base`` is ``L_base``. The window length is a whole
-    number of spacer periods.
+    ``d_m is None`` means the profile never stayed in band. Exclusion
+    then stops on the boundary at or just above ``L_base`` and the rule
+    is ``not_developed_fallback``. The window is a whole number of
+    spacer periods and is never empty. A boundary within 1e-9 m of
+    ``L_base`` is ``L_base``.
     """
     n_cells = _positive_int(n_active, "n_active")
     dx = _positive_length(cell_length_m, "cell_length_x_m")
     period = _positive_int(period_cells, "period_cells")
     if d_m is None:
-        n_lead = n_cells
-        rule = "not_developed"
+        n_lead = _nonempty_window_lead(
+            _whole_period_lead(
+                _lead_at_or_above(n_cells, dx, L_BASE_M), n_cells, period
+            ),
+            n_cells,
+            period,
+        )
+        rule = "not_developed_fallback"
     else:
         distance = _finite_number(d_m, "d_m")
         if distance < 0.0:
@@ -347,10 +375,10 @@ def exclusion_for_distance(n_active, cell_length_m, d_m, period_cells=1):
                 rule = "exclusion_exceeds_active_length"
             else:
                 rule = "at_least_max_l_base_d"
-    aligned = _whole_period_lead(n_lead, n_cells, period)
-    if aligned != n_lead and rule != "not_developed":
-        rule = rule + "_period_aligned"
-    n_lead = aligned
+        aligned = _whole_period_lead(n_lead, n_cells, period)
+        if aligned != n_lead:
+            rule = rule + "_period_aligned"
+        n_lead = aligned
     excluded = n_lead * dx
     window = (n_cells - n_lead) * dx
     window_cells = n_cells - n_lead
@@ -771,6 +799,7 @@ def table_payload(results, date):
             "mesh_id": result["mesh_id"],
             "date": date,
             "short_window": result["short_window"],
+            "rule": result["rule"],
         }
     return payload
 
@@ -812,7 +841,9 @@ def render_report(results, date):
         "`u0p1_p6M`, `u0p2_p6M`, and `u0p3_p6M` leaves that exist.",
         "A missing, FAIL, or UNKNOWN leaf is not an operating point.",
         "An operating point whose rolling mean never stays in band has not",
-        "developed; that geometry excludes the whole active zone.",
+        "developed. That geometry uses `not_developed_fallback`: exclude to",
+        "the boundary at or just above `L_base`, and keep a whole number of",
+        "spacer periods. The window is never empty.",
         "",
         f"`L_base` = {L_BASE_M * 1000:.3f} mm (three {REFERENCE_CELL_M * 1000:.3f} mm cells).",
         "Cell boundaries are compared within 1e-9 m. A boundary on `L_base`",

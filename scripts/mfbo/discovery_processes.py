@@ -75,26 +75,73 @@ def list_discovery_processes(runner=None) -> list[dict]:
         raise RuntimeError(f"Could not list Discovery processes: {exc}") from exc
 
 
-def terminate_pid(pid: int) -> None:
+# taskkill exit 128 is "process not found". Windows often writes that line as
+# UTF-16, so the decoded text can have a NUL between every character.
+_TASKKILL_NOT_FOUND = 128
+
+
+def _taskkill_text(completed) -> str:
+    raw = (completed.stderr or "") + (completed.stdout or "")
+    return raw.replace("\x00", "")
+
+
+def taskkill_already_gone(returncode, output: str) -> bool:
+    """True when taskkill failed because the process had already exited."""
+    if returncode == _TASKKILL_NOT_FOUND:
+        return True
+    return "not found" in output.replace("\x00", "").casefold()
+
+
+def pid_is_running(pid: int, runner=None) -> bool:
+    """Whether ``pid`` is still alive. A listing failure is an error."""
+    if runner is None:
+        runner = subprocess.run
+    if os.name == "nt":
+        result = runner(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        text = ((result.stdout or "") + (result.stderr or "")).replace("\x00", "")
+        folded = text.casefold()
+        if "no tasks" in folded or "no running" in folded:
+            return False
+        return str(pid) in text
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def terminate_pid(pid: int, runner=None, alive=None) -> None:
     """Stop one process this job started. An already-exited pid is not an error."""
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         raise ValueError(f"pid must be a positive int, got {pid!r}.")
     if pid == os.getpid():
         raise RuntimeError(f"Refusing to terminate this process, pid {pid}.")
-    if os.name == "nt":
-        completed = subprocess.run(
+    if os.name == "nt" or runner is not None:
+        if runner is None:
+            runner = subprocess.run
+        completed = runner(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
             text=True,
             check=False,
         )
-        message = ((completed.stderr or "") + (completed.stdout or "")).casefold()
-        if completed.returncode != 0 and "not found" not in message:
-            raise RuntimeError(
-                f"taskkill pid {pid} returned {completed.returncode}: "
-                f"{(completed.stderr or completed.stdout or '').strip()}"
-            )
-        return
+        output = _taskkill_text(completed)
+        if completed.returncode == 0 or taskkill_already_gone(completed.returncode, output):
+            return
+        still_alive = pid_is_running(pid, runner) if alive is None else alive(pid)
+        if not still_alive:
+            return
+        detail = output.strip() or "taskkill failed"
+        raise RuntimeError(
+            f"taskkill pid {pid} returned {completed.returncode}: {detail}"
+        )
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:

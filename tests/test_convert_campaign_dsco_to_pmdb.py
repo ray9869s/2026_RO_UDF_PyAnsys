@@ -265,6 +265,42 @@ def test_process_listings_keep_discovery_and_spaceclaim_only():
     assert killed == [99]
 
 
+class _Completed:
+    def __init__(self, returncode, stderr="", stdout=""):
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout = stdout
+
+
+def test_taskkill_exit_128_is_an_already_exited_process():
+    calls = {"alive": 0}
+
+    def runner(argv, **kwargs):
+        assert argv[0] == "taskkill"
+        return _Completed(128, stderr="ERROR: The process \"36504\" not found.")
+
+    def alive(pid):
+        calls["alive"] += 1
+        return True
+
+    processes.terminate_pid(36504, runner=runner, alive=alive)
+    assert calls["alive"] == 0
+    nulled = "process not found".encode("utf-16-le").decode("latin-1")
+    processes.terminate_pid(
+        36504,
+        runner=lambda argv, **kwargs: _Completed(1, stderr=nulled),
+        alive=alive,
+    )
+    assert calls["alive"] == 0
+
+    def still_there(argv, **kwargs):
+        return _Completed(1, stderr="Access is denied.")
+
+    with pytest.raises(RuntimeError, match="36504"):
+        processes.terminate_pid(36504, runner=still_there, alive=lambda pid: True)
+    processes.terminate_pid(36504, runner=still_there, alive=lambda pid: False)
+
+
 def test_failed_conversion_is_archived_and_converted_output_is_kept(tmp_path):
     now = datetime(2026, 10, 11, 4, 1, tzinfo=timezone.utc)
     source = tmp_path / "source"
