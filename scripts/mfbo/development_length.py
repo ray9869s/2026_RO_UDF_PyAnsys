@@ -10,18 +10,24 @@ cell's wide-summary columns. The cell mean is unweighted. Area versus flux
 weighting was left open at the 2026-10-08 meeting and is not chosen here.
 
 The downstream reference is the mean excess of the cells in the last
-6.93 mm (two 3.465 mm reference cells), and at least 2 cells. A 3-cell
-rolling mean is within band when it is within 3% of that reference
-(relative). The rolling window that starts at active cell ``m + 1`` sits
-after the cell boundary ``m * cell_length``. ``d`` is the first such
-boundary for which every rolling window from there on stays in band. If
-no boundary qualifies, the operating point has not developed.
+6.93 mm (two 3.465 mm reference cells), and at least 2 cells. A rolling
+mean is within band when it is within 3% of that reference (relative).
+On a one-cell spacer period the rolling window is 3 cells. A longer
+period uses the smallest multiple of that period which is at least 3
+cells, so a 2-cell wavelength is not averaged with a 3-cell window.
+The rolling window that starts at active cell ``m + 1`` sits after the
+cell boundary ``m * cell_length``. ``d`` is the first such boundary for
+which every rolling window from there on stays in band. If no boundary
+qualifies, the operating point has not developed.
 
-``L_base`` is 10.395 mm (three reference cells). When the cell boundary
-just below ``L_base`` is at or beyond ``d``, exclusion stops on that
-boundary. Otherwise it stops on the first cell boundary at or beyond
-``max(L_base, d)``. ``d`` is the maximum over the PASS operating points
-that exist. The evaluation window is every remaining active cell. A
+``L_base`` is 10.395 mm (three reference cells). Cell boundaries are
+compared within 1e-9 m. A boundary that falls on ``L_base`` is
+``L_base`` itself, including the case ``3 * 3.465 mm`` which lands
+about 1e-18 m above the decimal. When that boundary is at or beyond
+``d``, exclusion stops on it. Otherwise it stops on the first cell
+boundary at or beyond ``max(L_base, d)``. The lead is then extended so
+the remaining window is a whole number of spacer periods.
+``d`` is the maximum over the PASS operating points that exist. A
 window shorter than 9.0 mm is flagged.
 
 Importing this module does not launch Fluent and does not read a data root.
@@ -47,6 +53,7 @@ from ro.campaign_geo_ids import (  # noqa: E402
     family_for_geo_id,
     validate_campaign_geo_id,
 )
+from ro.campaign_geometry import geometry_parameters_for_geo_id  # noqa: E402
 from ro.paths import MESH_ID_RE  # noqa: E402
 
 REFERENCE_CELL_M = 0.003465
@@ -115,28 +122,88 @@ def _finite_number(value, label):
     return number
 
 
-def _below(boundary_m, target_m):
-    return boundary_m < target_m - LENGTH_TOL_M
+def _on_or_below(boundary_m, target_m):
+    """True when ``boundary`` is not past ``target``.
+
+    A boundary within ``LENGTH_TOL_M`` above the target lies on the target.
+    ``3 * 0.003465`` is about 1e-18 m above ``L_base`` and is that boundary.
+    """
+    return boundary_m <= target_m + LENGTH_TOL_M
 
 
 def _at_least(boundary_m, target_m):
     return boundary_m >= target_m - LENGTH_TOL_M
 
 
-def reference_cell_count(cell_length_m, n_active):
-    """Cells in the last 6.93 mm, and at least two."""
+def period_cell_count(period_m, cell_length_m):
+    """Mesh cells in one spacer period.
+
+    One cell that holds an integer number of shorter periods counts as
+    one period. A period that is not a whole number of cells is an error.
+    """
+    period = _positive_length(period_m, "spacer period")
+    dx = _positive_length(cell_length_m, "cell_length_x_m")
+    ratio = period / dx
+    nearest = int(round(ratio))
+    if nearest >= 1 and abs(nearest * dx - period) <= LENGTH_TOL_M:
+        return nearest
+    per_cell = int(round(dx / period))
+    if per_cell >= 2 and abs(per_cell * period - dx) <= LENGTH_TOL_M:
+        return 1
+    raise ValueError(
+        f"Spacer period {period} m is not a whole number of "
+        f"{dx} m cells (ratio {ratio})."
+    )
+
+
+def spacer_period(geo_id, cell_length_m):
+    """Geometric spacer period for one campaign geometry.
+
+    Sinusoidal geometries use ``wavelength_m``. Diamond, pillar, ml, and
+    empty use one mesh unit cell unless the registry carries a wavelength.
+    """
+    validate_campaign_geo_id(geo_id)
+    entry = geometry_parameters_for_geo_id(geo_id)
+    wavelength = entry.get("wavelength_m")
+    if wavelength is None:
+        period_m = _positive_length(cell_length_m, "cell_length_x_m")
+        source = "unit_cell"
+    else:
+        period_m = _positive_length(wavelength, f"{geo_id} wavelength_m")
+        source = "wavelength"
+    cells = period_cell_count(period_m, cell_length_m)
+    return {
+        "period_m": period_m,
+        "period_cells": cells,
+        "period_source": source,
+    }
+
+
+def rolling_cell_count(period_cells=1):
+    """Rolling window in cells: at least 3, and a whole number of periods."""
+    period = _positive_int(period_cells, "period_cells")
+    return period * math.ceil(ROLLING_CELLS / period)
+
+
+def reference_cell_count(cell_length_m, n_active, period_cells=1):
+    """Cells in the last 6.93 mm, at least two, and a whole number of periods."""
     dx = _positive_length(cell_length_m, "cell_length_x_m")
     n_cells = _positive_int(n_active, "n_active")
+    period = _positive_int(period_cells, "period_cells")
     count = 0
     # Count whole cells that fit in the last 6.93 mm: (count + 1) * dx <= L_REF.
     while count < n_cells and _at_least(L_REF_M, (count + 1) * dx):
         count += 1
-    count = max(MIN_REFERENCE_CELLS, count)
+    count = (count // period) * period
+    minimum = period * math.ceil(MIN_REFERENCE_CELLS / period)
+    if count < minimum:
+        count = minimum
     if count > n_cells:
         raise ValueError(
             "Downstream reference needs the last "
-            f"{count} cells (last {L_REF_M} m, at least {MIN_REFERENCE_CELLS}) "
-            f"but n_active={n_cells} and cell_length_x_m={dx!r}."
+            f"{count} cells (last {L_REF_M} m, at least {minimum}, "
+            f"period {period} cells) but n_active={n_cells} and "
+            f"cell_length_x_m={dx!r}."
         )
     return count
 
@@ -162,28 +229,34 @@ def cell_excesses(cm, cp, cb):
     return excess
 
 
-def _rolling_means(excess):
-    if len(excess) < ROLLING_CELLS:
+def _rolling_means(excess, rolling_cells):
+    if len(excess) < rolling_cells:
         raise ValueError(
-            f"A {ROLLING_CELLS}-cell rolling mean needs at least "
-            f"{ROLLING_CELLS} active cells, got {len(excess)}."
+            f"A {rolling_cells}-cell rolling mean needs at least "
+            f"{rolling_cells} active cells, got {len(excess)}."
         )
     means = []
-    for start in range(0, len(excess) - ROLLING_CELLS + 1):
-        window = excess[start : start + ROLLING_CELLS]
-        means.append(sum(window) / float(ROLLING_CELLS))
+    for start in range(0, len(excess) - rolling_cells + 1):
+        window = excess[start : start + rolling_cells]
+        means.append(sum(window) / float(rolling_cells))
     return means
 
 
-def development_distance_m(excess, cell_length_m):
+def _relative_deviation(mean, reference):
+    return abs(mean - reference) / abs(reference)
+
+
+def development_distance_m(excess, cell_length_m, period_cells=1):
     """Development distance from the start of the active zone.
 
-    ``d_m`` is ``None`` when no cell boundary leaves every later 3-cell
-    rolling mean within 3% of the downstream reference.
+    ``d_m`` is ``None`` when no cell boundary leaves every later rolling
+    mean within 3% of the downstream reference. The 3% band is unchanged.
     """
     values = [float(item) for item in excess]
     dx = _positive_length(cell_length_m, "cell_length_x_m")
-    ref_count = reference_cell_count(dx, len(values))
+    period = _positive_int(period_cells, "period_cells")
+    window = rolling_cell_count(period)
+    ref_count = reference_cell_count(dx, len(values), period)
     reference = sum(values[-ref_count:]) / float(ref_count)
     if not math.isfinite(reference) or reference <= 0.0:
         raise ValueError(
@@ -193,30 +266,59 @@ def development_distance_m(excess, cell_length_m):
     # 1e-12 slack keeps an exact 3% difference inside the closed band when
     # binary float lands just above the decimal. It is not a wider band.
     band = RELATIVE_BAND * reference + 1e-12 * max(reference, 1.0)
-    means = _rolling_means(values)
+    means = _rolling_means(values, window)
     start_index = None
     for index in range(len(means)):
         if all(abs(item - reference) <= band for item in means[index:]):
             start_index = index
             break
     developed = start_index is not None
+    tail = means if start_index is None else means[start_index:]
+    max_rel_after = max(_relative_deviation(item, reference) for item in tail)
+    # Windows before d are the ones that pushed d. A profile that never
+    # enters the band has no quiet tail, so the breach is the whole series.
+    before = means if start_index is None else means[:start_index]
+    if before:
+        max_overshoot_before = max(
+            max(0.0, _relative_deviation(item, reference) - RELATIVE_BAND)
+            for item in before
+        )
+    else:
+        max_overshoot_before = 0.0
     return {
         "developed": developed,
         "d_m": None if not developed else start_index * dx,
         "start_index": start_index,
         "reference_excess": reference,
         "reference_cell_count": ref_count,
+        "rolling_cells": window,
+        "period_cells": period,
+        "max_rel_dev_after_d": max_rel_after,
+        "max_out_of_band_before_d": max_overshoot_before,
     }
 
 
-def exclusion_for_distance(n_active, cell_length_m, d_m):
+def _whole_period_lead(n_lead, n_cells, period_cells):
+    """Extend the lead so the remaining window is a whole number of periods."""
+    if period_cells == 1:
+        return n_lead
+    remainder = (n_cells - n_lead) % period_cells
+    if remainder == 0:
+        return n_lead
+    return n_lead + remainder
+
+
+def exclusion_for_distance(n_active, cell_length_m, d_m, period_cells=1):
     """Lead exclusion for one development distance.
 
     ``d_m is None`` means the profile never stayed in band. The whole
-    active zone is excluded and the window is empty.
+    active zone is excluded and the window is empty. A boundary within
+    1e-9 m of ``L_base`` is ``L_base``. The window length is a whole
+    number of spacer periods.
     """
     n_cells = _positive_int(n_active, "n_active")
     dx = _positive_length(cell_length_m, "cell_length_x_m")
+    period = _positive_int(period_cells, "period_cells")
     if d_m is None:
         n_lead = n_cells
         rule = "not_developed"
@@ -224,14 +326,14 @@ def exclusion_for_distance(n_active, cell_length_m, d_m):
         distance = _finite_number(d_m, "d_m")
         if distance < 0.0:
             raise ValueError(f"d_m must be >= 0, got {distance!r}.")
-        k_below = 0
+        k_at_base = 0
         for k in range(1, n_cells + 1):
-            if _below(k * dx, L_BASE_M):
-                k_below = k
+            if _on_or_below(k * dx, L_BASE_M):
+                k_at_base = k
             else:
                 break
-        if _at_least(k_below * dx, distance):
-            n_lead = k_below
+        if _at_least(k_at_base * dx, distance):
+            n_lead = k_at_base
             rule = "boundary_below_l_base"
         else:
             target = max(L_BASE_M, distance)
@@ -245,6 +347,10 @@ def exclusion_for_distance(n_active, cell_length_m, d_m):
                 rule = "exclusion_exceeds_active_length"
             else:
                 rule = "at_least_max_l_base_d"
+    aligned = _whole_period_lead(n_lead, n_cells, period)
+    if aligned != n_lead and rule != "not_developed":
+        rule = rule + "_period_aligned"
+    n_lead = aligned
     excluded = n_lead * dx
     window = (n_cells - n_lead) * dx
     return {
@@ -445,7 +551,9 @@ def _operating_point(root, family, geo_id, mesh_id, run_id, layout):
             f"{csv_path} produced {len(excess)} active cells, "
             f"mesh n_active_cells={layout['n_active']}."
         )
-    distance = development_distance_m(excess, layout["cell_length_x_m"])
+    distance = development_distance_m(
+        excess, layout["cell_length_x_m"], layout["period_cells"]
+    )
     return {
         "run_id": run_id,
         "excess": excess,
@@ -453,6 +561,9 @@ def _operating_point(root, family, geo_id, mesh_id, run_id, layout):
         "d_m": distance["d_m"],
         "reference_excess": distance["reference_excess"],
         "reference_cell_count": distance["reference_cell_count"],
+        "rolling_cells": distance["rolling_cells"],
+        "max_rel_dev_after_d": distance["max_rel_dev_after_d"],
+        "max_out_of_band_before_d": distance["max_out_of_band_before_d"],
     }, None
 
 
@@ -463,6 +574,8 @@ def evaluate_geometry(data_root_label, data_root, geo_id, mesh_id):
         [(data_root_label, Path(data_root))], family, geo_id, mesh_id
     )
     layout = _load_mesh_layout(manifest_path, geo_id, mesh_id)
+    period = spacer_period(geo_id, layout["cell_length_x_m"])
+    layout["period_cells"] = period["period_cells"]
     points = []
     skipped = []
     for run_id in OPERATING_RUN_IDS:
@@ -484,6 +597,7 @@ def evaluate_geometry(data_root_label, data_root, geo_id, mesh_id):
         layout["n_active"],
         layout["cell_length_x_m"],
         d_max if developed else None,
+        period["period_cells"],
     )
     for point in points:
         point["bias_old"] = relative_bias(
@@ -494,6 +608,11 @@ def evaluate_geometry(data_root_label, data_root, geo_id, mesh_id):
             exclusion["n_lead_excluded"],
             point["reference_excess"],
         )
+        point["sets_d_max"] = (
+            developed
+            and point["d_m"] is not None
+            and abs(point["d_m"] - d_max) <= LENGTH_TOL_M
+        )
         del point["excess"]
     n_lead = exclusion["n_lead_excluded"]
     return {
@@ -502,6 +621,9 @@ def evaluate_geometry(data_root_label, data_root, geo_id, mesh_id):
         "mesh_id": mesh_id,
         "source_data_root": data_root_label,
         "cell_length_x_m": layout["cell_length_x_m"],
+        "period_m": period["period_m"],
+        "period_cells": period["period_cells"],
+        "period_source": period["period_source"],
         "n_active": layout["n_active"],
         "n_buffer_in": layout["n_buffer_in"],
         "operating_points": points,
@@ -576,10 +698,20 @@ def family_default_records(results, date):
     by_id = {result["geo_id"]: result for result in results}
     if any(geo_id not in by_id for geo_id in pillars):
         return {}
+    problems = []
     for geo_id in pillars:
         distance = by_id[geo_id]["d_max_m"]
-        if distance is None or distance > PILLAR_DEVELOPMENT_WITHIN_M + LENGTH_TOL_M:
-            return {}
+        if distance is None:
+            problems.append(f"{geo_id} did not develop")
+        elif distance > PILLAR_DEVELOPMENT_WITHIN_M + LENGTH_TOL_M:
+            problems.append(
+                f"{geo_id} d_max_m={distance} m is past "
+                f"{PILLAR_DEVELOPMENT_WITHIN_M} m"
+            )
+    if problems:
+        raise RuntimeError(
+            "Cannot derive the pillar family default: " + "; ".join(problems) + "."
+        )
     return {
         "pillar": {
             "n_lead_excluded": OLD_N_LEAD,
@@ -641,19 +773,25 @@ def render_report(results, date):
         f"Downstream reference: mean of the cells in the last {L_REF_M * 1000:.3f} mm,",
         f"and at least {MIN_REFERENCE_CELLS} cells.",
         f"Development distance `d` is the first active-zone cell boundary after",
-        f"which every {ROLLING_CELLS}-cell rolling mean stays within",
+        "which every rolling mean stays within",
         f"{RELATIVE_BAND * 100:.0f}% of that reference.",
-        "The rolling window starting at the next active cell is the window",
-        "after that boundary. `d` is the maximum over PASS",
+        "The rolling window is the smallest whole number of spacer periods",
+        f"that is at least {ROLLING_CELLS} cells. It starts at the next",
+        "active cell after that boundary. `d` is the maximum over PASS",
         "`u0p1_p6M`, `u0p2_p6M`, and `u0p3_p6M` leaves that exist.",
         "A missing, FAIL, or UNKNOWN leaf is not an operating point.",
         "An operating point whose rolling mean never stays in band has not",
         "developed; that geometry excludes the whole active zone.",
         "",
         f"`L_base` = {L_BASE_M * 1000:.3f} mm (three {REFERENCE_CELL_M * 1000:.3f} mm cells).",
-        "If the cell boundary just below `L_base` is at or beyond `d`,",
-        "exclude up to that boundary. Otherwise exclude up to the first",
-        "cell boundary at or beyond `max(L_base, d)`.",
+        "Cell boundaries are compared within 1e-9 m. A boundary on `L_base`",
+        "is `L_base` itself.",
+        "If that boundary is at or beyond `d`, exclude up to it.",
+        "Otherwise exclude up to the first cell boundary at or beyond",
+        "`max(L_base, d)`. The window is then a whole number of spacer periods.",
+        "Sinusoidal periods are the registry wavelength. Other families use",
+        "one mesh unit cell. The rolling window is the smallest multiple of",
+        "that period which is at least 3 cells.",
         "The evaluation window is the remaining active cells.",
         f"A window shorter than {SHORT_WINDOW_M * 1000:.1f} mm is flagged.",
         "",
@@ -697,9 +835,9 @@ def render_report(results, date):
             "",
             "## Exclusion",
             "",
-            "| geo_id | cell mm | n_active | d max mm | excluded cells | "
-            "excluded mm | window cells | window mm | short | rule |",
-            "| --- | ---: | ---: | ---: | --- | ---: | --- | ---: | --- | --- |",
+            "| geo_id | cell mm | period | n_active | d max mm | sets max | "
+            "excluded cells | excluded mm | window cells | window mm | short | rule |",
+            "| --- | ---: | --- | ---: | ---: | --- | --- | ---: | --- | ---: | --- | --- |",
         ]
     )
     for result in results:
@@ -709,8 +847,18 @@ def render_report(results, date):
                 [
                     result["geo_id"],
                     _mm(result["cell_length_x_m"]),
+                    (
+                        f"{result['period_cells']} cells, "
+                        f"{_mm(result['period_m'])} mm, {result['period_source']}"
+                    ),
                     str(result["n_active"]),
                     _mm(result["d_max_m"]),
+                    ", ".join(
+                        point["run_id"]
+                        for point in result["operating_points"]
+                        if point.get("sets_d_max")
+                    )
+                    or "none",
                     _cell_span(result["excluded_global_cells"]),
                     _mm(result["excluded_length_m"]),
                     _cell_span(result["window_global_cells"]),
@@ -726,8 +874,9 @@ def render_report(results, date):
             "",
             "## Operating points",
             "",
-            "| geo_id | run_id | d mm | reference cells | bias old 3-cell | bias new window |",
-            "| --- | --- | ---: | ---: | ---: | ---: |",
+            "| geo_id | run_id | d mm | sets max | reference cells | "
+            "max rel after d | breach before d | bias old 3-cell | bias new window |",
+            "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for result in results:
@@ -739,7 +888,10 @@ def render_report(results, date):
                         result["geo_id"],
                         point["run_id"],
                         _mm(point["d_m"]),
+                        "yes" if point.get("sets_d_max") else "no",
                         str(point["reference_cell_count"]),
+                        _percent(point["max_rel_dev_after_d"]),
+                        _percent(point["max_out_of_band_before_d"]),
                         _percent(point["bias_old"]),
                         _percent(point["bias_new"]),
                     ]
@@ -748,7 +900,7 @@ def render_report(results, date):
             )
         for skip in result["skipped"]:
             lines.append(
-                f"| {result['geo_id']} | {skip['run_id']} |  |  |  | "
+                f"| {result['geo_id']} | {skip['run_id']} |  |  |  |  |  |  | "
                 f"not used ({skip['reason']}) |"
             )
     lines.extend(

@@ -139,6 +139,8 @@ def test_noisy_spike_after_l_base_pushes_exclusion_past_it():
     excess[11] = 1.5
     distance = dev.development_distance_m(excess, 0.001)
     assert distance["d_m"] == pytest.approx(0.012)
+    assert distance["max_rel_dev_after_d"] == pytest.approx(0.0)
+    assert distance["max_out_of_band_before_d"] == pytest.approx(1.0 / 6.0 - 0.03)
     exclusion = dev.exclusion_for_distance(20, 0.001, distance["d_m"])
     assert exclusion["rule"] == "at_least_max_l_base_d"
     assert exclusion["n_lead_excluded"] == 12
@@ -146,6 +148,17 @@ def test_noisy_spike_after_l_base_pushes_exclusion_past_it():
     assert exclusion["short_window"] is True
     assert dev.relative_bias(excess, 3, 1.0) == pytest.approx(0.5 / 17.0)
     assert dev.relative_bias(excess, 12, 1.0) == pytest.approx(0.0)
+
+
+def test_small_late_spike_keeps_a_quiet_tail_and_a_small_breach():
+    excess = _excess_from_profile([1.0] * 20)
+    excess[11] = 1.0903
+    distance = dev.development_distance_m(excess, 0.001)
+    assert distance["developed"] is True
+    assert distance["d_m"] == pytest.approx(0.012)
+    assert distance["max_rel_dev_after_d"] == pytest.approx(0.0)
+    mean = (2.0 + 1.0903) / 3.0
+    assert distance["max_out_of_band_before_d"] == pytest.approx(abs(mean - 1.0) - 0.03)
 
 
 def test_exact_3_percent_stays_inside_and_a_larger_gap_does_not():
@@ -186,14 +199,48 @@ def test_window_of_exactly_9_mm_is_not_short():
     assert under["short_window"] is True
 
 
-def test_reference_pitch_flat_profile_excludes_the_boundary_under_l_base():
+def test_reference_pitch_flat_profile_excludes_the_boundary_on_l_base():
+    assert 3 * 0.003465 > dev.L_BASE_M
+    assert abs(3 * 0.003465 - dev.L_BASE_M) <= dev.LENGTH_TOL_M
     excess = _excess_from_profile([1.0] * 7)
     distance = dev.development_distance_m(excess, 0.003465)
     assert distance["d_m"] == pytest.approx(0.0)
     exclusion = dev.exclusion_for_distance(7, 0.003465, distance["d_m"])
-    assert exclusion["n_lead_excluded"] == 2
-    assert exclusion["excluded_length_m"] == pytest.approx(0.00693)
-    assert exclusion["window_length_m"] == pytest.approx(5 * 0.003465)
+    assert exclusion["rule"] == "boundary_below_l_base"
+    assert exclusion["n_lead_excluded"] == 3
+    assert exclusion["excluded_length_m"] == pytest.approx(0.010395)
+    assert exclusion["window_length_m"] == pytest.approx(4 * 0.003465)
+
+
+def test_two_cell_period_profile_develops_with_an_even_window():
+    oscillating = [1.2, 0.8] * 3 + [1.2]
+    assert dev.development_distance_m(oscillating, 0.003465)["developed"] is False
+    period = dev.spacer_period("S_a072_l6930", 0.003465)
+    assert period["period_m"] == pytest.approx(0.00693)
+    assert period["period_cells"] == 2
+    assert period["period_source"] == "wavelength"
+    measured = dev.development_distance_m(
+        oscillating, 0.003465, period_cells=period["period_cells"]
+    )
+    assert measured["developed"] is True
+    assert measured["d_m"] == pytest.approx(0.0)
+    assert measured["rolling_cells"] == 4
+    assert measured["reference_cell_count"] == 2
+    assert measured["max_rel_dev_after_d"] == pytest.approx(0.0)
+    exclusion = dev.exclusion_for_distance(
+        7, 0.003465, measured["d_m"], period_cells=2
+    )
+    assert exclusion["n_lead_excluded"] == 3
+    assert (7 - exclusion["n_lead_excluded"]) % 2 == 0
+    assert dev.spacer_period("S_a144_l3465", 0.003465)["period_cells"] == 1
+    assert dev.spacer_period("S_a193_l1733", 0.003465)["period_cells"] == 1
+    unit = dev.spacer_period("P_p100_h00", 0.003465)
+    assert unit["period_cells"] == 1
+    assert unit["period_source"] == "unit_cell"
+    odd_window = dev.exclusion_for_distance(20, 0.003465, 0.0, period_cells=2)
+    assert odd_window["n_lead_excluded"] == 4
+    assert odd_window["rule"] == "boundary_below_l_base_period_aligned"
+    assert (20 - odd_window["n_lead_excluded"]) % 2 == 0
 
 
 def test_cell_excess_rejects_a_zero_denominator_and_a_length_mismatch():
@@ -232,9 +279,17 @@ def test_d_max_uses_pass_runs_only_and_records_both_biases(tmp_path):
     by_run = {point["run_id"]: point for point in result["operating_points"]}
     assert set(by_run) == {"u0p1_p6M", "u0p2_p6M"}
     assert by_run["u0p1_p6M"]["d_m"] == pytest.approx(0.001)
+    assert by_run["u0p1_p6M"]["sets_d_max"] is False
     assert by_run["u0p1_p6M"]["bias_new"] == pytest.approx(0.0)
+    assert by_run["u0p2_p6M"]["sets_d_max"] is True
+    assert by_run["u0p2_p6M"]["max_rel_dev_after_d"] == pytest.approx(0.0)
+    assert by_run["u0p2_p6M"]["max_out_of_band_before_d"] == pytest.approx(
+        1.0 / 6.0 - 0.03
+    )
     assert by_run["u0p2_p6M"]["bias_old"] == pytest.approx(0.5 / 17.0)
     assert by_run["u0p2_p6M"]["bias_new"] == pytest.approx(0.0)
+    assert result["period_cells"] == 1
+    assert result["period_source"] == "unit_cell"
     assert result["skipped"] == [{"run_id": "u0p3_p6M", "reason": "FAIL"}]
 
 
@@ -334,7 +389,7 @@ def test_no_pass_run_and_a_missing_column_fail_loudly(tmp_path):
         MESH,
         [("u0p2_p6M", "PASS", [1.0] * 8)],
         n_active=8,
-        dx=0.001,
+        dx=0.003465,
     )
     csv_path = (
         root
@@ -446,8 +501,10 @@ def test_family_default_is_written_only_when_all_pillars_develop_within_3_5_mm()
 
     slow = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
     slow[0]["d_max_m"] = 0.004
-    assert dev.family_default_records(slow, "2026-10-09") == {}
+    with pytest.raises(RuntimeError, match=pillars[0]):
+        dev.family_default_records(slow, "2026-10-09")
     assert dev.family_default_records(slow[1:], "2026-10-09") == {}
     undeveloped = [_synthetic_row(geo_id, 0.003) for geo_id in pillars]
     undeveloped[0]["d_max_m"] = None
-    assert dev.family_default_records(undeveloped, "2026-10-09") == {}
+    with pytest.raises(RuntimeError, match="did not develop"):
+        dev.family_default_records(undeveloped, "2026-10-09")
