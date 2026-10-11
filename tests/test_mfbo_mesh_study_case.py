@@ -648,6 +648,24 @@ def test_pmdb_copy_checks_meta_and_requires_a_passed_parity_record(tmp_path):
             geometry_root=str(mismatch),
             require_parity=True,
         )
+    without_volume = tmp_path / "without_volume"
+    _plant_converted_pmdb(
+        without_volume,
+        "diamond",
+        "D1225_a30",
+        b"pmdb-unread",
+        status="passed_without_volume",
+        passed=False,
+    )
+    unread_dest = driver.ensure_study_geometry(
+        study,
+        "diamond",
+        "D1225_a30",
+        suffix=".pmdb",
+        geometry_root=str(without_volume),
+        require_parity=True,
+    )
+    assert unread_dest.read_bytes() == b"pmdb-unread"
     with pytest.raises(ValueError, match="C:/ro_data"):
         driver.resolve_geometry_root("C:/ro_data/geometries")
     with pytest.raises(ValueError, match="only valid"):

@@ -290,6 +290,11 @@ def _object_volumes(utilities, object_names):
         try:
             raw_regions = utilities.get_regions(object_name=name)
             print(f"RAW regions {name!r}: {raw_regions!r}")
+            if raw_regions is None:
+                raise RuntimeError(
+                    "meshing_utilities.get_regions"
+                    f"(object_name={name!r}) returned None."
+                )
             if isinstance(raw_regions, (str, bytes)):
                 raise TypeError(
                     f"get_regions({name!r}) returned text: {raw_regions!r}"

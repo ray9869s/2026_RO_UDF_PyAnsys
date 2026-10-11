@@ -248,6 +248,18 @@ def test_copy_from_production_can_take_the_converted_pmdb(monkeypatch, tmp_path)
     (source.parent / "P_p100_h30_meta.json").write_text(
         json.dumps(meta), encoding="utf-8"
     )
+    parity = mesh_study.parity_record_path(pmdb_root, "P_p100_h30")
+    parity.parent.mkdir(parents=True, exist_ok=True)
+    parity.write_text(
+        json.dumps(
+            {
+                "geo_id": "P_p100_h30",
+                "status": "passed_without_volume",
+                "passed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
     data = tmp_path / "root"
     reextract_runs.copy_production_for_reextract(
         "C:/ro_data/runs/pillar/P_p100_h30/mesh/u0p2_p6M",

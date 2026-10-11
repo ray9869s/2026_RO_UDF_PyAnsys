@@ -9,7 +9,8 @@ Before the meshing worker starts, the production geometry file
 the study data root. An existing copy is reused only when its sha256
 matches. The source is never moved. ``--geometry-suffix .pmdb`` with
 ``--geometry-root`` copies the converted file from that root instead
-(never from ``C:/ro_data``), requires its parity record to have passed,
+(never from ``C:/ro_data``), requires parity status ``passed`` or
+``passed_without_volume``,
 and passes ``geometry_suffix`` and ``geometry_root`` to the meshing child.
 The default remains the production ``.dsco``.
 
@@ -470,17 +471,19 @@ def require_converted_pmdb(geometry_root, family, geo_id):
     return source
 
 
+_ACCEPTED_PARITY_STATUSES = ("passed", "passed_without_volume")
+
+
 def require_passed_parity(geometry_root, geo_id):
-    """Raise unless the parity record for this geometry passed."""
+    """Raise unless parity status is passed or passed_without_volume."""
     path = parity_record_path(geometry_root, geo_id)
     if not path.is_file():
         raise FileNotFoundError(f"Parity record not found: {path}")
     payload = _read_json_object(path)
-    passed = (
-        payload.get("geo_id") == geo_id
-        and payload.get("status") == "passed"
-        and payload.get("passed") is True
-    )
+    status = payload.get("status")
+    passed = payload.get("geo_id") == geo_id and status in _ACCEPTED_PARITY_STATUSES
+    if status == "passed":
+        passed = passed and payload.get("passed") is True
     if not passed:
         raise RuntimeError(
             "Parity record did not pass for "
@@ -519,7 +522,7 @@ def ensure_study_geometry(
     The default source is the production ``.dsco``. ``suffix='.pmdb'``
     reads the converted file from ``geometry_root`` (never ``C:/ro_data``)
     and checks it against the conversion meta. ``require_parity`` also
-    requires that geometry's parity record to have passed.
+    requires parity status ``passed`` or ``passed_without_volume``.
 
     Uses ``run_parity_mesh.copy_geometry_file`` (copy only; sha256 checked
     after the copy). An existing destination is not rewritten: the same

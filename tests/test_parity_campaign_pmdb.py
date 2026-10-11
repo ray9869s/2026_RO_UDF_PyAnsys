@@ -68,7 +68,24 @@ def test_face_count_area_box_and_volume_failures():
     assert judged["volume"]["rel_diff"] > parity.VOLUME_RTOL
     unread = _dump()
     unread["bodies"] = [{"name": "fluid", "error": "unread", "volumes": None}]
-    assert parity.judge_dumps(reference, unread)["passed"] is False
+    one_sided = parity.judge_dumps(reference, unread)
+    assert one_sided["passed"] is False
+    assert one_sided["status"] == "failed"
+    both = _dump()
+    both["bodies"] = [
+        {
+            "name": "origin-p_p80_h15-solid",
+            "regions": None,
+            "volumes": None,
+            "error": "TypeError: 'NoneType' object is not iterable",
+        }
+    ]
+    unread_both = parity.judge_dumps(both, both)
+    assert unread_both["comparison_passed"] is True
+    assert unread_both["status"] == "passed_without_volume"
+    assert unread_both["passed"] is False
+    assert "origin-p_p80_h15-solid" in unread_both["volume"]["read_error"]
+    assert "NoneType" in unread_both["volume"]["read_error"]
 
 
 def test_run_one_uses_the_probe_and_continues(tmp_path):
@@ -237,3 +254,105 @@ def test_failed_parity_is_archived_and_passed_parity_is_kept(tmp_path):
             now=now,
         )
     assert calls["n"] == 0
+
+
+def test_reevaluate_uses_the_record_and_does_not_probe(tmp_path, capsys):
+    now = datetime(2026, 10, 11, 5, 0, tzinfo=timezone.utc)
+    work = tmp_path / "work"
+    geo_id = "P_p80_h15"
+    geo_dir = work / geo_id
+    unread = {
+        "name": "origin-p_p80_h15-solid",
+        "regions": None,
+        "volumes": None,
+        "error": "TypeError: 'NoneType' object is not iterable",
+    }
+    for side in ("dsco", "pmdb"):
+        dump = geo_dir / side / parity.SUMMARY_NAME
+        dump.parent.mkdir(parents=True)
+        dump.write_text(
+            json.dumps({"bodies": [unread], "labels": {}}),
+            encoding="utf-8",
+        )
+    record = {
+        "geo_id": geo_id,
+        "status": "failed",
+        "passed": False,
+        "comparison_passed": True,
+        "face_counts": [
+            {"label": "body", "reference": 14823, "current": 14823, "status": "PASS"},
+            {"label": "wall_spacer_pillar", "reference": 7366, "current": 7366, "status": "PASS"},
+        ],
+        "volume": {
+            "status": "unread",
+            "current_mm3": None,
+            "reference_mm3": None,
+            "rel_diff": None,
+        },
+    }
+    path = geo_dir / "parity.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    def runner(_command):
+        raise AssertionError("reevaluate must not probe")
+
+    with pytest.raises(ValueError, match="probe"):
+        parity.main(
+            ["--reevaluate", "--only", geo_id, "--work-root", str(work)],
+            runner=runner,
+        )
+    code = parity.main(
+        ["--reevaluate", "--only", geo_id, "--work-root", str(work)],
+        now=now,
+    )
+    assert code == 0
+    archived = geo_dir / "parity_reevaluated_20261011T050000Z.json"
+    assert json.loads(archived.read_text(encoding="utf-8"))["status"] == "failed"
+    updated = json.loads(path.read_text(encoding="utf-8"))
+    assert updated["status"] == "passed_without_volume"
+    assert "TypeError: 'NoneType' object is not iterable" in updated["volume"]["read_error"]
+    assert "origin-p_p80_h15-solid" in updated["volume"]["read_error"]
+    printed = capsys.readouterr().out
+    assert f"{geo_id} failed -> passed_without_volume" in printed
+
+    calls = {"n": 0}
+
+    def counting_runner(_command):
+        calls["n"] += 1
+        return 0
+
+    with pytest.raises(FileExistsError, match="passed_without_volume"):
+        parity.run_one(
+            geo_id,
+            source_root=tmp_path / "source",
+            pmdb_root=tmp_path / "pmdb",
+            work_root=work,
+            runner=counting_runner,
+            process_lister=lambda: [],
+            process_killer=lambda pid: None,
+        )
+    assert calls["n"] == 0
+
+    one_sided = geo_dir / "parity.json"
+    one_sided.write_text(
+        json.dumps(
+            {
+                **record,
+                "volume": {
+                    "status": "unread",
+                    "current_mm3": 12.5,
+                    "reference_mm3": None,
+                    "rel_diff": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    later = datetime(2026, 10, 11, 5, 1, tzinfo=timezone.utc)
+    code = parity.main(
+        ["--reevaluate", "--only", geo_id, "--work-root", str(work)],
+        now=later,
+    )
+    assert code == 2
+    assert json.loads(one_sided.read_text(encoding="utf-8"))["status"] == "failed"
+    assert (geo_dir / "parity_reevaluated_20261011T050100Z.json").is_file()

@@ -81,6 +81,24 @@ def test_reference_dump_reports_face_counts_areas_and_volume():
     assert "40" in text
 
 
+def test_get_regions_none_is_recorded_and_volume_is_not_read():
+    probe = load_probe()
+
+    class Utilities:
+        def get_regions(self, object_name):
+            assert object_name == "origin-p_p80_h15-solid"
+            return None
+
+        def get_region_volume(self, **kwargs):
+            raise AssertionError(kwargs)
+
+    bodies = probe._object_volumes(Utilities(), ["origin-p_p80_h15-solid"])
+    assert bodies[0]["volumes"] is None
+    assert bodies[0]["error"].startswith("RuntimeError:")
+    assert "get_regions" in bodies[0]["error"]
+    assert "returned None" in bodies[0]["error"]
+
+
 def test_unread_volume_is_marked_and_not_invented():
     probe = load_probe()
     extracted = _extracted()

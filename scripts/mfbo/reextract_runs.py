@@ -10,7 +10,8 @@ contains ``runs/``).
 and ``geometries/<family>/<geo_id>/<geo_id>.dsco`` into ``--data-root``
 (sha256 every file, reuse an identical copy, refuse a different one) and
 re-extracts the copy. ``--geometry-suffix .pmdb`` with ``--geometry-root``
-copies that converted file instead of the production ``.dsco``. Fluent is
+copies that converted file instead of the production ``.dsco`` and
+accepts parity status ``passed`` or ``passed_without_volume``. Fluent is
 not pointed at ``C:/ro_data``. The geometry file is copied, never moved.
 """
 
@@ -145,6 +146,7 @@ def copy_production_for_reextract(
         identity["geo_id"],
         suffix=geometry_suffix,
         geometry_root=geometry_root,
+        require_parity=geometry_suffix == ".pmdb",
     )
     run_leaf = copied["run_leaf"]
     case_file, data_file = hotspots.final_case_data(

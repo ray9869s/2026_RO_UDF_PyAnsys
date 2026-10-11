@@ -4,7 +4,9 @@ Uses ``scripts/_probe_reference_geometry.py --family campaign``. Labels,
 per-label face-zone counts, areas, and bounding boxes use the pillar-parity
 tolerances (bbox 1e-3 mm, area relative 1e-3). Per-label ``face_count``
 values must match exactly. Body volume uses the same relative tolerance
-the diamond parity script uses (1e-3); an unread volume fails. A failed
+the diamond parity script uses (1e-3). An unread volume on both probes,
+with the other checks passing, is ``passed_without_volume``. A volume
+read on one side only, or read on both and outside tolerance, fails. A failed
 geometry is recorded and the loop continues. A probe that writes no dump
 is closed, Discovery and SpaceClaim processes that probe started are
 terminated, and that probe is tried once more. The parity record names
@@ -193,17 +195,38 @@ def _summed_body_volume_mm3(bodies):
     return total
 
 
+def _volume_read_errors(bodies):
+    if not isinstance(bodies, list):
+        return []
+    errors = []
+    for body in bodies:
+        if not isinstance(body, dict) or not body.get("error"):
+            continue
+        name = body.get("name")
+        text = str(body["error"])
+        errors.append(f"{name}: {text}" if name else text)
+    return errors
+
+
 def compare_body_volumes(current_bodies, reference_bodies):
     """Same unread-versus-compared split as the diamond parity script."""
     current = _summed_body_volume_mm3(current_bodies)
     reference = _summed_body_volume_mm3(reference_bodies)
     if current is None or reference is None:
-        return {
+        errors = []
+        if current is None:
+            errors.extend(_volume_read_errors(current_bodies))
+        if reference is None:
+            errors.extend(_volume_read_errors(reference_bodies))
+        unread = {
             "status": "unread",
             "current_mm3": current,
             "reference_mm3": reference,
             "rel_diff": None,
         }
+        if errors:
+            unread["read_error"] = "; ".join(errors)
+        return unread
     if reference == 0.0:
         rel_diff = 0.0 if current == 0.0 else None
     else:
@@ -248,27 +271,57 @@ def face_count_rows(reference, current) -> list[dict]:
     return rows
 
 
+def _volume_within_tolerance(volume) -> bool:
+    rel_diff = volume.get("rel_diff")
+    return (
+        volume.get("status") == "compared"
+        and isinstance(rel_diff, (int, float))
+        and not isinstance(rel_diff, bool)
+        and rel_diff <= VOLUME_RTOL
+    )
+
+
+def status_from_parity_record(record) -> str:
+    """Status from labels, face counts, areas, boxes, and volume already recorded.
+
+    Both sides unread, with the other checks passing, is
+    ``passed_without_volume``. A volume present on one side only, or
+    present on both and outside tolerance, is ``failed``.
+    """
+    if record.get("comparison_passed") is not True:
+        return "failed"
+    faces = record.get("face_counts")
+    if not isinstance(faces, list) or not faces:
+        return "failed"
+    if any(not isinstance(row, dict) or row.get("status") != "PASS" for row in faces):
+        return "failed"
+    volume = record.get("volume")
+    if not isinstance(volume, dict):
+        return "failed"
+    if volume.get("status") == "unread":
+        if volume.get("current_mm3") is None and volume.get("reference_mm3") is None:
+            return "passed_without_volume"
+        return "failed"
+    if _volume_within_tolerance(volume):
+        return "passed"
+    return "failed"
+
+
 def judge_dumps(reference, current, *, probe=None) -> dict:
     """Label, area, box, face-count, and volume parity. Does not launch Fluent."""
     compare = probe.compare_reference if probe is not None else _probe_module().compare_reference
     comparison = compare(current, reference, BBOX_TOL_MM, area_rtol=AREA_RTOL)
     faces = face_count_rows(reference, current)
     volume = compare_body_volumes(current.get("bodies"), reference.get("bodies"))
-    volume_ok = (
-        volume["status"] == "compared"
-        and isinstance(volume["rel_diff"], (int, float))
-        and not isinstance(volume["rel_diff"], bool)
-        and volume["rel_diff"] <= VOLUME_RTOL
-    )
-    return {
+    judgement = {
         "comparison_passed": bool(comparison["passed"]),
         "comparison": comparison,
         "face_counts": faces,
         "volume": volume,
-        "passed": bool(comparison["passed"])
-        and all(row["status"] == "PASS" for row in faces)
-        and volume_ok,
     }
+    judgement["status"] = status_from_parity_record(judgement)
+    judgement["passed"] = judgement["status"] == "passed"
+    return judgement
 
 
 def _read_dump(path: Path):
@@ -301,21 +354,24 @@ def archive_failed_record(path: Path, prefix: str, now=None) -> Path:
     return destination
 
 
+_ACCEPTED_STATUSES = ("passed", "passed_without_volume")
+
+
 def write_parity_record(path: Path, record: dict, now=None) -> Path | None:
-    """Write ``parity.json``. A failed record is archived. A passed record is kept."""
+    """Write ``parity.json``. A failed record is archived. An accepted record is kept."""
     archived = None
     if path.is_file():
         previous = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(previous, dict):
             raise ValueError(f"{path} is not a JSON object.")
         status = previous.get("status")
-        if status == "passed":
+        if status in _ACCEPTED_STATUSES:
             raise FileExistsError(
-                f"Refusing to overwrite passed parity record: {path}"
+                f"Refusing to overwrite {status} parity record: {path}"
             )
         if status != "failed":
             raise ValueError(
-                f"{path} status {status!r} is not passed or failed."
+                f"{path} status {status!r} is not an accepted or failed parity status."
             )
         archived = archive_failed_record(path, "parity_failed", now)
     _write_json(path, record)
@@ -432,9 +488,9 @@ def run_one(
     parity_path = work_root / geo_id / "parity.json"
     if parity_path.is_file():
         previous = json.loads(parity_path.read_text(encoding="utf-8"))
-        if isinstance(previous, dict) and previous.get("status") == "passed":
+        if isinstance(previous, dict) and previous.get("status") in _ACCEPTED_STATUSES:
             raise FileExistsError(
-                f"Refusing to overwrite passed parity record: {parity_path}"
+                f"Refusing to overwrite {previous.get('status')} parity record: {parity_path}"
             )
     if not dsco.is_file() or not pmdb.is_file():
         record["status"] = "failed"
@@ -473,7 +529,7 @@ def run_one(
         write_parity_record(work_root / geo_id / "parity.json", record, now)
         return record
     judgement = judge_dumps(reference, current, probe=probe)
-    record["status"] = "passed" if judgement["passed"] else "failed"
+    record["status"] = judgement["status"]
     record["passed"] = judgement["passed"]
     record["volume"] = judgement["volume"]
     record["face_counts"] = judgement["face_counts"]
@@ -510,6 +566,51 @@ def run_all(
     ]
 
 
+def _dump_volume_errors(geo_dir: Path) -> list[str]:
+    errors = []
+    for side in ("dsco", "pmdb"):
+        path = geo_dir / side / SUMMARY_NAME
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        for text in _volume_read_errors(payload.get("bodies")):
+            errors.append(f"{side}: {text}")
+    return errors
+
+
+def reevaluate_one(work_root, geo_id, now=None) -> dict:
+    """Recompute one parity status from the record on disk. Does not probe."""
+    path = Path(work_root) / geo_id / "parity.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"Parity record not found: {path}")
+    previous = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(previous, dict):
+        raise ValueError(f"{path} is not a JSON object.")
+    before = previous.get("status")
+    archive_failed_record(path, "parity_reevaluated", now)
+    record = dict(previous)
+    record["status"] = status_from_parity_record(record)
+    record["passed"] = record["status"] == "passed"
+    if record["status"] == "passed_without_volume":
+        volume = dict(record.get("volume") or {})
+        if not volume.get("read_error"):
+            errors = _dump_volume_errors(path.parent)
+            if errors:
+                volume["read_error"] = "; ".join(errors)
+        record["volume"] = volume
+    _write_json(path, record)
+    print(f"{geo_id} {before} -> {record['status']}")
+    if record["status"] == "passed_without_volume":
+        print(f"  volume unread: {record['volume'].get('read_error')}")
+    return record
+
+
+def reevaluate_all(geo_ids, work_root, now=None) -> list[dict]:
+    return [reevaluate_one(work_root, geo_id, now) for geo_id in geo_ids]
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -526,16 +627,40 @@ def build_parser():
         type=Path,
         help="Write the parity job queue and do not probe.",
     )
+    parser.add_argument(
+        "--reevaluate",
+        action="store_true",
+        help=(
+            "Recompute status from existing parity.json comparison data. "
+            "Does not launch Discovery or Fluent."
+        ),
+    )
     return parser
 
 
-def main(argv=None, runner=None, probe=None) -> int:
+def main(argv=None, runner=None, probe=None, now=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.emit_queue is not None and args.reevaluate:
+        raise ValueError("--reevaluate does not take --emit-queue.")
     if args.emit_queue is not None:
         if args.only is not None:
             raise ValueError("--emit-queue does not take --only.")
         path = write_queue(args.emit_queue, parity_jobs())
         print(path)
+        return 0
+    if args.reevaluate:
+        if runner is not None or probe is not None:
+            raise ValueError("--reevaluate does not launch a probe.")
+        work_root = resolve_work_root(args.work_root)
+        records = reevaluate_all(select_geo_ids(args.only), work_root, now)
+        failed = [
+            record["geo_id"]
+            for record in records
+            if record["status"] not in _ACCEPTED_STATUSES
+        ]
+        if failed:
+            print("Failed: " + ", ".join(failed), file=sys.stderr)
+            return 2
         return 0
     source_root = resolve_root(args.source_root, "source root")
     pmdb_root = resolve_root(args.pmdb_root, "pmdb root")
@@ -550,7 +675,11 @@ def main(argv=None, runner=None, probe=None) -> int:
     )
     if args.only is None:
         _write_json(work_root / "parity_summary.json", {"records": records})
-    failed = [record["geo_id"] for record in records if record["status"] != "passed"]
+    failed = [
+        record["geo_id"]
+        for record in records
+        if record["status"] not in _ACCEPTED_STATUSES
+    ]
     if failed:
         print("Failed: " + ", ".join(failed), file=sys.stderr)
         return 2
