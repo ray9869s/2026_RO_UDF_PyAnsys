@@ -37,6 +37,12 @@ def build_parser():
         required=True,
         help="Output directory. Paths under C:/ro_data/geometries are refused.",
     )
+    parser.add_argument(
+        "--n-active",
+        type=int,
+        default=7,
+        help="Active cells. Buffers stay 1 in + 2 out. Default 7, the unsuffixed domain.",
+    )
     return parser
 
 
@@ -50,6 +56,7 @@ def main(argv=None):
         d_f_mm=args.d_f_mm,
         geo_id=args.geo_id,
         out_dir=args.out_dir,
+        n_active=args.n_active,
     )
     for kind, path in written["paths"].items():
         print(f"{kind}: {path}")

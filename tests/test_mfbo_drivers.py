@@ -100,6 +100,10 @@ def test_mesh_argv_passes_fidelity_settings_and_solve_does_not(tmp_path):
     assert solve_argv[1].endswith("scripts/mfbo/solve_mfbo_case.py")
     assert solve_argv[solve_argv.index("--case") + 1] == RUN_ID
     assert "--m-max" not in solve_argv
+    assert "--n-active" not in calls[0]["argv"]
+    assert "--profile" not in solve_argv
+    assert "--fidelity-n-lead-excluded" not in solve_argv
+    assert "--n-lead-excluded" not in mesh_argv
 
     drivers.extract(
         design=DESIGN,

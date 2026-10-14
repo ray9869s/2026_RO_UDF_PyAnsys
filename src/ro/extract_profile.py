@@ -226,23 +226,60 @@ PARITY_EXCEPTIONS = (
 )
 
 
+def _parse_extract_args(argv: Sequence[str] | None = None):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--profile", default=PROFILE_FULL)
+    parser.add_argument("--legacy-3-cell-window", action="store_true")
+    parser.add_argument("--fidelity-n-lead-excluded", type=int, default=None)
+    parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
+    parser.add_argument("--mass-balance-rel-abs-max", type=float, default=None)
+    parser.add_argument("--continuity-final-max", type=float, default=None)
+    args, unknown = parser.parse_known_args(list(argv) if argv is not None else None)
+    if unknown:
+        raise ValueError(f"Unrecognized extract arguments: {unknown!r}.")
+    if args.profile not in PROFILES:
+        raise ValueError(
+            f"Unknown extract profile {args.profile!r}. "
+            f"Expected one of {sorted(PROFILES)}."
+        )
+    if args.legacy_3_cell_window and args.fidelity_n_lead_excluded is not None:
+        raise ValueError(
+            "--fidelity-n-lead-excluded and --legacy-3-cell-window cannot both be set."
+        )
+    return args
+
+
 def parse_extract_options(
     argv: Sequence[str] | None = None,
 ) -> tuple[str, bool]:
     """Return ``(profile, legacy_3_cell_window)``. Unknown flags raise."""
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--profile", default=PROFILE_FULL)
-    parser.add_argument("--legacy-3-cell-window", action="store_true")
-    args, unknown = parser.parse_known_args(list(argv) if argv is not None else None)
-    if unknown:
-        raise ValueError(f"Unrecognized extract arguments: {unknown!r}.")
-    profile = args.profile
-    if profile not in PROFILES:
-        raise ValueError(
-            f"Unknown extract profile {profile!r}. "
-            f"Expected one of {sorted(PROFILES)}."
-        )
-    return profile, bool(args.legacy_3_cell_window)
+    args = _parse_extract_args(argv)
+    return args.profile, bool(args.legacy_3_cell_window)
+
+
+def fidelity_extract_overrides(
+    argv: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Fidelity-table window and gate overrides. Empty when the flags are absent."""
+    args = _parse_extract_args(argv)
+    overrides: dict[str, Any] = {}
+    if args.fidelity_n_lead_excluded is not None:
+        if args.fidelity_n_lead_excluded < 0:
+            raise ValueError(
+                "--fidelity-n-lead-excluded must be >= 0, "
+                f"got {args.fidelity_n_lead_excluded}."
+            )
+        overrides["n_lead_excluded"] = args.fidelity_n_lead_excluded
+    gate = {}
+    if args.lmh_rel_abs_max is not None:
+        gate["lmh_rel_abs_max"] = args.lmh_rel_abs_max
+    if args.mass_balance_rel_abs_max is not None:
+        gate["mass_balance_rel_abs_max"] = args.mass_balance_rel_abs_max
+    if args.continuity_final_max is not None:
+        gate["continuity_final_max"] = args.continuity_final_max
+    if gate:
+        overrides["convergence_gate"] = gate
+    return overrides
 
 
 def parse_extract_profile(argv: Sequence[str] | None = None) -> str:

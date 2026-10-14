@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ro.geometry_registry import format_mfbo_pillar_geo_id
+from ro.mfbo_fidelity import parse_fidelity_level
 from ro.mfbo_adapter import (
     PillarDesign,
     _design,
@@ -90,6 +91,7 @@ def require_runnable_fidelity(table: Mapping[str, Any], fidelity: str) -> dict[s
     entry = table[fidelity]
     if entry == TBD:
         raise ValueError(f"fidelity {fidelity!r} is TBD and is refused.")
+    parse_fidelity_level(entry)
     mesh_id_for_settings(entry)
     return dict(entry)
 
@@ -128,6 +130,73 @@ def load_designs(path: str | Path) -> list[PillarDesign]:
         except (KeyError, TypeError, ValueError) as exc:
             raise type(exc)(f"design {index}: {exc}") from exc
     return designs
+
+
+def build_named_level_queue(
+    designs: Sequence[PillarDesign],
+    levels: Sequence[str],
+    table: Mapping[str, Any],
+    *,
+    run_id: str,
+    data_root: str | Path,
+    fidelity_table: str | Path,
+) -> list[dict[str, Any]]:
+    """One ``run_3d_evaluate.py`` job per design and named level, in that order.
+
+    The geo id uses that level's ``n_active``. A mesh-only level stays unsuffixed.
+    Does not call ``evaluate``.
+    """
+    if not designs:
+        raise ValueError("design list is empty.")
+    if not levels:
+        raise ValueError("fidelity level list is empty.")
+    root = resolve_data_root(data_root)
+    table_text = _queue_path(fidelity_table)
+    jobs = []
+    seen = set()
+    for design in designs:
+        for fidelity in levels:
+            entry = require_runnable_fidelity(table, fidelity)
+            parsed = parse_fidelity_level(entry)
+            n_active = parsed["n_active"] if parsed["extended"] else None
+            geo_id = format_mfbo_pillar_geo_id(
+                design.d_p_mm,
+                design.d_h_mm,
+                design.d_f_mm,
+                n_active=n_active,
+            )
+            job_id = f"{fidelity}-{geo_id}"
+            if _JOB_ID_RE.fullmatch(job_id) is None:
+                raise ValueError(f"job id is not filename-safe: {job_id!r}.")
+            if job_id in seen:
+                raise ValueError(f"duplicate job id {job_id!r}.")
+            seen.add(job_id)
+            jobs.append(
+                {
+                    "id": job_id,
+                    "argv": [
+                        "{python}",
+                        _EVALUATE_SCRIPT,
+                        "--d-p-mm",
+                        _cli_number(design.d_p_mm),
+                        "--d-h-mm",
+                        _cli_number(design.d_h_mm),
+                        "--d-f-mm",
+                        _cli_number(design.d_f_mm),
+                        "--fidelity",
+                        fidelity,
+                        "--run-id",
+                        run_id,
+                        "--data-root",
+                        root.as_posix(),
+                        "--fidelity-table",
+                        table_text,
+                    ],
+                    "cwd": str(repo_root()),
+                    "env": {"RO_DATA_ROOT": root.as_posix()},
+                }
+            )
+    return jobs
 
 
 def build_queue(

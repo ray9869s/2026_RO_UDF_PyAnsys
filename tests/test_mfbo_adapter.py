@@ -39,12 +39,23 @@ class RecordingDrivers:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def generate(self, *, design, geo_id, out_dir):
+    def generate(self, *, design, geo_id, out_dir, n_active=None):
         self.calls.append("generate")
+        self.n_active = n_active
         _write_geometry(out_dir, geo_id, design)
 
-    def mesh(self, *, design, geo_id, mesh_id, mesh_settings, mesh_dir):
+    def mesh(
+        self,
+        *,
+        design,
+        geo_id,
+        mesh_id,
+        mesh_settings,
+        mesh_dir,
+        n_lead_excluded=None,
+    ):
         self.calls.append(f"mesh:{mesh_id}")
+        self.n_lead_excluded = n_lead_excluded
         mesh_dir.mkdir(parents=True, exist_ok=True)
         _write_json(
             mesh_dir / "mesh_run_record.json",
@@ -52,13 +63,15 @@ class RecordingDrivers:
         )
         _write_json(mesh_dir / "manifest.json", _mesh_manifest())
 
-    def solve(self, *, design, geo_id, mesh_id, run_id, run_dir):
+    def solve(self, *, design, geo_id, mesh_id, run_id, run_dir, level=None):
         self.calls.append(f"solve:{run_id}")
+        self.level = level
         run_dir.mkdir(parents=True, exist_ok=True)
         _write_json(run_dir / "manifest.json", _run_manifest())
 
-    def extract(self, *, design, geo_id, mesh_id, run_id, run_dir):
+    def extract(self, *, design, geo_id, mesh_id, run_id, run_dir, level=None):
         self.calls.append("extract")
+        self.extract_level = level
         _write_summary(run_dir)
 
 
@@ -472,6 +485,8 @@ def test_adapter_source_does_not_import_fluent():
         "typing",
         "ro.campaign_matrix",
         "ro.geometry_registry",
+        "ro.manifest",
+        "ro.mfbo_fidelity",
         "ro.paths",
         "ro.solver_common",
     ]

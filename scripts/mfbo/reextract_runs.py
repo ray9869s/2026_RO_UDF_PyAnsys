@@ -156,13 +156,41 @@ def copy_production_for_reextract(
     return run_leaf
 
 
-def reextract_leaf(run_leaf_value):
+def _extract_extra(args):
+    """Window and gate flags for the extract worker. Profile is separate."""
+    extra = []
+    if args.fidelity_n_lead_excluded is not None:
+        extra.extend(
+            ["--fidelity-n-lead-excluded", str(args.fidelity_n_lead_excluded)]
+        )
+    if args.lmh_rel_abs_max is not None:
+        extra.extend(["--lmh-rel-abs-max", format(args.lmh_rel_abs_max, ".12g")])
+    if args.mass_balance_rel_abs_max is not None:
+        extra.extend(
+            [
+                "--mass-balance-rel-abs-max",
+                format(args.mass_balance_rel_abs_max, ".12g"),
+            ]
+        )
+    if args.continuity_final_max is not None:
+        extra.extend(
+            ["--continuity-final-max", format(args.continuity_final_max, ".12g")]
+        )
+    return extra
+
+
+def reextract_leaf(run_leaf_value, *, profile=None, extra_argv=None):
     """Archive reports, then run the production extract launcher."""
     leaf, data_root, _family, geo_id, mesh_id, run_id = parse_run_leaf(
         run_leaf_value
     )
     archive_reports(leaf)
     case = operating_point_case(data_root, leaf)
+    kwargs = {}
+    if profile is not None:
+        kwargs["profile"] = profile
+    if extra_argv:
+        kwargs["extra_argv"] = extra_argv
     return mfbo_common.launch_extract(
         data_root,
         leaf,
@@ -170,6 +198,19 @@ def reextract_leaf(run_leaf_value):
         geo_id=geo_id,
         mesh_id=mesh_id,
         run_id=run_id,
+        **kwargs,
+    )
+
+
+def _reextract_with_flags(run_leaf_value, args):
+    """Production re-extract keeps the old one-argument call."""
+    extra = _extract_extra(args)
+    if args.profile is None and not extra:
+        return reextract_leaf(run_leaf_value)
+    return reextract_leaf(
+        run_leaf_value,
+        profile=args.profile,
+        extra_argv=extra,
     )
 
 
@@ -206,6 +247,11 @@ def main(argv=None) -> int:
         default=None,
         help="Destination data root for --copy-from-production. Not C:/ro_data.",
     )
+    parser.add_argument("--profile", default=None)
+    parser.add_argument("--fidelity-n-lead-excluded", type=int, default=None)
+    parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
+    parser.add_argument("--mass-balance-rel-abs-max", type=float, default=None)
+    parser.add_argument("--continuity-final-max", type=float, default=None)
     parser.add_argument(
         "run_leaves",
         nargs="*",
@@ -225,13 +271,13 @@ def main(argv=None) -> int:
             geometry_suffix=args.geometry_suffix,
             geometry_root=args.geometry_root,
         )
-        result = reextract_leaf(copied)
+        result = _reextract_with_flags(copied, args)
         return result.returncode
     if not args.run_leaves:
         parser.error("a run leaf path is required.")
     code = 0
     for raw in args.run_leaves:
-        result = reextract_leaf(raw)
+        result = _reextract_with_flags(raw, args)
         if result.returncode != 0:
             code = result.returncode
     return code

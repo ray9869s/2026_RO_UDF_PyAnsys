@@ -73,7 +73,9 @@ def _write_meta(root, geo_id, *, d_p_mm, d_h_mm, d_f_mm, registry, pmdb_sha256):
 def test_mfbo_pillar_geo_id_satisfies_path_constraints():
     geo_id = format_mfbo_pillar_geo_id(0.6, 0.15, 0.4)
     assert geo_id == "MFP_d0600_h0150_f0400"
-    assert MFBO_PILLAR_GEO_ID_RE.pattern == r"^MFP_d(\d{4})_h(\d{4})_f(\d{4})$"
+    assert MFBO_PILLAR_GEO_ID_RE.pattern == (
+        r"^MFP_d(\d{4})_h(\d{4})_f(\d{4})(?:_n([1-9]\d*))?$"
+    )
     assert MFBO_PILLAR_GEO_ID_RE.fullmatch(geo_id)
     assert GEO_ID_RE.fullmatch(geo_id)
     assert _GEO_ID_FORBIDDEN.search(geo_id) is None

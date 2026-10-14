@@ -61,6 +61,7 @@ def launch_extract(
     mesh_id,
     run_id,
     profile=None,
+    extra_argv=None,
 ):
     """Run pyfluent_report_extract.py the way batch_report_extract.py does.
 
@@ -89,6 +90,8 @@ def launch_extract(
     overrides = call_with_data_root(data_root, _build)
     env = extract_child_env(data_root, overrides, base_config)
     cmd = report_extract_argv(sys.executable, worker, profile)
+    if extra_argv:
+        cmd.extend(str(item) for item in extra_argv)
     print(f"Extract command: {' '.join(cmd)}")
     print(f"RO_DATA_ROOT (child only): {data_root}")
     print(f"Extract overrides: {json.dumps(overrides)}")

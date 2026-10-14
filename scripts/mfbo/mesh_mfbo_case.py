@@ -26,7 +26,11 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import batch_meshing
 from ro.campaign_matrix import format_production_mesh_id
-from ro.geometry_registry import MFBO_PILLAR_GEO_ID_RE, resolve_geometry_parameters
+from ro.geometry_registry import (
+    MFBO_PILLAR_GEO_ID_RE,
+    mfbo_pillar_n_active,
+    resolve_geometry_parameters,
+)
 
 TEMPLATE_GEO_ID = "P_p100_h30"
 DEFAULT_MESH_ID = "max085_min006_cpg5_bl4_peel2"
@@ -41,6 +45,8 @@ ALLOWED_OVERRIDE_DELTA = frozenset(
         "bridge_radius_m",
         "wall_spacer_labels",
         "geometry_suffix",
+        "n_active_cells",
+        "n_lead_excluded",
     }
 )
 
@@ -91,6 +97,7 @@ def require_mfbo_geo_id(geo_id):
         raise ValueError(
             f"geo_id must match MFBO_PILLAR_GEO_ID_RE, got {geo_id!r}."
         )
+    mfbo_pillar_n_active(geo_id)
     return geo_id
 
 
@@ -172,8 +179,12 @@ def load_template(mesh_id):
     return cases[0], overrides, retries
 
 
-def apply_mfbo_overrides(template, geo_id, registry):
-    """Copy the template and replace only the MFP geometry keys."""
+def apply_mfbo_overrides(template, geo_id, registry, n_lead_excluded=None):
+    """Copy the template and replace the MFP geometry keys.
+
+    ``n_active_cells`` comes from the CAD registry. ``n_lead_excluded`` is
+    set only when the caller passes it. Omitting it leaves the template lead.
+    """
     overrides = dict(template)
     overrides["geo_id"] = geo_id
     overrides["geo_name"] = geo_id
@@ -182,6 +193,17 @@ def apply_mfbo_overrides(template, geo_id, registry):
     overrides["bridge_radius_m"] = registry["bridge_radius_m"]
     overrides["wall_spacer_labels"] = list(registry["spacer_wall_zones"])
     overrides["geometry_suffix"] = ".pmdb"
+    overrides["n_active_cells"] = int(registry["n_active_cells"])
+    if n_lead_excluded is not None:
+        if isinstance(n_lead_excluded, bool) or not isinstance(n_lead_excluded, int):
+            raise TypeError(
+                f"n_lead_excluded must be an integer, got {n_lead_excluded!r}."
+            )
+        if n_lead_excluded < 0:
+            raise ValueError(
+                f"n_lead_excluded must be >= 0, got {n_lead_excluded}."
+            )
+        overrides["n_lead_excluded"] = n_lead_excluded
     return overrides
 
 
@@ -452,6 +474,12 @@ def build_parser():
     parser.add_argument("--bl-layers", type=int, default=None)
     parser.add_argument("--spacer-bl-layers", type=int, default=None)
     parser.add_argument("--peel-layers", type=int, default=None)
+    parser.add_argument(
+        "--n-lead-excluded",
+        type=int,
+        default=None,
+        help="Evaluation lead written onto the mesh case. Omit to keep the template.",
+    )
     return parser
 
 
@@ -473,7 +501,12 @@ def main(argv=None):
             raise RuntimeError(
                 f"settings mesh id {template['mesh_id']!r} != {mesh_id!r}."
             )
-    overrides = apply_mfbo_overrides(template, geo_id, registry)
+    overrides = apply_mfbo_overrides(
+        template,
+        geo_id,
+        registry,
+        n_lead_excluded=args.n_lead_excluded,
+    )
     assert_override_delta(template, overrides)
     leaf = mesh_leaf(data_root, geo_id, mesh_id)
     refuse_existing_mesh(leaf)

@@ -26,8 +26,15 @@ from ro.campaign_geometry import (
 from ro.solver_common import sha256_file
 
 # Micrometres, four digits each. Example: 0.60 mm, 0.15 mm, 0.40 mm
-# -> MFP_d0600_h0150_f0400.
-MFBO_PILLAR_GEO_ID_RE = re.compile(r"^MFP_d(\d{4})_h(\d{4})_f(\d{4})$")
+# -> MFP_d0600_h0150_f0400. A domain other than 7 active cells appends
+# ``_n<count>`` (``MFP_d0900_h0200_f0400_n3``). ``_n7`` is not an id.
+DEFAULT_PILLAR_N_ACTIVE = 7
+MFBO_PILLAR_GEO_ID_RE = re.compile(
+    r"^MFP_d(\d{4})_h(\d{4})_f(\d{4})(?:_n([1-9]\d*))?$"
+)
+_DEFAULT_DOMAIN_SUFFIX_RE = re.compile(
+    r"^MFP_d\d{4}_h\d{4}_f\d{4}_n7$"
+)
 
 PILLAR_REGISTRY_FIELDS = (
     "spacing_code",
@@ -80,24 +87,64 @@ def _um_token(name: str, millimetres: float) -> str:
     return f"{micrometres:04d}"
 
 
-def format_mfbo_pillar_geo_id(d_p_mm: float, d_h_mm: float, d_f_mm: float) -> str:
-    """Return ``MFP_dXXXX_hXXXX_fXXXX`` with each diameter rounded to 1 um."""
-    return (
+def format_mfbo_pillar_geo_id(
+    d_p_mm: float,
+    d_h_mm: float,
+    d_f_mm: float,
+    n_active: int | None = None,
+) -> str:
+    """Return ``MFP_dXXXX_hXXXX_fXXXX``, plus ``_n<count>`` when not 7 cells."""
+    base = (
         "MFP_"
         f"d{_um_token('d_p_mm', _millimetres('d_p_mm', d_p_mm))}_"
         f"h{_um_token('d_h_mm', _millimetres('d_h_mm', d_h_mm))}_"
         f"f{_um_token('d_f_mm', _millimetres('d_f_mm', d_f_mm))}"
     )
+    if n_active is None:
+        return base
+    count = _active_count(n_active)
+    if count == DEFAULT_PILLAR_N_ACTIVE:
+        return base
+    return f"{base}_n{count}"
 
 
 def parse_mfbo_pillar_geo_id(geo_id: str) -> tuple[int, int, int] | None:
-    """Return ``(d_p_um, d_h_um, d_f_um)`` or None when ``geo_id`` is not MFP."""
+    """Return ``(d_p_um, d_h_um, d_f_um)`` or None when ``geo_id`` is not MFP.
+
+    ``MFP_..._n7`` is not an id. The 7-cell domain has no suffix.
+    """
     if not isinstance(geo_id, str):
+        return None
+    if _DEFAULT_DOMAIN_SUFFIX_RE.fullmatch(geo_id):
         return None
     match = MFBO_PILLAR_GEO_ID_RE.fullmatch(geo_id)
     if match is None:
         return None
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def mfbo_pillar_n_active(geo_id: str) -> int:
+    """Active-cell count encoded by an MFP id. Unsuffixed ids are 7."""
+    if not isinstance(geo_id, str):
+        raise ValueError(f"Not an MFBO pillar geo_id: {geo_id!r}.")
+    if _DEFAULT_DOMAIN_SUFFIX_RE.fullmatch(geo_id):
+        raise ValueError(
+            f"{geo_id!r} uses the _n7 suffix. The 7-cell domain id has no suffix."
+        )
+    match = MFBO_PILLAR_GEO_ID_RE.fullmatch(geo_id)
+    if match is None:
+        raise ValueError(f"Not an MFBO pillar geo_id: {geo_id!r}.")
+    if match.group(4) is None:
+        return DEFAULT_PILLAR_N_ACTIVE
+    return int(match.group(4))
+
+
+def _active_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"n_active must be an integer, got {value!r}.")
+    if value < 1:
+        raise ValueError(f"n_active must be >= 1, got {value!r}.")
+    return value
 
 
 def is_mfbo_pillar_geo_id(geo_id: str) -> bool:
@@ -109,6 +156,7 @@ def pillar_registry_entry(
     d_p_m: float,
     d_h_m: float,
     d_f_m: float,
+    n_active_cells: int = DEFAULT_PILLAR_N_ACTIVE,
 ) -> dict[str, Any]:
     """Pillar manifest geometry. ``d_p_m`` / ``d_h_m`` / ``d_f_m`` are metres."""
     d_p_m = _millimetres("d_p_m", d_p_m)
@@ -116,6 +164,7 @@ def pillar_registry_entry(
     d_f_m = _millimetres("d_f_m", d_f_m)
     if d_p_m <= 0.0:
         raise ValueError(f"d_p_m must be positive, got {d_p_m}.")
+    n_active_cells = _active_count(n_active_cells)
     cell_area_m2 = _PILLAR_UNIT_CELL_M * _PILLAR_UNIT_CELL_M / 2.0
     blocked = math.pi * (d_p_m / 2.0) ** 2 / cell_area_m2
     zones = list(_PILLAR_SPACER_WALL_ZONES_BASE)
@@ -128,7 +177,7 @@ def pillar_registry_entry(
         "filament_d_m": d_f_m,
         "bridge_radius_m": 0.0,
         "overlap_m": 0.0,
-        "n_active_cells": 7,
+        "n_active_cells": n_active_cells,
         "cell_length_x_m": _PILLAR_UNIT_CELL_M,
         "Sigma_d_nominal_m": None,
         "membrane_trim_m": 0.0,
@@ -181,6 +230,7 @@ def _registry_from_meta(geo_id: str) -> dict[str, Any]:
     encoded = parse_mfbo_pillar_geo_id(geo_id)
     if encoded is None:
         raise ValueError(f"Not an MFBO pillar geo_id: {geo_id!r}.")
+    encoded_active = mfbo_pillar_n_active(geo_id)
     path, payload = _read_meta(geo_id)
     inputs = payload.get("inputs")
     if not isinstance(inputs, dict):
@@ -207,6 +257,11 @@ def _registry_from_meta(geo_id: str) -> dict[str, Any]:
     for field in PILLAR_REGISTRY_FIELDS:
         value = registry[field]
         copied[field] = list(value) if isinstance(value, list) else value
+    if copied["n_active_cells"] != encoded_active:
+        raise ValueError(
+            f"MFBO geo_id {geo_id!r} encodes n_active={encoded_active} "
+            f"but meta registry n_active_cells={copied['n_active_cells']!r}."
+        )
     return copied
 
 
@@ -223,6 +278,10 @@ def resolve_geometry_parameters(geo_id: str) -> dict[str, Any]:
 
 def validate_known_geo_id(geo_id: str) -> None:
     """Accept a campaign id or an MFP id. Other ids use today's campaign error."""
+    if isinstance(geo_id, str) and _DEFAULT_DOMAIN_SUFFIX_RE.fullmatch(geo_id):
+        raise ValueError(
+            f"{geo_id!r} uses the _n7 suffix. The 7-cell domain id has no suffix."
+        )
     if is_mfbo_pillar_geo_id(geo_id):
         return
     validate_campaign_geo_id(geo_id)
@@ -240,11 +299,26 @@ def require_pillar_cad_geo_id(
     d_p_mm: float,
     d_h_mm: float,
     d_f_mm: float,
+    n_active: int | None = None,
 ) -> None:
-    """Allow a campaign pillar id, or the MFP id formatted from these inputs."""
+    """Allow a campaign pillar id, or the MFP id formatted from these inputs.
+
+    Campaign pillar ids are the 7-cell domain. A shorter domain must use the
+    suffixed MFP id.
+    """
+    if isinstance(geo_id, str) and _DEFAULT_DOMAIN_SUFFIX_RE.fullmatch(geo_id):
+        raise ValueError(
+            f"{geo_id!r} uses the _n7 suffix. The 7-cell domain id has no suffix."
+        )
+    active = DEFAULT_PILLAR_N_ACTIVE if n_active is None else _active_count(n_active)
     if geo_id in _PILLAR_HAS_HOLE:
+        if active != DEFAULT_PILLAR_N_ACTIVE:
+            raise ValueError(
+                f"geo_id {geo_id!r} is a campaign pillar id. Those geometries "
+                f"are the {DEFAULT_PILLAR_N_ACTIVE}-cell domain, got n_active={active}."
+            )
         return
-    formatted = format_mfbo_pillar_geo_id(d_p_mm, d_h_mm, d_f_mm)
+    formatted = format_mfbo_pillar_geo_id(d_p_mm, d_h_mm, d_f_mm, n_active=active)
     if geo_id == formatted:
         return
     raise ValueError(

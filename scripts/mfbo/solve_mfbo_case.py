@@ -28,7 +28,11 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
-from ro.geometry_registry import MFBO_PILLAR_GEO_ID_RE, resolve_geometry_parameters
+from ro.geometry_registry import (
+    MFBO_PILLAR_GEO_ID_RE,
+    mfbo_pillar_n_active,
+    resolve_geometry_parameters,
+)
 
 TEMPLATE_GEO_ID = "P_p100_h30"
 DEFAULT_MESH_ID = "max085_min006_cpg5_bl4_peel2"
@@ -94,6 +98,7 @@ def require_mfbo_geo_id(geo_id):
         raise ValueError(
             f"geo_id must match MFBO_PILLAR_GEO_ID_RE, got {geo_id!r}."
         )
+    mfbo_pillar_n_active(geo_id)
     return geo_id
 
 
@@ -229,8 +234,15 @@ def _cell(value):
     return str(value)
 
 
-def assert_override_delta(template, overrides):
-    """Print every override against the template. Only MFP keys may differ."""
+def assert_override_delta(template, overrides, allowed=None):
+    """Print every override against the template. Only MFP keys may differ.
+
+    ``allowed`` adds the solver keys this invocation was asked to change.
+    Omitting it keeps the geometry-only set.
+    """
+    permitted = (
+        ALLOWED_OVERRIDE_DELTA if allowed is None else frozenset(allowed)
+    )
     keys = sorted(set(template) | set(overrides))
     rows = []
     unexpected = []
@@ -251,13 +263,13 @@ def assert_override_delta(template, overrides):
                 "status": status,
             }
         )
-        if status == "differs" and key not in ALLOWED_OVERRIDE_DELTA:
+        if status == "differs" and key not in permitted:
             unexpected.append(key)
     _print_override_table(rows)
     if unexpected:
         raise ValueError(
             "MFBO overrides may only change "
-            f"{sorted(ALLOWED_OVERRIDE_DELTA)}. Unexpected differences: "
+            f"{sorted(permitted)}. Unexpected differences: "
             f"{unexpected}."
         )
     return rows
@@ -433,7 +445,57 @@ def build_parser():
         default=DEFAULT_CASE,
         help=f"Production run id (default {DEFAULT_CASE}).",
     )
+    parser.add_argument("--max-iterations", type=int, default=None)
+    parser.add_argument("--residual-target", type=float, default=None)
+    parser.add_argument("--turbulence-residual-target", type=float, default=None)
+    parser.add_argument("--qoi-stop-criterion", type=float, default=None)
+    parser.add_argument("--qoi-previous-values-to-consider", type=int, default=None)
+    parser.add_argument("--qoi-initial-values-to-ignore", type=int, default=None)
+    parser.add_argument("--profile", default=None)
+    parser.add_argument("--fidelity-n-lead-excluded", type=int, default=None)
+    parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
+    parser.add_argument("--mass-balance-rel-abs-max", type=float, default=None)
+    parser.add_argument("--continuity-final-max", type=float, default=None)
     return parser
+
+
+def solver_convergence_from_args(args):
+    """Only the flags the caller set. Absent flags leave production settings."""
+    specified = {}
+    for key, value in (
+        ("max_iterations", args.max_iterations),
+        ("residual_target", args.residual_target),
+        ("turbulence_residual_target", args.turbulence_residual_target),
+        ("qoi_stop_criterion", args.qoi_stop_criterion),
+        ("qoi_previous_values_to_consider", args.qoi_previous_values_to_consider),
+        ("qoi_initial_values_to_ignore", args.qoi_initial_values_to_ignore),
+    ):
+        if value is not None:
+            specified[key] = value
+    return specified
+
+
+def extract_forward_args(args):
+    """Extract-worker flags. Empty when this solve keeps the production extract."""
+    extra = []
+    if args.fidelity_n_lead_excluded is not None:
+        extra.extend(
+            ["--fidelity-n-lead-excluded", str(args.fidelity_n_lead_excluded)]
+        )
+    if args.lmh_rel_abs_max is not None:
+        extra.extend(["--lmh-rel-abs-max", format(args.lmh_rel_abs_max, ".12g")])
+    if args.mass_balance_rel_abs_max is not None:
+        extra.extend(
+            [
+                "--mass-balance-rel-abs-max",
+                format(args.mass_balance_rel_abs_max, ".12g"),
+            ]
+        )
+    if args.continuity_final_max is not None:
+        extra.extend(
+            ["--continuity-final-max", format(args.continuity_final_max, ".12g")]
+        )
+    return extra
 
 
 def main(argv=None):
@@ -451,7 +513,13 @@ def main(argv=None):
         args.case,
     )
     overrides = apply_mfbo_overrides(template, geo_id, registry)
-    assert_override_delta(template, overrides)
+    specified = solver_convergence_from_args(args)
+    overrides.update(specified)
+    assert_override_delta(
+        template,
+        overrides,
+        allowed=ALLOWED_OVERRIDE_DELTA | set(specified),
+    )
 
     result = launch_solver(
         overrides,
@@ -466,6 +534,12 @@ def main(argv=None):
     if not batch_solver_sweep.solver_worker_succeeded(result.returncode):
         return _exit_code(result.returncode)
 
+    extract_kwargs = {}
+    if args.profile is not None:
+        extract_kwargs["profile"] = args.profile
+    forwarded = extract_forward_args(args)
+    if forwarded:
+        extract_kwargs["extra_argv"] = forwarded
     extract_result = mfbo_common.launch_extract(
         data_root,
         run_directory,
@@ -473,6 +547,7 @@ def main(argv=None):
         geo_id=geo_id,
         mesh_id=args.mesh_id,
         run_id=args.case,
+        **extract_kwargs,
     )
     if extract_result.returncode != 0:
         return _exit_code(extract_result.returncode)

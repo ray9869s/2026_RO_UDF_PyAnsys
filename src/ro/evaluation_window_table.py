@@ -32,6 +32,7 @@ LEGACY_WINDOW_TABLE_VERSION = "legacy-3-cell"
 WINDOW_SOURCE_GEO_ID = "geo_id"
 WINDOW_SOURCE_GEO_ROW_PRODUCTION_MESH = "geo_row_production_mesh"
 WINDOW_SOURCE_FAMILY_DEFAULT = "family_default"
+WINDOW_SOURCE_FIDELITY_TABLE = "fidelity_table"
 WINDOW_SOURCE_LEGACY = "legacy-3-cell"
 _PRODUCTION_CAMPAIGN_ROOTS = ("c:/ro_data", "/mnt/c/ro_data")
 _FAMILY_DEFAULTS_KEY = "family_defaults"
@@ -98,8 +99,24 @@ def select_evaluation_window(
     legacy_3_cell_window: bool,
     table_path: Path | None = None,
     data_root: str | Path | None = None,
+    fidelity_n_lead_excluded: int | None = None,
 ) -> EvaluationWindowSelection:
-    """Table row for ``geo_id``, or the legacy lead of 3 when asked."""
+    """Table row for ``geo_id``, or the legacy lead of 3 when asked.
+
+    ``fidelity_n_lead_excluded`` uses that count for this mesh and does not
+    read the evaluation-window table. ``window_source`` is ``fidelity_table``.
+    """
+    if fidelity_n_lead_excluded is not None and legacy_3_cell_window:
+        raise ValueError(
+            "fidelity_n_lead_excluded and --legacy-3-cell-window cannot both be set."
+        )
+    if fidelity_n_lead_excluded is not None:
+        return fidelity_table_selection(
+            n_active,
+            cell_length_x_m,
+            fidelity_n_lead_excluded,
+            run_mesh_id=mesh_id,
+        )
     if legacy_3_cell_window:
         return legacy_3_cell_selection(
             n_active,
@@ -118,6 +135,38 @@ def select_evaluation_window(
         n_active=n_active,
         cell_length_x_m=cell_length_x_m,
         data_root=data_root,
+    )
+
+
+def fidelity_table_selection(
+    n_active: int,
+    cell_length_x_m: float,
+    n_lead_excluded: int,
+    *,
+    run_mesh_id: str | None = None,
+) -> EvaluationWindowSelection:
+    """Window named by a fidelity level. Lengths are ``n_lead * pitch``."""
+    _require_count("n_active", n_active)
+    _require_count("n_lead_excluded", n_lead_excluded)
+    if n_active < 1:
+        raise ValueError(f"n_active must be >= 1, got {n_active}.")
+    if n_lead_excluded < 0:
+        raise ValueError(
+            f"n_lead_excluded must be >= 0, got {n_lead_excluded}."
+        )
+    if n_lead_excluded >= n_active:
+        raise ValueError(
+            f"n_lead_excluded={n_lead_excluded} must be < n_active={n_active}."
+        )
+    dx = _require_positive_length("cell_length_x_m", cell_length_x_m)
+    return EvaluationWindowSelection(
+        n_lead_excluded=n_lead_excluded,
+        excluded_length_m=n_lead_excluded * dx,
+        window_length_m=(n_active - n_lead_excluded) * dx,
+        window_table_version=WINDOW_SOURCE_FIDELITY_TABLE,
+        window_source=WINDOW_SOURCE_FIDELITY_TABLE,
+        window_table_mesh_id=None,
+        run_mesh_id=run_mesh_id,
     )
 
 

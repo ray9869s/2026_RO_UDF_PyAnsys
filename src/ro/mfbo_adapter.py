@@ -33,7 +33,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ro.campaign_matrix import format_production_mesh_id
-from ro.geometry_registry import format_mfbo_pillar_geo_id
+from ro.geometry_registry import (
+    DEFAULT_PILLAR_N_ACTIVE,
+    format_mfbo_pillar_geo_id,
+    mfbo_pillar_n_active,
+)
+from ro.manifest import update_run_manifest_fields
+from ro.mfbo_fidelity import fidelity_settings_used, parse_fidelity_level
 from ro.paths import RUN_ID_RE
 from ro.solver_common import sha256_file
 
@@ -226,7 +232,14 @@ def evaluate(
     root = resolve_data_root(data_root)
     settings = _require_fidelity(fidelity_table, fidelity)
     mesh_id = mesh_id_for_settings(settings)
-    geo_id = format_mfbo_pillar_geo_id(point.d_p_mm, point.d_h_mm, point.d_f_mm)
+    n_active = settings["n_active"] if settings.get("extended") else None
+    geo_id = format_mfbo_pillar_geo_id(
+        point.d_p_mm,
+        point.d_h_mm,
+        point.d_f_mm,
+        n_active=n_active,
+    )
+    used = fidelity_settings_used(settings)
     gap = opening_gap_mm(point.d_p_mm, point.d_h_mm, point.d_f_mm)
     base = _identity(
         point,
@@ -240,20 +253,55 @@ def evaluate(
             base,
             status=STATUS_INVALID,
             failure_reason=REASON_OPENING_GAP_SLIVER,
+            fidelity_settings=used,
         )
 
     geo_dir = root / "geometries" / FAMILY / geo_id
     mesh_dir = root / "meshes" / FAMILY / geo_id / mesh_id
     run_dir = root / "runs" / FAMILY / geo_id / mesh_id / checked_run
-    failed = _ensure_geometry(drivers, point, geo_id, geo_dir)
+    failed = _ensure_geometry(drivers, point, geo_id, geo_dir, n_active=n_active)
     if failed is not None:
-        return _finish(base, status=STATUS_EXECUTION_FAILED, failure_reason=failed[0], leaf_path=failed[1])
-    failed = _ensure_mesh(drivers, point, geo_id, mesh_id, settings, mesh_dir)
+        return _finish(
+            base,
+            status=STATUS_EXECUTION_FAILED,
+            failure_reason=failed[0],
+            leaf_path=failed[1],
+            fidelity_settings=used,
+        )
+    failed = _ensure_mesh(
+        drivers,
+        point,
+        geo_id,
+        mesh_id,
+        settings,
+        mesh_dir,
+        n_lead_excluded=settings.get("n_lead_excluded"),
+    )
     if failed is not None:
-        return _finish(base, status=STATUS_EXECUTION_FAILED, failure_reason=failed[0], leaf_path=failed[1])
-    failed = _ensure_solve(drivers, point, geo_id, mesh_id, checked_run, run_dir)
+        return _finish(
+            base,
+            status=STATUS_EXECUTION_FAILED,
+            failure_reason=failed[0],
+            leaf_path=failed[1],
+            fidelity_settings=used,
+        )
+    failed = _ensure_solve(
+        drivers,
+        point,
+        geo_id,
+        mesh_id,
+        checked_run,
+        run_dir,
+        level=settings,
+    )
     if failed is not None:
-        return _finish(base, status=STATUS_EXECUTION_FAILED, failure_reason=failed[0], leaf_path=failed[1])
+        return _finish(
+            base,
+            status=STATUS_EXECUTION_FAILED,
+            failure_reason=failed[0],
+            leaf_path=failed[1],
+            fidelity_settings=used,
+        )
     summary_path = run_dir / _SUMMARY_CSV
     if not summary_path.is_file():
         drivers.extract(
@@ -262,8 +310,15 @@ def evaluate(
             mesh_id=mesh_id,
             run_id=checked_run,
             run_dir=run_dir,
+            level=settings,
         )
-    return _result_from_leaves(base, mesh_dir, run_dir, summary_path)
+    return _result_from_leaves(
+        base,
+        mesh_dir,
+        run_dir,
+        summary_path,
+        fidelity_settings=used,
+    )
 
 
 def _design(value: PillarDesign | Mapping[str, Any]) -> PillarDesign:
@@ -305,7 +360,7 @@ def _require_fidelity(
             f"fidelity {fidelity!r} is not in the fidelity table. "
             "High fidelity is not defined."
         )
-    return _mesh_settings(table[fidelity])
+    return parse_fidelity_level(table[fidelity])
 
 
 def _mesh_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -364,19 +419,33 @@ def _is_windows_absolute(text: str) -> bool:
     return len(text) >= 3 and text[1] == ":" and text[2] == "/"
 
 
-def _ensure_geometry(drivers: Drivers, design: PillarDesign, geo_id: str, geo_dir: Path):
+def _ensure_geometry(
+    drivers: Drivers,
+    design: PillarDesign,
+    geo_id: str,
+    geo_dir: Path,
+    n_active: int | None = None,
+):
     state = _geometry_state(geo_dir, geo_id, design)
     if state == "success":
         return None
     if state == "failed":
         return ("leaf_not_successful", str(geo_dir))
-    drivers.generate(design=design, geo_id=geo_id, out_dir=geo_dir)
+    drivers.generate(design=design, geo_id=geo_id, out_dir=geo_dir, n_active=n_active)
     if _geometry_state(geo_dir, geo_id, design) != "success":
         return ("leaf_not_successful", str(geo_dir))
     return None
 
 
-def _ensure_mesh(drivers, design, geo_id, mesh_id, settings, mesh_dir: Path):
+def _ensure_mesh(
+    drivers,
+    design,
+    geo_id,
+    mesh_id,
+    settings,
+    mesh_dir: Path,
+    n_lead_excluded: int | None = None,
+):
     state = _mesh_state(mesh_dir)
     if state == "success":
         return None
@@ -388,13 +457,14 @@ def _ensure_mesh(drivers, design, geo_id, mesh_id, settings, mesh_dir: Path):
         mesh_id=mesh_id,
         mesh_settings=settings,
         mesh_dir=mesh_dir,
+        n_lead_excluded=n_lead_excluded,
     )
     if _mesh_state(mesh_dir) != "success":
         return ("leaf_not_successful", str(mesh_dir))
     return None
 
 
-def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path):
+def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path, level=None):
     state = _run_state(run_dir)
     if state in ("success", "needs_extract"):
         return None
@@ -406,6 +476,7 @@ def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path):
         mesh_id=mesh_id,
         run_id=run_id,
         run_dir=run_dir,
+        level=level,
     )
     if _run_state(run_dir) not in ("success", "needs_extract"):
         return ("leaf_not_successful", str(run_dir))
@@ -448,7 +519,14 @@ def _geometry_inputs_match(inputs: Any, geo_id: str, design: PillarDesign) -> bo
             return False
         if float(raw) != float(value):
             return False
-    return True
+    recorded = inputs.get("n_active", DEFAULT_PILLAR_N_ACTIVE)
+    if isinstance(recorded, bool) or not isinstance(recorded, int):
+        return False
+    try:
+        encoded = mfbo_pillar_n_active(geo_id)
+    except ValueError:
+        return False
+    return recorded == encoded
 
 
 def _mesh_state(directory: Path) -> str:
@@ -481,7 +559,13 @@ def _run_state(directory: Path) -> str:
     return "success"
 
 
-def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path):
+def _result_from_leaves(
+    base,
+    mesh_dir: Path,
+    run_dir: Path,
+    summary_path: Path,
+    fidelity_settings=None,
+):
     mesh_manifest = _read_object(mesh_dir / "manifest.json") or {}
     mesh_record = _read_object(mesh_dir / "mesh_run_record.json") or {}
     run_manifest = _read_object(run_dir / "manifest.json") or {}
@@ -498,6 +582,7 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
             run_manifest=run_manifest,
             retry=retry,
             run_dir=run_dir,
+            fidelity_settings=fidelity_settings,
         )
     status, reason = _physics_status(run_manifest)
     if summary is None and status == STATUS_VALID:
@@ -511,6 +596,7 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
             run_manifest=run_manifest,
             retry=retry,
             run_dir=run_dir,
+            fidelity_settings=fidelity_settings,
         )
     values = _quantities(summary, mesh_manifest)
     if status == STATUS_VALID and (
@@ -532,6 +618,7 @@ def _result_from_leaves(base, mesh_dir: Path, run_dir: Path, summary_path: Path)
         retry=retry,
         run_dir=run_dir,
         summary=summary,
+        fidelity_settings=fidelity_settings,
     )
 
 
@@ -611,6 +698,7 @@ def _finish(
     retry: Mapping[str, Any] | None = None,
     run_dir: Path | None = None,
     summary: Mapping[str, Any] | None = None,
+    fidelity_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     mesh_manifest = mesh_manifest or {}
     mesh_record = mesh_record or {}
@@ -640,6 +728,13 @@ def _finish(
     record["processor_count"] = _optional_processor_count(
         run_manifest.get("processor_count")
     )
+    if fidelity_settings is not None:
+        record["fidelity_settings"] = dict(fidelity_settings)
+        if run_dir is not None and (Path(run_dir) / "manifest.json").is_file():
+            update_run_manifest_fields(
+                run_dir,
+                {"fidelity_settings": dict(fidelity_settings)},
+            )
     return record
 
 

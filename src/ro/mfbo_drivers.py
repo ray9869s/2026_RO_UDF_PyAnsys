@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ro.mfbo_adapter import Drivers, PillarDesign, resolve_data_root
+from ro.mfbo_fidelity import extraction_cli_args, solver_cli_args
 
 _LOCK = threading.Lock()
 _MESH_KNOBS = ("m_max", "m_min", "m_cpg", "bl_layers", "peel_layers")
@@ -71,7 +72,14 @@ class _Worker:
         self.runner = runner
         self.log_root = log_root
 
-    def generate(self, *, design: PillarDesign, geo_id: str, out_dir: Path) -> None:
+    def generate(
+        self,
+        *,
+        design: PillarDesign,
+        geo_id: str,
+        out_dir: Path,
+        n_active: int | None = None,
+    ) -> None:
         script = _script("scripts/generate_pillar_cad.py")
         argv = [
             sys.executable,
@@ -87,6 +95,8 @@ class _Worker:
             "--out-dir",
             str(out_dir),
         ]
+        if n_active is not None:
+            argv.extend(["--n-active", str(int(n_active))])
         self._run("generate", argv, geo_id)
 
     def mesh(
@@ -97,6 +107,7 @@ class _Worker:
         mesh_id: str,
         mesh_settings: Mapping[str, Any],
         mesh_dir: Path,
+        n_lead_excluded: int | None = None,
     ) -> None:
         """Mesh one MFP id from the ``.pmdb`` already in this data root.
 
@@ -129,6 +140,8 @@ class _Worker:
         ]
         if "spacer_bl_layers" in settings:
             argv.extend(["--spacer-bl-layers", str(settings["spacer_bl_layers"])])
+        if n_lead_excluded is not None:
+            argv.extend(["--n-lead-excluded", str(int(n_lead_excluded))])
         self._run("mesh", argv, geo_id, mesh_id)
 
     def solve(
@@ -139,6 +152,7 @@ class _Worker:
         mesh_id: str,
         run_id: str,
         run_dir: Path,
+        level: Mapping[str, Any] | None = None,
     ) -> None:
         del design, run_dir
         script = _script("scripts/mfbo/solve_mfbo_case.py")
@@ -154,6 +168,9 @@ class _Worker:
             "--case",
             run_id,
         ]
+        if level is not None:
+            argv.extend(solver_cli_args(level))
+            argv.extend(extraction_cli_args(level))
         self._run("solve", argv, geo_id, mesh_id, run_id)
 
     def extract(
@@ -164,10 +181,14 @@ class _Worker:
         mesh_id: str,
         run_id: str,
         run_dir: Path,
+        level: Mapping[str, Any] | None = None,
     ) -> None:
         del design, geo_id, mesh_id, run_id
         script = _script("scripts/mfbo/reextract_runs.py")
-        argv = [sys.executable, str(script), str(run_dir)]
+        argv = [sys.executable, str(script)]
+        if level is not None:
+            argv.extend(extraction_cli_args(level))
+        argv.append(str(run_dir))
         self._run("extract", argv, run_dir.name)
 
     def _run(self, stage: str, argv: list[str], *log_parts: str) -> None:

@@ -11,7 +11,11 @@ import math
 import sys
 from pathlib import Path
 
-from ro.geometry_registry import pillar_registry_entry, require_pillar_cad_geo_id
+from ro.geometry_registry import (
+    DEFAULT_PILLAR_N_ACTIVE,
+    pillar_registry_entry,
+    require_pillar_cad_geo_id,
+)
 from ro.paths import project_root
 from ro.solver_common import sha256_file
 
@@ -91,7 +95,7 @@ def _bind_geometry_symbols():
     Sketch = _Sketch
 
 
-def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
+def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir, n_active=None):
     """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``."""
     d_p_mm = _require_real("d_p_mm", d_p_mm)
     d_h_mm = _require_real("d_h_mm", d_h_mm)
@@ -108,9 +112,9 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
         raise ValueError(
             f"d_h_mm must be smaller than d_p_mm, got d_h_mm={d_h_mm}, d_p_mm={d_p_mm}."
         )
-    require_pillar_cad_geo_id(geo_id, d_p_mm, d_h_mm, d_f_mm)
+    require_pillar_cad_geo_id(geo_id, d_p_mm, d_h_mm, d_f_mm, n_active=n_active)
 
-    layout = _layout_from_config(d_f_mm * MM_TO_M)
+    layout = _layout_from_config(d_f_mm * MM_TO_M, n_active=n_active)
     d_p_m = d_p_mm * MM_TO_M
     d_h_m = d_h_mm * MM_TO_M
     paths = _output_paths(out_dir, geo_id)
@@ -152,7 +156,11 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
             counts=counts,
             backend_version=str(modeler.client.backend_version),
             registry=pillar_registry_entry(
-                geo_id, d_p_m, d_h_m, d_f_mm * MM_TO_M
+                geo_id,
+                d_p_m,
+                d_h_m,
+                d_f_mm * MM_TO_M,
+                n_active_cells=layout["n_active"],
             ),
             pmdb_sha256=sha256_file(paths["pmdb"]),
         )
@@ -183,11 +191,21 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir):
     return {"paths": {key: str(path) for key, path in paths.items()}, "face_counts": counts}
 
 
-def _layout_from_config(filament_d_m):
-    """Campaign layout from ``_COMMON_MESH``. ``geo_id`` is not a case key."""
+def _layout_from_config(filament_d_m, n_active=None):
+    """Campaign layout from ``_COMMON_MESH``. ``geo_id`` is not a case key.
+
+    ``n_active=None`` uses the config count. Buffers stay the config values
+    (1 in + 2 out on the campaign pillar).
+    """
     common = _load_batch_config()._COMMON_MESH
     a_m = _require_real("cell_length_x_m", common["cell_length_x_m"])
-    n_active = _require_count("n_active_cells", common["n_active_cells"])
+    configured_active = _require_count("n_active_cells", common["n_active_cells"])
+    if n_active is None:
+        n_active = configured_active
+    else:
+        n_active = _require_count("n_active", n_active)
+        if n_active < 1:
+            raise ValueError(f"n_active must be >= 1, got {n_active}.")
     n_buffer_in = _require_count("n_buffer_in", common["n_buffer_in"])
     n_buffer_out = _require_count("n_buffer_out", common["n_buffer_out"])
     filament_d_m = _require_real("filament_d_m", filament_d_m)
@@ -683,15 +701,29 @@ def _required_labels(d_h_m):
     return labels
 
 
+def _meta_inputs(*, d_p_mm, d_h_mm, d_f_mm, geo_id, n_active):
+    """Default-domain inputs omit ``n_active`` so the meta object stays unchanged."""
+    inputs = {
+        "d_p_mm": d_p_mm,
+        "d_h_mm": d_h_mm,
+        "d_f_mm": d_f_mm,
+        "geo_id": geo_id,
+    }
+    if n_active != DEFAULT_PILLAR_N_ACTIVE:
+        inputs["n_active"] = n_active
+    return inputs
+
+
 def _meta_payload(*, geo_id, d_p_mm, d_h_mm, d_f_mm, layout, d_p_m, d_h_m, nodes, line_count, counts, backend_version, registry, pmdb_sha256):
     return {
         "geo_id": geo_id,
-        "inputs": {
-            "d_p_mm": d_p_mm,
-            "d_h_mm": d_h_mm,
-            "d_f_mm": d_f_mm,
-            "geo_id": geo_id,
-        },
+        "inputs": _meta_inputs(
+            d_p_mm=d_p_mm,
+            d_h_mm=d_h_mm,
+            d_f_mm=d_f_mm,
+            geo_id=geo_id,
+            n_active=layout["n_active"],
+        ),
         "derived": {
             "a_m": layout["a_m"],
             "channel_height_m": layout["h_m"],

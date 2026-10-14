@@ -97,6 +97,9 @@ def evaluate_convergence_quality(
     *,
     continuity_final: Any = None,
     evaluation_cell_numbers: Optional[Sequence[int]] = None,
+    lmh_rel_abs_max: Optional[float] = None,
+    mass_balance_rel_abs_max: Optional[float] = None,
+    continuity_final_max: Optional[float] = None,
 ) -> dict[str, Any]:
     """Classify post-hoc convergence quality from summary + residual metrics.
 
@@ -123,6 +126,17 @@ def evaluate_convergence_quality(
         ``pp_pressure_drop_rel_spread_window``, and the continuity column
         ``pp_pressure_drop_rel_spread_cells_4_7``.
     """
+    lmh_limit = LMH_REL_ABS_MAX if lmh_rel_abs_max is None else float(lmh_rel_abs_max)
+    mb_limit = (
+        MASS_BALANCE_REL_ABS_MAX
+        if mass_balance_rel_abs_max is None
+        else float(mass_balance_rel_abs_max)
+    )
+    continuity_limit = (
+        CONTINUITY_FINAL_MAX
+        if continuity_final_max is None
+        else float(continuity_final_max)
+    )
     lmh_rel = _as_float(metrics.get("lmh_relative_difference"))
     mb_rel = _as_float(metrics.get("mass_balance_relative_error"))
     continuity = _as_float(continuity_final)
@@ -140,26 +154,26 @@ def evaluate_convergence_quality(
     checks: dict[str, dict[str, Any]] = {
         "lmh_relative_difference": {
             "value": lmh_rel,
-            "threshold_abs": LMH_REL_ABS_MAX,
+            "threshold_abs": lmh_limit,
             "available": lmh_rel is not None,
             "passed": (
-                lmh_rel is not None and abs(lmh_rel) < LMH_REL_ABS_MAX
+                lmh_rel is not None and abs(lmh_rel) < lmh_limit
             ),
         },
         "mass_balance_relative_error": {
             "value": mb_rel,
-            "threshold_abs": MASS_BALANCE_REL_ABS_MAX,
+            "threshold_abs": mb_limit,
             "available": mb_rel is not None,
             "passed": (
-                mb_rel is not None and abs(mb_rel) < MASS_BALANCE_REL_ABS_MAX
+                mb_rel is not None and abs(mb_rel) < mb_limit
             ),
         },
         "continuity_final": {
             "value": continuity,
-            "threshold_max": CONTINUITY_FINAL_MAX,
+            "threshold_max": continuity_limit,
             "available": continuity is not None,
             "passed": (
-                continuity is not None and continuity < CONTINUITY_FINAL_MAX
+                continuity is not None and continuity < continuity_limit
             ),
         },
     }

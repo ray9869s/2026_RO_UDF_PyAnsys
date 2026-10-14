@@ -488,6 +488,7 @@ requires that row's `mesh_id` and records `window_source` `geo_id`. Any
 other data root uses the same geo row for every mesh and records
 `window_source` `geo_row_production_mesh`, so a mesh study shares one
 window. Diamond, ml, sin, and empty have no family default.
+A fidelity level that sets `n_lead_excluded` does not read the table: the window is that count on the run mesh, and `window_source` is `fidelity_table`.
 `--legacy-3-cell-window` is the only way to score the old fixed lead of 3,
 and it exists to reproduce old extracts. The run manifest and the wide
 summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`,

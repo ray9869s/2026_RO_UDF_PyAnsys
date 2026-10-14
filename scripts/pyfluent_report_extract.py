@@ -50,6 +50,7 @@ from ro.extract_profile import (  # noqa: E402
     mfbo_mixing_cup_boundary_indices,
     mfbo_pressure_boundary_indices,
     mfbo_required_report_names,
+    fidelity_extract_overrides,
     parse_extract_options,
     parse_extract_profile,
     require_mfbo_summary_columns,
@@ -433,6 +434,7 @@ if __name__ == "__main__":
     # silently score a 1+7+2 mesh as 1+3+1. The evaluation window is
     # applied after the run manifest is read.
     _extract_profile_name, _legacy_3_cell_window = parse_extract_options()
+    _fidelity_extract = fidelity_extract_overrides()
     scoring_layout = require_explicit_scoring_layout(cfg)
 
     print("Config loaded from:")
@@ -514,6 +516,7 @@ if __name__ == "__main__":
         cell_length_x_m=scoring_layout.layout.cell_length_x_m,
         legacy_3_cell_window=_legacy_3_cell_window,
         data_root=os.environ.get("RO_DATA_ROOT"),
+        fidelity_n_lead_excluded=_fidelity_extract.get("n_lead_excluded"),
     )
     apply_selection_to_config(cfg, _evaluation_window_selection)
     evaluation_window = require_explicit_evaluation_window(cfg)
@@ -2882,10 +2885,14 @@ if __name__ == "__main__":
 
         # Post-hoc convergence quality (independent of stop_reason).
         continuity_final = continuity_final_from_case_dir(case_path)
+        _gate = _fidelity_extract.get("convergence_gate") or {}
         quality_result = evaluate_convergence_quality(
             wide_record,
             continuity_final=continuity_final,
             evaluation_cell_numbers=evaluation_cells,
+            lmh_rel_abs_max=_gate.get("lmh_rel_abs_max"),
+            mass_balance_rel_abs_max=_gate.get("mass_balance_rel_abs_max"),
+            continuity_final_max=_gate.get("continuity_final_max"),
         )
 
         # ----------------------------------------------------------

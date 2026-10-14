@@ -1,0 +1,33 @@
+{
+  "HF": {
+    "m_max": 0.085,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 12,
+    "spacer_bl_layers": 4,
+    "peel_layers": 2,
+    "n_active": 7,
+    "n_lead_excluded": 4,
+    "extract_profile": "mfbo"
+  },
+  "LF_a": {
+    "m_max": 0.085,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 4,
+    "peel_layers": 2,
+    "n_active": 3,
+    "n_lead_excluded": 1,
+    "extract_profile": "mfbo"
+  },
+  "LF_b": {
+    "m_max": 0.12,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 4,
+    "peel_layers": 2,
+    "n_active": 3,
+    "n_lead_excluded": 1,
+    "extract_profile": "mfbo"
+  }
+}
