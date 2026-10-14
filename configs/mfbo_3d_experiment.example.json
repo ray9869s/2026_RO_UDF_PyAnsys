@@ -1,0 +1,33 @@
+{
+  "experiment_id": "example",
+  "method": "mfbo",
+  "mode": "offline_replay",
+  "seed": 0,
+  "run_id": "u0p2_p6M",
+  "d_f_mm": 0.4,
+  "design_box": {
+    "d_p_mm": [0.6, 1.0],
+    "d_h_mm": [0.0, 0.3]
+  },
+  "cp_excess_max": "TBD",
+  "dp_max_pa_per_m": "TBD",
+  "budget_hf_equivalent": 8.0,
+  "max_sequential": 6,
+  "reference_hf_wall_s": 3600.0,
+  "lf_over_hf_cost_ratio": 0.25,
+  "candidate_grid": 9,
+  "initial_hf": [
+    {"d_p_mm": 0.8, "d_h_mm": 0.15},
+    {"d_p_mm": 1.0, "d_h_mm": 0.0},
+    {"d_p_mm": 1.0, "d_h_mm": 0.3},
+    {"d_p_mm": 0.6, "d_h_mm": 0.3}
+  ],
+  "initial_lf": [
+    {"d_p_mm": 0.8, "d_h_mm": 0.15},
+    {"d_p_mm": 1.0, "d_h_mm": 0.0},
+    {"d_p_mm": 1.0, "d_h_mm": 0.3},
+    {"d_p_mm": 0.6, "d_h_mm": 0.3}
+  ],
+  "fidelity_table": "configs/mfbo_fidelity_table.example.json",
+  "replay_table": "studies/optimization/3d/campaign_lf_replay.json"
+}

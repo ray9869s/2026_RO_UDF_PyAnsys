@@ -129,15 +129,68 @@ def test_constrained_ei_is_zero_when_the_constraint_is_violated() -> None:
     assert open_score > 0.0
 
 
+def test_one_constraint_is_unchanged_and_two_constraints_multiply() -> None:
+    from ro_2d_pilot.optimization.acquisition import feasibility_probability, forrester_scores
+    from ro_2d_pilot.optimization.domain import FIDELITY_HIGH, FIDELITY_LOW
+
+    pressure_only = constrained_ei(2.0, 1.0, 10.0, 0.25, incumbent=1.0, limit=30.0)
+    manual = expected_improvement(2.0, 1.0, 1.0) * feasibility_probability(10.0, 0.25, 30.0)
+    assert pressure_only == manual
+    certain = constrained_ei(
+        2.0,
+        1.0,
+        10.0,
+        0.25,
+        incumbent=1.0,
+        limit=30.0,
+        extra_constraints=((0.02, 0.0, 0.05),),
+    )
+    assert certain == manual
+    violated = constrained_ei(
+        2.0,
+        1.0,
+        10.0,
+        0.25,
+        incumbent=1.0,
+        limit=30.0,
+        extra_constraints=((0.20, 0.0, 0.05),),
+    )
+    assert violated == 0.0
+    no_incumbent = constrained_ei(
+        2.0,
+        1.0,
+        10.0,
+        0.0,
+        incumbent=None,
+        limit=30.0,
+        extra_constraints=((0.01, 0.0, 0.05),),
+    )
+    assert no_incumbent == 2.0
+    ratio = lf_over_hf_cost_ratio()
+    assert forrester_scores(
+        1.5,
+        0.4,
+        cost_ratio=ratio,
+        high_name=FIDELITY_HIGH,
+        low_name=FIDELITY_LOW,
+    ) == forrester_scores(1.5, 0.4)
+
+
 def test_hf_and_mfbo_replay_are_deterministic_and_budgeted(tmp_path: Path) -> None:
     first = _run(tmp_path / "a", METHOD_HF)
     second = _run(tmp_path / "b", METHOD_HF)
     assert first["final_hf_validated"] == second["final_hf_validated"]
     assert first["cumulative_hf_equivalent"] == second["cumulative_hf_equivalent"]
+    assert first["final_hf_validated"]["d_m"] == 0.0003
+    assert first["final_hf_validated"]["L_m"] == 0.003
+    assert first["final_hf_validated"]["hf_lmh"] == 25.3042
+    assert first["cumulative_hf_equivalent"] == 7.149066061869485
     history = json.loads((tmp_path / "a" / "history.json").read_text(encoding="utf-8"))
     assert all(row["fidelity"] == FIDELITY_HIGH for row in history)
     assert first["cumulative_hf_equivalent"] <= 8.0 + 1.0e-6
     mf = _run(tmp_path / "mf", METHOD_MF)
+    assert mf["final_hf_validated"]["hf_lmh"] == 25.3042
+    assert mf["cumulative_hf_equivalent"] == 6.933907002541019
     mf_history = json.loads((tmp_path / "mf" / "history.json").read_text(encoding="utf-8"))
     assert any(row["fidelity"] == FIDELITY_LOW for row in mf_history)
     assert mf["n_medium"] >= 4

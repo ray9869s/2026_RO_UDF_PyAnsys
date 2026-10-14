@@ -4,9 +4,9 @@ Methodological pilot only. It is not the 3D campaign, and `very_fine` is
 the target fidelity for this pilot, not a grid-independent solution.
 
 The 3D production workflow (`src/ro/`, `scripts/solver_code_260616.py`,
-`udfs/260822_RO_UDF.c`, `RO_DATA_ROOT`) is unchanged. A 3D multi-fidelity
-Bayesian optimization layer is still not implemented. This document records
-the 2D closed loop that can later be attached to a separate 3D evaluator.
+`udfs/260822_RO_UDF.c`, `RO_DATA_ROOT`) is unchanged. This document records
+the 2D closed loop. The 3D loop that calls the pillar evaluator is in
+[3D loop](#3d-loop).
 
 Code lives in `src/ro_2d_pilot/optimization/`. Case files and experiment
 logs live under absolute `RO_2D_DATA_ROOT`, never in git and never under
@@ -220,7 +220,9 @@ NumPy only. BoTorch / PyTorch are not dependencies.
 
 HF-only (`constrained_expected_improvement`): every new query is
 `very_fine`. An RBF GP. Constrained expected improvement is LMH expected
-improvement times the probability that dP/L is within the limit.
+improvement times the probability that dP/L is within the limit. A second
+constraint multiplies a second probability. The 2D pilot sets only the
+pressure limit, and that score is the single-constraint value.
 
 MFBO (`kennedy_ohagan_forrester_constrained_ei`): one autoregressive model
 `y_HF = ρ y_LF + δ` for LMH and another for dP/L. Forrester scores compare
@@ -289,8 +291,8 @@ python scripts/run_ro_2d_mfbo.py --mode offline_replay --experiment-id replay_ch
 
 The optimizer needs a design box, an `evaluate(design, fidelity)` function,
 fidelity names, LMH and dP/L extraction, and a cost model. The pillar
-evaluator that supplies that function is below. It does not replace the
-2D design box.
+evaluator that supplies that function is below. The loop that calls it is
+[3D loop](#3d-loop). It does not replace the 2D design box.
 
 ## 3D adapter
 
@@ -322,9 +324,9 @@ plus `manifest.json`. Run success is `manifest.json` plus
 A leaf that exists without that record returns `execution_failed` and
 the leaf path, and is not run again.
 
-`lmh` is `lmh_mass_balance` per exposed membrane area.
-`lmh_module_area` rescales it with the same module-area formula as
-`scripts/mfbo/summarize_results.py`.
+`lmh` is summary column `lmh_window_module` (window, module-area LMH).
+`lmh_module_area` remains the whole-active rescale of `lmh_mass_balance`
+and is not a fallback for `lmh`.
 `pressure_drop_per_length_pa_per_m` is `pressure_drop_spacer_per_m`.
 `cp_average` is `cpc_window_avg_flux`. `cp_q999` is `cp_q999_window_flux`.
 `cp_canon_window_avg` is kept as a reference and is not `cp_average`.
@@ -401,3 +403,104 @@ Mesh knobs (`m_max`, `m_min`, `m_cpg`, `bl_layers`, `spacer_bl_layers`,
   is not in the production solver catalog reuses the default solver case
   and replaces only `mesh_id`. The default mesh id is unchanged.
 - `reextract_runs.py` takes a run leaf, not the knobs.
+
+## 3D loop
+
+`scripts/mfbo/run_3d_mfbo.py` runs the pillar problem in
+`src/ro/mfbo_3d.py`. Importing either does not launch Fluent. Live mode
+imports `ro.mfbo_drivers` and runs one case at a time on the Windows host.
+
+Design variables are pillar diameter `d_p_mm` and bore diameter `d_h_mm`.
+Filament diameter `d_f_mm` is fixed at 0.40. The operating point is the
+experiment `run_id`, for example `u0p2_p6M`. The objective is maximize
+`lmh` (`lmh_window_module`).
+
+Two constraints, both from the experiment file:
+
+```
+cp_average - 1 <= cp_excess_max
+pressure_drop_per_length_pa_per_m <= dp_max_pa_per_m
+```
+
+The design box, budget, initial designs, reference HF wall time, and
+LF/HF cost ratio are in that file too. A missing field is an error.
+`configs/mfbo_3d_experiment.example.json` sets `cp_excess_max` and
+`dp_max_pa_per_m` to `TBD`, and the run refuses those placeholders.
+There is no default limit. The example's `reference_hf_wall_s` (3600 s)
+and `lf_over_hf_cost_ratio` (0.25) are not a measured 3D screen. Replace
+them with the median HF wall time and the median LF/HF wall-time ratio
+before quoting a cost.
+
+The same NumPy acquisition is used. Probability of feasibility is the
+product of one Gaussian probability per constraint. HF-only queries `HF`.
+MFBO is the Kennedy–O'Hagan model on LMH, on dP/L, and on CP excess, with
+Forrester's cost ratio taken from the experiment file. With only the
+pressure constraint set, the 2D score is unchanged.
+
+Before a candidate is scored, the opening gap is compared with that
+fidelity's `m_min`. A sliver, or a bore that is not smaller than the
+pillar, is left out of the candidate set and is not evaluated. An initial
+design that fails that check is an error.
+
+`diverged`, `invalid`, and `execution_failed` are recorded, excluded from
+GP training, and not repeated at the same `(d_p_mm, d_h_mm, fidelity)`.
+They are not stored as LMH = 0.
+
+`offline_replay` reads a table keyed by `(d_p_mm, d_h_mm, fidelity)` and
+refuses a design that is not in it. `build-replay` builds the LF rows
+from campaign pillar leaves in a data root:
+`P_p60/80/100` × `h00/15/30` are `d_p_mm` 0.60/0.80/1.00 and `d_h_mm`
+0/0.15/0.30, at the requested mesh and `run_id`. A geo_id with no run
+leaf is omitted. A leaf that exists is kept, including a failure.
+
+`live` calls `mfbo_adapter.evaluate` with the real drivers. The output
+data root must not be `C:/ro_data`. `build-replay` may read a campaign
+root; its `--out` path may not be under `C:/ro_data`.
+
+HF-equivalent cost is cumulative wall seconds divided by
+`reference_hf_wall_s`. Wall seconds are `mesh_wall_time_s +
+solver_wall_time_s + extraction_wall_time_s`. A missing part is imputed
+from that fidelity's expected cost and marked `cost_imputed`. Reused
+results are still charged. The example budget is 8.0 HF-equivalent and
+at most 6 sequential queries, plus one final `HF` evaluation of the
+recommended design when that design has no `HF` result yet.
+
+The reported optimum is an evaluated `HF` point that satisfies both
+constraints. An LF prediction is not the result. If no evaluated `HF`
+point is feasible, the summary fields are null.
+
+Outputs go under
+`<data_root>/studies/optimization/3d/{hf_bo|mfbo}/<experiment_id>/`:
+
+- `config.json`
+- `history.csv`
+- `history.json`
+- `final_summary.json`
+
+A restart reloads `history.json` and continues. Raising
+`budget_hf_equivalent` or `max_sequential` is allowed. Changing the
+limits, the box, the initials, the fidelity table, or the replay table
+is refused. A file named `STOP` in the experiment directory finishes the
+current evaluation and does not start the next one. Remove it to
+continue. If `STOP` is already there and no history exists, the run
+writes nothing.
+
+`configs/mfbo_fidelity_table.example.json` still marks `HF` as `TBD`.
+A method that needs that level refuses it before any driver starts.
+
+```bash
+python scripts/mfbo/run_3d_mfbo.py build-replay \
+  --data-root "$RO_DATA_ROOT" \
+  --run-id u0p2_p6M \
+  --mesh-id max085_min006_cpg5_bl4_peel2 \
+  --fidelity LF \
+  --out /c/ro_data_mfbo/studies/optimization/3d/campaign_lf_replay.json
+
+python scripts/mfbo/run_3d_mfbo.py run \
+  --config configs/mfbo_3d_experiment.example.json \
+  --data-root /c/ro_data_mfbo
+```
+
+The example run refuses until `cp_excess_max` and `dp_max_pa_per_m` are
+finite numbers, the fidelity table has mesh settings for every level the
+method queries, and, for `offline_replay`, the replay table exists.

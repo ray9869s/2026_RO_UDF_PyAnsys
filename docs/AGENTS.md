@@ -13,7 +13,8 @@ in `configs/batch_config.py` → subprocess workers (`scripts/meshing_code_*.py`
 `scripts/solver_code_*.py`) → `RO_DATA_ROOT/runs/{family}/{geo_id}/{mesh_id}/{run_id}/`
 → post-processing orchestrators under `scripts/`. Campaign-side MFBO
 drivers live in `scripts/mfbo/` (mesh, solve, re-extract, CP hotspot,
-mesh-study). The Bayesian optimizer itself is not implemented. The
+mesh-study). The 3D Bayesian optimization loop is
+`scripts/mfbo/run_3d_mfbo.py` (`src/ro/mfbo_3d.py`). The
 separate 2D methodological pilot in
 `src/ro_2d_pilot/optimization/` is documented in `docs/RO_2D_OPTIMIZATION.md`.
 It does not change the 3D campaign. Offline replay is not a performance
