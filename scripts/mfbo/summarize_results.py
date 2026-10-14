@@ -690,7 +690,9 @@ def _whole_int(mapping, key):
     return int(number)
 
 
-def _window_columns(wide, mesh_manifest, geo_id, mesh_id, notes, table_path):
+def _window_columns(
+    wide, mesh_manifest, geo_id, mesh_id, notes, table_path, data_root
+):
     """Copy stored window fields, or fill old leaves from the table and cells."""
     fields = {}
     identity_stored = all(
@@ -739,6 +741,7 @@ def _window_columns(wide, mesh_manifest, geo_id, mesh_id, notes, table_path):
             mesh_id=mesh_id,
             n_active=n_active,
             cell_length_x_m=cell_length,
+            data_root=data_root,
         )
     except (FileNotFoundError, KeyError, ValueError, TypeError) as exc:
         lookup_error = exc
@@ -929,6 +932,7 @@ def row_for_leaf(
             mesh_id,
             notes,
             window_table_path,
+            data_root,
         )
     )
     row.update(_dimensionless_fields(mesh_manifest, wide, run_manifest, notes))

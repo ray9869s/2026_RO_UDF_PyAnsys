@@ -71,6 +71,12 @@ _FEATURE_SCALE_FIELDS = frozenset({
     "membrane_contact_width_m",
     "Sigma_d_nominal_m",
 })
+# Signed coordinates near the campaign origin, not positive lengths.
+# |z| <= 1e-6 m stays in require_campaign_midplane_z.
+_SIGNED_OFFSET_FIELDS = frozenset({
+    "channel_midplane_z_m",
+    "channel_midplane_offset_m",
+})
 
 
 class ManifestValidationError(ManifestError):
@@ -135,6 +141,8 @@ def validate_metre_field_scales(
                 f"{kind} manifest field {label!r} must be finite metres, "
                 f"got {raw!r}."
             )
+        if field in _SIGNED_OFFSET_FIELDS:
+            continue
         # Exact zero is a valid unset/no-feature value for several lengths.
         if value == 0.0:
             continue

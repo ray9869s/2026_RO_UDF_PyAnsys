@@ -134,6 +134,24 @@ def test_mfbo_profile_keeps_window_lmh_columns():
     assert "wall_shear_avg" not in kept
 
 
+def test_mfbo_profile_keeps_window_mesh_identity_including_a_null_table_mesh():
+    rows = [
+        {"metric": "window_source", "value": "family_default", "unit": "-"},
+        {"metric": "window_table_mesh_id", "value": None, "unit": "-"},
+        {
+            "metric": "run_mesh_id",
+            "value": "max085_min006_cpg5_bl12s4_peel2",
+            "unit": "-",
+        },
+        {"metric": "wall_shear_avg", "value": 1.0, "unit": "Pa"},
+    ]
+    kept = {row["metric"]: row["value"] for row in filter_mfbo_summary_rows(rows)}
+    assert kept["window_source"] == "family_default"
+    assert kept["window_table_mesh_id"] is None
+    assert kept["run_mesh_id"] == "max085_min006_cpg5_bl12s4_peel2"
+    assert "wall_shear_avg" not in kept
+
+
 def test_require_mfbo_summary_columns_requires_window_lmh():
     row = {column: "1" for column in MFBO_REQUIRED_SUMMARY_COLUMNS}
     row["profile"] = "mfbo"

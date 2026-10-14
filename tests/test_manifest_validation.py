@@ -15,6 +15,7 @@ from ro.campaign_geometry import (
     merge_geometry_into_mesh_manifest,
 )
 from ro.manifest_errors import ManifestError
+from ro.fluent_report_helpers import require_campaign_midplane_z
 from ro.manifest_validation import (
     collect_spacer_wall_zones_from_fluent,
     derive_periodic_shift_y_from_angle_m,
@@ -27,6 +28,7 @@ from ro.manifest_validation import (
     validate_metre_field_scales,
     validate_ml_layer_fields,
     validate_periodic_shift_y,
+    validate_run_geometry_fields,
     validate_sigma_d_invariant,
     validate_spacer_wall_zones,
 )
@@ -72,6 +74,29 @@ def test_metre_field_list_rejects_millimetre_leakage():
 def test_plausible_metre_fields_pass_scale_guard():
     validate_metre_field_scales(mesh_payload(), kind="Mesh")
     validate_metre_field_scales(run_payload(), kind="Run")
+
+
+def test_channel_midplane_coordinates_skip_the_length_band():
+    for value in (2.3283e-10, 0.0, -2.337e-8):
+        payload = run_payload()
+        payload["channel_midplane_z_m"] = value
+        payload["channel_midplane_offset_m"] = value
+        validate_run_geometry_fields(payload)
+        assert require_campaign_midplane_z(value) == pytest.approx(value)
+    leaked = run_payload()
+    leaked["periodic_shift_y_m"] = 2.3283e-10
+    with pytest.raises(ManifestError, match="micrometres leaked into a metre field"):
+        validate_metre_field_scales(leaked, kind="Run")
+    with pytest.raises(RuntimeError, match="1e-06"):
+        require_campaign_midplane_z(1.1e-6)
+    bad = run_payload()
+    bad["channel_midplane_z_m"] = float("nan")
+    with pytest.raises(ManifestError, match="finite"):
+        validate_run_geometry_fields(bad)
+    text = run_payload()
+    text["channel_midplane_offset_m"] = "2.3283e-10"
+    with pytest.raises(ManifestError, match="numeric"):
+        validate_run_geometry_fields(text)
 
 
 def test_feature_scale_rejects_both_unit_leaks():

@@ -66,6 +66,8 @@ MFBO_REQUIRED_SUMMARY_COLUMNS = (
     "excluded_length_m",
     "window_length_m",
     "window_table_version",
+    "window_source",
+    "run_mesh_id",
     "area_mem",
     "pressure_drop_spacer_per_m",
     "cpc_window_avg_flux",
@@ -112,6 +114,9 @@ _MFBO_SUMMARY_METRICS = frozenset(
         "excluded_length_m",
         "window_length_m",
         "window_table_version",
+        "window_source",
+        "window_table_mesh_id",
+        "run_mesh_id",
         "lmh_mass_balance_signed_python",
         "lmh_udm_avg",
         "lmh_difference_mass_balance_minus_udm",
@@ -195,7 +200,10 @@ _CELL_METRIC = re.compile(
 )
 
 # Present on a successful extract even when the value is null.
-_NULLABLE_SUMMARY_METRICS = frozenset({"cp_canon_rescale_delta_max"})
+_NULLABLE_SUMMARY_METRICS = frozenset({
+    "cp_canon_rescale_delta_max",
+    "window_table_mesh_id",
+})
 
 # Explained in the parity report. These are not shared columns.
 PARITY_EXCEPTIONS = (

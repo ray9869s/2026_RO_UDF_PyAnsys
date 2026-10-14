@@ -481,13 +481,18 @@ does not report a salt-path observation.
 reads that table. A campaign `geo_id` that is not in the table is an error.
 Registered MFBO pillar ids (`MFP_d####_h####_f####`) use the table's
 `family_defaults.pillar` entry, written from the campaign pillars, and
-the run manifest `window_source` is `family_default`. Campaign ids,
-including campaign pillars, keep `window_source` `geo_id`. Diamond, ml,
-sin, and empty have no family default.
+the run manifest `window_source` is `family_default`. That default does
+not compare `mesh_id`. Campaign ids, including campaign pillars, use the
+geo row. Production campaign extraction (`RO_DATA_ROOT` `C:/ro_data`)
+requires that row's `mesh_id` and records `window_source` `geo_id`. Any
+other data root uses the same geo row for every mesh and records
+`window_source` `geo_row_production_mesh`, so a mesh study shares one
+window. Diamond, ml, sin, and empty have no family default.
 `--legacy-3-cell-window` is the only way to score the old fixed lead of 3,
 and it exists to reproduce old extracts. The run manifest and the wide
 summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`,
-and `window_table_version` (the table row's `date`, or `legacy-3-cell`).
+`window_table_version` (the table row's `date`, or `legacy-3-cell`),
+`window_source`, `window_table_mesh_id`, and `run_mesh_id`.
 Trail exclusion stays 0. CP metrics, including `cpc_window_avg_flux` and
 `cp_q999_window_flux`, use this same window. `lmh_window_exposed` and
 `lmh_window_module` use it too.

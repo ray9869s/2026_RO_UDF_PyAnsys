@@ -129,7 +129,10 @@ def test_table_row_sets_the_window_and_version(tmp_path):
     assert selection.n_lead_excluded == 2
     assert selection.window_table_version == "2026-10-09"
     assert selection.window_source == "geo_id"
-    assert selection.manifest_fields()["window_length_m"] == pytest.approx(5 * DX)
+    fields = selection.manifest_fields()
+    assert fields["window_length_m"] == pytest.approx(5 * DX)
+    assert fields["window_table_mesh_id"] == MESH_ID
+    assert fields["run_mesh_id"] == MESH_ID
 
 
 def test_window_lmh_uses_both_area_bases():
@@ -185,6 +188,8 @@ def test_registered_mfbo_pillar_uses_the_family_default(tmp_path):
     assert selection.excluded_length_m == pytest.approx(3 * DX)
     assert selection.window_length_m == pytest.approx(4 * DX)
     assert selection.manifest_fields()["window_source"] == "family_default"
+    assert selection.window_table_mesh_id is None
+    assert selection.run_mesh_id == "not-the-campaign-mesh"
     campaign = selection_from_table(
         path,
         "P_p100_h30",
@@ -207,6 +212,105 @@ def test_campaign_pillar_missing_from_the_table_does_not_use_the_default(tmp_pat
             n_active=7,
             cell_length_x_m=DX,
         )
+
+
+def test_production_root_keeps_the_exact_mesh_match(tmp_path):
+    path = tmp_path / "evaluation_window_table.json"
+    _table(path, {"D2450_a45": _record()})
+    run_mesh = "max035_min006_cpg5_bl4_peel2"
+    for root in ("C:/ro_data", "C:\\ro_data", "/mnt/c/ro_data", "C:/ro_data/"):
+        with pytest.raises(ValueError, match="mesh_id"):
+            selection_from_table(
+                path,
+                "D2450_a45",
+                mesh_id=run_mesh,
+                n_active=7,
+                cell_length_x_m=DX,
+                data_root=root,
+            )
+    with pytest.raises(ValueError, match="mesh_id"):
+        select_evaluation_window(
+            geo_id="D2450_a45",
+            mesh_id=run_mesh,
+            n_active=7,
+            cell_length_x_m=DX,
+            legacy_3_cell_window=False,
+            table_path=path,
+        )
+
+
+def test_other_data_root_uses_the_geo_row_for_any_mesh(tmp_path):
+    path = tmp_path / "evaluation_window_table.json"
+    _table(path, {"D2450_a45": _record(n_lead_excluded=2), "M_c267": _record()})
+    cases = (
+        (
+            "C:/ro_data_mfbo/meshstudy",
+            "D2450_a45",
+            "max035_min006_cpg5_bl4_peel2",
+            2,
+        ),
+        (
+            "C:/ro_data_mfbo/meshstudy",
+            "M_c267",
+            "max085_min006_cpg5_bl10_peel2",
+            2,
+        ),
+        (
+            "C:/ro_data_mfbo/campaign_reextract_v2",
+            "D2450_a45",
+            "max025_min006_cpg5_bl4_peel2",
+            2,
+        ),
+        (str(tmp_path), "D2450_a45", MESH_ID, 2),
+    )
+    for root, geo_id, run_mesh, n_lead in cases:
+        selection = select_evaluation_window(
+            geo_id=geo_id,
+            mesh_id=run_mesh,
+            n_active=7,
+            cell_length_x_m=DX,
+            legacy_3_cell_window=False,
+            table_path=path,
+            data_root=root,
+        )
+        assert selection.n_lead_excluded == n_lead
+        assert selection.excluded_length_m == pytest.approx(n_lead * DX)
+        assert selection.window_length_m == pytest.approx((7 - n_lead) * DX)
+        assert selection.window_source == "geo_row_production_mesh"
+        fields = selection.manifest_fields()
+        assert fields["window_table_mesh_id"] == MESH_ID
+        assert fields["run_mesh_id"] == run_mesh
+        assert fields["window_source"] == "geo_row_production_mesh"
+    with pytest.raises(ValueError, match="excluded_length_m"):
+        selection_from_table(
+            path,
+            "D2450_a45",
+            mesh_id="max035_min006_cpg5_bl4_peel2",
+            n_active=7,
+            cell_length_x_m=0.001,
+            data_root="C:/ro_data_mfbo/meshstudy",
+        )
+
+
+def test_family_default_accepts_the_mfbo_hf_mesh(tmp_path):
+    path = tmp_path / "evaluation_window_table.json"
+    _table(path, {"family_defaults": {"pillar": _family_default()}})
+    hf_mesh = "max085_min006_cpg5_bl12s4_peel2"
+    for root in (None, "C:/ro_data", "C:/ro_data_mfbo"):
+        selection = selection_from_table(
+            path,
+            "MFP_d0800_h0000_f0400",
+            mesh_id=hf_mesh,
+            n_active=7,
+            cell_length_x_m=DX,
+            data_root=root,
+        )
+        assert selection.window_source == "family_default"
+        assert selection.n_lead_excluded == 3
+        fields = selection.manifest_fields()
+        assert fields["window_table_mesh_id"] is None
+        assert fields["run_mesh_id"] == hf_mesh
+        assert fields["window_source"] == "family_default"
 
 
 def test_family_default_refuses_diamond_and_a_mismatched_pitch(tmp_path):

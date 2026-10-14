@@ -513,6 +513,7 @@ if __name__ == "__main__":
         n_active=scoring_layout.layout.n_active,
         cell_length_x_m=scoring_layout.layout.cell_length_x_m,
         legacy_3_cell_window=_legacy_3_cell_window,
+        data_root=os.environ.get("RO_DATA_ROOT"),
     )
     apply_selection_to_config(cfg, _evaluation_window_selection)
     evaluation_window = require_explicit_evaluation_window(cfg)
@@ -524,6 +525,10 @@ if __name__ == "__main__":
         f"window_length_m={_evaluation_window_selection.window_length_m}",
         "window_table_version="
         f"{_evaluation_window_selection.window_table_version}",
+        f"window_source={_evaluation_window_selection.window_source}",
+        "window_table_mesh_id="
+        f"{_evaluation_window_selection.window_table_mesh_id}",
+        f"run_mesh_id={_evaluation_window_selection.run_mesh_id}",
     )
 
 def as_fluent_path(path):
@@ -2586,6 +2591,21 @@ if __name__ == "__main__":
             {
                 "metric": "window_table_version",
                 "value": _evaluation_window_selection.window_table_version,
+                "unit": "-",
+            },
+            {
+                "metric": "window_source",
+                "value": _evaluation_window_selection.window_source,
+                "unit": "-",
+            },
+            {
+                "metric": "window_table_mesh_id",
+                "value": _evaluation_window_selection.window_table_mesh_id,
+                "unit": "-",
+            },
+            {
+                "metric": "run_mesh_id",
+                "value": _evaluation_window_selection.run_mesh_id,
                 "unit": "-",
             },
             {"metric": "lmh_mass_balance_signed", "value": lmh_mass_balance_signed, "unit": "LMH"},

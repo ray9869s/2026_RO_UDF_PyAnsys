@@ -6,6 +6,11 @@ that is not in it is an error. A registered MFBO pillar id may use the
 pillar ``family_defaults`` entry. Diamond, ml, sin, and empty have no
 family default. ``--legacy-3-cell-window`` is the only fixed lead of 3,
 and it does not read the table.
+
+Production campaign extraction (``RO_DATA_ROOT`` of ``C:/ro_data``) requires
+the geo row's ``mesh_id``. Any other data root uses that same row for every
+mesh, so a mesh study shares one window. An unknown root keeps the exact
+match. Pillar family defaults never compare ``mesh_id``.
 """
 
 from __future__ import annotations
@@ -25,8 +30,10 @@ LENGTH_TOL_M = 1e-9
 LEGACY_N_LEAD = 3
 LEGACY_WINDOW_TABLE_VERSION = "legacy-3-cell"
 WINDOW_SOURCE_GEO_ID = "geo_id"
+WINDOW_SOURCE_GEO_ROW_PRODUCTION_MESH = "geo_row_production_mesh"
 WINDOW_SOURCE_FAMILY_DEFAULT = "family_default"
 WINDOW_SOURCE_LEGACY = "legacy-3-cell"
+_PRODUCTION_CAMPAIGN_ROOTS = ("c:/ro_data", "/mnt/c/ro_data")
 _FAMILY_DEFAULTS_KEY = "family_defaults"
 _FAMILY_DEFAULT_ALLOWED = frozenset({"pillar"})
 _FAMILY_DEFAULT_FORBIDDEN = frozenset({"diamond", "ml", "sin", "empty"})
@@ -55,6 +62,8 @@ class EvaluationWindowSelection:
     window_length_m: float
     window_table_version: str
     window_source: str
+    window_table_mesh_id: str | None = None
+    run_mesh_id: str | None = None
 
     def manifest_fields(self) -> dict[str, Any]:
         return {
@@ -63,6 +72,8 @@ class EvaluationWindowSelection:
             "window_length_m": self.window_length_m,
             "window_table_version": self.window_table_version,
             "window_source": self.window_source,
+            "window_table_mesh_id": self.window_table_mesh_id,
+            "run_mesh_id": self.run_mesh_id,
         }
 
 
@@ -86,10 +97,15 @@ def select_evaluation_window(
     cell_length_x_m: float,
     legacy_3_cell_window: bool,
     table_path: Path | None = None,
+    data_root: str | Path | None = None,
 ) -> EvaluationWindowSelection:
     """Table row for ``geo_id``, or the legacy lead of 3 when asked."""
     if legacy_3_cell_window:
-        return legacy_3_cell_selection(n_active, cell_length_x_m)
+        return legacy_3_cell_selection(
+            n_active,
+            cell_length_x_m,
+            run_mesh_id=mesh_id,
+        )
     path = (
         default_evaluation_window_table_path()
         if table_path is None
@@ -101,12 +117,15 @@ def select_evaluation_window(
         mesh_id=mesh_id,
         n_active=n_active,
         cell_length_x_m=cell_length_x_m,
+        data_root=data_root,
     )
 
 
 def legacy_3_cell_selection(
     n_active: int,
     cell_length_x_m: float,
+    *,
+    run_mesh_id: str | None = None,
 ) -> EvaluationWindowSelection:
     """Fixed lead of 3. Does not read the table."""
     _require_count("n_active", n_active)
@@ -122,6 +141,8 @@ def legacy_3_cell_selection(
         window_length_m=(n_active - LEGACY_N_LEAD) * dx,
         window_table_version=LEGACY_WINDOW_TABLE_VERSION,
         window_source=WINDOW_SOURCE_LEGACY,
+        window_table_mesh_id=None,
+        run_mesh_id=run_mesh_id,
     )
 
 
@@ -132,8 +153,13 @@ def selection_from_table(
     mesh_id: str,
     n_active: int,
     cell_length_x_m: float,
+    data_root: str | Path | None = None,
 ) -> EvaluationWindowSelection:
-    """One geometry's row, checked against this mesh's pitch."""
+    """One geometry's row, checked against this mesh's pitch.
+
+    ``data_root`` is the extract child's ``RO_DATA_ROOT``. Omitted or empty
+    keeps the exact ``mesh_id`` match.
+    """
     table = load_evaluation_window_table(path)
     defaults = _family_defaults(table, path)
     records = {
@@ -148,6 +174,7 @@ def selection_from_table(
             mesh_id=mesh_id,
             n_active=n_active,
             cell_length_x_m=cell_length_x_m,
+            require_mesh_match=_require_exact_window_mesh(data_root),
         )
     if is_mfbo_pillar_geo_id(geo_id):
         if "pillar" not in defaults:
@@ -158,10 +185,22 @@ def selection_from_table(
         return _selection_from_family_default(
             defaults["pillar"],
             geo_id,
+            mesh_id=mesh_id,
             n_active=n_active,
             cell_length_x_m=cell_length_x_m,
         )
     raise KeyError(f"geo_id {geo_id!r} is not in {path}.")
+
+
+def _require_exact_window_mesh(data_root: str | Path | None) -> bool:
+    """Exact mesh match on C:/ro_data and when the data root is unknown."""
+    if data_root is None or str(data_root).strip() == "":
+        return True
+    folded = str(data_root).strip().replace("\\", "/").casefold().rstrip("/")
+    return any(
+        folded == root or folded.startswith(root + "/")
+        for root in _PRODUCTION_CAMPAIGN_ROOTS
+    )
 
 
 def _selection_from_geo_record(
@@ -171,6 +210,7 @@ def _selection_from_geo_record(
     mesh_id,
     n_active,
     cell_length_x_m,
+    require_mesh_match,
 ):
     if not isinstance(record, dict):
         raise ValueError(
@@ -190,9 +230,15 @@ def _selection_from_geo_record(
             f"n_lead_excluded={n_lead} must be < n_active={n_active} "
             f"for {geo_id!r}."
         )
-    if record["mesh_id"] != mesh_id:
+    table_mesh = record["mesh_id"]
+    if not isinstance(table_mesh, str) or table_mesh.strip() == "":
         raise ValueError(
-            f"evaluation window table mesh_id {record['mesh_id']!r} "
+            f"evaluation window table mesh_id for {geo_id!r} must be a "
+            f"non-empty string, got {table_mesh!r}."
+        )
+    if require_mesh_match and table_mesh != mesh_id:
+        raise ValueError(
+            f"evaluation window table mesh_id {table_mesh!r} "
             f"does not match run mesh_id {mesh_id!r} for {geo_id!r}."
         )
     dx = _require_positive_length("cell_length_x_m", cell_length_x_m)
@@ -211,7 +257,13 @@ def _selection_from_geo_record(
         excluded_length_m=excluded,
         window_length_m=window,
         window_table_version=version.strip(),
-        window_source=WINDOW_SOURCE_GEO_ID,
+        window_source=(
+            WINDOW_SOURCE_GEO_ID
+            if require_mesh_match
+            else WINDOW_SOURCE_GEO_ROW_PRODUCTION_MESH
+        ),
+        window_table_mesh_id=table_mesh,
+        run_mesh_id=mesh_id,
     )
 
 
@@ -219,6 +271,7 @@ def _selection_from_family_default(
     record,
     geo_id,
     *,
+    mesh_id,
     n_active,
     cell_length_x_m,
 ):
@@ -256,6 +309,8 @@ def _selection_from_family_default(
         window_length_m=(n_active - n_lead) * dx,
         window_table_version=version.strip(),
         window_source=WINDOW_SOURCE_FAMILY_DEFAULT,
+        window_table_mesh_id=None,
+        run_mesh_id=mesh_id,
     )
 
 
