@@ -11,6 +11,13 @@ import math
 import sys
 from pathlib import Path
 
+from ro.discovery_session import (
+    DiscoveryAttemptError,
+    discovery_launch_arguments,
+    error_record,
+    run_discovery_job,
+    write_json,
+)
 from ro.geometry_registry import (
     DEFAULT_PILLAR_N_ACTIVE,
     pillar_registry_entry,
@@ -95,8 +102,23 @@ def _bind_geometry_symbols():
     Sketch = _Sketch
 
 
-def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir, n_active=None):
-    """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``."""
+def generate_pillar_cad(
+    *,
+    d_p_mm,
+    d_h_mm,
+    d_f_mm,
+    geo_id,
+    out_dir,
+    n_active=None,
+    process_lister=None,
+    process_killer=None,
+):
+    """Write ``<geo_id>.pmdb``, ``.scdocx``, and ``_meta.json`` under ``out_dir``.
+
+    Discovery gets 300 s to start. A backend timeout is cleaned up and retried
+    once. The attempt note is written on the meta, or on ``<geo_id>_error.json``
+    when both attempts fail.
+    """
     d_p_mm = _require_real("d_p_mm", d_p_mm)
     d_h_mm = _require_real("d_h_mm", d_h_mm)
     d_f_mm = _require_real("d_f_mm", d_f_mm)
@@ -121,14 +143,14 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir, n_active=Non
     _refuse_existing(paths)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    modeler = None
-    try:
-        _bind_geometry_symbols()
-        modeler = launch_modeler_with_discovery(
-            version=251,
-            api_version=ApiVersions.V_251,
-            hidden=True,
+    _bind_geometry_symbols()
+
+    def _launch():
+        return launch_modeler_with_discovery(
+            **discovery_launch_arguments(ApiVersions.V_251)
         )
+
+    def _build(modeler):
         design = modeler.create_design(geo_id)
         if design.name != geo_id:
             raise RuntimeError(
@@ -164,25 +186,28 @@ def generate_pillar_cad(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir, n_active=Non
             ),
             pmdb_sha256=sha256_file(paths["pmdb"]),
         )
-        paths["meta"].write_text(
-            json.dumps(meta, indent=2) + "\n",
-            encoding="utf-8",
+        meta["_counts"] = counts
+        return meta
+
+    try:
+        meta = run_discovery_job(
+            _build,
+            launch=_launch,
+            partial_paths=(paths["pmdb"], paths["scdocx"]),
+            process_lister=process_lister,
+            process_killer=process_killer,
         )
-    finally:
-        close_error = None
-        if modeler is not None:
-            try:
-                modeler.close()
-            except Exception as exc:
-                close_error = exc
-        if close_error is not None and sys.exc_info()[0] is None:
-            raise close_error
-        if close_error is not None:
-            body_error = sys.exc_info()[1]
-            raise RuntimeError(
-                "Discovery close failed after "
-                f"{type(body_error).__name__}: {body_error}"
-            ) from close_error
+    except DiscoveryAttemptError as exc:
+        write_json(out_dir / f"{geo_id}_error.json", error_record(geo_id, exc))
+        raise
+    counts = meta.pop("_counts")
+    error_path = out_dir / f"{geo_id}_error.json"
+    if error_path.exists():
+        error_path.unlink()
+    paths["meta"].write_text(
+        json.dumps(meta, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     print("Face counts:")
     for label in (*_BASE_LABELS, _HOLE_LABEL):

@@ -12,8 +12,10 @@ match the requested design, plus a ``.pmdb`` whose sha256 equals
 ``pmdb_sha256``. Mesh success is ``mesh_run_record.json`` ``status``
 ``SUCCESS`` and a manifest object. A run leaf is success only when its
 manifest object exists and ``post/reports/summary_metrics_wide.csv``
-exists. A missing field is not success. A leaf that exists without that
-record returns ``execution_failed`` and is not run again.
+exists. A missing field is not success. A geometry error, a mesh record, or a
+run that already has solver output stays ``execution_failed`` and is not
+run again. A leaf with no CAD or Fluent output is an infrastructure
+failure: it is archived and the next evaluate retries it.
 ``convergence_quality`` ``FAIL`` becomes ``diverged`` when
 ``stop_reason`` is ``diverged``, and ``invalid`` otherwise. Missing
 quantities stay missing; they are not stored as LMH = 0.
@@ -29,13 +31,16 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from ro.campaign_matrix import format_production_mesh_id
+from ro.discovery_session import FAILURE_GEOMETRY, FAILURE_INFRASTRUCTURE
 from ro.geometry_registry import (
     DEFAULT_PILLAR_N_ACTIVE,
     format_mfbo_pillar_geo_id,
+    is_mfbo_pillar_geo_id,
     mfbo_pillar_n_active,
 )
 from ro.manifest import update_run_manifest_fields
@@ -48,6 +53,9 @@ STATUS_VALID = "valid"
 STATUS_DIVERGED = "diverged"
 STATUS_INVALID = "invalid"
 STATUS_EXECUTION_FAILED = "execution_failed"
+FAILURE_MESH = "mesh"
+FAILURE_SOLVER = "solver"
+_ARCHIVE_TOKENS = ("_geometry_failed_", "_mesh_failed_", "_run_failed_")
 REASON_OPENING_GAP_SLIVER = "opening_gap_sliver"
 
 LF_FIDELITY = "LF"
@@ -259,16 +267,23 @@ def evaluate(
     geo_dir = root / "geometries" / FAMILY / geo_id
     mesh_dir = root / "meshes" / FAMILY / geo_id / mesh_id
     run_dir = root / "runs" / FAMILY / geo_id / mesh_id / checked_run
-    failed = _ensure_geometry(drivers, point, geo_id, geo_dir, n_active=n_active)
+    archived: list[str] = []
+    failed, geo_archived = _ensure_geometry(
+        drivers, point, geo_id, geo_dir, n_active=n_active
+    )
+    if geo_archived is not None:
+        archived.append(geo_archived)
     if failed is not None:
         return _finish(
             base,
             status=STATUS_EXECUTION_FAILED,
             failure_reason=failed[0],
             leaf_path=failed[1],
+            failure_class=failed[2],
+            archived_leaves=archived,
             fidelity_settings=used,
         )
-    failed = _ensure_mesh(
+    failed, mesh_archived = _ensure_mesh(
         drivers,
         point,
         geo_id,
@@ -277,15 +292,19 @@ def evaluate(
         mesh_dir,
         n_lead_excluded=settings.get("n_lead_excluded"),
     )
+    if mesh_archived is not None:
+        archived.append(mesh_archived)
     if failed is not None:
         return _finish(
             base,
             status=STATUS_EXECUTION_FAILED,
             failure_reason=failed[0],
             leaf_path=failed[1],
+            failure_class=failed[2],
+            archived_leaves=archived,
             fidelity_settings=used,
         )
-    failed = _ensure_solve(
+    failed, run_archived = _ensure_solve(
         drivers,
         point,
         geo_id,
@@ -294,12 +313,16 @@ def evaluate(
         run_dir,
         level=settings,
     )
+    if run_archived is not None:
+        archived.append(run_archived)
     if failed is not None:
         return _finish(
             base,
             status=STATUS_EXECUTION_FAILED,
             failure_reason=failed[0],
             leaf_path=failed[1],
+            failure_class=failed[2],
+            archived_leaves=archived,
             fidelity_settings=used,
         )
     summary_path = run_dir / _SUMMARY_CSV
@@ -318,6 +341,7 @@ def evaluate(
         run_dir,
         summary_path,
         fidelity_settings=used,
+        archived_leaves=archived,
     )
 
 
@@ -426,15 +450,30 @@ def _ensure_geometry(
     geo_dir: Path,
     n_active: int | None = None,
 ):
-    state = _geometry_state(geo_dir, geo_id, design)
-    if state == "success":
-        return None
-    if state == "failed":
-        return ("leaf_not_successful", str(geo_dir))
-    drivers.generate(design=design, geo_id=geo_id, out_dir=geo_dir, n_active=n_active)
+    """Return ``(failure, archived_path)``. ``failure`` is reason, path, class."""
+    archived = None
+    if _geometry_state(geo_dir, geo_id, design) == "success":
+        return None, None
+    kind = _geometry_attempt_class(geo_dir, geo_id, design)
+    if kind == FAILURE_GEOMETRY:
+        return ("leaf_not_successful", str(geo_dir), FAILURE_GEOMETRY), None
+    if kind == FAILURE_INFRASTRUCTURE:
+        archived = str(archive_failed_leaf(geo_dir, "geometry_failed"))
+    try:
+        drivers.generate(design=design, geo_id=geo_id, out_dir=geo_dir, n_active=n_active)
+    except Exception as exc:
+        if type(exc).__name__ != "DriverFailed":
+            raise
+        return (
+            ("leaf_not_successful", str(geo_dir), _class_from_driver(exc, geo_dir, geo_id)),
+            archived,
+        )
     if _geometry_state(geo_dir, geo_id, design) != "success":
-        return ("leaf_not_successful", str(geo_dir))
-    return None
+        kind = _geometry_attempt_class(geo_dir, geo_id, design)
+        if kind in ("absent", "success"):
+            kind = FAILURE_GEOMETRY
+        return ("leaf_not_successful", str(geo_dir), kind), archived
+    return None, archived
 
 
 def _ensure_mesh(
@@ -446,41 +485,65 @@ def _ensure_mesh(
     mesh_dir: Path,
     n_lead_excluded: int | None = None,
 ):
+    archived = None
     state = _mesh_state(mesh_dir)
     if state == "success":
-        return None
+        return None, None
+    if state == "failed" and _mesh_attempt_class(mesh_dir) != FAILURE_INFRASTRUCTURE:
+        return ("leaf_not_successful", str(mesh_dir), FAILURE_MESH), None
     if state == "failed":
-        return ("leaf_not_successful", str(mesh_dir))
-    drivers.mesh(
-        design=design,
-        geo_id=geo_id,
-        mesh_id=mesh_id,
-        mesh_settings=settings,
-        mesh_dir=mesh_dir,
-        n_lead_excluded=n_lead_excluded,
-    )
+        archived = str(archive_failed_leaf(mesh_dir, "mesh_failed"))
+    try:
+        drivers.mesh(
+            design=design,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            mesh_settings=settings,
+            mesh_dir=mesh_dir,
+            n_lead_excluded=n_lead_excluded,
+        )
+    except Exception as exc:
+        if type(exc).__name__ != "DriverFailed":
+            raise
+        kind = FAILURE_MESH if _mesh_has_fluent_output(mesh_dir) else FAILURE_INFRASTRUCTURE
+        return ("leaf_not_successful", str(mesh_dir), kind), archived
     if _mesh_state(mesh_dir) != "success":
-        return ("leaf_not_successful", str(mesh_dir))
-    return None
+        kind = _mesh_attempt_class(mesh_dir)
+        if kind in ("absent", "success"):
+            kind = FAILURE_MESH
+        return ("leaf_not_successful", str(mesh_dir), kind), archived
+    return None, archived
 
 
 def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path, level=None):
+    archived = None
     state = _run_state(run_dir)
     if state in ("success", "needs_extract"):
-        return None
+        return None, None
+    if state == "failed" and _run_attempt_class(run_dir) != FAILURE_INFRASTRUCTURE:
+        return ("leaf_not_successful", str(run_dir), FAILURE_SOLVER), None
     if state == "failed":
-        return ("leaf_not_successful", str(run_dir))
-    drivers.solve(
-        design=design,
-        geo_id=geo_id,
-        mesh_id=mesh_id,
-        run_id=run_id,
-        run_dir=run_dir,
-        level=level,
-    )
+        archived = str(archive_failed_leaf(run_dir, "run_failed"))
+    try:
+        drivers.solve(
+            design=design,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            run_id=run_id,
+            run_dir=run_dir,
+            level=level,
+        )
+    except Exception as exc:
+        if type(exc).__name__ != "DriverFailed":
+            raise
+        kind = FAILURE_SOLVER if _run_has_fluent_output(run_dir) else FAILURE_INFRASTRUCTURE
+        return ("leaf_not_successful", str(run_dir), kind), archived
     if _run_state(run_dir) not in ("success", "needs_extract"):
-        return ("leaf_not_successful", str(run_dir))
-    return None
+        kind = _run_attempt_class(run_dir)
+        if kind in ("absent", "success", "needs_extract"):
+            kind = FAILURE_SOLVER
+        return ("leaf_not_successful", str(run_dir), kind), archived
+    return None, archived
 
 
 def _geometry_state(directory: Path, geo_id: str, design: PillarDesign) -> str:
@@ -559,12 +622,195 @@ def _run_state(directory: Path) -> str:
     return "success"
 
 
+def is_archived_leaf_name(name: str) -> bool:
+    return any(token in name for token in _ARCHIVE_TOKENS)
+
+
+def archive_failed_leaf(directory: Path, prefix: str, now=None) -> Path:
+    """Move a failed leaf beside itself as ``<name>_<prefix>_<UTC>``."""
+    source = Path(directory)
+    if not source.is_dir():
+        raise FileNotFoundError(f"Cannot archive missing leaf: {source}")
+    destination = source.with_name(f"{source.name}_{prefix}_{_utc_stamp(now)}")
+    if destination.exists():
+        raise FileExistsError(f"Refusing to overwrite {destination}.")
+    source.rename(destination)
+    return destination
+
+
+def _utc_stamp(now) -> str:
+    moment = datetime.now(timezone.utc) if now is None else now
+    if moment.tzinfo is None:
+        raise ValueError("archive timestamp must be timezone-aware.")
+    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _geometry_attempt_class(directory: Path, geo_id: str, design: PillarDesign) -> str:
+    if not directory.exists():
+        return "absent"
+    if _geometry_state(directory, geo_id, design) == "success":
+        return "success"
+    error = _read_object(directory / f"{geo_id}_error.json")
+    if isinstance(error, dict) and error.get("failure_class") == FAILURE_GEOMETRY:
+        return FAILURE_GEOMETRY
+    if isinstance(error, dict) and error.get("failure_class") == FAILURE_INFRASTRUCTURE:
+        return FAILURE_INFRASTRUCTURE
+    if (directory / f"{geo_id}.pmdb").is_file():
+        return FAILURE_GEOMETRY
+    return FAILURE_INFRASTRUCTURE
+
+
+def _class_from_driver(exc: BaseException, geo_dir: Path, geo_id: str) -> str:
+    error = _read_object(geo_dir / f"{geo_id}_error.json")
+    if isinstance(error, dict) and error.get("failure_class") in (
+        FAILURE_GEOMETRY,
+        FAILURE_INFRASTRUCTURE,
+    ):
+        return str(error["failure_class"])
+    recorded = getattr(exc, "failure_class", None)
+    if recorded in (FAILURE_GEOMETRY, FAILURE_INFRASTRUCTURE):
+        return str(recorded)
+    return FAILURE_INFRASTRUCTURE
+
+
+def _mesh_has_fluent_output(directory: Path) -> bool:
+    if not directory.is_dir():
+        return False
+    if (directory / "mesh_run_record.json").is_file():
+        return True
+    if (directory / "manifest.json").is_file():
+        return True
+    return any(directory.glob("*.msh.h5"))
+
+
+def _mesh_attempt_class(directory: Path) -> str:
+    if not directory.exists():
+        return "absent"
+    if _mesh_state(directory) == "success":
+        return "success"
+    if _mesh_has_fluent_output(directory):
+        return FAILURE_MESH
+    return FAILURE_INFRASTRUCTURE
+
+
+def _run_has_fluent_output(directory: Path) -> bool:
+    if not directory.is_dir():
+        return False
+    if (directory / "manifest.json").is_file():
+        return True
+    return any(directory.glob("*.cas.h5")) or any(directory.glob("*.dat.h5"))
+
+
+def _run_attempt_class(directory: Path) -> str:
+    if not directory.exists():
+        return "absent"
+    state = _run_state(directory)
+    if state == "success":
+        return "success"
+    if state == "needs_extract":
+        return "needs_extract"
+    if _run_has_fluent_output(directory):
+        return FAILURE_SOLVER
+    return FAILURE_INFRASTRUCTURE
+
+
+def _geometry_sha_success(directory: Path) -> bool:
+    geo_id = directory.name
+    pmdb = directory / f"{geo_id}.pmdb"
+    meta = _read_object(directory / f"{geo_id}_meta.json")
+    if not pmdb.is_file() or not isinstance(meta, dict):
+        return False
+    if meta.get("geo_id") != geo_id:
+        return False
+    digest = meta.get("pmdb_sha256")
+    return isinstance(digest, str) and bool(digest) and sha256_file(pmdb) == digest
+
+
+def summarize_mfbo_leaves(data_root: Path) -> dict[str, Any]:
+    """Classify MFBO leaves. Successful leaves are counted and not listed."""
+    root = Path(data_root)
+    failed: list[dict[str, Any]] = []
+    success_count = 0
+    geometries = root / "geometries"
+    if geometries.is_dir():
+        for family in _child_dirs(geometries):
+            for leaf in _child_dirs(family):
+                if is_archived_leaf_name(leaf.name) or not is_mfbo_pillar_geo_id(leaf.name):
+                    continue
+                if _geometry_sha_success(leaf):
+                    success_count += 1
+                    continue
+                error = _read_object(leaf / f"{leaf.name}_error.json")
+                if isinstance(error, dict) and error.get("failure_class") == FAILURE_GEOMETRY:
+                    kind = FAILURE_GEOMETRY
+                elif (leaf / f"{leaf.name}.pmdb").is_file():
+                    kind = FAILURE_GEOMETRY
+                else:
+                    kind = FAILURE_INFRASTRUCTURE
+                failed.append(_leaf_row("geometry", kind, leaf, "geometry_failed"))
+    meshes = root / "meshes"
+    if meshes.is_dir():
+        for family in _child_dirs(meshes):
+            for geo in _child_dirs(family):
+                if not is_mfbo_pillar_geo_id(geo.name):
+                    continue
+                for leaf in _child_dirs(geo):
+                    if is_archived_leaf_name(leaf.name):
+                        continue
+                    kind = _mesh_attempt_class(leaf)
+                    if kind == "success":
+                        success_count += 1
+                        continue
+                    failed.append(_leaf_row("mesh", kind, leaf, "mesh_failed"))
+    runs = root / "runs"
+    if runs.is_dir():
+        for family in _child_dirs(runs):
+            for geo in _child_dirs(family):
+                if not is_mfbo_pillar_geo_id(geo.name):
+                    continue
+                for mesh in _child_dirs(geo):
+                    for leaf in _child_dirs(mesh):
+                        if is_archived_leaf_name(leaf.name):
+                            continue
+                        kind = _run_attempt_class(leaf)
+                        if kind in ("success", "needs_extract"):
+                            success_count += 1
+                            continue
+                        failed.append(_leaf_row("run", kind, leaf, "run_failed"))
+    return {"failed": failed, "success_count": success_count}
+
+
+def archive_infrastructure_leaves(data_root: Path, now=None) -> list[dict[str, Any]]:
+    """Archive infrastructure leftovers. Geometry, mesh, and solver failures stay."""
+    archived = []
+    for row in summarize_mfbo_leaves(data_root)["failed"]:
+        if row["class"] != FAILURE_INFRASTRUCTURE:
+            continue
+        destination = archive_failed_leaf(Path(row["path"]), row["prefix"], now)
+        archived.append({**row, "archived": str(destination)})
+    return archived
+
+
+def _child_dirs(directory: Path) -> list[Path]:
+    return sorted(path for path in directory.iterdir() if path.is_dir())
+
+
+def _leaf_row(kind: str, failure_class: str, path: Path, prefix: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "class": failure_class,
+        "path": str(path),
+        "prefix": prefix,
+    }
+
+
 def _result_from_leaves(
     base,
     mesh_dir: Path,
     run_dir: Path,
     summary_path: Path,
     fidelity_settings=None,
+    archived_leaves=None,
 ):
     mesh_manifest = _read_object(mesh_dir / "manifest.json") or {}
     mesh_record = _read_object(mesh_dir / "mesh_run_record.json") or {}
@@ -583,6 +829,7 @@ def _result_from_leaves(
             retry=retry,
             run_dir=run_dir,
             fidelity_settings=fidelity_settings,
+            archived_leaves=archived_leaves,
         )
     status, reason = _physics_status(run_manifest)
     if summary is None and status == STATUS_VALID:
@@ -597,6 +844,7 @@ def _result_from_leaves(
             retry=retry,
             run_dir=run_dir,
             fidelity_settings=fidelity_settings,
+            archived_leaves=archived_leaves,
         )
     values = _quantities(summary, mesh_manifest)
     if status == STATUS_VALID and (
@@ -619,6 +867,7 @@ def _result_from_leaves(
         run_dir=run_dir,
         summary=summary,
         fidelity_settings=fidelity_settings,
+        archived_leaves=archived_leaves,
     )
 
 
@@ -699,6 +948,8 @@ def _finish(
     run_dir: Path | None = None,
     summary: Mapping[str, Any] | None = None,
     fidelity_settings: Mapping[str, Any] | None = None,
+    failure_class: str | None = None,
+    archived_leaves: list[str] | None = None,
 ) -> dict[str, Any]:
     mesh_manifest = mesh_manifest or {}
     mesh_record = mesh_record or {}
@@ -728,6 +979,10 @@ def _finish(
     record["processor_count"] = _optional_processor_count(
         run_manifest.get("processor_count")
     )
+    if failure_class is not None:
+        record["failure_class"] = failure_class
+    if archived_leaves:
+        record["archived_leaves"] = list(archived_leaves)
     if fidelity_settings is not None:
         record["fidelity_settings"] = dict(fidelity_settings)
         if run_dir is not None and (Path(run_dir) / "manifest.json").is_file():

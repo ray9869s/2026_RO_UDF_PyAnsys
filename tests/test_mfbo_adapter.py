@@ -280,7 +280,7 @@ def test_existing_failed_leaf_is_not_rerun(tmp_path):
     assert record["lmh"] is None
 
 
-def test_geometry_without_manifest_is_execution_failed(tmp_path):
+def test_geometry_without_manifest_is_archived_and_retried(tmp_path):
     from ro.geometry_registry import format_mfbo_pillar_geo_id
 
     geo_id = format_mfbo_pillar_geo_id(WIDE.d_p_mm, WIDE.d_h_mm, WIDE.d_f_mm)
@@ -288,9 +288,14 @@ def test_geometry_without_manifest_is_execution_failed(tmp_path):
     geo_dir.mkdir(parents=True)
     drivers = _drivers()
     record = _evaluate(tmp_path, WIDE, "LF", drivers)
-    assert drivers.calls == []
-    assert record["status"] == "execution_failed"
-    assert record["leaf_path"] == str(geo_dir)
+    assert drivers.calls[0] == "generate"
+    assert record["status"] == "valid"
+    assert "failure_class" not in record
+    archived = record["archived_leaves"]
+    assert len(archived) == 1
+    assert Path(archived[0]).is_dir()
+    assert "geometry_failed_" in Path(archived[0]).name
+    assert not geo_dir.samefile(archived[0])
 
 
 def test_missing_window_module_lmh_is_missing_qoi(tmp_path):
@@ -481,9 +486,11 @@ def test_adapter_source_does_not_import_fluent():
         "math",
         "collections.abc",
         "dataclasses",
+        "datetime",
         "pathlib",
         "typing",
         "ro.campaign_matrix",
+        "ro.discovery_session",
         "ro.geometry_registry",
         "ro.manifest",
         "ro.mfbo_fidelity",
@@ -604,9 +611,11 @@ def test_run_directory_without_manifest_is_not_rerun(tmp_path):
     run_dir.mkdir(parents=True)
     drivers = _drivers()
     result = _evaluate(tmp_path, LIVE, "LF", drivers)
-    assert drivers.calls == []
-    assert result["status"] == "execution_failed"
-    assert result["leaf_path"] == str(run_dir)
+    assert drivers.calls == ["solve:u0p2_p6M", "extract"]
+    assert result["status"] == "valid"
+    assert len(result["archived_leaves"]) == 1
+    assert "run_failed_" in Path(result["archived_leaves"][0]).name
+    assert not run_dir.samefile(result["archived_leaves"][0])
 
 
 @pytest.mark.parametrize("relative", ARCHIVED_FAILED_MESH_LEAVES)

@@ -321,8 +321,11 @@ a `.pmdb` whose sha256 equals `pmdb_sha256` (`pillar_cad` does not write
 `status`). Mesh success is `mesh_run_record.json` `status` `SUCCESS`
 plus `manifest.json`. Run success is `manifest.json` plus
 `post/reports/summary_metrics_wide.csv`. A missing field is not success.
-A leaf that exists without that record returns `execution_failed` and
-the leaf path, and is not run again.
+A geometry error, a mesh record, or a run that already has solver output
+returns `execution_failed` and is not run again. A leaf with no CAD or
+Fluent output is an infrastructure failure: it is archived as
+`<name>_geometry_failed_<UTC>` (or `mesh_failed` / `run_failed`) and the
+next evaluate retries it. The result records `failure_class`.
 
 `lmh` is summary column `lmh_window_module` (window, module-area LMH).
 `lmh_module_area` remains the whole-active rescale of `lmh_mass_balance`

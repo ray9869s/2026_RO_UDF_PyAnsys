@@ -1,6 +1,8 @@
 """Generate one Pillar or Hole-Pillar CAD file with Discovery 25.1.
 
 Does not launch Discovery until this script is executed. Windows only.
+The backend start timeout is 300 s. A backend timeout is cleaned up and
+retried once. Attempts are written on the meta, or on ``<geo_id>_error.json``.
 """
 
 from __future__ import annotations
