@@ -23,6 +23,7 @@ import batch_report_extract
 from ro.extract_profile import PROFILE_MFBO
 from ro.manifest import ManifestError, update_run_manifest_fields
 from ro.mfbo_adapter import is_archived_leaf_name, resolve_data_root
+from ro.paths import using_data_root
 
 # Files the mfbo extract writes before it returns 0. The wide summary is
 # the column source; the other four are the reports the host extract saved.
@@ -63,9 +64,10 @@ def read_summary_profile(summary_csv: Path) -> str | None:
     return str(value).strip()
 
 
-def finalize_run_leaf(run_directory: Path) -> None:
+def finalize_run_leaf(run_directory: Path, data_root: Path) -> None:
     """Validate one complete mfbo extract and write the pass status.
 
+    The manifest rewrite uses ``data_root``, not the process ``RO_DATA_ROOT``.
     Raises FileNotFoundError when a required file is missing, and ValueError
     when the summary is not an mfbo extract or the column check fails.
     """
@@ -87,13 +89,14 @@ def finalize_run_leaf(run_directory: Path) -> None:
     )
     if not valid:
         raise ValueError(f"FAILED_METRIC_VALIDATION: {message}")
-    update_run_manifest_fields(
-        directory,
-        {
-            "extract_profile": PROFILE_MFBO,
-            "extract_validation": EXTRACT_VALIDATION_PASS,
-        },
-    )
+    with using_data_root(data_root):
+        update_run_manifest_fields(
+            directory,
+            {
+                "extract_profile": PROFILE_MFBO,
+                "extract_validation": EXTRACT_VALIDATION_PASS,
+            },
+        )
 
 
 def iter_run_leaves(data_root: Path):
@@ -188,7 +191,7 @@ def main(argv=None) -> int:
             refused += 1
             continue
         try:
-            finalize_run_leaf(leaf)
+            finalize_run_leaf(leaf, root)
         except (OSError, ValueError, ManifestError) as exc:
             print(f"REFUSE {leaf}: {exc}", flush=True)
             refused += 1

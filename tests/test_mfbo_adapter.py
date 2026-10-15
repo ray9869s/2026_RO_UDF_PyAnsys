@@ -6,6 +6,7 @@ import ast
 import csv
 import json
 import math
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from ro.mfbo_adapter import (
     EXAMPLE_FIDELITY_TABLE,
     LF_MESH_ID,
     PillarDesign,
+    _finish,
     _geometry_state,
     _mesh_state,
     _run_state,
@@ -670,3 +672,31 @@ def test_mesh_success_requires_status_success_and_a_manifest(tmp_path):
     record["status"] = "SUCCESS_AFTER_RETRY"
     _write_json(leaf / "mesh_run_record.json", record)
     assert _mesh_state(leaf) == "failed"
+
+
+def test_finish_writes_fidelity_settings_under_the_given_data_root(
+    tmp_path, monkeypatch
+):
+    from test_manifest import write_test_run
+
+    given = tmp_path / "mfbo"
+    given.mkdir()
+    monkeypatch.setenv("RO_DATA_ROOT", str(given))
+    directory = write_test_run()
+    other = tmp_path / "process_default"
+    other.mkdir()
+    monkeypatch.setenv("RO_DATA_ROOT", str(other))
+    settings = {
+        "solver": {"max_iterations": {"value": 2000, "source": "production"}}
+    }
+    _finish(
+        {"geo_id": "D2450_a45"},
+        status="valid",
+        failure_reason=None,
+        run_dir=directory,
+        fidelity_settings=settings,
+        data_root=given,
+    )
+    payload = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    assert payload["fidelity_settings"] == settings
+    assert os.environ["RO_DATA_ROOT"] == str(other)

@@ -18,15 +18,10 @@ from ro.extract_profile import report_extract_argv
 
 def call_with_data_root(data_root, fn):
     """Call ``fn`` with ``RO_DATA_ROOT`` set, then restore the parent env."""
-    previous = os.environ.get("RO_DATA_ROOT")
-    os.environ["RO_DATA_ROOT"] = str(data_root)
-    try:
+    from ro.paths import using_data_root
+
+    with using_data_root(data_root):
         return fn()
-    finally:
-        if previous is None:
-            os.environ.pop("RO_DATA_ROOT", None)
-        else:
-            os.environ["RO_DATA_ROOT"] = previous
 
 
 def extract_launcher_paths():

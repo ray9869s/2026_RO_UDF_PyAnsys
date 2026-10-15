@@ -45,7 +45,7 @@ from ro.geometry_registry import (
 )
 from ro.manifest import update_run_manifest_fields
 from ro.mfbo_fidelity import fidelity_settings_used, parse_fidelity_level, run_id_for_level
-from ro.paths import RUN_ID_RE
+from ro.paths import RUN_ID_RE, using_data_root
 from ro.solver_common import sha256_file
 
 FAMILY = "pillar"
@@ -347,6 +347,7 @@ def evaluate(
         summary_path,
         fidelity_settings=used,
         archived_leaves=archived,
+        data_root=root,
     )
 
 
@@ -816,6 +817,7 @@ def _result_from_leaves(
     summary_path: Path,
     fidelity_settings=None,
     archived_leaves=None,
+    data_root: Path | None = None,
 ):
     mesh_manifest = _read_object(mesh_dir / "manifest.json") or {}
     mesh_record = _read_object(mesh_dir / "mesh_run_record.json") or {}
@@ -835,6 +837,7 @@ def _result_from_leaves(
             run_dir=run_dir,
             fidelity_settings=fidelity_settings,
             archived_leaves=archived_leaves,
+            data_root=data_root,
         )
     status, reason = _physics_status(run_manifest)
     if summary is None and status == STATUS_VALID:
@@ -850,6 +853,7 @@ def _result_from_leaves(
             run_dir=run_dir,
             fidelity_settings=fidelity_settings,
             archived_leaves=archived_leaves,
+            data_root=data_root,
         )
     values = _quantities(summary, mesh_manifest)
     if status == STATUS_VALID and (
@@ -873,6 +877,7 @@ def _result_from_leaves(
         summary=summary,
         fidelity_settings=fidelity_settings,
         archived_leaves=archived_leaves,
+        data_root=data_root,
     )
 
 
@@ -955,6 +960,7 @@ def _finish(
     fidelity_settings: Mapping[str, Any] | None = None,
     failure_class: str | None = None,
     archived_leaves: list[str] | None = None,
+    data_root: Path | None = None,
 ) -> dict[str, Any]:
     mesh_manifest = mesh_manifest or {}
     mesh_record = mesh_record or {}
@@ -991,10 +997,15 @@ def _finish(
     if fidelity_settings is not None:
         record["fidelity_settings"] = dict(fidelity_settings)
         if run_dir is not None and (Path(run_dir) / "manifest.json").is_file():
-            update_run_manifest_fields(
-                run_dir,
-                {"fidelity_settings": dict(fidelity_settings)},
-            )
+            if data_root is None:
+                raise ValueError(
+                    "data_root is required to update the run manifest."
+                )
+            with using_data_root(data_root):
+                update_run_manifest_fields(
+                    run_dir,
+                    {"fidelity_settings": dict(fidelity_settings)},
+                )
     if run_manifest.get("convergence_gate") is not None:
         record["convergence_gate"] = run_manifest["convergence_gate"]
         for key in (

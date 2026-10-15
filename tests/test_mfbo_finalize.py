@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 
 import pytest
 
@@ -64,7 +65,7 @@ def test_finalize_refuses_a_missing_report_and_does_not_write_status(
     (directory / "post" / "reports" / "mass_balance.csv").unlink()
     before = (directory / "manifest.json").read_text(encoding="utf-8")
     with pytest.raises(FileNotFoundError, match="mass_balance.csv"):
-        finalize.finalize_run_leaf(directory)
+        finalize.finalize_run_leaf(directory, tmp_path)
     assert (directory / "manifest.json").read_text(encoding="utf-8") == before
     assert "extract_validation" not in before
 
@@ -73,14 +74,14 @@ def test_finalize_records_a_pass_and_the_adapter_reuses_the_leaf(
     tmp_path, monkeypatch
 ):
     directory = _leaf(tmp_path, monkeypatch)
-    finalize.finalize_run_leaf(directory)
+    finalize.finalize_run_leaf(directory, tmp_path)
     payload = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     assert payload["extract_profile"] == PROFILE_MFBO
     assert payload["extract_validation"] == "PASS"
     assert payload["convergence_quality"] == "PASS"
     assert payload["stop_reason"] == "qoi_converged"
     assert _run_state(directory) == "success"
-    finalize.finalize_run_leaf(directory)
+    finalize.finalize_run_leaf(directory, tmp_path)
     again = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     assert again["extract_validation"] == "PASS"
     assert again["stop_reason"] == "qoi_converged"
@@ -90,7 +91,7 @@ def test_finalize_refuses_a_blank_score_column(tmp_path, monkeypatch):
     directory = _leaf(tmp_path, monkeypatch)
     _write_reports(directory, _mfbo_row(lmh_window_module=""))
     with pytest.raises(ValueError, match="lmh_window_module"):
-        finalize.finalize_run_leaf(directory)
+        finalize.finalize_run_leaf(directory, tmp_path)
     payload = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     assert "extract_validation" not in payload
 
@@ -132,3 +133,20 @@ def test_explicit_leaf_outside_the_data_root_is_refused(tmp_path, monkeypatch):
 def test_production_data_root_is_refused(tmp_path):
     assert finalize.main(["--data-root", "C:/ro_data"]) == 1
     assert finalize.main(["--data-root", str(tmp_path)]) == 1
+
+
+def test_finalize_writes_under_the_given_root_when_the_process_root_differs(
+    tmp_path, monkeypatch
+):
+    given = tmp_path / "mfbo"
+    given.mkdir()
+    monkeypatch.setenv("RO_DATA_ROOT", str(given))
+    directory = write_test_run(convergence_quality="PASS")
+    _write_reports(directory, _mfbo_row())
+    other = tmp_path / "process_default"
+    other.mkdir()
+    monkeypatch.setenv("RO_DATA_ROOT", str(other))
+    finalize.finalize_run_leaf(directory, given)
+    payload = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    assert payload["extract_validation"] == "PASS"
+    assert os.environ["RO_DATA_ROOT"] == str(other)

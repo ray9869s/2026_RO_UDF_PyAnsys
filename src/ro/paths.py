@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,27 @@ def data_root() -> Path:
     if not root.is_absolute():
         raise ValueError(f"RO_DATA_ROOT must be absolute, got {value!r}.")
     return root
+
+
+@contextmanager
+def using_data_root(root: str | Path) -> Iterator[Path]:
+    """Point ``data_root()`` at ``root`` for the duration of the block.
+
+    Manifest location checks compare a leaf with ``run_dir()`` / ``mesh_dir()``,
+    which follow this environment variable. The previous value is restored.
+    """
+    path = Path(root)
+    if not path.is_absolute():
+        raise ValueError(f"data root must be absolute, got {root!r}.")
+    previous = os.environ.get(_DATA_ROOT_ENV)
+    os.environ[_DATA_ROOT_ENV] = str(path)
+    try:
+        yield path
+    finally:
+        if previous is None:
+            os.environ.pop(_DATA_ROOT_ENV, None)
+        else:
+            os.environ[_DATA_ROOT_ENV] = previous
 
 
 def templates_dir() -> Path:
