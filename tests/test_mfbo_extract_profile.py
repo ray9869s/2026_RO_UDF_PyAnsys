@@ -17,12 +17,25 @@ from ro.extract_profile import (
     filter_mfbo_summary_rows,
     mfbo_mixing_cup_boundary_indices,
     mfbo_pressure_boundary_indices,
+    mfbo_required_report_names,
     parse_extract_options,
     parse_extract_profile,
     report_extract_argv,
     require_mfbo_summary_columns,
 )
-from ro.fluent_report_helpers import LOAD_BEARING_SUMMARY_METRICS
+from ro.domain_layout import (
+    BUFFER_LENGTH_IN_M,
+    BUFFER_LENGTH_OUT_M,
+    CELL_LENGTH_X_M,
+    CURRENT_LAYOUT,
+    DomainLayout,
+    EvaluationWindow,
+)
+from ro.fluent_report_helpers import (
+    LOAD_BEARING_SUMMARY_METRICS,
+    derive_spacer_cell_metrics_for_layout,
+    expected_cell_7_report_names,
+)
 
 parity = load_module(
     "parity_mfbo_extract_under_test",
@@ -92,8 +105,65 @@ def test_report_extract_argv_leaves_the_full_command_unchanged():
 
 def test_mfbo_boundaries_cover_gate_cells_and_evaluation_flanks():
     evaluation = [5, 6, 7, 8]
-    assert mfbo_pressure_boundary_indices(evaluation) == set(range(3, 9))
+    assert mfbo_pressure_boundary_indices(evaluation, n_unit_cells=10) == set(
+        range(3, 9)
+    )
+    assert "pp_p_unit_cell_boundary_7_avg" in mfbo_required_report_names(
+        evaluation, n_unit_cells=10
+    )
     assert mfbo_mixing_cup_boundary_indices(evaluation) == set(range(4, 9))
+
+
+def _short_layout():
+    return DomainLayout(
+        n_buffer_in=1,
+        n_active=3,
+        n_buffer_out=2,
+        cell_length_x_m=CELL_LENGTH_X_M,
+        buffer_length_in_m=BUFFER_LENGTH_IN_M,
+        buffer_length_out_m=BUFFER_LENGTH_OUT_M,
+    )
+
+
+def test_short_layout_does_not_require_boundary_7_and_production_columns_stay():
+    short = _short_layout()
+    assert short.n_total == 6
+    cells = EvaluationWindow(1, 0).evaluation_cell_numbers(short)
+    assert cells == [3, 4]
+    names = mfbo_required_report_names(cells, n_unit_cells=short.n_total)
+    assert "pp_p_unit_cell_boundary_7_avg" not in names
+    assert mfbo_pressure_boundary_indices(cells, n_unit_cells=short.n_total) == {
+        2,
+        3,
+        4,
+    }
+    production_names = expected_cell_7_report_names(CURRENT_LAYOUT.n_total)
+    short_names = expected_cell_7_report_names(short.n_total)
+    assert [
+        name
+        for name in production_names
+        if name.startswith("pp_p_unit_cell_boundary_")
+    ] == [f"pp_p_unit_cell_boundary_{index}_avg" for index in range(11)]
+    assert "pp_p_unit_cell_boundary_7_avg" not in short_names
+    assert f"pp_p_unit_cell_boundary_{short.n_total}_avg" in short_names
+    production_cells = [
+        name
+        for name in derive_spacer_cell_metrics_for_layout({}, CURRENT_LAYOUT)
+        if name.startswith("pp_pressure_drop_cell_")
+    ]
+    assert production_cells == [
+        f"pp_pressure_drop_cell_{number}" for number in range(2, 9)
+    ]
+    short_cells = [
+        name
+        for name in derive_spacer_cell_metrics_for_layout({}, short)
+        if name.startswith("pp_pressure_drop_cell_")
+    ]
+    assert short_cells == [
+        "pp_pressure_drop_cell_2",
+        "pp_pressure_drop_cell_3",
+        "pp_pressure_drop_cell_4",
+    ]
 
 
 def test_filter_drops_reports_the_mfbo_fields_do_not_need():

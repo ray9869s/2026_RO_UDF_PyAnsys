@@ -38,6 +38,7 @@ from ro.convergence_quality import (
     continuity_final_from_case_dir,
     evaluate_convergence_quality,
     manifest_quality_payload,
+    pressure_drop_cells_in_layout,
 )
 from ro.lf_monitor_stop import evaluate_lf_monitor_gate
 from ro.manifest import (  # noqa: E402
@@ -1446,7 +1447,8 @@ if __name__ == "__main__":
         _mfbo_mixing_boundaries = set()
         if report_profile == PROFILE_MFBO:
             _mfbo_pressure_boundaries = mfbo_pressure_boundary_indices(
-                _mfbo_evaluation_cells
+                _mfbo_evaluation_cells,
+                n_unit_cells=n_unit_cells,
             )
             _mfbo_mixing_boundaries = mfbo_mixing_cup_boundary_indices(
                 _mfbo_evaluation_cells
@@ -1604,7 +1606,10 @@ if __name__ == "__main__":
         pprint(failed_report_specs)
 
         _mfbo_required_reports = (
-            mfbo_required_report_names(_mfbo_evaluation_cells)
+            mfbo_required_report_names(
+                _mfbo_evaluation_cells,
+                n_unit_cells=n_unit_cells,
+            )
             if report_profile == PROFILE_MFBO
             else None
         )
@@ -2443,14 +2448,17 @@ if __name__ == "__main__":
                 ],
                 "unit": "Pa/m",
             },
-            {
-                "metric": "pp_pressure_drop_cell2_over_cell3",
-                "value": periodic_pressure_metrics[
-                    "pp_pressure_drop_cell2_over_cell3"
-                ],
-                "unit": "-",
-            },
         ]
+        if n_unit_cells >= 3:
+            periodic_pressure_rows.append(
+                {
+                    "metric": "pp_pressure_drop_cell2_over_cell3",
+                    "value": periodic_pressure_metrics[
+                        "pp_pressure_drop_cell2_over_cell3"
+                    ],
+                    "unit": "-",
+                }
+            )
         unit_cell_summary_rows.extend(periodic_pressure_rows)
         unit_cell_pressure_rows.extend(
             row.copy() for row in periodic_pressure_rows
@@ -2989,6 +2997,11 @@ if __name__ == "__main__":
             "raw_results": raw_results,
         }
 
+        if not pressure_drop_cells_in_layout(n_unit_cells):
+            raw_save_dict["derived_values"].pop(
+                "pp_pressure_drop_rel_spread_cells_4_7",
+                None,
+            )
         if report_profile == PROFILE_MFBO:
             raw_save_dict["case_info"]["profile"] = PROFILE_MFBO
 

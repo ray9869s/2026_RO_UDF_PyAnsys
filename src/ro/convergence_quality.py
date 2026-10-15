@@ -31,6 +31,20 @@ LMH_REL_ABS_MAX = 1e-3
 MASS_BALANCE_REL_ABS_MAX = 1e-3
 CONTINUITY_FINAL_MAX = 1e-4
 PRESSURE_DROP_CELLS = (4, 5, 6, 7)
+
+
+def pressure_drop_cells_in_layout(n_unit_cells: int) -> tuple[int, ...]:
+    """Legacy cells 4–7 when every one of them is inside the layout.
+
+    A shorter domain omits the whole set. A partial set is not a substitute.
+    """
+    if isinstance(n_unit_cells, bool) or not isinstance(n_unit_cells, int):
+        raise TypeError(f"n_unit_cells must be an int, got {n_unit_cells!r}.")
+    if n_unit_cells < 1:
+        raise ValueError(f"n_unit_cells must be >= 1, got {n_unit_cells!r}.")
+    if any(cell > n_unit_cells for cell in PRESSURE_DROP_CELLS):
+        return ()
+    return PRESSURE_DROP_CELLS
 PRESSURE_DROP_REL_SPREAD_WARNING = "pp_pressure_drop_rel_spread_window"
 PRESSURE_DROP_REL_SPREAD_NOTE = (
     "Evaluation-window mean is only meaningful when this spread is small."

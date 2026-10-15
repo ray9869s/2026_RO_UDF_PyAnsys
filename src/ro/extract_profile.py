@@ -24,7 +24,7 @@ import math
 import re
 from typing import Any, Mapping, Sequence
 
-from ro.convergence_quality import PRESSURE_DROP_CELLS
+from ro.convergence_quality import pressure_drop_cells_in_layout
 from ro.fluent_report_helpers import (
     LOAD_BEARING_SUMMARY_METRICS,
     unit_cell_mixing_cup_report_name,
@@ -367,24 +367,39 @@ def report_extract_argv(python: str, worker: str, profile: str | None = None) ->
     return cmd
 
 
-def mfbo_pressure_cells(evaluation_cells: Sequence[int]) -> set[int]:
-    """Cells whose boundary pressures the convergence warning reads."""
-    cells = set(PRESSURE_DROP_CELLS)
+def mfbo_pressure_cells(
+    evaluation_cells: Sequence[int],
+    *,
+    n_unit_cells: int,
+) -> set[int]:
+    """Cells whose boundary pressures an mfbo extract must create.
+
+    The legacy cells 4–7 are included only when the layout contains all of
+    them. Evaluation cells outside the layout are refused.
+    """
+    cells = set(pressure_drop_cells_in_layout(n_unit_cells))
     for cell in evaluation_cells:
         if isinstance(cell, bool) or not isinstance(cell, int):
             raise TypeError(
                 f"evaluation cell must be an int, got {cell!r}."
             )
-        if cell < 1:
-            raise ValueError(f"evaluation cell must be >= 1, got {cell!r}.")
+        if cell < 1 or cell > n_unit_cells:
+            raise ValueError(
+                f"evaluation cell {cell} is outside the layout "
+                f"(n_unit_cells={n_unit_cells})."
+            )
         cells.add(cell)
     return cells
 
 
-def mfbo_pressure_boundary_indices(evaluation_cells: Sequence[int]) -> set[int]:
+def mfbo_pressure_boundary_indices(
+    evaluation_cells: Sequence[int],
+    *,
+    n_unit_cells: int,
+) -> set[int]:
     """Unit-cell planes that bound the convergence pressure cells."""
     indices: set[int] = set()
-    for cell in mfbo_pressure_cells(evaluation_cells):
+    for cell in mfbo_pressure_cells(evaluation_cells, n_unit_cells=n_unit_cells):
         indices.add(cell - 1)
         indices.add(cell)
     return indices
@@ -405,10 +420,18 @@ def mfbo_mixing_cup_boundary_indices(evaluation_cells: Sequence[int]) -> set[int
     return indices
 
 
-def mfbo_required_report_names(evaluation_cells: Sequence[int]) -> list[str]:
+def mfbo_required_report_names(
+    evaluation_cells: Sequence[int],
+    *,
+    n_unit_cells: int,
+) -> list[str]:
     """Report definitions whose failure must abort an mfbo extract."""
     names = list(MFBO_BASE_REPORTS)
-    for index in sorted(mfbo_pressure_boundary_indices(evaluation_cells)):
+    for index in sorted(
+        mfbo_pressure_boundary_indices(
+            evaluation_cells, n_unit_cells=n_unit_cells
+        )
+    ):
         names.append(unit_cell_pressure_report_name(index))
     for index in sorted(mfbo_mixing_cup_boundary_indices(evaluation_cells)):
         names.append(unit_cell_mixing_cup_report_name(index))
