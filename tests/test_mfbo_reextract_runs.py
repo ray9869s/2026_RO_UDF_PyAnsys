@@ -2,6 +2,7 @@
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -122,6 +123,78 @@ def _plant_geometry(root, payload=b"dsco-v1"):
     path.parent.mkdir(parents=True)
     path.write_bytes(payload)
     return path
+
+
+def test_mfbo_profile_reads_the_mesh_lead_under_the_leaf_root(
+    monkeypatch, tmp_path
+):
+    leaf = _leaf(tmp_path)
+    (leaf / "post" / "reports").mkdir(parents=True)
+    other = tmp_path / "process_default"
+    other.mkdir()
+    monkeypatch.setenv("RO_DATA_ROOT", str(other))
+    seen = {}
+
+    def fake_read(directory):
+        seen["env"] = os.environ["RO_DATA_ROOT"]
+        seen["directory"] = Path(directory)
+        return {"n_lead_excluded": 1}
+
+    def fake_launch(
+        data_root,
+        run_directory,
+        case,
+        *,
+        geo_id,
+        mesh_id,
+        run_id,
+        profile=None,
+        extra_argv=None,
+    ):
+        del run_directory, case, geo_id, mesh_id, run_id
+        seen["data_root"] = data_root
+        seen["profile"] = profile
+        seen["extra"] = list(extra_argv or [])
+        seen["parent_after"] = os.environ.get("RO_DATA_ROOT")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("ro.manifest.read_mesh_manifest", fake_read)
+    monkeypatch.setattr(reextract_runs.mfbo_common, "launch_extract", fake_launch)
+    monkeypatch.setattr(
+        reextract_runs,
+        "operating_point_case",
+        lambda data_root, run_leaf: {
+            "inlet_velocity_value": 0.2,
+            "outlet_gauge_pressure": 6.0e6,
+        },
+    )
+    assert reextract_runs.main(["--profile", "mfbo", str(leaf)]) == 0
+    assert seen["profile"] == "mfbo"
+    assert seen["extra"][:2] == ["--fidelity-n-lead-excluded", "1"]
+    assert seen["directory"] == (
+        tmp_path.resolve()
+        / "meshes"
+        / "pillar"
+        / "P_p100_h30"
+        / "max085_min006_cpg5_bl4_peel2"
+    )
+    assert Path(seen["env"]) == tmp_path.resolve()
+    assert seen["data_root"] == tmp_path.resolve()
+    assert seen["parent_after"] == str(other)
+
+
+def test_mfbo_profile_refuses_a_lead_that_disagrees_with_the_mesh(
+    monkeypatch, tmp_path
+):
+    leaf = _leaf(tmp_path)
+    monkeypatch.setattr(
+        "ro.manifest.read_mesh_manifest",
+        lambda directory: {"n_lead_excluded": 1},
+    )
+    with pytest.raises(ValueError, match="n_lead_excluded is 1"):
+        reextract_runs.main(
+            ["--profile", "mfbo", "--fidelity-n-lead-excluded", "4", str(leaf)]
+        )
 
 
 def test_copy_from_production_reextracts_the_copy(monkeypatch, tmp_path):

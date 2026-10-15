@@ -202,14 +202,53 @@ def reextract_leaf(run_leaf_value, *, profile=None, extra_argv=None):
     )
 
 
+def mesh_lead_excluded(data_root, family, geo_id, mesh_id):
+    """``n_lead_excluded`` from the mesh manifest under ``data_root``."""
+    from ro.manifest import read_mesh_manifest
+
+    directory = Path(data_root) / "meshes" / family / geo_id / mesh_id
+
+    def _read():
+        payload = read_mesh_manifest(directory)
+        value = payload.get("n_lead_excluded")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f"mesh manifest {directory} n_lead_excluded must be an "
+                f"integer >= 0, got {value!r}."
+            )
+        return value
+
+    return mfbo_common.call_with_data_root(data_root, _read)
+
+
 def _reextract_with_flags(run_leaf_value, args):
-    """Production re-extract keeps the old one-argument call."""
+    """Production re-extract keeps the old one-argument call.
+
+    ``--profile mfbo`` reads ``n_lead_excluded`` from that leaf's mesh
+    manifest and passes it as ``--fidelity-n-lead-excluded``, so the
+    extract window source is ``fidelity_table``.
+    """
     extra = _extract_extra(args)
-    if args.profile is None and not extra:
+    profile = args.profile
+    if profile == "mfbo":
+        leaf, data_root, family, geo_id, mesh_id, _run_id = parse_run_leaf(
+            run_leaf_value
+        )
+        del leaf
+        lead = mesh_lead_excluded(data_root, family, geo_id, mesh_id)
+        if args.fidelity_n_lead_excluded is None:
+            extra = ["--fidelity-n-lead-excluded", str(lead), *extra]
+        elif args.fidelity_n_lead_excluded != lead:
+            raise ValueError(
+                f"mesh manifest n_lead_excluded is {lead}, "
+                "--fidelity-n-lead-excluded is "
+                f"{args.fidelity_n_lead_excluded}."
+            )
+    if profile is None and not extra:
         return reextract_leaf(run_leaf_value)
     return reextract_leaf(
         run_leaf_value,
-        profile=args.profile,
+        profile=profile,
         extra_argv=extra,
     )
 
@@ -258,6 +297,8 @@ def main(argv=None) -> int:
         help="Absolute run leaf paths (.../runs/<family>/<geo>/<mesh>/<run_id>).",
     )
     args = parser.parse_args(argv)
+    if args.profile not in (None, "full", "mfbo"):
+        parser.error(f"--profile must be full or mfbo, got {args.profile!r}.")
     if args.copy_from_production:
         if args.run_leaves:
             parser.error(
