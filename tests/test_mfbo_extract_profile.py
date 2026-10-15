@@ -7,12 +7,13 @@ import json
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from helpers import SCRIPTS_DIR, load_batch_report_extract, load_module
 from ro.extract_profile import (
     MFBO_REQUIRED_SUMMARY_COLUMNS,
     PROFILE_FULL,
     PROFILE_MFBO,
     compare_shared_summary_columns,
+    critical_summary_columns,
     filter_mfbo_summary_rows,
     mfbo_mixing_cup_boundary_indices,
     mfbo_pressure_boundary_indices,
@@ -21,6 +22,7 @@ from ro.extract_profile import (
     report_extract_argv,
     require_mfbo_summary_columns,
 )
+from ro.fluent_report_helpers import LOAD_BEARING_SUMMARY_METRICS
 
 parity = load_module(
     "parity_mfbo_extract_under_test",
@@ -352,6 +354,60 @@ def test_default_runner_reads_the_manifest_under_the_data_root(tmp_path, monkeyp
     assert seen["launch"]["geo_id"] == "P_p100_h30"
     assert seen["launch"]["run_id"] == "u0p2_p6M_rke"
     assert seen["launch"]["profile"] == "mfbo"
+
+
+_FULL_ONLY_COLUMNS = (
+    "pp_udm_area_sum",
+    "pressure_drop",
+    "pressure_drop_per_m",
+)
+
+
+def _write_wide_row(path, row):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+
+
+def test_critical_summary_columns_cite_one_list_per_profile():
+    assert critical_summary_columns(None) is LOAD_BEARING_SUMMARY_METRICS
+    assert critical_summary_columns(PROFILE_FULL) is LOAD_BEARING_SUMMARY_METRICS
+    assert critical_summary_columns(PROFILE_MFBO) is MFBO_REQUIRED_SUMMARY_COLUMNS
+    assert set(_FULL_ONLY_COLUMNS) <= set(LOAD_BEARING_SUMMARY_METRICS)
+    assert set(_FULL_ONLY_COLUMNS).isdisjoint(MFBO_REQUIRED_SUMMARY_COLUMNS)
+    with pytest.raises(ValueError, match="extract profile"):
+        critical_summary_columns("lite")
+
+
+def test_mfbo_validation_ignores_columns_the_profile_skips(tmp_path):
+    row = {name: "1" for name in LOAD_BEARING_SUMMARY_METRICS}
+    for name in _FULL_ONLY_COLUMNS:
+        del row[name]
+    for name in MFBO_REQUIRED_SUMMARY_COLUMNS:
+        row.setdefault(name, "1")
+    row["profile"] = PROFILE_MFBO
+    path = tmp_path / "summary_metrics_wide.csv"
+    _write_wide_row(path, row)
+    checker = load_batch_report_extract()
+    assert list(checker.CRITICAL_SUMMARY_COLUMNS) == list(LOAD_BEARING_SUMMARY_METRICS)
+    ok, message = checker.validate_summary_wide_csv(path, profile=PROFILE_MFBO)
+    assert ok, message
+    ok, message = checker.validate_summary_wide_csv(path)
+    assert not ok
+    assert message == (
+        "Missing critical columns: "
+        "['pp_udm_area_sum', 'pressure_drop', 'pressure_drop_per_m']"
+    )
+    ok, full_message = checker.validate_summary_wide_csv(path, profile=PROFILE_FULL)
+    assert not ok
+    assert full_message == message
+    row["lmh_window_module"] = ""
+    _write_wide_row(path, row)
+    ok, message = checker.validate_summary_wide_csv(path, profile=PROFILE_MFBO)
+    assert not ok
+    assert "lmh_window_module" in message
 
 
 def test_prepare_refuses_a_missing_or_mfbo_summary(tmp_path):

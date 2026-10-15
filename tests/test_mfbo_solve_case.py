@@ -266,6 +266,76 @@ def test_main_returns_worker_code_and_prints_results(monkeypatch, tmp_path, caps
         driver.main(["--data-root", str(tmp_path), "--geo-id", geo_id])
 
 
+def test_mfbo_result_print_does_not_require_cells_outside_the_short_domain():
+    driver = load_driver()
+    row = {
+        "lmh_mass_balance": "1.5",
+        "pressure_drop_spacer_per_m": "1000",
+        "cp_canon_window_avg": "1.1",
+    }
+    mesh = {"inlet_profile_G": 1.01}
+    run = {"u_mean_ms": 0.2, "stop_reason": "residual_converged"}
+    fields = driver.result_fields(row, mesh, run, profile="mfbo")
+    assert fields["lmh_mass_balance"] == "1.5"
+    assert "pp_cp_canon_max_cell_5" not in fields
+    with pytest.raises(KeyError, match="pp_cp_canon_max_cell_5"):
+        driver.result_fields(row, mesh, run)
+
+
+def test_main_validates_an_mfbo_extract_with_the_mfbo_column_list(
+    monkeypatch, tmp_path, capsys
+):
+    driver = load_driver()
+    geo_id = format_mfbo_pillar_geo_id(1.0, 0.3, 0.4)
+    _write_meta(tmp_path, geo_id, _registry(geo_id))
+    _place_mesh(driver, tmp_path, geo_id)
+    template = _template()
+    case = {"inlet_velocity_value": 0.2, "outlet_gauge_pressure": 6.0e6}
+    monkeypatch.delenv("RO_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        driver,
+        "load_template",
+        lambda mesh_id, run_id: (case, template, 0, 0.0),
+    )
+
+    def fake_solver(overrides, data_root, run_directory, **kwargs):
+        run_directory.mkdir(parents=True)
+        (run_directory / "manifest.json").write_text(
+            json.dumps({"u_mean_ms": 0.198, "stop_reason": "residual_converged"}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    def fake_extract(data_root, run_directory, case_dict, *, geo_id, mesh_id, run_id, **kwargs):
+        assert kwargs["profile"] == "mfbo"
+        summary = run_directory / "post" / "reports" / "summary_metrics_wide.csv"
+        summary.parent.mkdir(parents=True)
+        summary.write_text(
+            "lmh_mass_balance,pressure_drop_spacer_per_m,cp_canon_window_avg\n"
+            "1.5,1000,1.1\n",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    seen = {}
+
+    def validate(path, profile=None):
+        seen["profile"] = profile
+        return True, "OK"
+
+    monkeypatch.setattr(driver, "launch_solver", fake_solver)
+    monkeypatch.setattr(driver.mfbo_common, "launch_extract", fake_extract)
+    monkeypatch.setattr(driver.batch_report_extract, "validate_summary_wide_csv", validate)
+    code = driver.main(
+        ["--data-root", str(tmp_path), "--geo-id", geo_id, "--profile", "mfbo"]
+    )
+    assert code == 0
+    assert seen["profile"] == "mfbo"
+    printed = capsys.readouterr().out
+    assert "lmh_mass_balance: 1.5" in printed
+    assert "pp_cp_canon_max_cell_5" not in printed
+
+
 def test_unknown_mesh_id_reuses_the_default_solver_case():
     driver = load_driver()
     mesh_id = "max045_min006_cpg5_bl8_peel2"

@@ -22,7 +22,7 @@ from ro.domain_layout import (
 )
 from ro.extract_skip import extract_skip_block_reason, inspect_extract_skip_leaf
 from ro.manifest import ManifestError, iter_run_manifests
-from ro.fluent_report_helpers import LOAD_BEARING_SUMMARY_METRICS
+from ro.extract_profile import critical_summary_columns
 from ro.paths import data_root, project_root, run_dir, runs_root
 from ro.session_retry import (
     classify_retryable_session_crash,
@@ -32,11 +32,13 @@ from ro.session_retry import (
 
 # ============================================================
 # Critical columns required to be present and non-NaN/empty
-# in summary_metrics_wide.csv for a case to be considered valid.
-# Kept in sync with LOAD_BEARING_SUMMARY_METRICS in report extract.
+# in summary_metrics_wide.csv for a full extract.
+# The names live in extract_profile.critical_summary_columns("full"),
+# which is LOAD_BEARING_SUMMARY_METRICS. The mfbo profile uses
+# critical_summary_columns("mfbo") instead.
 # ============================================================
 
-CRITICAL_SUMMARY_COLUMNS = list(LOAD_BEARING_SUMMARY_METRICS)
+CRITICAL_SUMMARY_COLUMNS = list(critical_summary_columns("full"))
 
 # Same defaults as batch_postprocess_all_cases / batch_solver_sweep:
 # 2 retries after the first attempt (3 total), 15 s settle.
@@ -129,9 +131,15 @@ def load_python_config(config_path, module_name):
     return module
 
 
-def validate_summary_wide_csv(summary_wide_csv):
+def validate_summary_wide_csv(summary_wide_csv, profile=None):
     """
-    Validate a per-case summary_metrics_wide.csv against CRITICAL_SUMMARY_COLUMNS.
+    Validate a per-case summary_metrics_wide.csv.
+
+    ``profile`` None or ``full`` checks CRITICAL_SUMMARY_COLUMNS, which is
+    ``critical_summary_columns("full")`` (LOAD_BEARING_SUMMARY_METRICS).
+    ``profile`` ``mfbo`` checks ``critical_summary_columns("mfbo")``
+    (MFBO_REQUIRED_SUMMARY_COLUMNS). Callers that omit ``profile`` keep
+    the full-extract list.
 
     Returns (True, "OK") when all critical columns are present and non-NaN/empty.
     Returns (False, detailed_message) on any validation failure.
@@ -143,6 +151,15 @@ def validate_summary_wide_csv(summary_wide_csv):
         return False, f"summary_metrics_wide.csv not found: {summary_wide_csv}"
 
     try:
+        columns = (
+            CRITICAL_SUMMARY_COLUMNS
+            if profile is None
+            else critical_summary_columns(profile)
+        )
+    except ValueError as exc:
+        return False, str(exc)
+
+    try:
         df = pd.read_csv(summary_wide_csv, encoding="utf-8-sig")
     except Exception as exc:
         return False, f"Could not read summary_metrics_wide.csv: {exc}"
@@ -150,13 +167,13 @@ def validate_summary_wide_csv(summary_wide_csv):
     if len(df) == 0:
         return False, "summary_metrics_wide.csv has no data rows."
 
-    missing_cols = [col for col in CRITICAL_SUMMARY_COLUMNS if col not in df.columns]
+    missing_cols = [col for col in columns if col not in df.columns]
     if missing_cols:
         return False, f"Missing critical columns: {missing_cols}"
 
     row = df.iloc[0]
     invalid_cols = [
-        col for col in CRITICAL_SUMMARY_COLUMNS
+        col for col in columns
         if pd.isna(row[col]) or row[col] == ""
     ]
 

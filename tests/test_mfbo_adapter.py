@@ -631,6 +631,30 @@ def test_archived_failed_mesh_leaves_are_failed(tmp_path, relative):
     assert _mesh_state(leaf) == "failed"
 
 
+def test_adapter_summary_reads_are_columns_the_mfbo_profile_writes():
+    import re
+
+    from ro.extract_profile import MFBO_REQUIRED_SUMMARY_COLUMNS
+
+    text = (REPO_ROOT / "src" / "ro" / "mfbo_adapter.py").read_text(encoding="utf-8")
+    start = text.index("def _quantities")
+    end = text.index("\ndef _identity")
+    names = set(re.findall(r'summary\.get\("([^"]+)"\)', text[start:end]))
+    assert names == {
+        "lmh_window_module",
+        "lmh_mass_balance",
+        "area_mem",
+        "pressure_drop_spacer_per_m",
+        "cpc_window_avg_flux",
+        "cp_q999_window_flux",
+        "cp_canon_window_avg",
+    }
+    assert names <= set(MFBO_REQUIRED_SUMMARY_COLUMNS)
+    assert names.isdisjoint(
+        {"pp_udm_area_sum", "pressure_drop", "pressure_drop_per_m"}
+    )
+
+
 def test_mesh_success_requires_status_success_and_a_manifest(tmp_path):
     leaf = tmp_path / "mesh"
     record = _load_fixture("mesh_run_record_success.json")

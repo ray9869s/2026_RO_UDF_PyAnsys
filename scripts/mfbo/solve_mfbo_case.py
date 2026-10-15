@@ -28,6 +28,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
+from ro.extract_profile import MFBO_REQUIRED_SUMMARY_COLUMNS, PROFILE_MFBO
 from ro.geometry_registry import (
     MFBO_PILLAR_GEO_ID_RE,
     mfbo_pillar_n_active,
@@ -365,17 +366,37 @@ def read_summary_wide(path):
     return rows[0]
 
 
-def result_fields(summary_row, mesh_manifest, run_manifest):
-    """Fields printed after a successful extract."""
+def result_fields(summary_row, mesh_manifest, run_manifest, profile=None):
+    """Fields printed after a successful extract.
+
+    ``profile`` ``mfbo`` requires only the print fields that
+    ``MFBO_REQUIRED_SUMMARY_COLUMNS`` promises. Cell-max print fields are
+    included when the row has them, so a short domain that never built
+    cells 5-8 still finishes.
+    """
     if not isinstance(summary_row, dict):
         raise TypeError("summary row must be a dict.")
+    if profile == PROFILE_MFBO:
+        required = tuple(
+            key for key in SUMMARY_PRINT_FIELDS if key in MFBO_REQUIRED_SUMMARY_COLUMNS
+        )
+    elif profile in (None, "full"):
+        required = SUMMARY_PRINT_FIELDS
+    else:
+        raise ValueError(f"extract profile must be full or mfbo, got {profile!r}.")
     values = {}
     missing = []
-    for key in SUMMARY_PRINT_FIELDS:
+    for key in required:
         if key not in summary_row or summary_row[key] == "":
             missing.append(key)
         else:
             values[key] = summary_row[key]
+    if profile == PROFILE_MFBO:
+        for key in SUMMARY_PRINT_FIELDS:
+            if key in required:
+                continue
+            if key in summary_row and summary_row[key] != "":
+                values[key] = summary_row[key]
     manifest_sources = {
         "inlet_profile_G": mesh_manifest,
         "u_mean_ms": run_manifest,
@@ -394,6 +415,8 @@ def result_fields(summary_row, mesh_manifest, run_manifest):
 def print_result_fields(values):
     print("MFBO solve results:")
     for key in (*SUMMARY_PRINT_FIELDS, "inlet_profile_G", "u_mean_ms", "stop_reason"):
+        if key not in values:
+            continue
         print(f"  {key}: {_cell(values[key])}")
 
 
@@ -553,7 +576,12 @@ def main(argv=None):
         return _exit_code(extract_result.returncode)
 
     summary = run_directory / "post" / "reports" / "summary_metrics_wide.csv"
-    valid, message = batch_report_extract.validate_summary_wide_csv(summary)
+    validate_kwargs = {}
+    if args.profile is not None:
+        validate_kwargs["profile"] = args.profile
+    valid, message = batch_report_extract.validate_summary_wide_csv(
+        summary, **validate_kwargs
+    )
     if not valid:
         print(f"FAILED_METRIC_VALIDATION: {message}")
         return 1
@@ -562,6 +590,7 @@ def main(argv=None):
             read_summary_wide(summary),
             _read_json(mesh_directory / "manifest.json"),
             _read_json(run_directory / "manifest.json"),
+            profile=args.profile,
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"FAILED_RESULT_PRINT: {exc}")

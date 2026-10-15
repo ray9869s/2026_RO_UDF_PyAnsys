@@ -26,6 +26,7 @@ from typing import Any, Mapping, Sequence
 
 from ro.convergence_quality import PRESSURE_DROP_CELLS
 from ro.fluent_report_helpers import (
+    LOAD_BEARING_SUMMARY_METRICS,
     unit_cell_mixing_cup_report_name,
     unit_cell_pressure_report_name,
 )
@@ -85,6 +86,33 @@ MFBO_REQUIRED_SUMMARY_COLUMNS = (
     "mass_balance_relative_error",
     PROFILE_COLUMN,
 )
+
+# Post-extract validation reads these tuples and does not keep a second copy.
+# ``full`` is LOAD_BEARING_SUMMARY_METRICS in src/ro/fluent_report_helpers.py
+# (inlet/outlet pressure, the domain pressure drop, and the UDM area sum).
+# ``mfbo`` is MFBO_REQUIRED_SUMMARY_COLUMNS above: score columns
+# (lmh_window_module, lmh_mass_balance, lmh_window_exposed,
+# pressure_drop_spacer_per_m, cpc_window_avg_flux, cp_q999_window_flux,
+# cp_canon_window_avg), window and geometry columns, and the convergence-gate
+# inputs that live on the wide summary (lmh_udm_avg, lmh_relative_difference,
+# m_in, m_out, mass_balance_relative_error). continuity_final is read from
+# the residual transcript, not from this CSV.
+
+
+def critical_summary_columns(profile: str | None = None) -> tuple[str, ...]:
+    """Columns a successful extract must leave present and non-blank.
+
+    ``None`` and ``full`` return ``LOAD_BEARING_SUMMARY_METRICS``.
+    ``mfbo`` returns ``MFBO_REQUIRED_SUMMARY_COLUMNS``.
+    """
+    if profile is None or profile == PROFILE_FULL:
+        return LOAD_BEARING_SUMMARY_METRICS
+    if profile == PROFILE_MFBO:
+        return MFBO_REQUIRED_SUMMARY_COLUMNS
+    raise ValueError(
+        f"extract profile must be one of {sorted(PROFILES)}, got {profile!r}."
+    )
+
 
 # Same-formula columns. A name absent from this set and from _CELL_METRIC
 # is not written, so it is not a shared parity column.
