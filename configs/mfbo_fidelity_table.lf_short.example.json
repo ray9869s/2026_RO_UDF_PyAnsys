@@ -29,5 +29,27 @@
     "n_active": 3,
     "n_lead_excluded": 1,
     "extract_profile": "mfbo"
+  },
+  "LF_c": {
+    "m_max": 0.12,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 4,
+    "peel_layers": 2,
+    "n_active": 3,
+    "n_lead_excluded": 1,
+    "extract_profile": "mfbo",
+    "run_id_suffix": "lfc",
+    "solver_overrides": {
+      "max_iterations": 600,
+      "lf_monitor_stop": {
+        "tol_lmh": 0.001,
+        "tol_dp": 0.005,
+        "n": 100
+      }
+    },
+    "convergence_gate": {
+      "mode": "lf_monitor"
+    }
   }
 }

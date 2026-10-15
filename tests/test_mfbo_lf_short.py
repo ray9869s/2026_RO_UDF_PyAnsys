@@ -104,6 +104,18 @@ def test_lf_short_table_schema_and_mesh_only_table_still_parses():
     assert low_a["n_active"] == 3
     assert low_a["n_lead_excluded"] == 1
     assert low_b["m_max"] == 0.12
+    low_c = parse_fidelity_level(table["LF_c"])
+    assert mesh_id_for_settings(table["LF_c"]) == mesh_id_for_settings(table["LF_b"])
+    assert low_c["n_active"] == low_b["n_active"] == 3
+    assert low_c["n_lead_excluded"] == 1
+    assert low_c["run_id_suffix"] == "lfc"
+    assert low_c["solver_overrides"]["max_iterations"] == 600
+    assert low_c["solver_overrides"]["lf_monitor_stop"] == {
+        "tol_lmh": 1.0e-3,
+        "tol_dp": 5.0e-3,
+        "n": 100,
+    }
+    assert low_c["convergence_gate"] == {"mode": "lf_monitor"}
     used = fidelity_settings_used(hf)
     assert used["window_source"] == "fidelity_table"
     assert used["solver"]["max_iterations"]["source"] == "production"
@@ -288,9 +300,11 @@ def test_check_queue_has_six_jobs_and_emit_does_not_evaluate(tmp_path, monkeypat
         "HF-MFP_d0800_h0150_f0400",
         "LF_a-MFP_d0800_h0150_f0400_n3",
         "LF_b-MFP_d0800_h0150_f0400_n3",
+        "LF_c-MFP_d0800_h0150_f0400_n3",
         "HF-MFP_d1000_h0300_f0400",
         "LF_a-MFP_d1000_h0300_f0400_n3",
         "LF_b-MFP_d1000_h0300_f0400_n3",
+        "LF_c-MFP_d1000_h0300_f0400_n3",
     ]
     assert all(job["argv"][1] == "scripts/mfbo/run_3d_evaluate.py" for job in jobs)
     assert jobs[0]["argv"][jobs[0]["argv"].index("--run-id") + 1] == RUN_ID
@@ -419,4 +433,113 @@ def test_adapter_passes_the_level_into_every_driver(tmp_path, monkeypatch):
     assert (
         written["updates"]["fidelity_settings"]["solver"]["max_iterations"]["source"]
         == "production"
+    )
+
+
+def test_lf_c_reuses_the_lf_b_geometry_and_mesh(tmp_path, monkeypatch):
+    calls = []
+
+    def _capture(run_dir, updates):
+        return Path(run_dir) / "manifest.json"
+
+    monkeypatch.setattr("ro.mfbo_adapter.update_run_manifest_fields", _capture)
+
+    class _Drivers:
+        def generate(self, *, design, geo_id, out_dir, n_active=None):
+            calls.append("generate")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            pmdb = out_dir / f"{geo_id}.pmdb"
+            pmdb.write_bytes(b"pmdb")
+            meta = {
+                "geo_id": geo_id,
+                "inputs": {
+                    "d_p_mm": design.d_p_mm,
+                    "d_h_mm": design.d_h_mm,
+                    "d_f_mm": design.d_f_mm,
+                    "geo_id": geo_id,
+                    "n_active": n_active,
+                },
+                "pmdb_sha256": sha256_file(pmdb),
+            }
+            (out_dir / f"{geo_id}_meta.json").write_text(
+                json.dumps(meta), encoding="utf-8"
+            )
+
+        def mesh(self, *, design, geo_id, mesh_id, mesh_settings, mesh_dir, n_lead_excluded=None):
+            calls.append("mesh")
+            mesh_dir.mkdir(parents=True, exist_ok=True)
+            (mesh_dir / "mesh_run_record.json").write_text(
+                json.dumps({"status": "SUCCESS", "wall_time_seconds": 1.0}),
+                encoding="utf-8",
+            )
+            (mesh_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "cell_count": 10,
+                        "n_active_cells": 3,
+                        "cell_length_x_m": 0.001,
+                        "periodic_shift_y_m": 0.001,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        def solve(self, *, design, geo_id, mesh_id, run_id, run_dir, level=None):
+            calls.append(("solve", run_id))
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "stop_reason": "lf_monitor_stable",
+                        "convergence_quality": "PASS",
+                        "convergence_gate": "lf_monitor",
+                        "lf_monitor_ramp_end": 150,
+                        "lf_monitor_tol_lmh": 1.0e-3,
+                        "lf_monitor_tol_dp": 5.0e-3,
+                        "lf_monitor_n": 100,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        def extract(self, *, design, geo_id, mesh_id, run_id, run_dir, level=None):
+            calls.append("extract")
+            path = run_dir / "post" / "reports" / "summary_metrics_wide.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "lmh_mass_balance,lmh_window_module,area_mem,"
+                "pressure_drop_spacer_per_m,cpc_window_avg_flux,"
+                "cp_q999_window_flux,cp_canon_window_avg\n"
+                "25,18,1.0e-5,30000,1.08,1.2,1.05\n",
+                encoding="utf-8",
+            )
+
+    design = PillarDesign(d_p_mm=0.8, d_h_mm=0.15, d_f_mm=0.4)
+    table = _table()
+    evaluate(
+        design,
+        "LF_b",
+        run_id=RUN_ID,
+        data_root=tmp_path,
+        fidelity_table=table,
+        drivers=_Drivers(),
+    )
+    calls.clear()
+    result = evaluate(
+        design,
+        "LF_c",
+        run_id=RUN_ID,
+        data_root=tmp_path,
+        fidelity_table=table,
+        drivers=_Drivers(),
+    )
+    assert calls == [("solve", "u0p2_p6M_lfc"), "extract"]
+    assert result["run_id"] == "u0p2_p6M_lfc"
+    assert result["mesh_id"] == mesh_id_for_settings(table["LF_b"])
+    assert result["geo_id"].endswith("_n3")
+    assert result["status"] == "valid"
+    assert result["convergence_gate"] == "lf_monitor"
+    assert result["lf_monitor_ramp_end"] == 150
+    assert result["fidelity_settings"]["convergence_gate"]["mode"]["value"] == (
+        "lf_monitor"
     )

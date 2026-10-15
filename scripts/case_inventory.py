@@ -519,7 +519,7 @@ def sort_paths(paths: Iterable[Path]) -> list[Path]:
 
 def convergence_status_from_stop_reason(stop_reason: str) -> str:
     """Map a run-manifest stop_reason onto inventory convergence_status."""
-    if stop_reason in {"residual_converged", "qoi_converged"}:
+    if stop_reason in {"residual_converged", "qoi_converged", "lf_monitor_stable"}:
         return CONVERGED
     if stop_reason == "max_iter_reached":
         return MAX_ITER_REACHED

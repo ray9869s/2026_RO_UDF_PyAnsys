@@ -39,6 +39,7 @@ from ro.convergence_quality import (
     evaluate_convergence_quality,
     manifest_quality_payload,
 )
+from ro.lf_monitor_stop import evaluate_lf_monitor_gate
 from ro.manifest import (  # noqa: E402
     read_run_manifest,
     sync_run_manifest_analytic_cwall,
@@ -2886,14 +2887,25 @@ if __name__ == "__main__":
         # Post-hoc convergence quality (independent of stop_reason).
         continuity_final = continuity_final_from_case_dir(case_path)
         _gate = _fidelity_extract.get("convergence_gate") or {}
-        quality_result = evaluate_convergence_quality(
-            wide_record,
-            continuity_final=continuity_final,
-            evaluation_cell_numbers=evaluation_cells,
-            lmh_rel_abs_max=_gate.get("lmh_rel_abs_max"),
-            mass_balance_rel_abs_max=_gate.get("mass_balance_rel_abs_max"),
-            continuity_final_max=_gate.get("continuity_final_max"),
-        )
+        if _gate.get("mode") == "lf_monitor":
+            quality_result = evaluate_lf_monitor_gate(
+                case_path,
+                continuity_final=continuity_final,
+                tol_lmh=_gate["tol_lmh"],
+                tol_dp=_gate["tol_dp"],
+                n=_gate["n"],
+                metrics=wide_record,
+                evaluation_cell_numbers=evaluation_cells,
+            )
+        else:
+            quality_result = evaluate_convergence_quality(
+                wide_record,
+                continuity_final=continuity_final,
+                evaluation_cell_numbers=evaluation_cells,
+                lmh_rel_abs_max=_gate.get("lmh_rel_abs_max"),
+                mass_balance_rel_abs_max=_gate.get("mass_balance_rel_abs_max"),
+                continuity_final_max=_gate.get("continuity_final_max"),
+            )
 
         # ----------------------------------------------------------
         # Save raw report values for debugging/reproducibility

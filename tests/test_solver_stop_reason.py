@@ -109,6 +109,7 @@ def test_stop_reason_enum_is_complete(common):
     assert set(common.STOP_REASON_VALUES) == {
         "residual_converged",
         "qoi_converged",
+        "lf_monitor_stable",
         "max_iter_reached",
         "diverged",
         "unknown_early_stop",

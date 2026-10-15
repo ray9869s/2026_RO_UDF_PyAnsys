@@ -262,6 +262,10 @@ def _parse_extract_args(argv: Sequence[str] | None = None):
     parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
     parser.add_argument("--mass-balance-rel-abs-max", type=float, default=None)
     parser.add_argument("--continuity-final-max", type=float, default=None)
+    parser.add_argument("--convergence-gate", default=None)
+    parser.add_argument("--lf-tol-lmh", type=float, default=None)
+    parser.add_argument("--lf-tol-dp", type=float, default=None)
+    parser.add_argument("--lf-monitor-n", type=int, default=None)
     args, unknown = parser.parse_known_args(list(argv) if argv is not None else None)
     if unknown:
         raise ValueError(f"Unrecognized extract arguments: {unknown!r}.")
@@ -298,15 +302,48 @@ def fidelity_extract_overrides(
                 f"got {args.fidelity_n_lead_excluded}."
             )
         overrides["n_lead_excluded"] = args.fidelity_n_lead_excluded
-    gate = {}
+    production_gate = {}
     if args.lmh_rel_abs_max is not None:
-        gate["lmh_rel_abs_max"] = args.lmh_rel_abs_max
+        production_gate["lmh_rel_abs_max"] = args.lmh_rel_abs_max
     if args.mass_balance_rel_abs_max is not None:
-        gate["mass_balance_rel_abs_max"] = args.mass_balance_rel_abs_max
+        production_gate["mass_balance_rel_abs_max"] = args.mass_balance_rel_abs_max
     if args.continuity_final_max is not None:
-        gate["continuity_final_max"] = args.continuity_final_max
-    if gate:
-        overrides["convergence_gate"] = gate
+        production_gate["continuity_final_max"] = args.continuity_final_max
+    lf_specified = any(
+        value is not None
+        for value in (args.convergence_gate, args.lf_tol_lmh, args.lf_tol_dp, args.lf_monitor_n)
+    )
+    if lf_specified:
+        if production_gate:
+            raise ValueError(
+                "The LF monitor gate cannot be combined with production "
+                "gate thresholds."
+            )
+        if args.convergence_gate != "lf_monitor":
+            raise ValueError(
+                "LF monitor thresholds require --convergence-gate lf_monitor, "
+                f"got {args.convergence_gate!r}."
+            )
+        if None in (args.lf_tol_lmh, args.lf_tol_dp, args.lf_monitor_n):
+            raise ValueError(
+                "--convergence-gate lf_monitor requires --lf-tol-lmh, "
+                "--lf-tol-dp, and --lf-monitor-n."
+            )
+        if args.lf_tol_lmh <= 0.0 or args.lf_tol_dp <= 0.0:
+            raise ValueError("LF monitor tolerances must be positive.")
+        if args.lf_monitor_n < 1:
+            raise ValueError(
+                f"--lf-monitor-n must be >= 1, got {args.lf_monitor_n}."
+            )
+        overrides["convergence_gate"] = {
+            "mode": "lf_monitor",
+            "tol_lmh": float(args.lf_tol_lmh),
+            "tol_dp": float(args.lf_tol_dp),
+            "n": int(args.lf_monitor_n),
+        }
+        return overrides
+    if production_gate:
+        overrides["convergence_gate"] = production_gate
     return overrides
 
 

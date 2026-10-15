@@ -1,13 +1,17 @@
-"""HF versus two short-domain LF candidates for two pillar designs.
+"""HF versus short-domain LF candidates for two pillar designs.
 
 Importing this module does not launch Fluent. ``--emit-queue`` writes a
 job-queue JSON file and does not evaluate. Without it, each design is
-evaluated at HF, then LF_a, then LF_b, and the script prints the values,
-the relative bias ``(LF - HF) / HF`` (CP as CP-1), and the mesh, solve,
-extract, and total wall times.
+evaluated at HF, then LF_a, LF_b, and LF_c, and the script prints the
+values, the relative bias ``(LF - HF) / HF`` (CP as CP-1), and the mesh,
+solve, extract, and total wall times.
 
-Designs, the three level names, and their order are this check. The
-fidelity table, run id, and data root are required.
+LF_c uses LF_b's geometry and mesh. Its run id gains the table suffix
+``lfc``, so the solve and extract are a new leaf. ``--levels LF_c``
+emits or evaluates only that level.
+
+Designs, the level names, and their order are this check. The fidelity
+table, run id, and data root are required.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from ro.mfbo_fidelity_screen import (
 )
 
 HF_LEVEL = "HF"
-LF_LEVELS = ("LF_a", "LF_b")
+LF_LEVELS = ("LF_a", "LF_b", "LF_c")
 CHECK_LEVELS = (HF_LEVEL, *LF_LEVELS)
 DESIGNS = (
     PillarDesign(d_p_mm=0.80, d_h_mm=0.15, d_f_mm=0.40),
@@ -52,13 +56,20 @@ _WALL_KEYS = (
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate HF, LF_a, and LF_b for the two short-domain check designs. "
-            "--emit-queue writes a job queue and does not evaluate."
+            "Evaluate HF, LF_a, LF_b, and LF_c for the two short-domain check "
+            "designs. --emit-queue writes a job queue and does not evaluate. "
+            "--levels limits the run to those names."
         ),
     )
     parser.add_argument("--fidelity-table", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--data-root", required=True)
+    parser.add_argument(
+        "--levels",
+        nargs="+",
+        default=None,
+        help="Level names to run. Default: HF, LF_a, LF_b, LF_c.",
+    )
     parser.add_argument(
         "--emit-queue",
         type=Path,
@@ -69,28 +80,43 @@ def build_parser():
 
 
 def require_check_table(table):
-    """Require exactly HF, LF_a, and LF_b, each a runnable fidelity level."""
+    """Require exactly HF, LF_a, LF_b, and LF_c, each a runnable level."""
     if not isinstance(table, dict):
         raise TypeError("fidelity table must be a JSON object.")
     names = list(table)
     if set(names) != set(CHECK_LEVELS):
         raise ValueError(
-            "The LF short-domain check needs exactly HF, LF_a, and LF_b, "
-            f"got {names!r}."
+            "The LF short-domain check needs exactly HF, LF_a, LF_b, and "
+            f"LF_c, got {names!r}."
         )
     for name in CHECK_LEVELS:
         require_runnable_fidelity(table, name)
     return table
 
 
+def selected_levels(requested):
+    """Default to every check level. A request must name those levels."""
+    if requested is None:
+        return CHECK_LEVELS
+    if not requested:
+        raise ValueError("--levels needs at least one level name.")
+    unknown = [name for name in requested if name not in CHECK_LEVELS]
+    if unknown:
+        raise ValueError(
+            f"--levels has names outside this check: {unknown!r}."
+        )
+    return tuple(requested)
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     table = require_check_table(load_fidelity_table(args.fidelity_table))
+    levels = selected_levels(args.levels)
     root = resolve_data_root(args.data_root)
     if args.emit_queue is not None:
         jobs = build_named_level_queue(
             DESIGNS,
-            CHECK_LEVELS,
+            levels,
             table,
             run_id=args.run_id,
             data_root=root,
@@ -108,7 +134,7 @@ def main(argv=None) -> int:
     )
     for design in DESIGNS:
         records = {}
-        for fidelity in CHECK_LEVELS:
+        for fidelity in levels:
             records[fidelity] = evaluate(
                 design,
                 fidelity,
@@ -127,11 +153,16 @@ def _print_design(design: PillarDesign, records: dict) -> None:
         f"d_f_mm={design.d_f_mm}",
         flush=True,
     )
-    high = records[HF_LEVEL]
-    _print_record(HF_LEVEL, high)
+    high = records.get(HF_LEVEL)
+    if high is not None:
+        _print_record(HF_LEVEL, high)
     for fidelity in LF_LEVELS:
+        if fidelity not in records:
+            continue
         low = records[fidelity]
         _print_record(fidelity, low)
+        if high is None:
+            continue
         _print_bias(fidelity, low, high)
         _print_cost(fidelity, low, high)
 

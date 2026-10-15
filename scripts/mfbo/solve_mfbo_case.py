@@ -29,6 +29,7 @@ import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
 from ro.extract_profile import MFBO_REQUIRED_SUMMARY_COLUMNS, PROFILE_MFBO
+from ro.solver_common import operating_point_token_from_run_id
 from ro.geometry_registry import (
     MFBO_PILLAR_GEO_ID_RE,
     mfbo_pillar_n_active,
@@ -153,7 +154,35 @@ def resolve_registry(data_root, geo_id):
 
 
 def load_template(mesh_id, run_id):
-    """Production P_p100_h30 solver case, merged by batch_solver_sweep."""
+    """Production P_p100_h30 solver case, merged by batch_solver_sweep.
+
+    An exact ``run_id`` hit is unchanged. A suffixed id such as
+    ``u0p2_p6M_lfc`` uses the operating-point case and then keeps the
+    suffixed id as ``run_id`` and ``case_name``.
+    """
+    try:
+        return _load_template_exact(mesh_id, run_id)
+    except RuntimeError as exc:
+        if not str(exc).endswith("found 0."):
+            raise
+        try:
+            token = operating_point_token_from_run_id(run_id)
+        except ValueError:
+            raise exc
+        if token == run_id:
+            raise
+        case, overrides, retries, settle = _load_template_exact(mesh_id, token)
+        case = dict(case)
+        overrides = dict(overrides)
+        case["run_id"] = run_id
+        case["case_name"] = run_id
+        overrides["run_id"] = run_id
+        overrides["case_name"] = run_id
+        return case, overrides, retries, settle
+
+
+def _load_template_exact(mesh_id, run_id):
+    """One catalog row for this mesh and run id."""
     batchcfg = batch_solver_sweep._load_module(
         "batch_config_mfbo_solve",
         batch_solver_sweep.BATCH_CONFIG_PATH,
@@ -474,11 +503,16 @@ def build_parser():
     parser.add_argument("--qoi-stop-criterion", type=float, default=None)
     parser.add_argument("--qoi-previous-values-to-consider", type=int, default=None)
     parser.add_argument("--qoi-initial-values-to-ignore", type=int, default=None)
+    parser.add_argument("--lf-monitor-stop", default=None)
     parser.add_argument("--profile", default=None)
     parser.add_argument("--fidelity-n-lead-excluded", type=int, default=None)
     parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
     parser.add_argument("--mass-balance-rel-abs-max", type=float, default=None)
     parser.add_argument("--continuity-final-max", type=float, default=None)
+    parser.add_argument("--convergence-gate", default=None)
+    parser.add_argument("--lf-tol-lmh", type=float, default=None)
+    parser.add_argument("--lf-tol-dp", type=float, default=None)
+    parser.add_argument("--lf-monitor-n", type=int, default=None)
     return parser
 
 
@@ -495,6 +529,14 @@ def solver_convergence_from_args(args):
     ):
         if value is not None:
             specified[key] = value
+    if args.lf_monitor_stop is not None:
+        try:
+            parsed = json.loads(args.lf_monitor_stop)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"--lf-monitor-stop is not JSON: {args.lf_monitor_stop!r}."
+            ) from exc
+        specified["lf_monitor_stop"] = parsed
     return specified
 
 
@@ -518,6 +560,14 @@ def extract_forward_args(args):
         extra.extend(
             ["--continuity-final-max", format(args.continuity_final_max, ".12g")]
         )
+    if args.convergence_gate is not None:
+        extra.extend(["--convergence-gate", args.convergence_gate])
+    if args.lf_tol_lmh is not None:
+        extra.extend(["--lf-tol-lmh", format(args.lf_tol_lmh, ".12g")])
+    if args.lf_tol_dp is not None:
+        extra.extend(["--lf-tol-dp", format(args.lf_tol_dp, ".12g")])
+    if args.lf_monitor_n is not None:
+        extra.extend(["--lf-monitor-n", str(args.lf_monitor_n)])
     return extra
 
 

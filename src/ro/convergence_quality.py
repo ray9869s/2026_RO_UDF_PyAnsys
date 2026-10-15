@@ -260,7 +260,7 @@ def metrics_from_summary_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def manifest_quality_payload(result: Mapping[str, Any]) -> dict[str, Any]:
     """Fields safe to merge onto a run manifest (non-parameter)."""
-    return {
+    payload = {
         "convergence_quality": result["convergence_quality"],
         "needs_longer_solve": bool(result["needs_longer_solve"]),
         "convergence_quality_failures": list(result.get("failures") or []),
@@ -279,3 +279,17 @@ def manifest_quality_payload(result: Mapping[str, Any]) -> dict[str, Any]:
             "pp_pressure_drop_rel_spread_note"
         ),
     }
+    if result.get("convergence_gate") is not None:
+        payload["convergence_gate"] = result["convergence_gate"]
+        for key in (
+            "lf_monitor_ramp_end",
+            "lf_monitor_window",
+            "lf_monitor_lmh_range",
+            "lf_monitor_dp_range",
+            "lf_monitor_tol_lmh",
+            "lf_monitor_tol_dp",
+            "lf_monitor_n",
+        ):
+            if key in result:
+                payload[key] = result[key]
+    return payload

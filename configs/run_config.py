@@ -337,6 +337,9 @@ qoi_convergence_report_name = "lmh_udm_avg"
 qoi_stop_criterion = 1e-3
 qoi_previous_values_to_consider = 100
 qoi_initial_values_to_ignore = 200
+# None keeps the production residual/QoI stop. A fidelity-table LF level
+# sets {tol_lmh, tol_dp, n}. Production and HF do not set this.
+lf_monitor_stop = None
 # Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"
@@ -935,6 +938,10 @@ def validate_for_solver():
                     "first_to_second_order_blending=1.0 requires "
                     "restart_from_case_file and restart_from_data_file"
                 )
+    if lf_monitor_stop is not None:
+        from ro.lf_monitor_stop import require_lf_monitor_stop
+
+        require_lf_monitor_stop(lf_monitor_stop)
     if enable_qoi_convergence_stop:
         if not enable_solve_time_qoi_reports:
             raise ValueError(

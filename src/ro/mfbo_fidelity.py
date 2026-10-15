@@ -10,6 +10,8 @@ onto the solver override dict.
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -20,7 +22,9 @@ from ro.convergence_quality import (
 )
 from ro.extract_profile import PROFILES
 from ro.geometry_registry import DEFAULT_PILLAR_N_ACTIVE
-from ro.paths import project_root
+from ro.lf_monitor_stop import GATE_LF_MONITOR, require_lf_monitor_stop
+from ro.paths import RUN_ID_RE, project_root
+from ro.solver_common import operating_point_token_from_run_id
 
 WINDOW_SOURCE_FIDELITY_TABLE = "fidelity_table"
 SOURCE_PRODUCTION = "production"
@@ -35,6 +39,7 @@ _SOLVER_KEYS = (
     "qoi_stop_criterion",
     "qoi_previous_values_to_consider",
     "qoi_initial_values_to_ignore",
+    "lf_monitor_stop",
 )
 _SOLVER_INTS = frozenset(
     {
@@ -44,12 +49,20 @@ _SOLVER_INTS = frozenset(
     }
 )
 _GATE_KEYS = (
+    "mode",
     "lmh_rel_abs_max",
     "mass_balance_rel_abs_max",
     "continuity_final_max",
 )
+_PRODUCTION_GATE_KEYS = (
+    "lmh_rel_abs_max",
+    "mass_balance_rel_abs_max",
+    "continuity_final_max",
+)
+_RUN_ID_SUFFIX_RE = re.compile(r"^[a-z][a-z0-9]*$")
 _EXTENDED_MARKERS = (
     *_REQUIRED_EXTENDED,
+    "run_id_suffix",
     "solver_overrides",
     "convergence_gate",
 )
@@ -58,6 +71,7 @@ _LEVEL_KEYS = frozenset(
         *_MESH_KEYS,
         "spacer_bl_layers",
         *_REQUIRED_EXTENDED,
+        "run_id_suffix",
         "solver_overrides",
         "convergence_gate",
     }
@@ -151,18 +165,16 @@ def parse_fidelity_level(entry: Mapping[str, Any]) -> dict[str, Any]:
         _SOLVER_KEYS,
         _solver_value,
     )
-    gate_specified = _optional_group(
-        entry,
-        "convergence_gate",
-        _GATE_KEYS,
-        _positive_float,
-    )
+    gate_specified = _optional_gate(entry)
+    _require_gate_matches_stop(solver_specified, gate_specified)
+    suffix = _run_id_suffix(entry)
     mesh.update(
         {
             "extended": True,
             "n_active": n_active,
             "n_lead_excluded": n_lead,
             "extract_profile": profile,
+            "run_id_suffix": suffix,
             "solver_overrides": solver_specified,
             "convergence_gate": gate_specified,
         }
@@ -188,15 +200,12 @@ def fidelity_settings_used(level: Mapping[str, Any]) -> dict[str, Any] | None:
             "value": level["solver_overrides"]["turbulence_residual_target"],
             "source": SOURCE_FIDELITY_TABLE,
         }
-    gate_used = {}
-    for key, value in production_gate_thresholds().items():
-        if key in level["convergence_gate"]:
-            gate_used[key] = {
-                "value": level["convergence_gate"][key],
-                "source": SOURCE_FIDELITY_TABLE,
-            }
-        else:
-            gate_used[key] = {"value": value, "source": SOURCE_PRODUCTION}
+    if "lf_monitor_stop" in level["solver_overrides"]:
+        solver_used["lf_monitor_stop"] = {
+            "value": dict(level["solver_overrides"]["lf_monitor_stop"]),
+            "source": SOURCE_FIDELITY_TABLE,
+        }
+    gate_used = _gate_settings_used(level)
     mesh = {key: level[key] for key in _MESH_KEYS}
     if "spacer_bl_layers" in level:
         mesh["spacer_bl_layers"] = level["spacer_bl_layers"]
@@ -221,9 +230,25 @@ def extraction_cli_args(level: Mapping[str, Any]) -> list[str]:
         "--fidelity-n-lead-excluded",
         str(level["n_lead_excluded"]),
     ]
+    gate = level["convergence_gate"]
+    if gate.get("mode") == GATE_LF_MONITOR:
+        spec = level["solver_overrides"]["lf_monitor_stop"]
+        args.extend(
+            [
+                "--convergence-gate",
+                GATE_LF_MONITOR,
+                "--lf-tol-lmh",
+                _cli_number(spec["tol_lmh"]),
+                "--lf-tol-dp",
+                _cli_number(spec["tol_dp"]),
+                "--lf-monitor-n",
+                str(spec["n"]),
+            ]
+        )
+        return args
     for key, flag in _GATE_FLAGS:
-        if key in level["convergence_gate"]:
-            args.extend([flag, _cli_number(level["convergence_gate"][key])])
+        if key in gate:
+            args.extend([flag, _cli_number(gate[key])])
     return args
 
 
@@ -237,7 +262,38 @@ def solver_cli_args(level: Mapping[str, Any]) -> list[str]:
             value = level["solver_overrides"][key]
             text = str(value) if key in _SOLVER_INTS else _cli_number(value)
             args.extend([flag, text])
+    if "lf_monitor_stop" in level["solver_overrides"]:
+        args.extend(
+            [
+                "--lf-monitor-stop",
+                json.dumps(
+                    level["solver_overrides"]["lf_monitor_stop"],
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
     return args
+
+
+def run_id_for_level(run_id: str, level: Mapping[str, Any]) -> str:
+    """Operating-point run id, plus this level's suffix when it has one.
+
+    A level without ``run_id_suffix`` returns ``run_id`` unchanged.
+    """
+    suffix = level.get("run_id_suffix")
+    if not suffix:
+        return run_id
+    token = operating_point_token_from_run_id(run_id)
+    if run_id != token:
+        raise ValueError(
+            f"run_id {run_id!r} already has a suffix; "
+            f"refusing to append {suffix!r}."
+        )
+    leaf = f"{token}_{suffix}"
+    if RUN_ID_RE.fullmatch(leaf) is None:
+        raise ValueError(f"suffixed run id is not a run id: {leaf!r}.")
+    return leaf
 
 
 def _mesh_fields(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -272,9 +328,87 @@ def _optional_group(entry, name, allowed, convert):
 
 
 def _solver_value(name, value):
+    if name == "lf_monitor_stop":
+        return require_lf_monitor_stop(value)
     if name in _SOLVER_INTS:
         return _positive_int(name, value)
     return _positive_float(name, value)
+
+
+def _optional_gate(entry):
+    if "convergence_gate" not in entry:
+        return {}
+    raw = entry["convergence_gate"]
+    if not isinstance(raw, Mapping) or not raw:
+        raise ValueError(
+            f"convergence_gate must be a non-empty object, got {raw!r}."
+        )
+    unknown = sorted(set(raw) - set(_GATE_KEYS))
+    if unknown:
+        raise ValueError(f"convergence_gate has unknown keys: {unknown}.")
+    if raw.get("mode") == GATE_LF_MONITOR:
+        extra = sorted(set(raw) - {"mode"})
+        if extra:
+            raise ValueError(
+                "convergence_gate mode lf_monitor does not take production "
+                f"thresholds, got {extra}."
+            )
+        return {"mode": GATE_LF_MONITOR}
+    if "mode" in raw:
+        raise ValueError(
+            f"convergence_gate mode must be {GATE_LF_MONITOR!r}, got {raw['mode']!r}."
+        )
+    return {
+        key: _positive_float(key, raw[key])
+        for key in raw
+    }
+
+
+def _require_gate_matches_stop(solver, gate):
+    if gate.get("mode") != GATE_LF_MONITOR:
+        if "lf_monitor_stop" in solver:
+            raise ValueError(
+                "lf_monitor_stop requires convergence_gate mode "
+                f"{GATE_LF_MONITOR!r}."
+            )
+        return
+    if "lf_monitor_stop" not in solver:
+        raise ValueError(
+            "convergence_gate mode lf_monitor requires "
+            "solver_overrides.lf_monitor_stop."
+        )
+
+
+def _run_id_suffix(entry):
+    if "run_id_suffix" not in entry:
+        return None
+    suffix = entry["run_id_suffix"]
+    if not isinstance(suffix, str) or _RUN_ID_SUFFIX_RE.fullmatch(suffix) is None:
+        raise ValueError(
+            "run_id_suffix must be a letter-led token, got "
+            f"{suffix!r}."
+        )
+    return suffix
+
+
+def _gate_settings_used(level):
+    gate = level["convergence_gate"]
+    if gate.get("mode") == GATE_LF_MONITOR:
+        spec = level["solver_overrides"]["lf_monitor_stop"]
+        return {
+            "mode": {"value": GATE_LF_MONITOR, "source": SOURCE_FIDELITY_TABLE},
+            "tol_lmh": {"value": spec["tol_lmh"], "source": SOURCE_FIDELITY_TABLE},
+            "tol_dp": {"value": spec["tol_dp"], "source": SOURCE_FIDELITY_TABLE},
+            "n": {"value": spec["n"], "source": SOURCE_FIDELITY_TABLE},
+        }
+    used = {}
+    production = production_gate_thresholds()
+    for key in _PRODUCTION_GATE_KEYS:
+        if key in gate:
+            used[key] = {"value": gate[key], "source": SOURCE_FIDELITY_TABLE}
+        else:
+            used[key] = {"value": production[key], "source": SOURCE_PRODUCTION}
+    return used
 
 
 def _positive_int(name, value) -> int:

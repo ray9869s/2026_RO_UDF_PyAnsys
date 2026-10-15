@@ -44,7 +44,7 @@ from ro.geometry_registry import (
     mfbo_pillar_n_active,
 )
 from ro.manifest import update_run_manifest_fields
-from ro.mfbo_fidelity import fidelity_settings_used, parse_fidelity_level
+from ro.mfbo_fidelity import fidelity_settings_used, parse_fidelity_level, run_id_for_level
 from ro.paths import RUN_ID_RE
 from ro.solver_common import sha256_file
 
@@ -78,7 +78,12 @@ _EXTRACT_TIMING_JSON = Path("post") / "reports" / "report_extract_timing.json"
 _EXTRACTION_SOURCE_MANIFEST = "run_manifest"
 _EXTRACTION_SOURCE_TIMING_JSON = "report_extract_timing"
 _COMPLETED_STOP_REASONS = frozenset(
-    {"residual_converged", "qoi_converged", "max_iter_reached"}
+    {
+        "residual_converged",
+        "qoi_converged",
+        "lf_monitor_stable",
+        "max_iter_reached",
+    }
 )
 _MESH_SETTING_KEYS = (
     "m_max",
@@ -236,9 +241,9 @@ def evaluate(
 ) -> dict[str, Any]:
     """Run or reuse one pillar case and return the 2D-shaped result record."""
     point = _design(design)
-    checked_run = _require_run_id(run_id)
     root = resolve_data_root(data_root)
     settings = _require_fidelity(fidelity_table, fidelity)
+    checked_run = run_id_for_level(_require_run_id(run_id), settings)
     mesh_id = mesh_id_for_settings(settings)
     n_active = settings["n_active"] if settings.get("extended") else None
     geo_id = format_mfbo_pillar_geo_id(
@@ -990,6 +995,19 @@ def _finish(
                 run_dir,
                 {"fidelity_settings": dict(fidelity_settings)},
             )
+    if run_manifest.get("convergence_gate") is not None:
+        record["convergence_gate"] = run_manifest["convergence_gate"]
+        for key in (
+            "lf_monitor_ramp_end",
+            "lf_monitor_window",
+            "lf_monitor_lmh_range",
+            "lf_monitor_dp_range",
+            "lf_monitor_tol_lmh",
+            "lf_monitor_tol_dp",
+            "lf_monitor_n",
+        ):
+            if key in run_manifest:
+                record[key] = run_manifest[key]
     return record
 
 

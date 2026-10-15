@@ -24,11 +24,20 @@ from ro.manifest import (
     write_mesh_manifest,
     write_run_manifest,
 )
+from ro.lf_monitor_stop import (
+    manifest_monitor_fields,
+    ramp_end_from_case,
+    read_case_monitor_series,
+    require_lf_monitor_stop,
+    run_lf_monitor_iterations,
+    lf_monitor_decision,
+)
 from ro.solver_common import normalize_path, path_to_fluent_str as as_fluent_path
 from ro.solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
     SOLVER_EXIT_SUCCESS,
     STOP_REASON_DETERMINATION_FAILED,
+    STOP_REASON_LF_MONITOR_STABLE,
     FINAL_CASE_SHA256_FIELD,
     FINAL_DATA_SHA256_FIELD,
     SOLVER_ATTEMPT_ID_FIELD,
@@ -743,6 +752,7 @@ if __name__ == "__main__":
     qoi_stop_criterion = cfg.qoi_stop_criterion
     qoi_previous_values_to_consider = cfg.qoi_previous_values_to_consider
     qoi_initial_values_to_ignore = cfg.qoi_initial_values_to_ignore
+    lf_monitor_stop = require_lf_monitor_stop(cfg.lf_monitor_stop) if cfg.lf_monitor_stop is not None else None
     enable_lmh_udm_avg_report_file = cfg.enable_lmh_udm_avg_report_file
     lmh_udm_avg_report_file_name = cfg.lmh_udm_avg_report_file_name
     enable_pressure_drop_spacer_report_file = (
@@ -5306,7 +5316,7 @@ if __name__ == "__main__":
                     solution, float(first_to_second_order_blending)
                 )
 
-            if use_ramp_convergence_safety:
+            if use_ramp_convergence_safety and lf_monitor_stop is None:
                 pre_convergence_iterations = minimum_full_source_iterations
                 remaining_iterations = max_iterations - pre_convergence_iterations
                 if remaining_iterations <= 0:
@@ -5316,8 +5326,54 @@ if __name__ == "__main__":
                         f"minimum_full_source_iterations={minimum_full_source_iterations}"
                     )
 
+            lf_stop_decision = None
             try:
-                if use_ramp_convergence_safety:
+                if lf_monitor_stop is not None:
+                    ramp_end = ramp_end_from_case(case_path)
+                    print(
+                        "\nLF monitor stop: residual and QoI convergence "
+                        "checks stay off.\n"
+                        f"ramp_end={ramp_end} (RAMP_ITER_3 from the case UDF)\n"
+                        f"tol_lmh={lf_monitor_stop['tol_lmh']} "
+                        f"tol_dp={lf_monitor_stop['tol_dp']} "
+                        f"n={lf_monitor_stop['n']} "
+                        f"max_iterations={max_iterations}"
+                    )
+                    set_residual_convergence_check(
+                        solution=solution,
+                        species_name=species_name,
+                        enable=False,
+                        turbulence_equations=turbulence_equations,
+                    )
+                    for object_name in qoi_convergence_object_names:
+                        set_qoi_convergence_condition_active(
+                            solution,
+                            object_name,
+                            False,
+                        )
+
+                    def _read_lf_decision():
+                        lmh_series, dp_series = read_case_monitor_series(case_path)
+                        return lf_monitor_decision(
+                            lmh_series,
+                            dp_series,
+                            ramp_end=ramp_end,
+                            n=lf_monitor_stop["n"],
+                            tol_lmh=lf_monitor_stop["tol_lmh"],
+                            tol_dp=lf_monitor_stop["tol_dp"],
+                        )
+
+                    lf_stop_decision = run_lf_monitor_iterations(
+                        iterate=lambda count: solution.run_calculation.iterate(
+                            iter_count=count
+                        ),
+                        read_decision=_read_lf_decision,
+                        ramp_end=ramp_end,
+                        n=lf_monitor_stop["n"],
+                        max_iterations=max_iterations,
+                    )
+                    print(f"LF monitor decision: {lf_stop_decision}")
+                elif use_ramp_convergence_safety:
                     print(
                         "\nRunning ramp-up phase without residual/QoI convergence stopping.\n"
                         f"Ramp full iteration: {ramp_full_iteration}\n"
@@ -5397,7 +5453,23 @@ if __name__ == "__main__":
                     # Printed here (after iterate, before write_case_data /
                     # transcript assertions) so post-iterate failures still
                     # retain why iteration ended.
-                    solver_stop_reason = determine_and_print_stop_reason(
+                    if lf_stop_decision is not None and not calculation_diverged:
+                        solver_stop_reason = lf_stop_decision["stop_reason"]
+                        if solver_stop_reason not in (
+                            STOP_REASON_LF_MONITOR_STABLE,
+                            "max_iter_reached",
+                        ):
+                            raise RuntimeError(
+                                "LF monitor stop returned "
+                                f"{solver_stop_reason!r}."
+                            )
+                        print(format_stop_reason_marker(solver_stop_reason))
+                        update_run_manifest_fields(
+                            case_path,
+                            manifest_monitor_fields(lf_stop_decision),
+                        )
+                    else:
+                        solver_stop_reason = determine_and_print_stop_reason(
                         case_dir=case_path,
                         solver_log_path=solver_log_path,
                         max_iterations=max_iterations,
