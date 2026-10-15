@@ -43,10 +43,10 @@ from ro.geometry_registry import (
     is_mfbo_pillar_geo_id,
     mfbo_pillar_n_active,
 )
-from ro.manifest import update_run_manifest_fields
+from ro.manifest import ManifestError, update_run_manifest_fields, read_run_manifest
 from ro.mfbo_fidelity import fidelity_settings_used, parse_fidelity_level, run_id_for_level
 from ro.paths import RUN_ID_RE, using_data_root
-from ro.solver_common import sha256_file
+from ro.solver_common import cost_proxy, iterations_run_from_case, sha256_file
 
 FAMILY = "pillar"
 STATUS_VALID = "valid"
@@ -82,6 +82,7 @@ _COMPLETED_STOP_REASONS = frozenset(
         "residual_converged",
         "qoi_converged",
         "lf_monitor_stable",
+        "hf_monitor_stable",
         "max_iter_reached",
     }
 )
@@ -109,6 +110,10 @@ _RESULT_FIELDS = (
     "status",
     "failure_reason",
     "cell_count",
+    "iterations_run",
+    "stop_reason",
+    "generate_wall_time_s",
+    "cost_proxy",
     "mesh_wall_time_s",
     "solver_wall_time_s",
     "extraction_wall_time_s",
@@ -972,7 +977,11 @@ def _finish(
     record.update(quantities)
     record["status"] = status
     record["failure_reason"] = failure_reason
-    record["cell_count"] = _finite(mesh_manifest.get("cell_count"))
+    record["cell_count"] = _optional_positive_int(mesh_manifest.get("cell_count"))
+    record["iterations_run"] = _iterations_run(run_manifest, run_dir)
+    record["stop_reason"] = run_manifest.get("stop_reason")
+    record["generate_wall_time_s"] = _generate_wall_time(data_root, base)
+    record["cost_proxy"] = _cost_proxy(record["cell_count"], record["iterations_run"])
     record["mesh_wall_time_s"] = _first_finite(
         mesh_manifest.get("mesh_wall_time_s"),
         mesh_record.get("mesh_wall_time_s"),
@@ -996,16 +1005,15 @@ def _finish(
         record["archived_leaves"] = list(archived_leaves)
     if fidelity_settings is not None:
         record["fidelity_settings"] = dict(fidelity_settings)
-        if run_dir is not None and (Path(run_dir) / "manifest.json").is_file():
-            if data_root is None:
-                raise ValueError(
-                    "data_root is required to update the run manifest."
-                )
-            with using_data_root(data_root):
-                update_run_manifest_fields(
-                    run_dir,
-                    {"fidelity_settings": dict(fidelity_settings)},
-                )
+    if run_dir is not None and (Path(run_dir) / "manifest.json").is_file():
+        updates = _manifest_accounting(record, fidelity_settings)
+        if updates:
+            _write_run_accounting(
+                run_dir,
+                updates,
+                data_root=data_root,
+                require_valid=fidelity_settings is not None,
+            )
     if run_manifest.get("convergence_gate") is not None:
         record["convergence_gate"] = run_manifest["convergence_gate"]
         for key in (
@@ -1016,10 +1024,126 @@ def _finish(
             "lf_monitor_tol_lmh",
             "lf_monitor_tol_dp",
             "lf_monitor_n",
+            "hf_monitor_ramp_end",
+            "hf_monitor_window",
+            "hf_monitor_lmh_range",
+            "hf_monitor_dp_range",
+            "hf_monitor_tol_lmh",
+            "hf_monitor_tol_dp",
+            "hf_monitor_n",
+            "hf_monitor_continuity",
+            "hf_monitor_continuity_max",
         ):
             if key in run_manifest:
                 record[key] = run_manifest[key]
+    if isinstance(run_manifest.get("hf_solve_phases"), list):
+        record["hf_solve_phases"] = list(run_manifest["hf_solve_phases"])
     return record
+
+
+def _iterations_run(
+    run_manifest: Mapping[str, Any],
+    run_dir: Path | None,
+) -> int | None:
+    recorded = _optional_positive_int(run_manifest.get("iterations_run"))
+    if recorded is not None:
+        return recorded
+    if run_dir is None:
+        return None
+    return iterations_run_from_case(run_dir)
+
+
+def _generate_wall_time(data_root: Path | None, base: Mapping[str, Any]) -> float | None:
+    if data_root is None:
+        return None
+    geo_id = base.get("geo_id")
+    if not isinstance(geo_id, str) or not geo_id:
+        return None
+    path = (
+        Path(data_root)
+        / "geometries"
+        / FAMILY
+        / geo_id
+        / f"{geo_id}_generate_wall_time.json"
+    )
+    payload = _read_object(path)
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping) or "generate_wall_time_s" not in payload:
+        raise ValueError(
+            f"generate wall-time file {path} is missing generate_wall_time_s."
+        )
+    value = payload["generate_wall_time_s"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            f"generate_wall_time_s must be a number, got {value!r}."
+        )
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")) or number < 0.0:
+        raise ValueError(
+            f"generate_wall_time_s must be finite and >= 0, got {value!r}."
+        )
+    return number
+
+
+def _cost_proxy(cell_count: int | None, iterations_run: int | None) -> int | None:
+    if cell_count is None or iterations_run is None:
+        return None
+    return cost_proxy(cell_count, iterations_run)
+
+
+def _write_run_accounting(
+    run_dir: Path,
+    updates: Mapping[str, Any],
+    *,
+    data_root: Path | None,
+    require_valid: bool,
+) -> None:
+    """Merge accounting onto a real run manifest.
+
+    A JSON object that is not a run manifest is left unchanged. A requested
+    fidelity-settings write still raises when the file is not a run manifest.
+    """
+    if data_root is None:
+        if require_valid:
+            raise ValueError("data_root is required to update the run manifest.")
+        return
+    if not require_valid:
+        try:
+            with using_data_root(data_root):
+                read_run_manifest(run_dir)
+        except ManifestError:
+            return
+    with using_data_root(data_root):
+        update_run_manifest_fields(run_dir, updates)
+
+
+def _manifest_accounting(
+    record: Mapping[str, Any],
+    fidelity_settings: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    if fidelity_settings is not None:
+        updates["fidelity_settings"] = dict(fidelity_settings)
+    for key in (
+        "cell_count",
+        "iterations_run",
+        "generate_wall_time_s",
+        "cost_proxy",
+    ):
+        if record.get(key) is not None:
+            updates[key] = record[key]
+    return updates
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"expected an integer >= 1, got {value!r}.")
+    if value < 1:
+        raise ValueError(f"expected an integer >= 1, got {value!r}.")
+    return value
 
 
 def _extraction_wall_time(

@@ -19,11 +19,15 @@ if str(_SRC) not in sys.path:
 from ro.mfbo_adapter import resolve_data_root
 from ro.mfbo_drivers import make_drivers
 from ro.mfbo_fidelity_screen import (
+    V1_LEVELS,
+    build_named_level_queue,
     build_queue,
     load_designs,
     load_fidelity_table,
-    require_screen_table,
+    require_designs_clear_opening_gap,
     run_screen,
+    run_v1_screen,
+    screen_table_kind,
     write_queue,
     write_summary,
 )
@@ -32,7 +36,7 @@ from ro.mfbo_fidelity_screen import (
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Compare pillar designs at LF and HF. "
+            "Compare pillar designs at LF and HF, or at LF_d and HF_m. "
             "--emit-queue writes a sequential job queue and does not evaluate."
         ),
     )
@@ -41,7 +45,7 @@ def build_parser():
         "--fidelity-table",
         required=True,
         type=Path,
-        help="JSON object with LF and HF mesh settings.",
+        help="JSON object with LF and HF, or with LF_d and HF_m.",
     )
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--run-id", required=True)
@@ -63,15 +67,27 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     designs = load_designs(args.designs)
     table = load_fidelity_table(args.fidelity_table)
-    require_screen_table(table)
+    kind = screen_table_kind(table)
     root = resolve_data_root(args.data_root)
+    if kind == "v1":
+        require_designs_clear_opening_gap(designs, table)
     if args.emit_queue is not None:
-        jobs = build_queue(
-            designs,
-            run_id=args.run_id,
-            data_root=root,
-            fidelity_table=args.fidelity_table,
-        )
+        if kind == "v1":
+            jobs = build_named_level_queue(
+                designs,
+                V1_LEVELS,
+                table,
+                run_id=args.run_id,
+                data_root=root,
+                fidelity_table=args.fidelity_table,
+            )
+        else:
+            jobs = build_queue(
+                designs,
+                run_id=args.run_id,
+                data_root=root,
+                fidelity_table=args.fidelity_table,
+            )
         path = write_queue(args.emit_queue, jobs)
         print(f"queue: {path}", flush=True)
         print(f"jobs: {len(jobs)}", flush=True)
@@ -79,13 +95,22 @@ def main(argv=None) -> int:
         return 0
     if args.out_dir is None:
         raise ValueError("--out-dir is required when --emit-queue is not set.")
-    report = run_screen(
-        designs,
-        table,
-        run_id=args.run_id,
-        data_root=root,
-        drivers=make_drivers(root),
-    )
+    if kind == "v1":
+        report = run_v1_screen(
+            designs,
+            table,
+            run_id=args.run_id,
+            data_root=root,
+            drivers=make_drivers(root),
+        )
+    else:
+        report = run_screen(
+            designs,
+            table,
+            run_id=args.run_id,
+            data_root=root,
+            drivers=make_drivers(root),
+        )
     paths = write_summary(args.out_dir, report)
     print(f"csv: {paths['csv']}", flush=True)
     print(f"markdown: {paths['markdown']}", flush=True)
@@ -94,7 +119,16 @@ def main(argv=None) -> int:
         flush=True,
     )
     cost = report["cost_ratio"]
-    print(f"median cost ratio: {cost['median']}", flush=True)
+    print(f"median wall cost ratio: {cost['median']}", flush=True)
+    if kind == "v1":
+        proxy = report["cost_proxy_ratio"]
+        print(f"median proxy cost ratio: {proxy['median']}", flush=True)
+        print(
+            "CP-1 bias mean="
+            f"{report['cp_excess_bias_mean']} "
+            f"spread={report['cp_excess_bias_spread']}",
+            flush=True,
+        )
     return 0
 
 

@@ -340,6 +340,12 @@ qoi_initial_values_to_ignore = 200
 # None keeps the production residual/QoI stop. A fidelity-table LF level
 # sets {tol_lmh, tol_dp, n}. Production and HF do not set this.
 lf_monitor_stop = None
+# None keeps the production residual/QoI stop. A fidelity-table HF level
+# sets {tol_lmh, tol_dp, n, continuity_max}. The production gate stays.
+hf_monitor_stop = None
+# None on the first solve. A failed production gate after the HF monitor
+# stop sets {iterations_already_run, max_iterations_total} for the resume.
+hf_production_resume = None
 # Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"

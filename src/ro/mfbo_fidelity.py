@@ -22,11 +22,13 @@ from ro.convergence_quality import (
 )
 from ro.extract_profile import PROFILES
 from ro.geometry_registry import DEFAULT_PILLAR_N_ACTIVE
+from ro.hf_monitor_stop import require_hf_monitor_stop
 from ro.lf_monitor_stop import GATE_LF_MONITOR, require_lf_monitor_stop
 from ro.paths import RUN_ID_RE, project_root
 from ro.solver_common import operating_point_token_from_run_id
 
 WINDOW_SOURCE_FIDELITY_TABLE = "fidelity_table"
+WINDOW_SOURCE_FAMILY_DEFAULT = "family_default"
 SOURCE_PRODUCTION = "production"
 SOURCE_FIDELITY_TABLE = "fidelity_table"
 
@@ -40,6 +42,7 @@ _SOLVER_KEYS = (
     "qoi_previous_values_to_consider",
     "qoi_initial_values_to_ignore",
     "lf_monitor_stop",
+    "hf_monitor_stop",
 )
 _SOLVER_INTS = frozenset(
     {
@@ -62,6 +65,7 @@ _PRODUCTION_GATE_KEYS = (
 _RUN_ID_SUFFIX_RE = re.compile(r"^[a-z][a-z0-9]*$")
 _EXTENDED_MARKERS = (
     *_REQUIRED_EXTENDED,
+    "window_source",
     "run_id_suffix",
     "solver_overrides",
     "convergence_gate",
@@ -71,6 +75,7 @@ _LEVEL_KEYS = frozenset(
         *_MESH_KEYS,
         "spacer_bl_layers",
         *_REQUIRED_EXTENDED,
+        "window_source",
         "run_id_suffix",
         "solver_overrides",
         "convergence_gate",
@@ -126,8 +131,9 @@ def parse_fidelity_level(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Validate one fidelity object.
 
     Mesh-only entries stay mesh settings. Any domain, extract, solver, or
-    gate key requires ``n_active``, ``n_lead_excluded``, and
-    ``extract_profile``.
+    gate key requires ``n_active`` and ``extract_profile``.
+    ``n_lead_excluded`` is required unless ``window_source`` is
+    ``family_default``, which leaves the pillar family window in place.
     """
     if not isinstance(entry, Mapping):
         raise TypeError(
@@ -142,18 +148,32 @@ def parse_fidelity_level(entry: Mapping[str, Any]) -> dict[str, Any]:
     if not extended:
         mesh["extended"] = False
         return mesh
-    missing = [key for key in _REQUIRED_EXTENDED if key not in entry]
+    window_source = _window_source(entry)
+    if window_source == WINDOW_SOURCE_FAMILY_DEFAULT:
+        if "n_lead_excluded" in entry:
+            raise ValueError(
+                "window_source family_default does not take n_lead_excluded. "
+                "The pillar family default supplies the lead."
+            )
+        missing = [
+            key for key in ("n_active", "extract_profile") if key not in entry
+        ]
+    else:
+        missing = [key for key in _REQUIRED_EXTENDED if key not in entry]
     if missing:
         raise KeyError(
             "A fidelity level that sets a domain, extract profile, solver "
             f"override, or gate threshold is missing {missing}."
         )
     n_active = _positive_int("n_active", entry["n_active"])
-    n_lead = _nonnegative_int("n_lead_excluded", entry["n_lead_excluded"])
-    if n_lead >= n_active:
-        raise ValueError(
-            f"n_lead_excluded={n_lead} must be < n_active={n_active}."
-        )
+    if window_source == WINDOW_SOURCE_FAMILY_DEFAULT:
+        n_lead = None
+    else:
+        n_lead = _nonnegative_int("n_lead_excluded", entry["n_lead_excluded"])
+        if n_lead >= n_active:
+            raise ValueError(
+                f"n_lead_excluded={n_lead} must be < n_active={n_active}."
+            )
     profile = entry["extract_profile"]
     if profile not in PROFILES:
         raise ValueError(
@@ -173,6 +193,7 @@ def parse_fidelity_level(entry: Mapping[str, Any]) -> dict[str, Any]:
             "extended": True,
             "n_active": n_active,
             "n_lead_excluded": n_lead,
+            "window_source": window_source,
             "extract_profile": profile,
             "run_id_suffix": suffix,
             "solver_overrides": solver_specified,
@@ -205,6 +226,11 @@ def fidelity_settings_used(level: Mapping[str, Any]) -> dict[str, Any] | None:
             "value": dict(level["solver_overrides"]["lf_monitor_stop"]),
             "source": SOURCE_FIDELITY_TABLE,
         }
+    if "hf_monitor_stop" in level["solver_overrides"]:
+        solver_used["hf_monitor_stop"] = {
+            "value": dict(level["solver_overrides"]["hf_monitor_stop"]),
+            "source": SOURCE_FIDELITY_TABLE,
+        }
     gate_used = _gate_settings_used(level)
     mesh = {key: level[key] for key in _MESH_KEYS}
     if "spacer_bl_layers" in level:
@@ -213,7 +239,7 @@ def fidelity_settings_used(level: Mapping[str, Any]) -> dict[str, Any] | None:
         "n_active": level["n_active"],
         "n_lead_excluded": level["n_lead_excluded"],
         "extract_profile": level["extract_profile"],
-        "window_source": WINDOW_SOURCE_FIDELITY_TABLE,
+        "window_source": level.get("window_source", WINDOW_SOURCE_FIDELITY_TABLE),
         "mesh": mesh,
         "solver": solver_used,
         "convergence_gate": gate_used,
@@ -224,12 +250,13 @@ def extraction_cli_args(level: Mapping[str, Any]) -> list[str]:
     """Flags for the extract worker. Empty for a mesh-only level."""
     if not level.get("extended"):
         return []
-    args = [
-        "--profile",
-        level["extract_profile"],
-        "--fidelity-n-lead-excluded",
-        str(level["n_lead_excluded"]),
-    ]
+    args = ["--profile", level["extract_profile"]]
+    if level.get("window_source") == WINDOW_SOURCE_FAMILY_DEFAULT:
+        args.extend(["--window-source", WINDOW_SOURCE_FAMILY_DEFAULT])
+    else:
+        args.extend(
+            ["--fidelity-n-lead-excluded", str(level["n_lead_excluded"])]
+        )
     gate = level["convergence_gate"]
     if gate.get("mode") == GATE_LF_MONITOR:
         spec = level["solver_overrides"]["lf_monitor_stop"]
@@ -268,6 +295,17 @@ def solver_cli_args(level: Mapping[str, Any]) -> list[str]:
                 "--lf-monitor-stop",
                 json.dumps(
                     level["solver_overrides"]["lf_monitor_stop"],
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
+    if "hf_monitor_stop" in level["solver_overrides"]:
+        args.extend(
+            [
+                "--hf-monitor-stop",
+                json.dumps(
+                    level["solver_overrides"]["hf_monitor_stop"],
                     separators=(",", ":"),
                     sort_keys=True,
                 ),
@@ -330,6 +368,8 @@ def _optional_group(entry, name, allowed, convert):
 def _solver_value(name, value):
     if name == "lf_monitor_stop":
         return require_lf_monitor_stop(value)
+    if name == "hf_monitor_stop":
+        return require_hf_monitor_stop(value)
     if name in _SOLVER_INTS:
         return _positive_int(name, value)
     return _positive_float(name, value)
@@ -364,7 +404,28 @@ def _optional_gate(entry):
     }
 
 
+def _window_source(entry: Mapping[str, Any]) -> str:
+    if "window_source" not in entry:
+        return WINDOW_SOURCE_FIDELITY_TABLE
+    source = entry["window_source"]
+    if source not in (WINDOW_SOURCE_FIDELITY_TABLE, WINDOW_SOURCE_FAMILY_DEFAULT):
+        raise ValueError(
+            "window_source must be "
+            f"{WINDOW_SOURCE_FIDELITY_TABLE!r} or "
+            f"{WINDOW_SOURCE_FAMILY_DEFAULT!r}, got {source!r}."
+        )
+    return source
+
+
 def _require_gate_matches_stop(solver, gate):
+    if "lf_monitor_stop" in solver and "hf_monitor_stop" in solver:
+        raise ValueError(
+            "lf_monitor_stop and hf_monitor_stop cannot both be set."
+        )
+    if "hf_monitor_stop" in solver and gate.get("mode") == GATE_LF_MONITOR:
+        raise ValueError(
+            "hf_monitor_stop keeps the production convergence gate."
+        )
     if gate.get("mode") != GATE_LF_MONITOR:
         if "lf_monitor_stop" in solver:
             raise ValueError(

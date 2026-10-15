@@ -1,0 +1,45 @@
+{
+  "LF_d": {
+    "m_max": 0.085,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 4,
+    "peel_layers": 2,
+    "n_active": 3,
+    "n_lead_excluded": 1,
+    "extract_profile": "mfbo",
+    "run_id_suffix": "lfd",
+    "solver_overrides": {
+      "max_iterations": 600,
+      "lf_monitor_stop": {
+        "tol_lmh": 0.001,
+        "tol_dp": 0.005,
+        "n": 100
+      }
+    },
+    "convergence_gate": {
+      "mode": "lf_monitor"
+    }
+  },
+  "HF_m": {
+    "m_max": 0.085,
+    "m_min": 0.006,
+    "m_cpg": 5,
+    "bl_layers": 12,
+    "spacer_bl_layers": 4,
+    "peel_layers": 2,
+    "n_active": 7,
+    "window_source": "family_default",
+    "extract_profile": "mfbo",
+    "run_id_suffix": "hfm",
+    "solver_overrides": {
+      "max_iterations": 2000,
+      "hf_monitor_stop": {
+        "tol_lmh": 0.0001,
+        "tol_dp": 0.0001,
+        "n": 200,
+        "continuity_max": 0.00001
+      }
+    }
+  }
+}

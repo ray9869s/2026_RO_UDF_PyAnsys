@@ -230,7 +230,13 @@ def _reextract_with_flags(run_leaf_value, args):
     """
     extra = _extract_extra(args)
     profile = args.profile
-    if profile == "mfbo":
+    if getattr(args, "window_source", None) == "family_default":
+        if args.fidelity_n_lead_excluded is not None:
+            raise ValueError(
+                "window_source family_default does not take "
+                "--fidelity-n-lead-excluded."
+            )
+    elif profile == "mfbo":
         leaf, data_root, family, geo_id, mesh_id, _run_id = parse_run_leaf(
             run_leaf_value
         )
@@ -288,6 +294,11 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--profile", default=None)
     parser.add_argument("--fidelity-n-lead-excluded", type=int, default=None)
+    parser.add_argument(
+        "--window-source",
+        default=None,
+        help="family_default skips the mesh-lead window flag.",
+    )
     parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
     parser.add_argument("--mass-balance-rel-abs-max", type=float, default=None)
     parser.add_argument("--continuity-final-max", type=float, default=None)
@@ -299,6 +310,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.profile not in (None, "full", "mfbo"):
         parser.error(f"--profile must be full or mfbo, got {args.profile!r}.")
+    if args.window_source not in (None, "family_default"):
+        parser.error(
+            "--window-source must be family_default, got "
+            f"{args.window_source!r}."
+        )
     if args.copy_from_production:
         if args.run_leaves:
             parser.error(

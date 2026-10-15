@@ -18,6 +18,7 @@ import csv
 import json
 import math
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -29,7 +30,19 @@ import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
 from ro.extract_profile import MFBO_REQUIRED_SUMMARY_COLUMNS, PROFILE_MFBO
-from ro.solver_common import operating_point_token_from_run_id
+from ro.hf_monitor_stop import (
+    PHASE_HF_MONITOR,
+    PHASE_PRODUCTION,
+    iterations_after_resume,
+    phase_record,
+    require_hf_production_resume,
+    resume_iteration_budget,
+    should_resume_production,
+)
+from ro.manifest import read_run_manifest, update_run_manifest_fields
+from ro.paths import using_data_root
+from ro.solver_common import cost_proxy, operating_point_token_from_run_id
+from mfbo.reextract_runs import archive_reports
 from ro.geometry_registry import (
     MFBO_PILLAR_GEO_ID_RE,
     mfbo_pillar_n_active,
@@ -504,6 +517,8 @@ def build_parser():
     parser.add_argument("--qoi-previous-values-to-consider", type=int, default=None)
     parser.add_argument("--qoi-initial-values-to-ignore", type=int, default=None)
     parser.add_argument("--lf-monitor-stop", default=None)
+    parser.add_argument("--hf-monitor-stop", default=None)
+    parser.add_argument("--window-source", default=None)
     parser.add_argument("--profile", default=None)
     parser.add_argument("--fidelity-n-lead-excluded", type=int, default=None)
     parser.add_argument("--lmh-rel-abs-max", type=float, default=None)
@@ -537,6 +552,19 @@ def solver_convergence_from_args(args):
                 f"--lf-monitor-stop is not JSON: {args.lf_monitor_stop!r}."
             ) from exc
         specified["lf_monitor_stop"] = parsed
+    if args.hf_monitor_stop is not None:
+        try:
+            parsed = json.loads(args.hf_monitor_stop)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"--hf-monitor-stop is not JSON: {args.hf_monitor_stop!r}."
+            ) from exc
+        specified["hf_monitor_stop"] = parsed
+    if args.window_source not in (None, "family_default"):
+        raise ValueError(
+            "--window-source must be family_default, got "
+            f"{args.window_source!r}."
+        )
     return specified
 
 
@@ -569,6 +597,181 @@ def extract_forward_args(args):
     if args.lf_monitor_n is not None:
         extra.extend(["--lf-monitor-n", str(args.lf_monitor_n)])
     return extra
+
+
+def _read_run_under(data_root, run_directory):
+    with using_data_root(data_root):
+        return read_run_manifest(run_directory)
+
+
+def _write_run_under(data_root, run_directory, updates):
+    with using_data_root(data_root):
+        update_run_manifest_fields(run_directory, updates)
+
+
+def _stage_hf_resume_source(run_directory, run_id):
+    """Copy the final case/data outside the run leaf for a same-leaf restart."""
+    directory = Path(run_directory)
+    finals = sorted(directory.glob("*_final.cas.h5"))
+    if len(finals) != 1:
+        raise FileNotFoundError(
+            f"expected one final case in {directory}, found {len(finals)}."
+        )
+    case_file = finals[0]
+    data_file = Path(str(case_file).replace(".cas.h5", ".dat.h5"))
+    if not data_file.is_file():
+        raise FileNotFoundError(f"resume data file not found: {data_file}")
+    stage = directory.parent / f"{run_id}_hf_resume_source"
+    if stage.resolve() == directory.resolve():
+        raise ValueError("resume source directory must not be the run directory.")
+    stage.mkdir(parents=True, exist_ok=True)
+    staged_case = stage / case_file.name
+    staged_data = stage / data_file.name
+    shutil.copy2(case_file, staged_case)
+    shutil.copy2(data_file, staged_data)
+    return staged_case, staged_data
+
+
+def continue_hf_production_if_needed(
+    args,
+    data_root,
+    run_directory,
+    geo_id,
+    overrides,
+    max_retries,
+    settle_s,
+    extract_kwargs,
+    case,
+):
+    """Resume under the production stop when the HF monitor gate failed.
+
+    Returns None when this solve should print its result. Returns an exit
+    code when the resume launch or the second extract fails.
+    """
+    del geo_id
+    manifest_path = Path(run_directory) / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        preview = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"run manifest is not JSON: {manifest_path}") from exc
+    if not isinstance(preview, dict) or preview.get("stop_reason") != "hf_monitor_stable":
+        return None
+    manifest = _read_run_under(data_root, run_directory)
+    stop = manifest.get("stop_reason")
+    quality = manifest.get("convergence_quality")
+    iterations = manifest.get("iterations_run")
+    max_iterations = manifest["solver_settings"]["max_iterations"]
+    resume = should_resume_production(
+        stop_reason=stop,
+        convergence_quality=quality,
+        iterations_run=iterations,
+        max_iterations=max_iterations,
+    )
+    failures = manifest.get("convergence_quality_failures") or []
+    phase1 = phase_record(
+        PHASE_HF_MONITOR,
+        stop,
+        int(iterations),
+        quality,
+        failures,
+    )
+    _write_run_under(data_root, run_directory, {"hf_solve_phases": [phase1]})
+    if not resume:
+        return None
+    remaining = resume_iteration_budget(int(iterations), int(max_iterations))
+    staged_case, staged_data = _stage_hf_resume_source(run_directory, args.case)
+    resume_overrides = dict(overrides)
+    resume_overrides.pop("hf_monitor_stop", None)
+    resume_overrides["restart_from_case_file"] = str(staged_case)
+    resume_overrides["restart_from_data_file"] = str(staged_data)
+    resume_overrides["hf_production_resume"] = require_hf_production_resume(
+        {
+            "iterations_already_run": int(iterations),
+            "max_iterations_total": int(max_iterations),
+        }
+    )
+    print(
+        "HF monitor gate failed. Resuming under the production stop "
+        f"for {remaining} more iterations "
+        f"(already {iterations}, cap {max_iterations})."
+    )
+    result = launch_solver(
+        resume_overrides,
+        data_root,
+        run_directory,
+        geo_id=args.geo_id,
+        mesh_id=args.mesh_id,
+        run_id=args.case,
+        max_retries=max_retries,
+        settle_s=settle_s,
+    )
+    if not batch_solver_sweep.solver_worker_succeeded(result.returncode):
+        return _exit_code(result.returncode)
+    archive_reports(run_directory)
+    extract_result = mfbo_common.launch_extract(
+        data_root,
+        run_directory,
+        case,
+        geo_id=args.geo_id,
+        mesh_id=args.mesh_id,
+        run_id=args.case,
+        **extract_kwargs,
+    )
+    if extract_result.returncode != 0:
+        return _exit_code(extract_result.returncode)
+    summary = run_directory / "post" / "reports" / "summary_metrics_wide.csv"
+    validate_kwargs = {}
+    if args.profile is not None:
+        validate_kwargs["profile"] = args.profile
+    valid, message = batch_report_extract.validate_summary_wide_csv(
+        summary, **validate_kwargs
+    )
+    if not valid:
+        print(f"FAILED_METRIC_VALIDATION: {message}")
+        return 1
+    manifest2 = _read_run_under(data_root, run_directory)
+    first = manifest2.get("hf_phase2_first_iteration")
+    last = manifest2.get("hf_phase2_last_iteration")
+    if isinstance(first, bool) or not isinstance(first, int):
+        raise ValueError(
+            "production resume did not record hf_phase2_first_iteration, "
+            f"got {first!r}."
+        )
+    if isinstance(last, bool) or not isinstance(last, int):
+        raise ValueError(
+            "production resume did not record hf_phase2_last_iteration, "
+            f"got {last!r}."
+        )
+    quality2 = manifest2.get("convergence_quality")
+    if quality2 not in ("PASS", "FAIL"):
+        raise ValueError(
+            "production resume did not record a gate result, got "
+            f"{quality2!r}."
+        )
+    total = iterations_after_resume(int(iterations), first, last)
+    phase2 = phase_record(
+        PHASE_PRODUCTION,
+        manifest2["stop_reason"],
+        last - first + 1,
+        quality2,
+        manifest2.get("convergence_quality_failures") or [],
+    )
+    updates = {
+        "hf_solve_phases": [phase1, phase2],
+        "iterations_run": total,
+    }
+    cells = manifest2.get("cell_count")
+    if isinstance(cells, int) and not isinstance(cells, bool):
+        updates["cost_proxy"] = cost_proxy(cells, total)
+    _write_run_under(data_root, run_directory, updates)
+    print(
+        "HF production resume finished: "
+        f"phase1={phase1['stop_reason']} phase2={phase2['stop_reason']} "
+        f"gate={quality2} iterations_run={total}"
+    )
+    return None
 
 
 def main(argv=None):
@@ -635,6 +838,19 @@ def main(argv=None):
     if not valid:
         print(f"FAILED_METRIC_VALIDATION: {message}")
         return 1
+    resume_code = continue_hf_production_if_needed(
+        args,
+        data_root,
+        run_directory,
+        geo_id,
+        overrides,
+        max_retries,
+        settle_s,
+        extract_kwargs,
+        case,
+    )
+    if resume_code:
+        return resume_code
     try:
         fields = result_fields(
             read_summary_wide(summary),

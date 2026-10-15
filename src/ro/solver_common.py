@@ -766,6 +766,7 @@ def classify_convergence(
 STOP_REASON_RESIDUAL_CONVERGED = "residual_converged"
 STOP_REASON_QOI_CONVERGED = "qoi_converged"
 STOP_REASON_LF_MONITOR_STABLE = "lf_monitor_stable"
+STOP_REASON_HF_MONITOR_STABLE = "hf_monitor_stable"
 STOP_REASON_MAX_ITER_REACHED = "max_iter_reached"
 STOP_REASON_DIVERGED = "diverged"
 STOP_REASON_UNKNOWN_EARLY_STOP = "unknown_early_stop"
@@ -783,6 +784,7 @@ SOLVER_SKIP_ALLOWED_STOP_REASONS = frozenset(
         STOP_REASON_RESIDUAL_CONVERGED,
         STOP_REASON_QOI_CONVERGED,
         STOP_REASON_LF_MONITOR_STABLE,
+        STOP_REASON_HF_MONITOR_STABLE,
         STOP_REASON_MAX_ITER_REACHED,
     }
 )
@@ -799,6 +801,7 @@ STOP_REASON_VALUES = (
     STOP_REASON_RESIDUAL_CONVERGED,
     STOP_REASON_QOI_CONVERGED,
     STOP_REASON_LF_MONITOR_STABLE,
+    STOP_REASON_HF_MONITOR_STABLE,
     STOP_REASON_MAX_ITER_REACHED,
     STOP_REASON_DIVERGED,
     STOP_REASON_UNKNOWN_EARLY_STOP,
@@ -1073,3 +1076,83 @@ def parse_stop_reason_from_text(text: str) -> str | None:
         if value in STOP_REASON_VALUES:
             found = value
     return found
+
+
+def iterations_run_from_case(case_dir: str | Path) -> int | None:
+    """Last iteration in the LMH report file, else the residual transcript.
+
+    Returns None when neither file has a row. Does not invent a count.
+    """
+    directory = Path(case_dir)
+    report = directory / "lmh_udm_avg.out"
+    if report.is_file():
+        series = parse_fluent_report_file_series(
+            report.read_text(encoding="utf-8", errors="replace")
+        )
+        if series:
+            return int(series[-1][0])
+    from ro.residual_transcript import (
+        PARSE_OK,
+        parse_residual_table,
+        read_text_replace,
+        select_solve_transcript,
+    )
+
+    path, status, _detail = select_solve_transcript(directory)
+    if path is None or status != PARSE_OK:
+        return None
+    text, _err = read_text_replace(path)
+    if text is None:
+        return None
+    rows, detail = parse_residual_table(text)
+    if not rows or "unparsed_later_residual_rows=" in detail:
+        return None
+    return int(rows[-1]["iter"])
+
+
+def iteration_bounds_from_case(case_dir: str | Path) -> tuple[int, int] | None:
+    """First and last iteration in the solve transcript, else the LMH report.
+
+    The transcript is this session's solver log when one is present.
+    Returns None when neither file has a row.
+    """
+    from ro.residual_transcript import (
+        PARSE_OK,
+        parse_residual_table,
+        read_text_replace,
+        select_solve_transcript,
+    )
+
+    directory = Path(case_dir)
+    path, status, _detail = select_solve_transcript(directory)
+    if path is not None and status == PARSE_OK:
+        text, _err = read_text_replace(path)
+        if text is not None:
+            rows, detail = parse_residual_table(text)
+            if rows and "unparsed_later_residual_rows=" not in detail:
+                return int(rows[0]["iter"]), int(rows[-1]["iter"])
+    report = directory / "lmh_udm_avg.out"
+    if not report.is_file():
+        return None
+    series = parse_fluent_report_file_series(
+        report.read_text(encoding="utf-8", errors="replace")
+    )
+    if not series:
+        return None
+    return int(series[0][0]), int(series[-1][0])
+
+
+def cost_proxy(cell_count: int, iterations_run: int) -> int:
+    """Cell count times iterations actually run."""
+    if isinstance(cell_count, bool) or not isinstance(cell_count, int):
+        raise TypeError(f"cell_count must be an integer, got {cell_count!r}.")
+    if isinstance(iterations_run, bool) or not isinstance(iterations_run, int):
+        raise TypeError(
+            f"iterations_run must be an integer, got {iterations_run!r}."
+        )
+    if cell_count < 1 or iterations_run < 1:
+        raise ValueError(
+            "cost_proxy factors must be >= 1, got "
+            f"cell_count={cell_count!r}, iterations_run={iterations_run!r}."
+        )
+    return cell_count * iterations_run

@@ -542,10 +542,23 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
             f"geo_id {geo_id!r} (expected {expected_family!r})."
         )
     validate_run_geometry_fields(payload)
-    for field in ("solver_wall_time_s", "extraction_wall_time_s"):
+    for field in (
+        "solver_wall_time_s",
+        "extraction_wall_time_s",
+        "generate_wall_time_s",
+    ):
         _optional_nonnegative_number(payload, field, "Run")
+    for field in (
+        "iterations_run",
+        "cell_count",
+        "cost_proxy",
+        "hf_phase2_first_iteration",
+        "hf_phase2_last_iteration",
+    ):
+        _optional_positive_int(payload, field, "Run")
     _optional_processor_count(payload)
     _optional_solver_wall_time_attempts(payload)
+    _optional_hf_solve_phases(payload)
 
 
 def _optional_mesh_wall_times(payload: Mapping[str, Any]) -> None:
@@ -621,6 +634,57 @@ def _optional_nonnegative_number(
         raise ManifestError(
             f"{kind} manifest field {field!r} must be >= 0, got {payload[field]!r}."
         )
+
+
+def _optional_positive_int(
+    payload: Mapping[str, Any],
+    field: str,
+    kind: str,
+) -> None:
+    if field not in payload or payload[field] is None:
+        return
+    _require_integer(payload, field, kind, minimum=1)
+
+
+def _optional_hf_solve_phases(payload: Mapping[str, Any]) -> None:
+    if "hf_solve_phases" not in payload or payload["hf_solve_phases"] is None:
+        return
+    phases = payload["hf_solve_phases"]
+    if not isinstance(phases, list) or not phases:
+        raise ManifestError(
+            "Run manifest hf_solve_phases must be a non-empty list, "
+            f"got {phases!r}."
+        )
+    for item in phases:
+        if not isinstance(item, Mapping):
+            raise ManifestError(
+                "Run manifest hf_solve_phases entries must be objects, "
+                f"got {item!r}."
+            )
+        for key in (
+            "name",
+            "stop_reason",
+            "iterations_run",
+            "convergence_quality",
+        ):
+            if key not in item:
+                raise ManifestError(f"Run manifest hf_solve_phases entry is missing {key!r}.")
+        if item["name"] not in ("hf_monitor", "production"):
+            raise ManifestError(
+                "Run manifest hf_solve_phases name must be hf_monitor or "
+                f"production, got {item['name']!r}."
+            )
+        if item["stop_reason"] not in STOP_REASON_VALUES:
+            raise ManifestError(
+                "Run manifest hf_solve_phases stop_reason must be a solver "
+                f"stop reason, got {item['stop_reason']!r}."
+            )
+        if item["convergence_quality"] not in ("PASS", "FAIL"):
+            raise ManifestError(
+                "Run manifest hf_solve_phases convergence_quality must be "
+                f"PASS or FAIL, got {item['convergence_quality']!r}."
+            )
+        _require_integer(item, "iterations_run", "Run hf_solve_phases", minimum=1)
 
 
 def _optional_processor_count(payload: Mapping[str, Any]) -> None:

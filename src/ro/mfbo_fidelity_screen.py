@@ -22,6 +22,7 @@ from typing import Any
 from ro.geometry_registry import format_mfbo_pillar_geo_id
 from ro.mfbo_fidelity import parse_fidelity_level
 from ro.mfbo_adapter import (
+    opening_gap_mm,
     PillarDesign,
     _design,
     evaluate,
@@ -34,6 +35,10 @@ from ro_2d_pilot.fidelity_screen import pearson, rank_reversal_count, spearman
 LF_LEVEL = "LF"
 HF_LEVEL = "HF"
 LEVELS = (LF_LEVEL, HF_LEVEL)
+LF_D_LEVEL = "LF_d"
+HF_M_LEVEL = "HF_m"
+V1_LEVELS = (LF_D_LEVEL, HF_M_LEVEL)
+SCREEN_V1_NAME = "3d_fidelity_screen_v1"
 TBD = "TBD"
 SCREEN_NAME = "3d_fidelity_screen"
 
@@ -110,6 +115,56 @@ def require_screen_table(table: Mapping[str, Any]) -> dict[str, Any]:
     for name in LEVELS:
         checked[name] = require_runnable_fidelity(table, name)
     return checked
+
+
+def require_v1_screen_table(table: Mapping[str, Any]) -> dict[str, Any]:
+    """Require exactly LF_d and HF_m, both runnable."""
+    if not isinstance(table, Mapping):
+        raise TypeError("fidelity table must be a mapping.")
+    names = list(table)
+    if set(names) != set(V1_LEVELS):
+        raise ValueError(
+            "The 3D v1 fidelity screen needs exactly LF_d and HF_m, "
+            f"got {names!r}."
+        )
+    checked = {}
+    for name in V1_LEVELS:
+        checked[name] = require_runnable_fidelity(table, name)
+    return checked
+
+
+def screen_table_kind(table: Mapping[str, Any]) -> str:
+    """``lf_hf`` for the LF/HF screen, ``v1`` for LF_d/HF_m."""
+    if not isinstance(table, Mapping):
+        raise TypeError("fidelity table must be a mapping.")
+    names = set(table)
+    if names == set(LEVELS):
+        require_screen_table(table)
+        return "lf_hf"
+    if names == set(V1_LEVELS):
+        require_v1_screen_table(table)
+        return "v1"
+    raise ValueError(
+        "A fidelity screen table must be exactly LF and HF, or exactly "
+        f"LF_d and HF_m, got {list(table)!r}."
+    )
+
+
+def require_designs_clear_opening_gap(
+    designs: Sequence[PillarDesign],
+    table: Mapping[str, Any],
+) -> None:
+    """Refuse a design whose opening gap is a positive sliver under m_min."""
+    limits = [float(table[name]["m_min"]) for name in V1_LEVELS]
+    limit = min(limits)
+    for design in designs:
+        gap = opening_gap_mm(design.d_p_mm, design.d_h_mm, design.d_f_mm)
+        if 0.0 < gap < limit:
+            raise ValueError(
+                "opening-gap sliver: "
+                f"d_p_mm={design.d_p_mm} d_h_mm={design.d_h_mm} "
+                f"d_f_mm={design.d_f_mm} gap_mm={gap} m_min={limit}."
+            )
 
 
 def load_designs(path: str | Path) -> list[PillarDesign]:
@@ -325,6 +380,90 @@ def summarize(pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> d
     }
 
 
+def run_v1_screen(
+    designs: Sequence[PillarDesign],
+    fidelity_table: Mapping[str, Any],
+    *,
+    run_id: str,
+    data_root: str | Path,
+    drivers: Drivers,
+) -> dict[str, Any]:
+    """Evaluate every design at LF_d and then HF_m."""
+    table = require_v1_screen_table(fidelity_table)
+    require_designs_clear_opening_gap(designs, table)
+    root = resolve_data_root(data_root)
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for design in designs:
+        low = evaluate(
+            design,
+            LF_D_LEVEL,
+            run_id=run_id,
+            data_root=root,
+            fidelity_table=table,
+            drivers=drivers,
+        )
+        high = evaluate(
+            design,
+            HF_M_LEVEL,
+            run_id=run_id,
+            data_root=root,
+            fidelity_table=table,
+            drivers=drivers,
+        )
+        pairs.append((low, high))
+    return summarize_v1(pairs)
+
+
+def summarize_v1(
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """LF_d versus HF_m. Bias is (LF_d - HF_m) / HF_m."""
+    rows = [_v1_row(low, high) for low, high in pairs]
+    usable = [row for row in rows if row["comparable"]]
+    qoi_summary = {
+        name: _qoi_summary(usable, name, larger, excess)
+        for name, larger, excess in _QOI
+    }
+    relatives = [
+        float(row["cp_excess_rel"])
+        for row in usable
+        if _is_finite(row.get("cp_excess_rel"))
+    ]
+    wall_ratios = [
+        float(row["cost_ratio"])
+        for row in usable
+        if _is_finite(row.get("cost_ratio"))
+    ]
+    proxy_ratios = [
+        float(row["cost_proxy_ratio"])
+        for row in usable
+        if _is_finite(row.get("cost_proxy_ratio"))
+    ]
+    return {
+        "study": SCREEN_V1_NAME,
+        "low_level": LF_D_LEVEL,
+        "high_level": HF_M_LEVEL,
+        "n_designs": len(rows),
+        "n_comparable": len(usable),
+        "rows": rows,
+        "qoi": qoi_summary,
+        "cp_excess_bias_mean": _mean(relatives),
+        "cp_excess_bias_spread": _spread(relatives),
+        "cost_ratio": _cost_summary(wall_ratios),
+        "cost_proxy_ratio": _cost_summary(proxy_ratios),
+        "note": (
+            "Relative discrepancy is (LF_d - HF_m) / HF_m. "
+            "cp_average is compared as CP-1. "
+            "cp_excess_bias_spread is the sample standard deviation. "
+            "cost_ratio is LF_d wall time / HF_m wall time. Wall time sums "
+            "generate_wall_time_s when that stage was recorded, plus "
+            "mesh, solver, and extraction. "
+            "cost_proxy_ratio is (cell_count * iterations_run) at LF_d "
+            "divided by the same product at HF_m."
+        ),
+    }
+
+
 def summary_paths(out_dir: str | Path) -> dict[str, Path]:
     directory = Path(out_dir)
     return {
@@ -335,9 +474,18 @@ def summary_paths(out_dir: str | Path) -> dict[str, Path]:
 
 def write_summary(out_dir: str | Path, report: Mapping[str, Any]) -> dict[str, Path]:
     paths = summary_paths(out_dir)
+    if report.get("study") == SCREEN_V1_NAME:
+        paths = {
+            "csv": Path(out_dir) / f"{SCREEN_V1_NAME}.csv",
+            "markdown": Path(out_dir) / f"{SCREEN_V1_NAME}.md",
+        }
     paths["csv"].parent.mkdir(parents=True, exist_ok=True)
-    _write_csv(paths["csv"], report)
-    paths["markdown"].write_text(format_markdown(report), encoding="utf-8")
+    if report.get("study") == SCREEN_V1_NAME:
+        _write_v1_csv(paths["csv"], report)
+        paths["markdown"].write_text(format_v1_markdown(report), encoding="utf-8")
+    else:
+        _write_csv(paths["csv"], report)
+        paths["markdown"].write_text(format_markdown(report), encoding="utf-8")
     return paths
 
 
@@ -469,9 +617,114 @@ def _pair_row(low: Mapping[str, Any], high: Mapping[str, Any]) -> dict[str, Any]
     if not comparable:
         for name, _larger, excess in _QOI:
             row[f"{name}_rel"] = None
+        if excess:
+            row["cp_excess_rel"] = None
+    return row
+
+
+def _v1_row(low: Mapping[str, Any], high: Mapping[str, Any]) -> dict[str, Any]:
+    problems = _v1_identity_problems(low, high)
+    both_valid = low.get("status") == "valid" and high.get("status") == "valid"
+    comparable = not problems and both_valid
+    if problems:
+        reason = "; ".join(problems)
+    elif not both_valid:
+        reason = (
+            "not both valid "
+            f"(LF_d={low.get('status')!r}, HF_m={high.get('status')!r})"
+        )
+    else:
+        reason = ""
+    row: dict[str, Any] = {
+        "d_p_mm": low.get("d_p_mm"),
+        "d_h_mm": low.get("d_h_mm"),
+        "d_f_mm": low.get("d_f_mm"),
+        "geo_id_lf": low.get("geo_id"),
+        "geo_id_hf": high.get("geo_id"),
+        "run_id_lf": low.get("run_id"),
+        "run_id_hf": high.get("run_id"),
+        "status_lf": low.get("status"),
+        "status_hf": high.get("status"),
+        "failure_reason_lf": low.get("failure_reason"),
+        "failure_reason_hf": high.get("failure_reason"),
+        "comparable": comparable,
+        "reason": reason,
+    }
+    for name, _larger, excess in _QOI:
+        low_value = _qoi_value(low, name, excess=False)
+        high_value = _qoi_value(high, name, excess=False)
+        low_compared = _qoi_value(low, name, excess=excess)
+        high_compared = _qoi_value(high, name, excess=excess)
+        row[f"{name}_lf"] = low_value
+        row[f"{name}_hf"] = high_value
+        row[f"{name}_rel"] = _relative(low_compared, high_compared)
+        if excess:
+            row["cp_excess_lf"] = low_compared
+            row["cp_excess_hf"] = high_compared
+            row["cp_excess_rel"] = row[f"{name}_rel"]
+    for key in (
+        "generate_wall_time_s",
+        "mesh_wall_time_s",
+        "solver_wall_time_s",
+        "extraction_wall_time_s",
+        "iterations_run",
+        "cell_count",
+        "cost_proxy",
+    ):
+        row[f"{key}_lf"] = low.get(key)
+        row[f"{key}_hf"] = high.get(key)
+    wall_low = _v1_wall(low)
+    wall_high = _v1_wall(high)
+    row["wall_s_lf"] = wall_low
+    row["wall_s_hf"] = wall_high
+    if comparable:
+        row["cost_ratio"] = _ratio(wall_low, wall_high)
+        row["cost_proxy_ratio"] = _ratio(
+            _finite_number(low.get("cost_proxy")),
+            _finite_number(high.get("cost_proxy")),
+        )
+    else:
+        row["cost_ratio"] = None
+        row["cost_proxy_ratio"] = None
+        for name, _larger, excess in _QOI:
+            row[f"{name}_rel"] = None
             if excess:
                 row["cp_excess_rel"] = None
     return row
+
+
+def _v1_identity_problems(low: Mapping[str, Any], high: Mapping[str, Any]) -> list[str]:
+    problems = []
+    for key in ("d_p_mm", "d_h_mm", "d_f_mm"):
+        if key not in low or key not in high:
+            problems.append(f"missing {key}.")
+            continue
+        if not _same(low[key], high[key]):
+            problems.append(f"{key}: LF_d={low[key]!r} HF_m={high[key]!r}.")
+    if low.get("fidelity") not in (None, LF_D_LEVEL):
+        problems.append(f"LF_d record fidelity is {low.get('fidelity')!r}.")
+    if high.get("fidelity") not in (None, HF_M_LEVEL):
+        problems.append(f"HF_m record fidelity is {high.get('fidelity')!r}.")
+    return problems
+
+
+def _v1_wall(record: Mapping[str, Any]) -> float | None:
+    parts = []
+    generate = record.get("generate_wall_time_s")
+    if _is_finite(generate):
+        parts.append(float(generate))
+    for key in _WALL_KEYS:
+        value = record.get(key)
+        if not _is_finite(value):
+            return None
+        parts.append(float(value))
+    return sum(parts)
+
+
+def _finite_number(value: object) -> float | None:
+    if not _is_finite(value):
+        return None
+    return float(value)
 
 
 def _qoi_summary(
@@ -590,6 +843,13 @@ def _mean(values: list[float]) -> float | None:
     if not values:
         return None
     return statistics.fmean(values)
+
+
+def _spread(values: list[float]) -> float | None:
+    """Sample standard deviation. Undefined for fewer than two values."""
+    if len(values) < 2:
+        return None
+    return statistics.stdev(values)
 
 
 def _same(left: object, right: object) -> bool:
@@ -731,3 +991,207 @@ def _write_csv(path: Path, report: Mapping[str, Any]) -> None:
         writer.writeheader()
         for row in body:
             writer.writerow({name: "" if row.get(name) is None else row.get(name) for name in fieldnames})
+
+
+def format_v1_markdown(report: Mapping[str, Any]) -> str:
+    rows = report["rows"]
+    if not isinstance(rows, list):
+        raise TypeError("screen report is missing rows.")
+    lines = [
+        "# 3D fidelity screen v1",
+        "",
+        str(report["note"]),
+        "",
+        f"designs={report['n_designs']} comparable={report['n_comparable']}",
+        "",
+        (
+            "| d_p | d_h | d_f | status LF_d | status HF_m "
+            "| LMH LF_d | LMH HF_m | rel LMH "
+            "| dP/L LF_d | dP/L HF_m | rel dP/L "
+            "| CP LF_d | CP HF_m | rel CP-1 "
+            "| wall LF_d | wall HF_m | wall ratio "
+            "| iter LF_d | iter HF_m | cells LF_d | cells HF_m "
+            "| proxy LF_d | proxy HF_m | proxy ratio |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise TypeError("screen row is not a mapping.")
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _fmt(row.get("d_p_mm")),
+                    _fmt(row.get("d_h_mm")),
+                    _fmt(row.get("d_f_mm")),
+                    _md(row.get("status_lf")),
+                    _md(row.get("status_hf")),
+                    _fmt(row.get("lmh_lf")),
+                    _fmt(row.get("lmh_hf")),
+                    _fmt(row.get("lmh_rel")),
+                    _fmt(row.get("pressure_drop_per_length_pa_per_m_lf")),
+                    _fmt(row.get("pressure_drop_per_length_pa_per_m_hf")),
+                    _fmt(row.get("pressure_drop_per_length_pa_per_m_rel")),
+                    _fmt(row.get("cp_average_lf")),
+                    _fmt(row.get("cp_average_hf")),
+                    _fmt(row.get("cp_excess_rel")),
+                    _fmt(row.get("wall_s_lf")),
+                    _fmt(row.get("wall_s_hf")),
+                    _fmt(row.get("cost_ratio")),
+                    _fmt(row.get("iterations_run_lf")),
+                    _fmt(row.get("iterations_run_hf")),
+                    _fmt(row.get("cell_count_lf")),
+                    _fmt(row.get("cell_count_hf")),
+                    _fmt(row.get("cost_proxy_lf")),
+                    _fmt(row.get("cost_proxy_hf")),
+                    _fmt(row.get("cost_proxy_ratio")),
+                ]
+            )
+            + " |"
+        )
+        if row.get("reason"):
+            lines.append(
+                f"reason d_p={row.get('d_p_mm')} d_h={row.get('d_h_mm')}: "
+                f"{_md(row['reason'])}"
+            )
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            "",
+            (
+                f"- CP-1 bias: mean={_fmt(report.get('cp_excess_bias_mean'))} "
+                f"spread={_fmt(report.get('cp_excess_bias_spread'))}"
+            ),
+        ]
+    )
+    qoi = report["qoi"]
+    if isinstance(qoi, Mapping):
+        for name, _larger, excess in _QOI:
+            summary = qoi.get(name)
+            if not isinstance(summary, Mapping):
+                continue
+            label = f"{name} (CP-1)" if excess else name
+            lines.append(
+                f"- {label}: n={summary['n']} pearson={_fmt(summary['pearson'])} "
+                f"spearman={_fmt(summary['spearman'])}"
+            )
+            if summary.get("reason"):
+                lines.append(f"  {summary['reason']}")
+    for key, label in (
+        ("cost_ratio", "wall cost ratio"),
+        ("cost_proxy_ratio", "proxy cost ratio"),
+    ):
+        cost = report.get(key)
+        if isinstance(cost, Mapping):
+            lines.append(
+                f"- {label}: n={cost['n']} median={_fmt(cost['median'])} "
+                f"min={_fmt(cost['min'])} max={_fmt(cost['max'])}"
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_v1_csv(path: Path, report: Mapping[str, Any]) -> None:
+    rows = report.get("rows")
+    fieldnames = [
+        "row_type",
+        "d_p_mm",
+        "d_h_mm",
+        "d_f_mm",
+        "geo_id_lf",
+        "geo_id_hf",
+        "status_lf",
+        "status_hf",
+        "comparable",
+        "reason",
+        "lmh_lf",
+        "lmh_hf",
+        "lmh_rel",
+        "lmh_module_area_lf",
+        "lmh_module_area_hf",
+        "lmh_module_area_rel",
+        "pressure_drop_per_length_pa_per_m_lf",
+        "pressure_drop_per_length_pa_per_m_hf",
+        "pressure_drop_per_length_pa_per_m_rel",
+        "cp_average_lf",
+        "cp_average_hf",
+        "cp_excess_lf",
+        "cp_excess_hf",
+        "cp_excess_rel",
+        "generate_wall_time_s_lf",
+        "generate_wall_time_s_hf",
+        "mesh_wall_time_s_lf",
+        "mesh_wall_time_s_hf",
+        "solver_wall_time_s_lf",
+        "solver_wall_time_s_hf",
+        "extraction_wall_time_s_lf",
+        "extraction_wall_time_s_hf",
+        "wall_s_lf",
+        "wall_s_hf",
+        "cost_ratio",
+        "iterations_run_lf",
+        "iterations_run_hf",
+        "cell_count_lf",
+        "cell_count_hf",
+        "cost_proxy_lf",
+        "cost_proxy_hf",
+        "cost_proxy_ratio",
+        "summary_qoi",
+        "n",
+        "pearson",
+        "spearman",
+        "cp_excess_bias_mean",
+        "cp_excess_bias_spread",
+        "cost_median",
+    ]
+    body: list[dict[str, Any]] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, Mapping):
+                item = dict(row)
+                item["row_type"] = "design"
+                body.append(item)
+    qoi = report.get("qoi")
+    if isinstance(qoi, Mapping):
+        for name, _larger, _excess in _QOI:
+            summary = qoi.get(name)
+            if not isinstance(summary, Mapping):
+                continue
+            body.append(
+                {
+                    "row_type": "summary",
+                    "summary_qoi": name,
+                    "n": summary.get("n"),
+                    "pearson": summary.get("pearson"),
+                    "spearman": summary.get("spearman"),
+                    "reason": summary.get("reason"),
+                }
+            )
+    body.append(
+        {
+            "row_type": "summary",
+            "summary_qoi": "cp_excess_bias",
+            "cp_excess_bias_mean": report.get("cp_excess_bias_mean"),
+            "cp_excess_bias_spread": report.get("cp_excess_bias_spread"),
+        }
+    )
+    for key in ("cost_ratio", "cost_proxy_ratio"):
+        cost = report.get(key)
+        if isinstance(cost, Mapping):
+            body.append(
+                {
+                    "row_type": "summary",
+                    "summary_qoi": key,
+                    "n": cost.get("n"),
+                    "cost_median": cost.get("median"),
+                }
+            )
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in body:
+            writer.writerow(
+                {name: "" if row.get(name) is None else row.get(name) for name in fieldnames}
+            )

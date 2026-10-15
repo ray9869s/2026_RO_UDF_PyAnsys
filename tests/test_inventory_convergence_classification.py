@@ -484,6 +484,7 @@ class TestManifestStopReasonClassification:
             ("residual_converged", "CONVERGED"),
             ("qoi_converged", "CONVERGED"),
             ("lf_monitor_stable", "CONVERGED"),
+            ("hf_monitor_stable", "CONVERGED"),
             ("max_iter_reached", "MAX_ITER_REACHED"),
             ("diverged", "FAILED_OR_DIVERGED"),
             ("unknown_early_stop", "POSSIBLY_INCOMPLETE"),

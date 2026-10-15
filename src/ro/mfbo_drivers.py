@@ -15,10 +15,12 @@ here.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -99,11 +101,13 @@ class _Worker:
         ]
         if n_active is not None:
             argv.extend(["--n-active", str(int(n_active))])
+        started = time.perf_counter()
         try:
             self._run("generate", argv, geo_id)
         except DriverFailed as exc:
             _attach_failure_class(exc, out_dir / f"{geo_id}_error.json")
             raise
+        _write_generate_wall_time(out_dir, geo_id, time.perf_counter() - started)
 
     def mesh(
         self,
@@ -229,6 +233,21 @@ class _Worker:
         directory = self.log_root if self.log_root is not None else self.data_root / "driver_logs"
         name = "__".join(_safe(part) for part in (stage, *parts)) + ".log"
         return directory / name
+
+
+def _write_generate_wall_time(out_dir: Path, geo_id: str, seconds: float) -> None:
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise TypeError(f"generate wall time must be a number, got {seconds!r}.")
+    if not math.isfinite(float(seconds)) or float(seconds) < 0.0:
+        raise ValueError(
+            f"generate wall time must be finite and >= 0, got {seconds!r}."
+        )
+    path = Path(out_dir) / f"{geo_id}_generate_wall_time.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"generate_wall_time_s": float(seconds)}) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _attach_failure_class(exc: DriverFailed, error_path: Path) -> None:

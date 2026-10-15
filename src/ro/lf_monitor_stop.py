@@ -333,6 +333,7 @@ def evaluate_lf_monitor_gate(
 def manifest_monitor_fields(decision: Mapping[str, Any]) -> dict[str, Any]:
     """Non-parameter manifest fields for one LF monitor decision."""
     return {
+        "iterations_run": decision["iterations_run"],
         "lf_monitor_ramp_end": decision["ramp_end"],
         "lf_monitor_window": {
             "start": decision.get("window_start"),

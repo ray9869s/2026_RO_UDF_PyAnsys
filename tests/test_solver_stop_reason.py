@@ -110,6 +110,7 @@ def test_stop_reason_enum_is_complete(common):
         "residual_converged",
         "qoi_converged",
         "lf_monitor_stable",
+        "hf_monitor_stable",
         "max_iter_reached",
         "diverged",
         "unknown_early_stop",

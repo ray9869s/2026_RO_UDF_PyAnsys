@@ -346,3 +346,29 @@ def test_copy_from_production_can_take_the_converted_pmdb(monkeypatch, tmp_path)
     assert not (
         data / "geometries" / "pillar" / "P_p100_h30" / "P_p100_h30.dsco"
     ).exists()
+
+
+def test_family_default_window_does_not_inject_the_mesh_lead(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("mesh lead must not be read for family_default")
+
+    seen = {}
+
+    def fake_leaf(_leaf, profile=None, extra_argv=None):
+        seen["profile"] = profile
+        seen["extra"] = list(extra_argv or [])
+        return 0
+
+    monkeypatch.setattr(reextract_runs, "mesh_lead_excluded", boom)
+    monkeypatch.setattr(reextract_runs, "reextract_leaf", fake_leaf)
+    args = SimpleNamespace(
+        window_source="family_default",
+        profile="mfbo",
+        fidelity_n_lead_excluded=None,
+        lmh_rel_abs_max=None,
+        mass_balance_rel_abs_max=None,
+        continuity_final_max=None,
+    )
+    assert reextract_runs._reextract_with_flags("C:/not/a/leaf", args) == 0
+    assert seen["profile"] == "mfbo"
+    assert "--fidelity-n-lead-excluded" not in seen["extra"]
