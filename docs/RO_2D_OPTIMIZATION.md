@@ -430,9 +430,8 @@ LF/HF cost ratio are in that file too. A missing field is an error.
 `configs/mfbo_3d_experiment.example.json` sets `cp_excess_max` and
 `dp_max_pa_per_m` to `TBD`, and the run refuses those placeholders.
 There is no default limit. The example's `reference_hf_wall_s` (3600 s)
-and `lf_over_hf_cost_ratio` (0.25) are not a measured 3D screen. Replace
-them with the median HF wall time and the median LF/HF wall-time ratio
-before quoting a cost.
+and `lf_over_hf_cost_ratio` (0.25) are not a measured 3D screen. The
+screened run is `configs/mfbo_3d_experiment.v1.json`.
 
 The same NumPy acquisition is used. Probability of feasibility is the
 product of one Gaussian probability per constraint. HF-only queries `HF`.
@@ -507,3 +506,53 @@ python scripts/mfbo/run_3d_mfbo.py run \
 The example run refuses until `cp_excess_max` and `dp_max_pa_per_m` are
 finite numbers, the fidelity table has mesh settings for every level the
 method queries, and, for `offline_replay`, the replay table exists.
+
+## 3D v1 experiment
+
+`configs/mfbo_3d_experiment.v1.json` is the screened pillar problem.
+In the loop, `LF` is `LF_d` and `HF` is `HF_m` from
+`configs/mfbo_fidelity_table.3d_v1.json`. The limits are CP excess 0.040
+and 71000 Pa/m. `lf_over_hf_cost_ratio` is the screen median wall-time
+ratio 0.54. `cost_proxy_ratio` 0.25 is the screen median of cell count
+times iterations; acquisition uses the wall-time ratio.
+`reference_hf_wall_s` is `screen_median`, the median HF wall time
+(mesh + solver + extraction) in
+`studies/fidelity_screen_3d_v1/3d_fidelity_screen_v1.csv` under the data
+root. `budget_hf_equivalent` is `11h`: 11 hours divided by that median,
+inside a 10-12 h wall-time window. The seed is 0. `max_sequential` is 24.
+
+Both methods use that file. `--method` selects `hf_bo` or `mfbo`.
+`hf_bo` evaluates four HF designs: the center `(0.80, 0.15)` and the
+corners `(1.00, 0.00)`, `(1.00, 0.30)`, and `(0.60, 0.30)`. The corner
+`(0.60, 0.00)` stays out of the initial set. `(1.00, 0.00)` is the
+screen point whose HF solve failed the gate after 2000 iterations. It
+is still an initial HF design. GP training keeps valid points, and the
+recorded wall time of that leaf is charged. `mfbo` evaluates the same
+four designs at HF and at LF. A leaf already on disk is reused and charged.
+
+`scripts/mfbo/landscape_3d.py` fits the loop's Gaussian process to valid
+HF points (and, for the figure, to valid LF points) and writes
+`landscape_3d_lmh.png` with both constraint lines. `--dry-run` validates
+the experiment file, checks the opening gap on the initial designs, and
+prints the plan and any recorded leaf costs. It does not launch Fluent.
+`emit-queue` writes two `job_queue` jobs, `hf_bo` then `mfbo`, each with
+`--geometry-worker`.
+
+```bash
+python scripts/mfbo/landscape_3d.py \
+  --csv /c/ro_data_mfbo/mfbo3d/studies/fidelity_screen_3d_v1/3d_fidelity_screen_v1.csv \
+  --out-dir /c/ro_data_mfbo/mfbo3d/studies/fidelity_screen_3d_v1/landscape
+
+python scripts/mfbo/run_3d_mfbo.py run \
+  --config configs/mfbo_3d_experiment.v1.json \
+  --data-root /c/ro_data_mfbo/mfbo3d \
+  --dry-run
+
+python scripts/mfbo/run_3d_mfbo.py emit-queue \
+  --config configs/mfbo_3d_experiment.v1.json \
+  --data-root /c/ro_data_mfbo/mfbo3d \
+  --out /c/ro_data_mfbo/mfbo3d/studies/optimization/3d/v1_queue.json
+
+python scripts/mfbo/job_queue.py run \
+  /c/ro_data_mfbo/mfbo3d/studies/optimization/3d/v1_queue.json
+```

@@ -46,7 +46,9 @@ from ro.mfbo_adapter import (
     evaluate,
     mesh_id_for_settings,
     opening_gap_mm,
+    record_from_leaves,
 )
+from ro.mfbo_fidelity import parse_fidelity_level, run_id_for_level
 from ro.paths import MESH_ID_RE, RUN_ID_RE
 from ro_2d_pilot.optimization.acquisition import (
     constrained_ei,
@@ -70,6 +72,9 @@ FIDELITIES = (LF, HF)
 STOP_NAME = "STOP"
 FAMILY = "pillar"
 TBD = "TBD"
+SCREEN_MEDIAN = "screen_median"
+BUDGET_11H = "11h"
+TARGET_BUDGET_WALL_H = 11.0
 
 REQUIRED_FIELDS = (
     "experiment_id",
@@ -90,6 +95,10 @@ REQUIRED_FIELDS = (
     "initial_lf",
     "fidelity_table",
     "replay_table",
+)
+OPTIONAL_FIELDS = (
+    "cost_proxy_ratio",
+    "screen_csv",
 )
 
 _FAILURE = frozenset({STATUS_DIVERGED, STATUS_INVALID, STATUS_EXECUTION_FAILED})
@@ -342,6 +351,8 @@ class Experiment3D:
     fidelity_settings: dict[str, dict[str, Any]]
     replay: ReplayTable | None
     problem: dict[str, Any]
+    cost_proxy_ratio: float | None = None
+    screen_csv: str | None = None
 
 
 @dataclass(frozen=True)
@@ -393,9 +404,17 @@ class LiveEvaluator:
 
     def __call__(self, design: PillarPoint, fidelity: str) -> PillarOutcome:
         point = PillarDesign(design.d_p_mm, design.d_h_mm, self.d_f_mm)
-        geo_id = format_mfbo_pillar_geo_id(point.d_p_mm, point.d_h_mm, point.d_f_mm)
-        mesh_id = mesh_id_for_settings(self.fidelity_settings[fidelity])
-        run_dir = self.data_root / "runs" / FAMILY / geo_id / mesh_id / self.run_id
+        settings = parse_fidelity_level(self.fidelity_settings[fidelity])
+        n_active = settings["n_active"] if settings.get("extended") else None
+        geo_id = format_mfbo_pillar_geo_id(
+            point.d_p_mm,
+            point.d_h_mm,
+            point.d_f_mm,
+            n_active=n_active,
+        )
+        mesh_id = mesh_id_for_settings(settings)
+        checked_run = run_id_for_level(self.run_id, settings)
+        run_dir = self.data_root / "runs" / FAMILY / geo_id / mesh_id / checked_run
         reused = _run_state(run_dir) == "success"
         try:
             record = evaluate(
@@ -521,10 +540,20 @@ def load_replay_table(path: Path, config_fields: Mapping[str, Any]) -> ReplayTab
     return ReplayTable(parsed)
 
 
-def load_experiment(path: Path, *, repo_root: Path, data_root: Path) -> Experiment3D:
+def load_experiment(
+    path: Path,
+    *,
+    repo_root: Path,
+    data_root: Path,
+    method_override: str | None = None,
+) -> Experiment3D:
     """Load an experiment file. Missing fields and ``TBD`` limits are errors."""
     payload = _read_json_object(path, "experiment config")
-    unknown = sorted(set(payload) - set(REQUIRED_FIELDS))
+    if method_override is not None:
+        if method_override not in {METHOD_HF, METHOD_MF}:
+            raise ValueError(f"Unknown method {method_override!r}.")
+        payload["method"] = method_override
+    unknown = sorted(set(payload) - set(REQUIRED_FIELDS) - set(OPTIONAL_FIELDS))
     if unknown:
         raise ValueError(f"Unknown experiment fields: {unknown}.")
     missing = [key for key in REQUIRED_FIELDS if key not in payload]
@@ -552,12 +581,13 @@ def load_experiment(path: Path, *, repo_root: Path, data_root: Path) -> Experime
     d_p_min, d_p_max, d_h_min, d_h_max = _design_box(payload["design_box"])
     cp_excess_max = _real("cp_excess_max", payload["cp_excess_max"])
     dp_max = _real("dp_max_pa_per_m", payload["dp_max_pa_per_m"])
-    budget = _positive("budget_hf_equivalent", payload["budget_hf_equivalent"])
     max_sequential = payload["max_sequential"]
     if isinstance(max_sequential, bool) or not isinstance(max_sequential, int) or max_sequential < 0:
         raise ValueError(f"max_sequential must be an integer >= 0, got {max_sequential!r}.")
-    reference = _positive("reference_hf_wall_s", payload["reference_hf_wall_s"])
+    reference, screen_csv = _reference_wall(payload, data_root)
     ratio = _positive("lf_over_hf_cost_ratio", payload["lf_over_hf_cost_ratio"])
+    budget = _budget_limit(payload["budget_hf_equivalent"], reference)
+    proxy = _optional_cost_proxy(payload)
     grid = payload["candidate_grid"]
     if isinstance(grid, bool) or not isinstance(grid, int) or grid < 2:
         raise ValueError(f"candidate_grid must be an integer >= 2, got {grid!r}.")
@@ -612,6 +642,8 @@ def load_experiment(path: Path, *, repo_root: Path, data_root: Path) -> Experime
         "replay_table": replay_token,
         "replay_sha256": replay_hash,
     }
+    if proxy is not None:
+        problem["cost_proxy_ratio"] = proxy
     return Experiment3D(
         method=method,
         mode=mode,
@@ -635,11 +667,115 @@ def load_experiment(path: Path, *, repo_root: Path, data_root: Path) -> Experime
         fidelity_settings=settings,
         replay=replay,
         problem=problem,
+        cost_proxy_ratio=proxy,
+        screen_csv=screen_csv,
     )
 
 
 def experiment_dir(data_root: Path, method: str, experiment_id: str) -> Path:
     return data_root / "studies" / "optimization" / "3d" / method / experiment_id
+
+
+def require_initial_designs(config: Experiment3D) -> None:
+    """Refuse an initial design the opening-gap check would not evaluate."""
+    for point in config.initial_hf:
+        _require_evaluable(config, point, HF)
+    if config.method == METHOD_MF:
+        for point in config.initial_lf:
+            _require_evaluable(config, point, LF)
+
+
+def format_plan(config: Experiment3D) -> str:
+    """Initial designs and the HF-equivalent budget. Does not launch Fluent."""
+    hours = config.budget_hf_equivalent * config.reference_hf_wall_s / 3600.0
+    hf_expected = float(len(config.initial_hf))
+    mf_expected = hf_expected + len(config.initial_lf) * config.lf_over_hf_cost_ratio
+    lines = [
+        (
+            f"experiment_id={config.experiment_id} method={config.method} "
+            f"mode={config.mode} seed={config.seed}"
+        ),
+        (
+            f"box d_p_mm=[{config.d_p_min_mm}, {config.d_p_max_mm}] "
+            f"d_h_mm=[{config.d_h_min_mm}, {config.d_h_max_mm}] d_f_mm={config.d_f_mm}"
+        ),
+        f"run_id={config.run_id} cp_excess_max={config.cp_excess_max} dp_max_pa_per_m={config.dp_max_pa_per_m}",
+        (
+            f"reference_hf_wall_s={config.reference_hf_wall_s} "
+            f"lf_over_hf_cost_ratio={config.lf_over_hf_cost_ratio} "
+            f"cost_proxy_ratio={config.cost_proxy_ratio}"
+        ),
+        (
+            f"budget_hf_equivalent={config.budget_hf_equivalent} "
+            f"budget_wall_h={hours} max_sequential={config.max_sequential}"
+        ),
+        (
+            "expected initial HF-equivalent if each new run costs the reference: "
+            f"hf_bo={hf_expected} mfbo={mf_expected}"
+        ),
+        "hf_bo initial (recorded wall time is charged; these are not sequential queries):",
+    ]
+    for point in config.initial_hf:
+        lines.append(f"  HF d_p_mm={point.d_p_mm} d_h_mm={point.d_h_mm}")
+    lines.append("mfbo initial:")
+    for point in config.initial_hf:
+        lines.append(f"  HF d_p_mm={point.d_p_mm} d_h_mm={point.d_h_mm}")
+    for point in config.initial_lf:
+        lines.append(f"  LF d_p_mm={point.d_p_mm} d_h_mm={point.d_h_mm}")
+    lines.append(
+        "A leaf already on disk is reused and charged its recorded mesh+solver+extraction wall time."
+    )
+    lines.append(
+        "Initial evaluations are charged even when they exceed the budget. "
+        "Sequential queries stop when the next expected cost does not fit."
+    )
+    return "\n".join(lines)
+
+
+def format_recorded_initial_charges(config: Experiment3D, data_root: Path) -> str:
+    """Wall time already on disk for the shared initial designs. No Fluent."""
+    lines = ["recorded initial charges:"]
+    hf_sum = 0.0
+    lf_sum = 0.0
+    seen: list[tuple[PillarPoint, str]] = [(point, HF) for point in config.initial_hf]
+    seen.extend((point, LF) for point in config.initial_lf)
+    for point, fidelity in seen:
+        record = record_from_leaves(
+            PillarDesign(point.d_p_mm, point.d_h_mm, config.d_f_mm),
+            fidelity,
+            run_id=config.run_id,
+            data_root=data_root,
+            fidelity_table=config.fidelity_settings,
+        )
+        wall = _recorded_wall_s(record)
+        status = record.get("status")
+        if wall is None or status == STATUS_EXECUTION_FAILED:
+            lines.append(
+                f"  {fidelity} d_p_mm={point.d_p_mm} d_h_mm={point.d_h_mm} "
+                f"status={status} recorded=absent"
+            )
+            continue
+        equivalent = wall / config.reference_hf_wall_s
+        if fidelity == HF:
+            hf_sum += equivalent
+        else:
+            lf_sum += equivalent
+        lines.append(
+            f"  {fidelity} d_p_mm={point.d_p_mm} d_h_mm={point.d_h_mm} "
+            f"status={status} wall_s={wall} hf_equivalent={equivalent}"
+        )
+    lines.append(f"recorded_hf_equivalent hf_bo={hf_sum} mfbo={hf_sum + lf_sum}")
+    return "\n".join(lines)
+
+
+def _recorded_wall_s(record: Mapping[str, Any]) -> float | None:
+    parts = [
+        _optional_real(record.get(name))
+        for name in ("mesh_wall_time_s", "solver_wall_time_s", "extraction_wall_time_s")
+    ]
+    if any(part is None for part in parts):
+        return None
+    return float(sum(parts))
 
 
 def run_optimization(
@@ -1014,7 +1150,7 @@ def _summary(
         "note": (
             "offline_replay does not measure new CFD savings."
             if config.mode == MODE_REPLAY
-            else "Live costs count reused valid results as benchmark spend."
+            else "Live costs count reused results, including failures, as benchmark spend."
         ),
     }
 
@@ -1287,17 +1423,23 @@ def _initial_points(
     return tuple(points)
 
 
+_FIDELITY_ALIAS = {LF: "LF_d", HF: "HF_m"}
+
+
 def _load_fidelity_settings(path: Path, needed: Sequence[str]) -> dict[str, dict[str, Any]]:
     payload = _read_json_object(path, "fidelity table")
     if not payload:
         raise ValueError(f"fidelity table must be a non-empty JSON object: {path}")
     settings = {}
     for name in needed:
-        if name not in payload:
+        if name in payload:
+            entry = payload[name]
+        elif _FIDELITY_ALIAS.get(name) in payload:
+            entry = payload[_FIDELITY_ALIAS[name]]
+        else:
             raise KeyError(
                 f"fidelity {name!r} is not in the fidelity table. High fidelity is not defined."
             )
-        entry = payload[name]
         if entry == TBD:
             raise ValueError(f"fidelity {name!r} is TBD and is refused.")
         if not isinstance(entry, dict):
@@ -1305,6 +1447,37 @@ def _load_fidelity_settings(path: Path, needed: Sequence[str]) -> dict[str, dict
         mesh_id_for_settings(entry)
         settings[name] = dict(entry)
     return settings
+
+
+def _reference_wall(payload: Mapping[str, Any], data_root: Path) -> tuple[float, str | None]:
+    screen = payload.get("screen_csv", None)
+    if "screen_csv" in payload and not isinstance(screen, str):
+        raise ValueError("screen_csv must be a path.")
+    if isinstance(screen, str) and not screen.strip():
+        raise ValueError("screen_csv must be a path.")
+    value = payload["reference_hf_wall_s"]
+    if value == SCREEN_MEDIAN:
+        if not isinstance(screen, str):
+            raise ValueError("reference_hf_wall_s screen_median requires screen_csv.")
+        from ro.mfbo_landscape import cost_medians, read_screen_rows
+
+        path = _resolve_data_path(screen, data_root, "screen_csv")
+        medians = cost_medians(read_screen_rows(path))
+        return float(medians["hf_wall_median_s"]), screen
+    return _positive("reference_hf_wall_s", value), screen if isinstance(screen, str) else None
+
+
+def _budget_limit(value: Any, reference_hf_wall_s: float) -> float:
+    """``11h`` is 11 hours of wall time, in HF-equivalents."""
+    if value == BUDGET_11H:
+        return TARGET_BUDGET_WALL_H * 3600.0 / reference_hf_wall_s
+    return _positive("budget_hf_equivalent", value)
+
+
+def _optional_cost_proxy(payload: Mapping[str, Any]) -> float | None:
+    if "cost_proxy_ratio" not in payload:
+        return None
+    return _positive("cost_proxy_ratio", payload["cost_proxy_ratio"])
 
 
 def _resolve_repo_path(value: Any, repo_root: Path, name: str) -> Path:
