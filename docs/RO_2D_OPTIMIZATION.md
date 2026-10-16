@@ -522,13 +522,13 @@ root. `budget_hf_equivalent` is `11h`: 11 hours divided by that median,
 inside a 10-12 h wall-time window. The seed is 0. `max_sequential` is 24.
 
 Both methods use that file. `--method` selects `hf_bo` or `mfbo`.
-`hf_bo` evaluates four HF designs: the center `(0.80, 0.15)` and the
-corners `(1.00, 0.00)`, `(1.00, 0.30)`, and `(0.60, 0.30)`. The corner
-`(0.60, 0.00)` stays out of the initial set. `(1.00, 0.00)` is the
-screen point whose HF solve failed the gate after 2000 iterations. It
-is still an initial HF design. GP training keeps valid points, and the
-recorded wall time of that leaf is charged. `mfbo` evaluates the same
-four designs at HF and at LF. A leaf already on disk is reused and charged.
+`hf_bo` evaluates four HF designs: `(0.80, 0.15)`, `(0.60, 0.00)`,
+`(1.00, 0.30)`, and `(0.60, 0.30)`. `mfbo` evaluates those same four at
+HF and at LF. `(1.00, 0.00)` stays in the design box. Its screen HF
+solve failed the gate after 2000 iterations (6355 s, about 3.7 times the
+median HF wall time), so it is not an initial design. A later proposal
+there is recorded, kept out of the GP, and not repeated, as in the 2D
+loop. A leaf already on disk is reused and charged.
 
 `scripts/mfbo/landscape_3d.py` fits the loop's Gaussian process to valid
 HF points (and, for the figure, to valid LF points) and writes

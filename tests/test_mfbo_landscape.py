@@ -129,7 +129,7 @@ def test_v1_config_shares_seed_initials_and_resolves_an_11_hour_budget(tmp_path:
     assert payload["initial_hf"] == payload["initial_lf"]
     assert [(item["d_p_mm"], item["d_h_mm"]) for item in payload["initial_hf"]] == [
         (0.8, 0.15),
-        (1.0, 0.0),
+        (0.6, 0.0),
         (1.0, 0.3),
         (0.6, 0.3),
     ]
@@ -147,7 +147,8 @@ def test_v1_config_shares_seed_initials_and_resolves_an_11_hour_budget(tmp_path:
     assert "cost_proxy_ratio" in loaded.problem
     text = format_plan(loaded)
     assert "HF d_p_mm=0.8 d_h_mm=0.15" in text
-    assert "HF d_p_mm=1.0 d_h_mm=0.0" in text
+    assert "HF d_p_mm=0.6 d_h_mm=0.0" in text
+    assert "HF d_p_mm=1.0 d_h_mm=0.0" not in text
     assert "budget_wall_h=11.0" in text or "budget_wall_h=11" in text
 
 
@@ -170,7 +171,9 @@ def test_dry_run_prints_the_plan_without_importing_drivers(tmp_path: Path, capsy
     out = capsys.readouterr().out
     assert "hf_bo initial" in out
     assert "mfbo initial" in out
+    assert "d_p_mm=0.6 d_h_mm=0.0" in out
     assert "d_p_mm=0.6 d_h_mm=0.3" in out
+    assert "d_p_mm=1.0 d_h_mm=0.0" not in out
     assert "budget_wall_h=11" in out
     assert "recorded=absent" in out
 
@@ -203,7 +206,7 @@ def test_recorded_invalid_leaf_is_charged_and_a_missing_leaf_is_not(tmp_path: Pa
     config = load_experiment(_v1_with_screen(tmp_path), repo_root=REPO_ROOT, data_root=tmp_path)
 
     def fake(design, fidelity, **_kwargs):
-        wall = (10.0, 20.0, 30.0) if (design.d_p_mm, design.d_h_mm) == (1.0, 0.0) else None
+        wall = (10.0, 20.0, 30.0) if (design.d_p_mm, design.d_h_mm) == (0.6, 0.0) else None
         status = "invalid" if wall else "execution_failed"
         return {
             "status": status,
@@ -214,7 +217,7 @@ def test_recorded_invalid_leaf_is_charged_and_a_missing_leaf_is_not(tmp_path: Pa
 
     monkeypatch.setattr("ro.mfbo_3d.record_from_leaves", fake)
     text = format_recorded_initial_charges(config, tmp_path)
-    assert "HF d_p_mm=1.0 d_h_mm=0.0 status=invalid wall_s=60.0" in text
+    assert "HF d_p_mm=0.6 d_h_mm=0.0 status=invalid wall_s=60.0" in text
     assert "recorded=absent" in text
     assert "recorded_hf_equivalent hf_bo=" in text
 

@@ -20,13 +20,13 @@
   "candidate_grid": 9,
   "initial_hf": [
     {"d_p_mm": 0.8, "d_h_mm": 0.15},
-    {"d_p_mm": 1.0, "d_h_mm": 0.0},
+    {"d_p_mm": 0.6, "d_h_mm": 0.0},
     {"d_p_mm": 1.0, "d_h_mm": 0.3},
     {"d_p_mm": 0.6, "d_h_mm": 0.3}
   ],
   "initial_lf": [
     {"d_p_mm": 0.8, "d_h_mm": 0.15},
-    {"d_p_mm": 1.0, "d_h_mm": 0.0},
+    {"d_p_mm": 0.6, "d_h_mm": 0.0},
     {"d_p_mm": 1.0, "d_h_mm": 0.3},
     {"d_p_mm": 0.6, "d_h_mm": 0.3}
   ],
