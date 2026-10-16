@@ -40,6 +40,17 @@ def build_parser():
     run = sub.add_parser("run", help="Run hf_bo or mfbo from an experiment file.")
     run.add_argument("--config", required=True, type=Path)
     run.add_argument("--data-root", required=True)
+    run.add_argument(
+        "--geometry-worker",
+        action="store_true",
+        help="Keep one Discovery session for every new geometry in this run.",
+    )
+    run.add_argument(
+        "--stop-file",
+        type=Path,
+        default=None,
+        help="Also release Discovery when this file appears. The experiment STOP file is always watched.",
+    )
     build = sub.add_parser(
         "build-replay",
         help="Build an offline table from campaign pillar leaves at one mesh.",
@@ -66,22 +77,43 @@ def main(argv=None) -> int:
 def _run(args) -> int:
     root = resolve_data_root(args.data_root)
     config = load_experiment(args.config, repo_root=_REPO, data_root=root)
-    if config.mode == MODE_LIVE:
-        from ro.mfbo_drivers import make_drivers
-
-        evaluator = LiveEvaluator(
-            root,
-            config.fidelity_settings,
-            config.run_id,
-            config.d_f_mm,
-            make_drivers(root),
-        )
-    else:
-        if config.replay is None:
-            raise ValueError("offline_replay requires a replay table.")
-        evaluator = config.replay
     destination = experiment_dir(root, config.method, config.experiment_id)
-    summary = run_optimization(config, evaluator, destination)
+    supervisor = None
+    try:
+        if config.mode == MODE_LIVE:
+            from ro.mfbo_drivers import make_drivers
+
+            if args.geometry_worker:
+                from ro.geometry_worker import open_geometry_worker
+
+                stop = args.stop_file
+                if stop is None:
+                    stop = destination / "STOP"
+                supervisor = open_geometry_worker(root, enabled=True, stop_file=stop)
+                drivers = make_drivers(
+                    root,
+                    geometry_worker=supervisor.directory,
+                    geometry_supervisor=supervisor,
+                )
+            else:
+                drivers = make_drivers(root)
+            evaluator = LiveEvaluator(
+                root,
+                config.fidelity_settings,
+                config.run_id,
+                config.d_f_mm,
+                drivers,
+            )
+        else:
+            if args.geometry_worker:
+                raise ValueError("--geometry-worker applies to live mode.")
+            if config.replay is None:
+                raise ValueError("offline_replay requires a replay table.")
+            evaluator = config.replay
+        summary = run_optimization(config, evaluator, destination)
+    finally:
+        if supervisor is not None:
+            supervisor.shutdown()
     if not summary.get("wrote"):
         print(f"stop file present ({destination / 'STOP'}); not starting.", flush=True)
         return 0

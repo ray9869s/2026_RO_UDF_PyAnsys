@@ -25,6 +25,7 @@ from ro.mfbo_fidelity_screen import (
     load_designs,
     load_fidelity_table,
     require_designs_clear_opening_gap,
+    run_from_leaves,
     run_screen,
     run_v1_screen,
     screen_table_kind,
@@ -60,6 +61,22 @@ def build_parser():
         default=None,
         help="Write this queue JSON and do not evaluate.",
     )
+    parser.add_argument(
+        "--from-leaves",
+        action="store_true",
+        help="Write the tables from existing leaves. Does not generate, mesh, or solve.",
+    )
+    parser.add_argument(
+        "--geometry-worker",
+        action="store_true",
+        help="Keep one Discovery session and send every new geometry to it.",
+    )
+    parser.add_argument(
+        "--stop-file",
+        type=Path,
+        default=None,
+        help="With --geometry-worker, release Discovery when this file appears.",
+    )
     return parser
 
 
@@ -71,6 +88,10 @@ def main(argv=None) -> int:
     root = resolve_data_root(args.data_root)
     if kind == "v1":
         require_designs_clear_opening_gap(designs, table)
+    if args.from_leaves and args.emit_queue is not None:
+        raise ValueError("--from-leaves does not emit a queue.")
+    if args.geometry_worker and (args.emit_queue is not None or args.from_leaves):
+        raise ValueError("--geometry-worker is only for an in-process evaluation.")
     if args.emit_queue is not None:
         if kind == "v1":
             jobs = build_named_level_queue(
@@ -95,22 +116,56 @@ def main(argv=None) -> int:
         return 0
     if args.out_dir is None:
         raise ValueError("--out-dir is required when --emit-queue is not set.")
-    if kind == "v1":
-        report = run_v1_screen(
+    if args.from_leaves:
+        report = run_from_leaves(
             designs,
             table,
             run_id=args.run_id,
             data_root=root,
-            drivers=make_drivers(root),
         )
-    else:
-        report = run_screen(
-            designs,
-            table,
-            run_id=args.run_id,
-            data_root=root,
-            drivers=make_drivers(root),
+        paths = write_summary(args.out_dir, report)
+        print(f"csv: {paths['csv']}", flush=True)
+        print(f"markdown: {paths['markdown']}", flush=True)
+        print(
+            f"comparable: {report['n_comparable']} of {report['n_designs']}",
+            flush=True,
         )
+        print("This script did not evaluate.", flush=True)
+        return 0
+    supervisor = None
+    try:
+        if args.geometry_worker:
+            from ro.geometry_worker import open_geometry_worker
+
+            supervisor = open_geometry_worker(
+                root, enabled=True, stop_file=args.stop_file
+            )
+            drivers = make_drivers(
+                root,
+                geometry_worker=supervisor.directory,
+                geometry_supervisor=supervisor,
+            )
+        else:
+            drivers = make_drivers(root)
+        if kind == "v1":
+            report = run_v1_screen(
+                designs,
+                table,
+                run_id=args.run_id,
+                data_root=root,
+                drivers=drivers,
+            )
+        else:
+            report = run_screen(
+                designs,
+                table,
+                run_id=args.run_id,
+                data_root=root,
+                drivers=drivers,
+            )
+    finally:
+        if supervisor is not None:
+            supervisor.shutdown()
     paths = write_summary(args.out_dir, report)
     print(f"csv: {paths['csv']}", flush=True)
     print(f"markdown: {paths['markdown']}", flush=True)

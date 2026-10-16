@@ -127,6 +127,151 @@ def run_discovery_job(
     raise DiscoveryAttemptError(FAILURE_INFRASTRUCTURE, errors, note)
 
 
+class DiscoverySession:
+    """One Discovery process reused across builds.
+
+    A launch or a build that loses the backend is cleaned up and retried
+    once, the same as ``run_discovery_job``. A geometry failure leaves the
+    process open. ``close`` is the only path that stops a live session.
+    """
+
+    def __init__(
+        self,
+        launch: Callable[[], Any],
+        *,
+        process_lister: Callable[[], list[dict]] | None = None,
+        process_killer: Callable[[int], None] | None = None,
+    ):
+        processes = _discovery_processes()
+        self._launch = launch
+        self._lister = (
+            processes.list_discovery_processes if process_lister is None else process_lister
+        )
+        self._killer = processes.terminate_pid if process_killer is None else process_killer
+        self._processes = processes
+        self.modeler = None
+        self.note = None
+        self._before = None
+        self._terminated: list[int] = []
+        self._completed = 0
+        self._closed = False
+
+    def run(
+        self,
+        build: Callable[[Any], dict],
+        *,
+        partial_paths: tuple[Path, ...] = (),
+    ) -> tuple[dict, bool]:
+        """Run ``build(modeler)``. Return the meta and whether this build reused a session.
+
+        Infrastructure failures retry once after the existing cleanup. Geometry
+        failures are not retried and do not close the session.
+        """
+        if self._closed:
+            raise RuntimeError("Discovery session is closed.")
+        errors: list[str] = []
+        for attempt in (1, 2):
+            reused = self.modeler is not None and self._completed > 0
+            try:
+                if self.modeler is None:
+                    reused = False
+                    self._open(attempt)
+                payload = build(self.modeler)
+            except Exception as exc:
+                kind = failure_class_for_exception(exc)
+                if self.modeler is None:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+                    if attempt == 2 or kind != FAILURE_INFRASTRUCTURE:
+                        failure = DiscoveryAttemptError(kind, errors, self.note)
+                        failure.session_reused = False
+                        raise failure from exc
+                    continue
+                if kind != FAILURE_INFRASTRUCTURE:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+                    failure = DiscoveryAttemptError(kind, errors, self.note)
+                    failure.session_reused = reused
+                    raise failure from exc
+                self._drop(errors, exc, attempt)
+                if attempt == 2:
+                    failure = DiscoveryAttemptError(FAILURE_INFRASTRUCTURE, errors, self.note)
+                    failure.session_reused = False
+                    raise failure from exc
+                _delete_partials(partial_paths)
+                continue
+            if not isinstance(payload, dict):
+                raise TypeError(
+                    f"build must return a dict, got {type(payload).__name__}."
+                )
+            alive = payload.pop("_session_alive", True)
+            self._completed += 1
+            record = dict(payload)
+            if self.note is not None:
+                record.update(self.note)
+            record["backend_start_timeout_s"] = BACKEND_START_TIMEOUT_S
+            if alive is False:
+                self._drop([], RuntimeError("design close failed"), attempt)
+                self._completed = 0
+            return record, reused
+        failure = DiscoveryAttemptError(FAILURE_INFRASTRUCTURE, errors, self.note)
+        failure.session_reused = False
+        raise failure
+
+    def close(self) -> None:
+        """Close the modeler and stop processes this session started."""
+        if self._closed:
+            return
+        self._closed = True
+        modeler = self.modeler
+        self.modeler = None
+        self._completed = 0
+        _close_quietly(modeler)
+        if self._before is None:
+            return
+        after = self._lister()
+        self._terminated.extend(
+            self._processes.terminate_started(self._before, after, self._killer)
+        )
+        self.note = self._processes.process_note(
+            self._before, after, self._terminated, 1
+        )
+
+    def _open(self, attempt: int) -> None:
+        before = self._lister()
+        if self._before is None:
+            self._before = before
+        try:
+            self.modeler = self._launch()
+        except Exception:
+            after = self._lister()
+            self._terminated.extend(
+                self._processes.terminate_started(before, after, self._killer)
+            )
+            self.note = self._processes.process_note(
+                self._before, after, self._terminated, attempt
+            )
+            self.modeler = None
+            raise
+        after = self._lister()
+        self.note = self._processes.process_note(
+            self._before, after, self._terminated, attempt
+        )
+
+    def _drop(self, errors: list[str], exc: BaseException, attempt: int) -> None:
+        modeler = self.modeler
+        self.modeler = None
+        self._completed = 0
+        _close_quietly(modeler)
+        before = self._before if self._before is not None else []
+        after = self._lister()
+        self._terminated.extend(
+            self._processes.terminate_started(before, after, self._killer)
+        )
+        self.note = self._processes.process_note(
+            before, after, self._terminated, attempt
+        )
+        errors.append(f"{type(exc).__name__}: {exc}")
+
+
 def error_record(geo_id: str, exc: DiscoveryAttemptError) -> dict:
     record = {
         "geo_id": geo_id,

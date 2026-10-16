@@ -9,10 +9,12 @@ import importlib.util
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 from ro.discovery_session import (
     DiscoveryAttemptError,
+    DiscoverySession,
     discovery_launch_arguments,
     error_record,
     run_discovery_job,
@@ -117,8 +119,277 @@ def generate_pillar_cad(
 
     Discovery gets 300 s to start. A backend timeout is cleaned up and retried
     once. The attempt note is written on the meta, or on ``<geo_id>_error.json``
-    when both attempts fail.
+    when both attempts fail. This path starts and closes one session.
     """
+    spec = _pillar_spec(
+        d_p_mm=d_p_mm,
+        d_h_mm=d_h_mm,
+        d_f_mm=d_f_mm,
+        geo_id=geo_id,
+        out_dir=out_dir,
+        n_active=n_active,
+    )
+    _bind_geometry_symbols()
+
+    def _launch():
+        return launch_modeler_with_discovery(
+            **discovery_launch_arguments(ApiVersions.V_251)
+        )
+
+    def _build(modeler):
+        return _build_pillar_design(modeler, spec, close_design=False)
+
+    try:
+        meta = run_discovery_job(
+            _build,
+            launch=_launch,
+            partial_paths=(spec.paths["pmdb"], spec.paths["scdocx"]),
+            process_lister=process_lister,
+            process_killer=process_killer,
+        )
+    except DiscoveryAttemptError as exc:
+        write_json(spec.out_dir / f"{spec.geo_id}_error.json", error_record(spec.geo_id, exc))
+        raise
+    return _write_pillar_outputs(spec, meta)
+
+
+def generate_pillar_batch(
+    entries,
+    *,
+    launch=None,
+    process_lister=None,
+    process_killer=None,
+):
+    """Build every entry in one Discovery session.
+
+    One entry's failure is recorded and the loop continues. The session is
+    restarted, with the same cleanup and one retry, only when it dies.
+    Each entry gets ``<geo_id>_generate_wall_time.json`` with
+    ``session_reused``.
+    """
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("batch entries must be a non-empty list.")
+    prepared = []
+    results = [None] * len(entries)
+    for index, entry in enumerate(entries):
+        try:
+            prepared.append((index, _pillar_spec_from_entry(entry)))
+        except Exception as exc:
+            results[index] = _failed_batch_result(entry, exc, seconds=0.0, session_reused=False)
+    if not prepared:
+        return results
+    _bind_geometry_symbols()
+    if launch is None:
+        def launch():
+            return launch_modeler_with_discovery(
+                **discovery_launch_arguments(ApiVersions.V_251)
+            )
+    session = DiscoverySession(
+        launch,
+        process_lister=process_lister,
+        process_killer=process_killer,
+    )
+    try:
+        for index, spec in prepared:
+            results[index] = _generate_one(session, spec)
+    finally:
+        session.close()
+    return results
+
+
+def serve_pillar_worker(directory, *, stop_file=None, launch=None, process_lister=None, process_killer=None, sleep_s=0.2):
+    """Serve generate requests until shutdown, Ctrl+C, or ``stop_file``."""
+    from ro.geometry_worker import serve
+
+    _bind_geometry_symbols()
+    if launch is None:
+        def launch():
+            return launch_modeler_with_discovery(
+                **discovery_launch_arguments(ApiVersions.V_251)
+            )
+    session = DiscoverySession(
+        launch,
+        process_lister=process_lister,
+        process_killer=process_killer,
+    )
+
+    def handler(request):
+        spec = _pillar_spec_from_entry(request)
+        return _generate_one(session, spec)
+
+    serve(
+        directory,
+        handler=handler,
+        stop_file=stop_file,
+        session_open=lambda: session.modeler is not None,
+        sleep_s=sleep_s,
+        on_stop=session.close,
+    )
+
+
+def write_generate_timing(out_dir, geo_id, seconds, *, session_reused=None):
+    """Write ``<geo_id>_generate_wall_time.json``. Omit ``session_reused`` when unset."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise TypeError(f"generate wall time must be a number, got {seconds!r}.")
+    if not math.isfinite(float(seconds)) or float(seconds) < 0.0:
+        raise ValueError(
+            f"generate wall time must be finite and >= 0, got {seconds!r}."
+        )
+    payload = {"generate_wall_time_s": float(seconds)}
+    if session_reused is not None:
+        if not isinstance(session_reused, bool):
+            raise TypeError(
+                f"session_reused must be a bool, got {session_reused!r}."
+            )
+        payload["session_reused"] = session_reused
+    path = Path(out_dir) / f"{geo_id}_generate_wall_time.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def _generate_one(session, spec):
+    started = time.perf_counter()
+    try:
+        meta, reused = session.run(
+            lambda modeler: _build_pillar_design(modeler, spec, close_design=True),
+            partial_paths=(spec.paths["pmdb"], spec.paths["scdocx"]),
+        )
+    except DiscoveryAttemptError as exc:
+        seconds = time.perf_counter() - started
+        write_json(spec.out_dir / f"{spec.geo_id}_error.json", error_record(spec.geo_id, exc))
+        reused = bool(getattr(exc, "session_reused", False))
+        write_generate_timing(
+            spec.out_dir, spec.geo_id, seconds, session_reused=reused
+        )
+        return {
+            "geo_id": spec.geo_id,
+            "status": "failed",
+            "failure_class": exc.failure_class,
+            "error": str(exc),
+            "generate_wall_time_s": seconds,
+            "session_reused": reused,
+            "paths": None,
+        }
+    written = _write_pillar_outputs(spec, meta)
+    seconds = time.perf_counter() - started
+    write_generate_timing(spec.out_dir, spec.geo_id, seconds, session_reused=reused)
+    return {
+        "geo_id": spec.geo_id,
+        "status": "ok",
+        "failure_class": None,
+        "error": None,
+        "generate_wall_time_s": seconds,
+        "session_reused": reused,
+        "paths": written["paths"],
+    }
+
+
+def _build_pillar_design(modeler, spec, *, close_design):
+    """Create, export, and (for a shared session) close one design.
+
+    The export and the meta payload are the single-geometry path. ``close_design``
+    is false there because that path closes the whole modeler.
+    """
+    design = modeler.create_design(spec.geo_id)
+    if design.name != spec.geo_id:
+        if close_design:
+            _close_design_quietly(design)
+        raise RuntimeError(
+            f"Design name {design.name!r} does not match geo_id {spec.geo_id!r}."
+        )
+    try:
+        meta = _fill_and_export(design, modeler, spec)
+    except Exception:
+        if close_design:
+            _close_design_quietly(design)
+        raise
+    if close_design and not _close_design_quietly(design):
+        meta["_session_alive"] = False
+    return meta
+
+
+def _fill_and_export(design, modeler, spec):
+    body, nodes, line_count = _build_fluid(design, spec.layout, spec.d_p_m, spec.d_h_m)
+    counts = _classify_and_name(
+        design, body, spec.layout, nodes, spec.d_p_m, spec.d_h_m
+    )
+    design.export_to_pmdb(spec.out_dir)
+    design.export_to_scdocx(spec.out_dir)
+    if not spec.paths["pmdb"].is_file() or not spec.paths["scdocx"].is_file():
+        raise RuntimeError(
+            "Export did not write the expected files: "
+            f"{spec.paths['pmdb']} and {spec.paths['scdocx']}."
+        )
+    meta = _meta_payload(
+        geo_id=spec.geo_id,
+        d_p_mm=spec.d_p_mm,
+        d_h_mm=spec.d_h_mm,
+        d_f_mm=spec.d_f_mm,
+        layout=spec.layout,
+        d_p_m=spec.d_p_m,
+        d_h_m=spec.d_h_m,
+        nodes=nodes,
+        line_count=line_count,
+        counts=counts,
+        backend_version=str(modeler.client.backend_version),
+        registry=pillar_registry_entry(
+            spec.geo_id,
+            spec.d_p_m,
+            spec.d_h_m,
+            spec.d_f_mm * MM_TO_M,
+            n_active_cells=spec.layout["n_active"],
+        ),
+        pmdb_sha256=sha256_file(spec.paths["pmdb"]),
+    )
+    meta["_counts"] = counts
+    return meta
+
+
+def _write_pillar_outputs(spec, meta):
+    counts = meta.pop("_counts")
+    error_path = spec.out_dir / f"{spec.geo_id}_error.json"
+    if error_path.exists():
+        error_path.unlink()
+    spec.paths["meta"].write_text(
+        json.dumps(meta, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print("Face counts:")
+    for label in (*_BASE_LABELS, _HOLE_LABEL):
+        print(f"  {label}: {counts[label]}")
+    print(f"  total_faces: {sum(counts.values())}")
+    return {
+        "paths": {key: str(path) for key, path in spec.paths.items()},
+        "face_counts": counts,
+    }
+
+
+def _close_design_quietly(design):
+    close = getattr(design, "close", None)
+    if not callable(close):
+        return True
+    try:
+        close()
+    except Exception:
+        return False
+    return True
+
+
+class _PillarSpec:
+    def __init__(self, *, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir, n_active, layout, paths, d_p_m, d_h_m):
+        self.d_p_mm = d_p_mm
+        self.d_h_mm = d_h_mm
+        self.d_f_mm = d_f_mm
+        self.geo_id = geo_id
+        self.out_dir = out_dir
+        self.n_active = n_active
+        self.layout = layout
+        self.paths = paths
+        self.d_p_m = d_p_m
+        self.d_h_m = d_h_m
+
+
+def _pillar_spec(*, d_p_mm, d_h_mm, d_f_mm, geo_id, out_dir, n_active):
     d_p_mm = _require_real("d_p_mm", d_p_mm)
     d_h_mm = _require_real("d_h_mm", d_h_mm)
     d_f_mm = _require_real("d_f_mm", d_f_mm)
@@ -135,85 +406,69 @@ def generate_pillar_cad(
             f"d_h_mm must be smaller than d_p_mm, got d_h_mm={d_h_mm}, d_p_mm={d_p_mm}."
         )
     require_pillar_cad_geo_id(geo_id, d_p_mm, d_h_mm, d_f_mm, n_active=n_active)
-
     layout = _layout_from_config(d_f_mm * MM_TO_M, n_active=n_active)
-    d_p_m = d_p_mm * MM_TO_M
-    d_h_m = d_h_mm * MM_TO_M
     paths = _output_paths(out_dir, geo_id)
     _refuse_existing(paths)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    _bind_geometry_symbols()
-
-    def _launch():
-        return launch_modeler_with_discovery(
-            **discovery_launch_arguments(ApiVersions.V_251)
-        )
-
-    def _build(modeler):
-        design = modeler.create_design(geo_id)
-        if design.name != geo_id:
-            raise RuntimeError(
-                f"Design name {design.name!r} does not match geo_id {geo_id!r}."
-            )
-        body, nodes, line_count = _build_fluid(design, layout, d_p_m, d_h_m)
-        counts = _classify_and_name(design, body, layout, nodes, d_p_m, d_h_m)
-        design.export_to_pmdb(out_dir)
-        design.export_to_scdocx(out_dir)
-        if not paths["pmdb"].is_file() or not paths["scdocx"].is_file():
-            raise RuntimeError(
-                "Export did not write the expected files: "
-                f"{paths['pmdb']} and {paths['scdocx']}."
-            )
-        meta = _meta_payload(
-            geo_id=geo_id,
-            d_p_mm=d_p_mm,
-            d_h_mm=d_h_mm,
-            d_f_mm=d_f_mm,
-            layout=layout,
-            d_p_m=d_p_m,
-            d_h_m=d_h_m,
-            nodes=nodes,
-            line_count=line_count,
-            counts=counts,
-            backend_version=str(modeler.client.backend_version),
-            registry=pillar_registry_entry(
-                geo_id,
-                d_p_m,
-                d_h_m,
-                d_f_mm * MM_TO_M,
-                n_active_cells=layout["n_active"],
-            ),
-            pmdb_sha256=sha256_file(paths["pmdb"]),
-        )
-        meta["_counts"] = counts
-        return meta
-
-    try:
-        meta = run_discovery_job(
-            _build,
-            launch=_launch,
-            partial_paths=(paths["pmdb"], paths["scdocx"]),
-            process_lister=process_lister,
-            process_killer=process_killer,
-        )
-    except DiscoveryAttemptError as exc:
-        write_json(out_dir / f"{geo_id}_error.json", error_record(geo_id, exc))
-        raise
-    counts = meta.pop("_counts")
-    error_path = out_dir / f"{geo_id}_error.json"
-    if error_path.exists():
-        error_path.unlink()
-    paths["meta"].write_text(
-        json.dumps(meta, indent=2) + "\n",
-        encoding="utf-8",
+    return _PillarSpec(
+        d_p_mm=d_p_mm,
+        d_h_mm=d_h_mm,
+        d_f_mm=d_f_mm,
+        geo_id=geo_id,
+        out_dir=out_dir,
+        n_active=n_active,
+        layout=layout,
+        paths=paths,
+        d_p_m=d_p_mm * MM_TO_M,
+        d_h_m=d_h_mm * MM_TO_M,
     )
 
-    print("Face counts:")
-    for label in (*_BASE_LABELS, _HOLE_LABEL):
-        print(f"  {label}: {counts[label]}")
-    print(f"  total_faces: {sum(counts.values())}")
-    return {"paths": {key: str(path) for key, path in paths.items()}, "face_counts": counts}
+
+def _pillar_spec_from_entry(entry):
+    if not isinstance(entry, dict):
+        raise TypeError(f"batch entry must be an object, got {type(entry).__name__}.")
+    missing = [key for key in ("d_p_mm", "d_h_mm", "d_f_mm", "geo_id", "out_dir") if key not in entry]
+    if missing:
+        raise KeyError(f"batch entry is missing {missing}.")
+    n_active = entry["n_active"] if "n_active" in entry and entry["n_active"] is not None else 7
+    return _pillar_spec(
+        d_p_mm=entry["d_p_mm"],
+        d_h_mm=entry["d_h_mm"],
+        d_f_mm=entry["d_f_mm"],
+        geo_id=entry["geo_id"],
+        out_dir=entry["out_dir"],
+        n_active=n_active,
+    )
+
+
+def _failed_batch_result(entry, exc, *, seconds, session_reused):
+    geo_id = entry.get("geo_id") if isinstance(entry, dict) else None
+    out_dir = entry.get("out_dir") if isinstance(entry, dict) else None
+    if isinstance(geo_id, str) and geo_id and out_dir:
+        try:
+            directory = _require_out_dir(out_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            write_json(
+                directory / f"{geo_id}_error.json",
+                {
+                    "geo_id": geo_id,
+                    "status": "failed",
+                    "failure_class": "geometry",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "backend_start_timeout_s": 300,
+                },
+            )
+        except (OSError, TypeError, ValueError):
+            pass
+    return {
+        "geo_id": geo_id,
+        "status": "failed",
+        "failure_class": "geometry",
+        "error": f"{type(exc).__name__}: {exc}",
+        "generate_wall_time_s": seconds,
+        "session_reused": session_reused,
+        "paths": None,
+    }
 
 
 def _layout_from_config(filament_d_m, n_active=None):

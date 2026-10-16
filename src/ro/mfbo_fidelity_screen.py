@@ -27,6 +27,7 @@ from ro.mfbo_adapter import (
     _design,
     evaluate,
     mesh_id_for_settings,
+    record_from_leaves,
     resolve_data_root,
 )
 from ro.mfbo_drivers import Drivers, repo_root
@@ -412,6 +413,40 @@ def run_v1_screen(
         )
         pairs.append((low, high))
     return summarize_v1(pairs)
+
+
+def run_from_leaves(
+    designs: Sequence[PillarDesign],
+    fidelity_table: Mapping[str, Any],
+    *,
+    run_id: str,
+    data_root: str | Path,
+) -> dict[str, Any]:
+    """Build the screen report from leaves. Does not generate, mesh, or solve."""
+    kind = screen_table_kind(fidelity_table)
+    if kind == "v1":
+        table = require_v1_screen_table(fidelity_table)
+        levels = V1_LEVELS
+        finish = summarize_v1
+    else:
+        table = require_screen_table(fidelity_table)
+        levels = LEVELS
+        finish = summarize
+    root = resolve_data_root(data_root)
+    pairs = []
+    for design in designs:
+        records = tuple(
+            record_from_leaves(
+                design,
+                level,
+                run_id=run_id,
+                data_root=root,
+                fidelity_table=table,
+            )
+            for level in levels
+        )
+        pairs.append(records)
+    return finish(pairs)
 
 
 def summarize_v1(

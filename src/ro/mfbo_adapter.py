@@ -356,6 +356,66 @@ def evaluate(
     )
 
 
+def record_from_leaves(
+    design: PillarDesign | Mapping[str, Any],
+    fidelity: str,
+    *,
+    run_id: str,
+    data_root: str | Path,
+    fidelity_table: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Read one pillar result from leaves already on disk. Does not call drivers.
+
+    A missing or unfinished run is ``execution_failed`` and is not archived.
+    """
+    point = _design(design)
+    root = resolve_data_root(data_root)
+    settings = _require_fidelity(fidelity_table, fidelity)
+    checked_run = run_id_for_level(_require_run_id(run_id), settings)
+    mesh_id = mesh_id_for_settings(settings)
+    n_active = settings["n_active"] if settings.get("extended") else None
+    geo_id = format_mfbo_pillar_geo_id(
+        point.d_p_mm,
+        point.d_h_mm,
+        point.d_f_mm,
+        n_active=n_active,
+    )
+    used = fidelity_settings_used(settings)
+    gap = opening_gap_mm(point.d_p_mm, point.d_h_mm, point.d_f_mm)
+    base = _identity(
+        point,
+        geo_id=geo_id,
+        mesh_id=mesh_id,
+        run_id=checked_run,
+        fidelity=fidelity,
+    )
+    if 0.0 < gap < settings["m_min"]:
+        return _finish(
+            base,
+            status=STATUS_INVALID,
+            failure_reason=REASON_OPENING_GAP_SLIVER,
+            fidelity_settings=used,
+        )
+    mesh_dir = root / "meshes" / FAMILY / geo_id / mesh_id
+    run_dir = root / "runs" / FAMILY / geo_id / mesh_id / checked_run
+    if _run_state(run_dir) not in ("success", "needs_extract"):
+        return _finish(
+            base,
+            status=STATUS_EXECUTION_FAILED,
+            failure_reason="leaf_not_successful",
+            leaf_path=str(run_dir),
+            fidelity_settings=used,
+        )
+    return _result_from_leaves(
+        base,
+        mesh_dir,
+        run_dir,
+        run_dir / _SUMMARY_CSV,
+        fidelity_settings=used,
+        data_root=root,
+    )
+
+
 def _design(value: PillarDesign | Mapping[str, Any]) -> PillarDesign:
     if isinstance(value, PillarDesign):
         point = value

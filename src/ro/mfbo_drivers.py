@@ -28,6 +28,7 @@ from typing import Any
 from ro.discovery_session import FAILURE_INFRASTRUCTURE, failure_class_for_exception
 from ro.mfbo_adapter import Drivers, PillarDesign, resolve_data_root
 from ro.mfbo_fidelity import extraction_cli_args, solver_cli_args
+from ro.pillar_cad import write_generate_timing
 
 _LOCK = threading.Lock()
 _MESH_KNOBS = ("m_max", "m_min", "m_cpg", "bl_layers", "peel_layers")
@@ -57,11 +58,23 @@ def make_drivers(
     *,
     runner: Callable[..., Any] | None = None,
     log_root: str | Path | None = None,
+    geometry_worker: str | Path | None = None,
+    geometry_supervisor=None,
 ) -> Drivers:
-    """Drivers that call the CAD, mesh, solve, and re-extract scripts."""
+    """Drivers that call the CAD, mesh, solve, and re-extract scripts.
+
+    ``geometry_worker`` sends generate requests to a running worker directory.
+    Without it, each geometry starts ``generate_pillar_cad.py``.
+    """
     root = resolve_data_root(data_root)
     logs = None if log_root is None else Path(log_root)
-    worker = _Worker(root, runner if runner is not None else subprocess.run, logs)
+    worker = _Worker(
+        root,
+        runner if runner is not None else subprocess.run,
+        logs,
+        None if geometry_worker is None else Path(geometry_worker),
+        geometry_supervisor,
+    )
     return Drivers(
         generate=worker.generate,
         mesh=worker.mesh,
@@ -71,10 +84,19 @@ def make_drivers(
 
 
 class _Worker:
-    def __init__(self, data_root: Path, runner: Callable[..., Any], log_root: Path | None):
+    def __init__(
+        self,
+        data_root: Path,
+        runner: Callable[..., Any],
+        log_root: Path | None,
+        geometry_worker: Path | None,
+        geometry_supervisor,
+    ):
         self.data_root = data_root
         self.runner = runner
         self.log_root = log_root
+        self.geometry_worker = geometry_worker
+        self.geometry_supervisor = geometry_supervisor
 
     def generate(
         self,
@@ -84,6 +106,14 @@ class _Worker:
         out_dir: Path,
         n_active: int | None = None,
     ) -> None:
+        if self.geometry_worker is not None:
+            self._generate_via_worker(
+                design=design,
+                geo_id=geo_id,
+                out_dir=out_dir,
+                n_active=n_active,
+            )
+            return
         script = _script("scripts/generate_pillar_cad.py")
         argv = [
             sys.executable,
@@ -108,6 +138,45 @@ class _Worker:
             _attach_failure_class(exc, out_dir / f"{geo_id}_error.json")
             raise
         _write_generate_wall_time(out_dir, geo_id, time.perf_counter() - started)
+
+    def _generate_via_worker(self, *, design: PillarDesign, geo_id: str, out_dir: Path, n_active: int | None) -> None:
+        from ro.geometry_worker import submit_generate
+
+        request = {
+            "d_p_mm": design.d_p_mm,
+            "d_h_mm": design.d_h_mm,
+            "d_f_mm": design.d_f_mm,
+            "geo_id": geo_id,
+            "out_dir": str(out_dir),
+        }
+        if n_active is not None:
+            request["n_active"] = int(n_active)
+        log_path = self._log_path("generate", geo_id)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with _LOCK:
+            with _job_slot(log_path.parent / "job.lock"):
+                try:
+                    response = submit_generate(
+                        self.geometry_worker,
+                        request,
+                        supervisor=self.geometry_supervisor,
+                    )
+                except Exception as exc:
+                    log_path.write_text(
+                        f"{type(exc).__name__}: {exc}\n",
+                        encoding="utf-8",
+                    )
+                    raise DriverFailed("generate", None, log_path) from exc
+        log_path.write_text(json.dumps(response, indent=2) + "\n", encoding="utf-8")
+        if response.get("status") != "ok":
+            exc = DriverFailed("generate", 1, log_path)
+            _attach_failure_class(exc, out_dir / f"{geo_id}_error.json")
+            if getattr(exc, "failure_class", None) is None and response.get("failure_class") in (
+                "infrastructure",
+                "geometry",
+            ):
+                exc.failure_class = response["failure_class"]
+            raise exc
 
     def mesh(
         self,
@@ -242,12 +311,7 @@ def _write_generate_wall_time(out_dir: Path, geo_id: str, seconds: float) -> Non
         raise ValueError(
             f"generate wall time must be finite and >= 0, got {seconds!r}."
         )
-    path = Path(out_dir) / f"{geo_id}_generate_wall_time.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"generate_wall_time_s": float(seconds)}) + "\n",
-        encoding="utf-8",
-    )
+    write_generate_timing(out_dir, geo_id, seconds)
 
 
 def _attach_failure_class(exc: DriverFailed, error_path: Path) -> None:
