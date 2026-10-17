@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -15,10 +16,18 @@ import threading
 import time
 from pathlib import Path
 
+from ro.discovery_session import BACKEND_START_TIMEOUT_S
 from ro.paths import project_root
 
 _READY = ("ready", "busy")
 _SIGNALS = (signal.SIGINT, signal.SIGTERM)
+_TOKEN_ENV = "RO_GEOMETRY_WORKER_TOKEN"
+# Importing Discovery and the CAD stack can take longer than a few seconds.
+READY_TIMEOUT_S = 120
+# DiscoverySession retries a backend start once (attempts 1 and 2).
+DISCOVERY_START_RETRIES = 1
+# Pad after the worst-case Discovery open so the geometry build can finish.
+FIRST_REQUEST_MARGIN_S = 60
 
 
 def serve(
@@ -30,25 +39,29 @@ def serve(
     sleep_s=0.2,
     stop=None,
     on_stop=None,
+    token=None,
 ):
     """Handle one request at a time until stop, shutdown, or ``stop_file``.
 
     SIGINT and SIGTERM set the stop flag. The request already running finishes,
     then the loop exits. ``handler`` returns the response object.
+    ``token`` is the supervisor's per-launch id. The environment variable is
+    the same id when this process was spawned by the supervisor.
     """
     root = Path(directory)
     _prepare(root)
     _recover_inflight(root)
     flag = {"flag": False} if stop is None else stop
     installed = _install_stop_signals(flag)
+    launch_token = os.environ.get(_TOKEN_ENV) if token is None else token
     try:
-        _write_health(root, status="ready", session_open=bool(session_open()))
+        _write_health(root, status="ready", session_open=bool(session_open()), token=launch_token)
         while not _stop_requested(flag, root, stop_file):
             claimed = _claim(root)
             if claimed is None:
                 time.sleep(sleep_s)
                 continue
-            _write_health(root, status="busy", session_open=bool(session_open()))
+            _write_health(root, status="busy", session_open=bool(session_open()), token=launch_token)
             try:
                 payload = json.loads(claimed.read_text(encoding="utf-8"))
                 if not isinstance(payload, dict):
@@ -66,17 +79,36 @@ def serve(
             response.setdefault("request_id", claimed.name[: -len(".json")])
             _atomic_json(root / "responses" / claimed.name, response)
             claimed.unlink()
-            _write_health(root, status="ready", session_open=bool(session_open()))
+            _write_health(root, status="ready", session_open=bool(session_open()), token=launch_token)
     finally:
         for sig, previous in installed:
             signal.signal(sig, previous)
         if on_stop is not None:
             on_stop()
-        _write_health(root, status="stopped", session_open=False)
+        _write_health(root, status="stopped", session_open=False, token=launch_token)
 
 
-def submit_generate(directory, request, *, supervisor=None, poll_s=0.05):
-    """Write one request and wait for its response. Restart a dead worker once."""
+def first_request_timeout_s(
+    start_timeout_s: float = BACKEND_START_TIMEOUT_S,
+    *,
+    retries: int = DISCOVERY_START_RETRIES,
+    margin_s: float = FIRST_REQUEST_MARGIN_S,
+) -> float:
+    """Worst-case wait for the first generate, which opens Discovery lazily.
+
+    The backend start timeout is tried once and then retried once. The margin
+    is for the geometry build after that open.
+    """
+    return float(start_timeout_s) * (1 + retries) + float(margin_s)
+
+
+def submit_generate(directory, request, *, supervisor=None, poll_s=0.05, timeout_s=None):
+    """Write one request and wait for its response. Restart a dead worker once.
+
+    When Discovery is not open yet, the wait is limited to
+    ``first_request_timeout_s`` unless ``timeout_s`` is set. A timeout stops
+    the worker and anything that launch started.
+    """
     if not isinstance(request, dict):
         raise TypeError(f"geometry request must be an object, got {type(request).__name__}.")
     root = Path(directory)
@@ -86,6 +118,9 @@ def submit_generate(directory, request, *, supervisor=None, poll_s=0.05):
     body["request_id"] = request_id
     name = request_id + ".json"
     _atomic_json(root / "requests" / name, body)
+    if timeout_s is None and supervisor is not None and not _session_open(root):
+        timeout_s = first_request_timeout_s()
+    deadline = None if timeout_s is None else time.monotonic() + float(timeout_s)
     restarted = False
     while True:
         response_path = root / "responses" / name
@@ -102,16 +137,28 @@ def submit_generate(directory, request, *, supervisor=None, poll_s=0.05):
             supervisor.restart()
             restarted = True
             continue
+        if deadline is not None and time.monotonic() >= deadline:
+            if supervisor is not None:
+                supervisor.stop_started()
+            raise RuntimeError(_first_request_timeout_message(root))
         time.sleep(poll_s)
 
 
 class GeometryWorkerSupervisor:
     """Start ``generate_pillar_cad.py --serve`` and stop it on shutdown."""
 
-    def __init__(self, directory, *, stop_file=None):
+    def __init__(self, directory, *, stop_file=None, ready_timeout_s=READY_TIMEOUT_S):
+        if isinstance(ready_timeout_s, bool) or not isinstance(ready_timeout_s, (int, float)):
+            raise TypeError(
+                f"ready_timeout_s must be a number of seconds, got {ready_timeout_s!r}."
+            )
+        if ready_timeout_s <= 0:
+            raise ValueError(f"ready_timeout_s must be > 0, got {ready_timeout_s!r}.")
         self.directory = Path(directory)
         self.stop_file = None if stop_file is None else Path(stop_file)
+        self.ready_timeout_s = float(ready_timeout_s)
         self._process = None
+        self._token = None
 
     def start(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -119,18 +166,17 @@ class GeometryWorkerSupervisor:
         if shutdown.exists():
             shutdown.unlink()
         _recover_inflight(self.directory)
-        self._process = self._spawn()
-        self._wait_ready()
+        self._launch()
 
     def healthy(self) -> bool:
-        if self._process is None or self._process.poll() is not None:
-            return False
+        """True when this launch's token is in health.json and the worker is alive.
+
+        The pid in health.json is the interpreter. A Windows venv ``python.exe``
+        is a launcher, so that pid is not ``Popen.pid``. Either the launcher or
+        the interpreter being alive counts.
+        """
         health = _read_json(self.directory / "health.json")
-        if not isinstance(health, dict):
-            return False
-        if health.get("pid") != self._process.pid:
-            return False
-        return health.get("status") in _READY
+        return self._matches(health) and self._worker_alive(health)
 
     def restart(self) -> None:
         self._stop_process(5)
@@ -138,8 +184,7 @@ class GeometryWorkerSupervisor:
         if shutdown.exists():
             shutdown.unlink()
         _recover_inflight(self.directory)
-        self._process = self._spawn()
-        self._wait_ready()
+        self._launch()
 
     def shutdown(self) -> None:
         if self._process is None:
@@ -149,51 +194,121 @@ class GeometryWorkerSupervisor:
         self._stop_process(30)
         self._process = None
 
-    def _spawn(self):
+    def stop_started(self) -> None:
+        """Kill this launch and processes it started."""
+        process = self._process
+        health = _read_json(self.directory / "health.json")
+        if process is not None:
+            _kill_group(process.pid)
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+        self._kill_interpreter(health)
+
+    def _launch(self) -> None:
+        self._token = secrets.token_hex(16)
+        self._process = self._spawn()
+        self._wait_ready()
+
+    def _matches(self, health) -> bool:
+        return (
+            isinstance(health, dict)
+            and bool(self._token)
+            and health.get("token") == self._token
+            and health.get("status") in _READY
+        )
+
+    def _worker_alive(self, health) -> bool:
+        process = self._process
+        if process is not None and process.poll() is None:
+            return True
+        if not isinstance(health, dict) or health.get("token") != self._token:
+            return False
+        return _pid_alive(health.get("pid"))
+
+    def _command(self) -> list[str]:
         script = project_root() / "scripts" / "generate_pillar_cad.py"
         argv = [sys.executable, str(script), "--serve", str(self.directory)]
         if self.stop_file is not None:
             argv.extend(["--stop-file", str(self.stop_file)])
-        return subprocess.Popen(
-            argv,
-            cwd=str(project_root()),
-            stdin=subprocess.DEVNULL,
-        )
+        return argv
 
-    def _wait_ready(self, timeout_s=30) -> None:
-        deadline = time.monotonic() + timeout_s
+    def _spawn(self):
+        env = os.environ.copy()
+        env[_TOKEN_ENV] = self._token
+        kwargs = {
+            "cwd": str(project_root()),
+            "stdin": subprocess.DEVNULL,
+            "env": env,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        return subprocess.Popen(self._command(), **kwargs)
+
+    def _wait_ready(self) -> None:
+        deadline = time.monotonic() + self.ready_timeout_s
         while time.monotonic() < deadline:
-            if self.healthy():
+            health = _read_json(self.directory / "health.json")
+            if self._matches(health) and self._worker_alive(health):
                 return
-            if self._process is not None and self._process.poll() is not None:
-                raise RuntimeError(
-                    f"geometry worker exited {self._process.returncode} before it was ready."
-                )
+            if not self._worker_alive(health):
+                self._fail_ready("exited before it was ready", health)
             time.sleep(0.05)
-        raise RuntimeError("geometry worker did not become ready.")
+        health = _read_json(self.directory / "health.json")
+        self._fail_ready("did not become ready", health)
+
+    def _fail_ready(self, reason: str, health) -> None:
+        code = None if self._process is None else self._process.poll()
+        shown = health if isinstance(health, dict) else _read_json(self.directory / "health.json")
+        self.stop_started()
+        body = json.dumps(shown, sort_keys=True) if isinstance(shown, dict) else "missing"
+        detail = reason
+        if reason.startswith("exited") and code is not None:
+            detail = f"{reason} (exit {code})"
+        raise RuntimeError(f"geometry worker {detail}. health.json: {body}")
 
     def _stop_process(self, grace_s: float) -> None:
         process = self._process
-        if process is None or process.poll() is not None:
+        if process is None:
+            return
+        if process.poll() is not None:
+            self._kill_interpreter(_read_json(self.directory / "health.json"))
             return
         try:
             process.wait(timeout=grace_s)
         except subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=10)
+            self.stop_started()
+
+    def _kill_interpreter(self, health) -> None:
+        if not isinstance(health, dict) or health.get("token") != self._token:
+            return
+        pid = health.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+            return
+        if self._process is not None and pid == self._process.pid:
+            return
+        children = _descendant_pids(pid)
+        _kill_pid(pid)
+        for child in children:
+            _kill_pid(child)
 
 
-def open_geometry_worker(data_root, *, enabled, stop_file=None):
+def open_geometry_worker(data_root, *, enabled, stop_file=None, ready_timeout_s=READY_TIMEOUT_S):
     """Start the worker when ``enabled``. Return None when it is not."""
     if not enabled:
         return None
     supervisor = GeometryWorkerSupervisor(
         Path(data_root) / "geometry_worker",
         stop_file=stop_file,
+        ready_timeout_s=ready_timeout_s,
     )
     supervisor.start()
     _chain_stop_signals(supervisor)
@@ -275,15 +390,110 @@ def _claim(directory: Path):
     return destination
 
 
-def _write_health(directory: Path, *, status: str, session_open: bool) -> None:
+def _session_open(directory: Path) -> bool:
+    health = _read_json(directory / "health.json")
+    return isinstance(health, dict) and health.get("session_open") is True
+
+
+def _first_request_timeout_message(directory: Path) -> str:
+    health = _read_json(directory / "health.json")
+    body = json.dumps(health, sort_keys=True) if isinstance(health, dict) else "missing"
+    return f"geometry worker timed out waiting for the first request. health.json: {body}"
+
+
+def _write_health(directory: Path, *, status: str, session_open: bool, token) -> None:
     _atomic_json(
         directory / "health.json",
         {
             "pid": os.getpid(),
+            "token": token,
             "status": status,
             "session_open": bool(session_open),
         },
     )
+
+
+def _pid_alive(pid) -> bool:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        kernel.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _descendant_pids(pid: int) -> list[int]:
+    """Child pids of ``pid``. Windows uses ``taskkill /T`` instead."""
+    if os.name == "nt" or pid <= 0:
+        return []
+    found = []
+    path = Path(f"/proc/{pid}/task/{pid}/children")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for part in text.split():
+        try:
+            child = int(part)
+        except ValueError:
+            continue
+        found.append(child)
+        found.extend(_descendant_pids(child))
+    return found
+
+
+def _kill_pid(pid: int) -> None:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
+
+
+def _kill_group(pid: int) -> None:
+    """Stop ``pid`` and processes started under it. A foreign group is left alone."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return
+    try:
+        if pid == os.getpgrp():
+            return
+    except OSError:
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        _kill_pid(pid)
 
 
 def _atomic_json(path: Path, payload: dict) -> None:

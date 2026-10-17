@@ -202,6 +202,38 @@ def test_emit_queue_is_hf_bo_then_mfbo_with_the_geometry_worker(tmp_path: Path):
     assert jobs[1]["argv"][jobs[1]["argv"].index("--method") + 1] == "mfbo"
 
 
+def test_emit_queue_ids_follow_experiment_id(tmp_path: Path):
+    config_path = _v1_with_screen(tmp_path)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["experiment_id"] = "v1_seed1"
+    payload["seed"] = 1
+    seed_path = tmp_path / "v1_seed1.json"
+    seed_path.write_text(json.dumps(payload), encoding="utf-8")
+    script = load_module("run_3d_mfbo_emit_seed", SCRIPTS_DIR / "mfbo" / "run_3d_mfbo.py")
+    queue = tmp_path / "v1_seed1_queue.json"
+    code = script.main(
+        [
+            "emit-queue",
+            "--config",
+            str(seed_path),
+            "--data-root",
+            str(tmp_path),
+            "--out",
+            str(queue),
+        ]
+    )
+    assert code == 0
+    job_queue = load_module("job_queue_seed_ids", SCRIPTS_DIR / "mfbo" / "job_queue.py")
+    jobs = job_queue.load_queue(queue)
+    assert [job["id"] for job in jobs] == ["v1_seed1-hf_bo", "v1_seed1-mfbo"]
+    logs = job_queue.queue_files(queue).logs
+    assert [logs / f"{job['id']}.log" for job in jobs] == [
+        logs / "v1_seed1-hf_bo.log",
+        logs / "v1_seed1-mfbo.log",
+    ]
+    assert all(str(seed_path) in job["argv"] for job in jobs)
+
+
 def test_recorded_invalid_leaf_is_charged_and_a_missing_leaf_is_not(tmp_path: Path, monkeypatch):
     config = load_experiment(_v1_with_screen(tmp_path), repo_root=REPO_ROOT, data_root=tmp_path)
 

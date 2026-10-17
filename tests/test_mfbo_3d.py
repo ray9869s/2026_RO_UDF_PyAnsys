@@ -169,6 +169,33 @@ def test_changed_limit_refuses_resume(tmp_path: Path) -> None:
         run_optimization(changed, changed.replay, destination)
 
 
+def test_a_different_stored_config_does_not_overwrite_the_experiment(tmp_path: Path) -> None:
+    config = _load(tmp_path, method="hf_bo", name="lockbox", max_sequential=0)
+    destination = tmp_path / "lockbox_run"
+    run_optimization(config, config.replay, destination)
+    history = (destination / "history.json").read_text(encoding="utf-8")
+    stored = (destination / "config.json").read_text(encoding="utf-8")
+    payload = json.loads((tmp_path / "lockbox.json").read_text(encoding="utf-8"))
+    payload["seed"] = 1
+    seed_path = tmp_path / "lockbox_seed.json"
+    seed_path.write_text(json.dumps(payload), encoding="utf-8")
+    changed = load_experiment(seed_path, repo_root=REPO_ROOT, data_root=tmp_path)
+    with pytest.raises(ValueError, match="seed"):
+        run_optimization(changed, changed.replay, destination)
+    assert (destination / "history.json").read_text(encoding="utf-8") == history
+    assert (destination / "config.json").read_text(encoding="utf-8") == stored
+
+    payload["seed"] = 0
+    payload["budget_hf_equivalent"] = 3
+    budget_path = tmp_path / "lockbox_budget.json"
+    budget_path.write_text(json.dumps(payload), encoding="utf-8")
+    shorter = load_experiment(budget_path, repo_root=REPO_ROOT, data_root=tmp_path)
+    with pytest.raises(ValueError, match="budget_hf_equivalent"):
+        run_optimization(shorter, shorter.replay, destination)
+    assert (destination / "history.json").read_text(encoding="utf-8") == history
+    assert (destination / "config.json").read_text(encoding="utf-8") == stored
+
+
 def test_builder_reads_campaign_leaves_and_omits_missing_ones(tmp_path: Path) -> None:
     _write_campaign_leaf(tmp_path, "P_p60_h00", diverged=False)
     _write_campaign_leaf(tmp_path, "P_p80_h15", diverged=True)

@@ -168,22 +168,23 @@ def _run(args) -> int:
 
 def _emit_queue(args) -> int:
     root = resolve_data_root(args.data_root)
+    configs = []
     for method in (METHOD_HF, METHOD_MF):
-        require_initial_designs(
-            load_experiment(
-                args.config,
-                repo_root=_REPO,
-                data_root=root,
-                method_override=method,
-            )
+        config = load_experiment(
+            args.config,
+            repo_root=_REPO,
+            data_root=root,
+            method_override=method,
         )
+        require_initial_designs(config)
+        configs.append(config)
     config_text = str(args.config)
     script = "scripts/mfbo/run_3d_mfbo.py"
     jobs = []
-    for method in (METHOD_HF, METHOD_MF):
+    for config in configs:
         jobs.append(
             {
-                "id": f"v1-{method}",
+                "id": f"{config.experiment_id}-{config.method}",
                 "argv": [
                     "{python}",
                     script,
@@ -193,7 +194,7 @@ def _emit_queue(args) -> int:
                     "--data-root",
                     root.as_posix(),
                     "--method",
-                    method,
+                    config.method,
                     "--geometry-worker",
                 ],
                 "cwd": str(_REPO),

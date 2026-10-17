@@ -1211,6 +1211,7 @@ def _load_history(
     if not isinstance(stored_problem, dict):
         raise ValueError(f"Refusing to resume {destination}: stored config has no problem.")
     _require_same_problem(stored_problem, config.problem)
+    _require_same_stored_limits(stored, config)
     history = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(history, list):
         raise ValueError(f"Refusing to resume {destination}: history.json is not a list.")
@@ -1248,6 +1249,17 @@ def _require_same_problem(stored: Mapping[str, Any], current: Mapping[str, Any])
         return
     changed = sorted(key for key in set(left) | set(right) if left.get(key) != right.get(key))
     raise ValueError(f"Refusing to resume because the experiment changed: {changed}.")
+
+
+def _require_same_stored_limits(stored: Mapping[str, Any], config: Experiment3D) -> None:
+    """Refuse when the stored run limits differ. Python and platform are ignored."""
+    expected = {
+        "budget_hf_equivalent": config.budget_hf_equivalent,
+        "max_sequential": config.max_sequential,
+    }
+    changed = [key for key in expected if stored.get(key) != expected[key]]
+    if changed:
+        raise ValueError(f"Refusing to resume because the experiment changed: {changed}.")
 
 
 def _outcome_from_history_row(row: Mapping[str, Any]) -> PillarOutcome:
