@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -155,7 +156,13 @@ class DiscoverySession:
         self._terminated: list[int] = []
         self._completed = 0
         self._closed = False
+        self._launch_calls = 0
         self.close_reason = None
+        self.closed_at = None
+        self.discovery_exit_code = None
+        self.discovery_exit_at = None
+        self.last_keepalive = None
+        self.last_keepalive_at = None
 
     def run(
         self,
@@ -217,41 +224,84 @@ class DiscoverySession:
         failure.session_reused = False
         raise failure
 
-    def touch(self) -> bool:
-        """Cheap call so an idle session stays up. False when it has died."""
+    def touch(self, work=None) -> bool:
+        """One backend call so an idle licence stays in use. False when it has died.
+
+        ``work(modeler)`` is that call. Without it, ``ping`` or
+        ``backend_version`` is read, and a licence server does not count
+        either as use.
+        """
+        stamp = _utc_stamp()
         if self._closed or self.modeler is None:
+            self.last_keepalive = "down"
+            self.last_keepalive_at = stamp
             return False
         try:
-            _probe_modeler(self.modeler)
+            if work is None:
+                _probe_modeler(self.modeler)
+            else:
+                work(self.modeler)
         except Exception as exc:
+            self.last_keepalive = f"down: {type(exc).__name__}: {exc}"
+            self.last_keepalive_at = stamp
             self._drop([], exc, 1)
             return False
+        self.last_keepalive = "ok"
+        self.last_keepalive_at = stamp
         return True
 
+    def failed_reopen(self) -> bool:
+        """True when a launch in this process left no modeler.
+
+        Closing the modeler does not clear the launcher's cached backend
+        port. The next ``launch`` in this interpreter waits on that port
+        until the backend timeout. A new interpreter does not have the cache.
+        """
+        return self._launch_calls > 0 and self.modeler is None and not self._closed
+
+    def seconds_since_close(self, now=None) -> float | None:
+        """Seconds since this session last had a modeler, or None."""
+        if self.closed_at is None:
+            return None
+        moment = time.time() if now is None else float(now)
+        return max(0.0, moment - float(self.closed_at))
+
+    def release(self) -> None:
+        """Stop the backend and allow a later ``run`` to launch another.
+
+        ``close`` is permanent. ``release`` is the close-after-geometry path.
+        """
+        if self._closed or self.modeler is None:
+            return
+        modeler = self.modeler
+        self.modeler = None
+        self._completed = 0
+        self._record_exit(modeler, "released", None)
+        self._stop_owned()
+
     def close(self) -> None:
-        """Close the modeler and stop processes this session started."""
+        """Close the modeler and stop processes this session started.
+
+        The reason ``shutdown`` is this method. The worker logs it when its
+        loop exits. Keep-alive uses ``session dropped`` and does not call
+        ``close``.
+        """
         if self._closed:
             return
         self._closed = True
         modeler = self.modeler
         self.modeler = None
         self._completed = 0
-        if modeler is not None:
-            self.close_reason = _close_text("shutdown", None, modeler)
-        elif self.close_reason is None:
-            self.close_reason = "shutdown"
-        _close_quietly(modeler)
-        if self._before is None:
-            return
-        after = self._lister()
-        self._terminated.extend(
-            self._processes.terminate_started(self._before, after, self._killer)
-        )
-        self.note = self._processes.process_note(
-            self._before, after, self._terminated, 1
-        )
+        if modeler is not None or self.close_reason is None:
+            self._record_exit(modeler, "shutdown", None)
+        else:
+            _close_quietly(modeler)
+        self._stop_owned()
 
     def _open(self, attempt: int) -> None:
+        # Count this even when launch raises. A failed launch can cache the
+        # backend port; failed_reopen() is then true and the worker exits.
+        self._launch_calls += 1
         before = self._lister()
         if self._before is None:
             self._before = before
@@ -267,6 +317,8 @@ class DiscoverySession:
             )
             self.modeler = None
             raise
+        self.closed_at = None
+        self.close_reason = None
         after = self._lister()
         self.note = self._processes.process_note(
             self._before, after, self._terminated, attempt
@@ -276,8 +328,7 @@ class DiscoverySession:
         modeler = self.modeler
         self.modeler = None
         self._completed = 0
-        self.close_reason = _close_text("session dropped", exc, modeler)
-        _close_quietly(modeler)
+        self._record_exit(modeler, "session dropped", exc)
         before = self._before if self._before is not None else []
         after = self._lister()
         self._terminated.extend(
@@ -287,6 +338,26 @@ class DiscoverySession:
             before, after, self._terminated, attempt
         )
         errors.append(f"{type(exc).__name__}: {exc}")
+
+    def _record_exit(self, modeler, prefix: str, exc: BaseException | None) -> None:
+        _close_quietly(modeler)
+        code, when = _observe_exit(modeler)
+        self.discovery_exit_code = code
+        self.discovery_exit_at = when
+        self.close_reason = _close_text(prefix, exc, code, when)
+        if modeler is not None and self.closed_at is None:
+            self.closed_at = time.time()
+
+    def _stop_owned(self) -> None:
+        if self._before is None:
+            return
+        after = self._lister()
+        self._terminated.extend(
+            self._processes.terminate_started(self._before, after, self._killer)
+        )
+        self.note = self._processes.process_note(
+            self._before, after, self._terminated, 1
+        )
 
 
 def error_record(geo_id: str, exc: DiscoveryAttemptError) -> dict:
@@ -340,13 +411,42 @@ def _modeler_exit_code(modeler):
     return None
 
 
-def _close_text(prefix: str, exc: BaseException | None, modeler) -> str:
+def _utc_stamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _observe_exit(modeler, *, wait_s: float = 2.0):
+    """Return ``(exit_code, utc_stamp)`` after the backend has had a chance to exit.
+
+    The code is read after ``close``. Before that, a live Discovery process
+    still has no return code, which is what a worker-initiated shutdown used
+    to log.
+    """
+    if modeler is None:
+        return None, None
+    code = _modeler_exit_code(modeler)
+    if code is None:
+        process = getattr(modeler, "process", None)
+        wait = getattr(process, "wait", None) if process is not None else None
+        if callable(wait) and wait_s > 0:
+            try:
+                wait(timeout=wait_s)
+            except Exception:
+                pass
+        code = _modeler_exit_code(modeler)
+    if code is None:
+        return None, None
+    return code, _utc_stamp()
+
+
+def _close_text(prefix: str, exc: BaseException | None, code, when) -> str:
     text = prefix
     if exc is not None:
         text = f"{prefix}: {type(exc).__name__}: {exc}"
-    code = _modeler_exit_code(modeler)
-    if code is not None:
-        text = f"{text}; discovery_exit_code={code}"
+    shown = "none" if code is None else str(code)
+    text = f"{text}; discovery_exit_code={shown}"
+    if when:
+        text = f"{text}; discovery_exit_at={when}"
     return text
 
 

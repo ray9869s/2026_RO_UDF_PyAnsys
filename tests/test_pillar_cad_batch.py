@@ -446,7 +446,7 @@ def test_submit_restarts_a_dead_worker_once(tmp_path):
         def healthy(self):
             return self._alive
 
-        def restart(self):
+        def restart(self, *, recycle=False):
             self.restarts += 1
             self._alive = True
             for folder in ("requests", "inflight"):
@@ -474,7 +474,7 @@ def test_submit_restarts_a_dead_worker_once(tmp_path):
         def healthy(self):
             return False
 
-        def restart(self):
+        def restart(self, *, recycle=False):
             self.restarts += 1
 
     dead = _Dead()
@@ -545,6 +545,135 @@ def test_default_generate_path_is_unchanged(tmp_path):
     thread_stop = worker / "shutdown"
     thread_stop.write_text("", encoding="utf-8")
     thread.join(2)
+
+
+def test_keepalive_defaults_to_a_design_every_ten_minutes(monkeypatch):
+    import ro.pillar_cad as pillar_cad
+
+    monkeypatch.delenv(pillar_cad._KEEPALIVE_MODE_ENV, raising=False)
+    monkeypatch.delenv(pillar_cad._KEEPALIVE_S_ENV, raising=False)
+    assert pillar_cad._resolve_keepalive(None, None) == ("design", 600.0)
+    monkeypatch.setenv(pillar_cad._KEEPALIVE_MODE_ENV, "close")
+    monkeypatch.setenv(pillar_cad._KEEPALIVE_S_ENV, "120")
+    assert pillar_cad._resolve_keepalive(None, None) == ("close", 120.0)
+    assert pillar_cad._resolve_keepalive("design", 10) == ("design", 10.0)
+
+
+def test_design_keep_alive_creates_and_closes_a_design_while_idle(tmp_path, monkeypatch):
+    import ro.pillar_cad as pillar_cad
+
+    launch, lister, killer, _killed, modelers = _processes()
+    _install(monkeypatch, pillar_cad, launch, _fill_ok)
+    worker = tmp_path / "geometry_worker"
+    thread = threading.Thread(
+        target=pillar_cad.serve_pillar_worker,
+        kwargs={
+            "directory": worker,
+            "launch": launch,
+            "process_lister": lister,
+            "process_killer": killer,
+            "sleep_s": 0.01,
+            "keepalive_mode": "design",
+            "keepalive_s": 0,
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_ready(worker)
+        submit_generate(worker, _entry(tmp_path / "geo", DESIGN_A), poll_s=0.01)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            names = [
+                design.name
+                for modeler in modelers
+                for design in modeler.designs
+                if design.closed
+            ]
+            if "_keepalive" in names:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError(f"keep-alive design was not closed: {modelers}")
+        log = (worker / "worker.log").read_text(encoding="utf-8")
+        assert "keep-alive result=ok" in log
+        assert "session open path=in-process" in log
+    finally:
+        (worker / "shutdown").write_text("", encoding="utf-8")
+        thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_close_mode_reopen_fails_on_a_stale_port_and_records_the_delay(tmp_path, monkeypatch):
+    """Same-process reopen keeps the port; the worker exits for a new one.
+
+    The fake launcher is the cached product instance. ``close`` does not
+    clear its port, so the second geometry times out. The request stays in
+    inflight and the log records seconds since the session was released.
+    """
+    import ro.pillar_cad as pillar_cad
+
+    class _Sticky:
+        def __init__(self):
+            self.port = None
+            self.launches = 0
+            self.modelers = []
+
+        def __call__(self):
+            self.launches += 1
+            if self.port is not None:
+                raise TimeoutError("Timeout while waiting for backend to be ready")
+            self.port = 50051
+            modeler = _Modeler()
+            self.modelers.append(modeler)
+            return modeler
+
+    sticky = _Sticky()
+    _install(monkeypatch, pillar_cad, sticky, _fill_ok)
+    worker = tmp_path / "geometry_worker"
+    thread = threading.Thread(
+        target=pillar_cad.serve_pillar_worker,
+        kwargs={
+            "directory": worker,
+            "launch": sticky,
+            "process_lister": lambda: [],
+            "process_killer": lambda _pid: None,
+            "sleep_s": 0.01,
+            "keepalive_mode": "close",
+            "keepalive_s": 600,
+        },
+        daemon=True,
+    )
+    thread.start()
+    _wait_ready(worker)
+    first = _entry(tmp_path / "geo", DESIGN_A)
+    submit_generate(worker, first, poll_s=0.01)
+    assert sticky.modelers[0].closed is True
+    assert sticky.port == 50051
+    second = _entry(tmp_path / "geo", DESIGN_B)
+    (worker / "requests").mkdir(parents=True, exist_ok=True)
+    (worker / "requests" / "second.json").write_text(
+        json.dumps(second) + "\n",
+        encoding="utf-8",
+    )
+    thread.join(5)
+    assert not thread.is_alive()
+    assert sticky.launches == 3
+    assert (worker / "inflight" / "second.json").is_file()
+    assert not (worker / "responses" / "second.json").exists()
+    log = (worker / "worker.log").read_text(encoding="utf-8")
+    assert "reopen failed path=in-process" in log
+    assert "recycling worker" in log
+    assert "seconds_since_close=none" not in log
+    assert "seconds_since_close=" in log
+    error = json.loads(
+        (Path(second["out_dir"]) / f"{second['geo_id']}_error.json").read_text(encoding="utf-8")
+    )
+    assert error["seconds_since_close"] >= 0
+    assert "seconds_since_close=" in error["error"]
+    state = json.loads((worker / "session_state.json").read_text(encoding="utf-8"))
+    assert isinstance(state["closed_at_unix"], float)
+
 
 
 def test_from_leaves_does_not_evaluate(monkeypatch, tmp_path):

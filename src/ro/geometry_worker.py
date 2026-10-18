@@ -28,9 +28,12 @@ READY_TIMEOUT_S = 120
 DISCOVERY_START_RETRIES = 1
 # Pad after the worst-case Discovery open so the geometry build can finish.
 FIRST_REQUEST_MARGIN_S = 60
-# Idle Discovery sessions die. A cheap call on this period keeps one open.
-KEEPALIVE_S = 60.0
+# Idle Discovery sessions die. Creating a design on this period is licence
+# use; ping and backend_version are not. Ten minutes is the default.
+KEEPALIVE_S = 600.0
 WORKER_LOG = "worker.log"
+RECYCLE_MARKER = "recycle"
+_RECYCLE_ENV = "RO_GEOMETRY_WORKER_RECYCLE"
 
 
 def serve(
@@ -55,6 +58,9 @@ def serve(
     the same id when this process was spawned by the supervisor.
     ``session_keepalive`` is called while idle. A false result or an
     exception is the session closing; the reason is appended to ``worker.log``.
+    A response with ``recycle_worker`` true means this interpreter failed to
+    open Discovery again. The request stays in ``inflight`` and this process
+    exits so the supervisor can start a fresh one before any backoff.
     """
     root = Path(directory)
     _prepare(root)
@@ -63,6 +69,12 @@ def serve(
     installed = _install_stop_signals(flag)
     launch_token = os.environ.get(_TOKEN_ENV) if token is None else token
     last_keepalive = time.monotonic()
+    last_keepalive_text = "none"
+    recycling = False
+    # A process started to retry one failed reopen reports that retry.
+    # A later failure in the same process may recycle again.
+    suppress_recycle = os.environ.get(_RECYCLE_ENV) == "1"
+    fresh_process = suppress_recycle
     try:
         _write_health(
             root,
@@ -74,9 +86,12 @@ def serve(
         while not _stop_requested(flag, root, stop_file):
             claimed = _claim(root)
             if claimed is None:
-                if session_keepalive is not None and time.monotonic() - last_keepalive >= float(keepalive_s):
+                due = time.monotonic() - last_keepalive >= float(keepalive_s)
+                if session_keepalive is not None and session_open() and due:
                     last_keepalive = time.monotonic()
-                    _keepalive(root, session_keepalive, session_reason, launch_token)
+                    last_keepalive_text = _keepalive(
+                        root, session_keepalive, session_reason, launch_token
+                    )
                 time.sleep(sleep_s)
                 continue
             _write_health(
@@ -102,6 +117,33 @@ def serve(
                 }
                 _log(root, f"request failed: {type(exc).__name__}: {exc}")
             response.setdefault("request_id", claimed.name[: -len(".json")])
+            # The geometry itself is licence use. The idle timer starts over.
+            last_keepalive = time.monotonic()
+            recycle = response.pop("recycle_worker", False) is True
+            if recycle:
+                seconds = response.get("seconds_since_close")
+                shown = "none" if seconds is None else f"{float(seconds):.3f}"
+                if suppress_recycle:
+                    _log(
+                        root,
+                        "reopen failed path=fresh-process "
+                        f"seconds_since_close={shown}",
+                    )
+                    suppress_recycle = False
+                else:
+                    _log(
+                        root,
+                        "reopen failed path=in-process "
+                        f"seconds_since_close={shown}; recycling worker",
+                    )
+                    (root / RECYCLE_MARKER).write_text("", encoding="utf-8")
+                    recycling = True
+                    break
+            if response.get("status") == "ok" and response.get("session_reused") is False:
+                kind = "fresh-process" if fresh_process else "in-process"
+                _log(root, f"session open path={kind}")
+                fresh_process = False
+                suppress_recycle = False
             _atomic_json(root / "responses" / claimed.name, response)
             claimed.unlink()
             _write_health(
@@ -120,8 +162,16 @@ def serve(
             except Exception as exc:
                 _log(root, f"session closed: {type(exc).__name__}: {exc}")
         reason = session_reason() if callable(session_reason) else None
+        # This is the only writer of "session closed: shutdown". on_stop is
+        # DiscoverySession.close, which sets that reason. Keep-alive logs
+        # "session dropped" above and leaves this loop running.
+        cause = "recycle" if recycling else _stop_cause(flag, root, stop_file)
         if reason:
-            _log(root, f"session closed: {reason}")
+            _log(
+                root,
+                f"session closed: {reason} stop={cause} "
+                f"last_keepalive={last_keepalive_text}",
+            )
         _write_health(
             root,
             status="stopped",
@@ -177,8 +227,14 @@ def submit_generate(directory, request, *, supervisor=None, poll_s=0.05, timeout
                 raise RuntimeError(
                     f"geometry worker died while generating {geo_id!r}."
                 )
-            supervisor.restart()
+            recycle = (root / RECYCLE_MARKER).is_file()
+            if recycle:
+                (root / RECYCLE_MARKER).unlink()
+            # The fresh interpreter runs before the caller's backoff wait.
+            supervisor.restart(recycle=recycle)
             restarted = True
+            if timeout_s is not None:
+                deadline = time.monotonic() + float(timeout_s)
             continue
         if deadline is not None and time.monotonic() >= deadline:
             if supervisor is not None:
@@ -202,12 +258,17 @@ class GeometryWorkerSupervisor:
         self.ready_timeout_s = float(ready_timeout_s)
         self._process = None
         self._token = None
+        self._recycle_launch = False
 
     def start(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         shutdown = self.directory / "shutdown"
         if shutdown.exists():
             shutdown.unlink()
+        marker = self.directory / RECYCLE_MARKER
+        if marker.exists():
+            marker.unlink()
+        self._recycle_launch = False
         _recover_inflight(self.directory)
         self._launch()
 
@@ -221,12 +282,26 @@ class GeometryWorkerSupervisor:
         health = _read_json(self.directory / "health.json")
         return self._matches(health) and self._worker_alive(health)
 
-    def restart(self) -> None:
+    def restart(self, *, recycle: bool = False) -> None:
+        """Stop this worker and its backends, then start a new interpreter.
+
+        ``recycle`` marks the new process as the retry of a failed reopen.
+        That one request is logged ``fresh-process`` and is not recycled
+        again. A later failure in that process may recycle. The old process
+        is waited out first so its ``on_stop`` can kill the Discovery it
+        started; if it is still alive, the process group is killed before
+        the new interpreter starts.
+        """
+        self._recycle_launch = bool(recycle)
         self._stop_process(5)
         shutdown = self.directory / "shutdown"
         if shutdown.exists():
             shutdown.unlink()
         _recover_inflight(self.directory)
+        _log(
+            self.directory,
+            f"restarting worker recycle={str(bool(recycle)).lower()}",
+        )
         self._launch()
 
     def shutdown(self) -> None:
@@ -285,6 +360,10 @@ class GeometryWorkerSupervisor:
     def _spawn(self):
         env = os.environ.copy()
         env[_TOKEN_ENV] = self._token
+        if self._recycle_launch:
+            env[_RECYCLE_ENV] = "1"
+        else:
+            env.pop(_RECYCLE_ENV, None)
         kwargs = {
             "cwd": str(project_root()),
             "stdin": subprocess.DEVNULL,
@@ -361,10 +440,15 @@ def open_geometry_worker(data_root, *, enabled, stop_file=None, ready_timeout_s=
 def _install_stop_signals(stop: dict) -> list:
     if threading.current_thread() is not threading.main_thread():
         return []
+
+    def _handler(signum, frame, stop=stop):
+        stop["flag"] = True
+        stop["signal"] = int(signum)
+
     installed = []
     for sig in _SIGNALS:
         try:
-            previous = signal.signal(sig, lambda signum, frame, stop=stop: stop.__setitem__("flag", True))
+            previous = signal.signal(sig, _handler)
         except (ValueError, OSError):
             continue
         installed.append((sig, previous))
@@ -398,6 +482,20 @@ def _stop_requested(stop: dict, directory: Path, stop_file) -> bool:
     if (directory / "shutdown").is_file():
         return True
     return stop_file is not None and Path(stop_file).is_file()
+
+
+def _stop_cause(stop: dict, directory: Path, stop_file) -> str:
+    """Why ``serve`` left its loop. ``shutdown`` in the log is not this string."""
+    if stop.get("flag"):
+        number = stop.get("signal")
+        if number is None:
+            return "stop_flag"
+        return f"signal:{number}"
+    if (directory / "shutdown").is_file():
+        return "shutdown_file"
+    if stop_file is not None and Path(stop_file).is_file():
+        return "stop_file"
+    return "loop_exit"
 
 
 def _prepare(directory: Path) -> None:
@@ -444,20 +542,26 @@ def _first_request_timeout_message(directory: Path) -> str:
     return f"geometry worker timed out waiting for the first request. health.json: {body}"
 
 
-def _keepalive(directory: Path, session_keepalive, session_reason, token) -> None:
+def _keepalive(directory: Path, session_keepalive, session_reason, token) -> str:
     try:
         alive = bool(session_keepalive())
     except Exception as exc:
         _log(directory, f"session closed: {type(exc).__name__}: {exc}")
         alive = False
+        text = f"down: {type(exc).__name__}: {exc}"
     else:
         previous = _read_json(directory / "health.json")
         already_down = isinstance(previous, dict) and previous.get("session_open") is False
-        if not alive and not already_down:
+        if alive:
+            text = "ok"
+        else:
             reported = session_reason() if callable(session_reason) else None
             if not reported:
                 reported = "keep-alive reported the session down"
-            _log(directory, f"session closed: {reported}")
+            text = reported
+            if not already_down:
+                _log(directory, f"session closed: {reported}")
+    _log(directory, f"keep-alive result={text}")
     _write_health(
         directory,
         status="ready",
@@ -465,6 +569,7 @@ def _keepalive(directory: Path, session_keepalive, session_reason, token) -> Non
         token=token,
         session_reason=session_reason,
     )
+    return text
 
 
 def _write_health(directory: Path, *, status: str, session_open: bool, token, session_reason=None) -> None:

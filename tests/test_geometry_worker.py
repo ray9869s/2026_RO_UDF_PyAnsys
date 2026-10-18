@@ -13,13 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from ro.discovery_session import BACKEND_START_TIMEOUT_S
+from ro.discovery_session import BACKEND_START_TIMEOUT_S, DiscoverySession
 from ro.geometry_worker import (
     DISCOVERY_START_RETRIES,
     FIRST_REQUEST_MARGIN_S,
     READY_TIMEOUT_S,
+    RECYCLE_MARKER,
     GeometryWorkerSupervisor,
     first_request_timeout_s,
+    serve,
     submit_generate,
 )
 
@@ -260,3 +262,183 @@ def test_open_session_is_not_limited_by_the_first_request_timeout(tmp_path: Path
     )
     thread.join(2)
     assert response["status"] == "ok"
+
+
+_RECYCLE_WORKER = """\
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+from ro.geometry_worker import serve
+
+directory = Path(sys.argv[1])
+retry = os.environ.get("RO_GEOMETRY_WORKER_RECYCLE") == "1"
+
+
+def _gone(pid):
+    if os.name == "nt":
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return True
+        kernel.CloseHandle(handle)
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return True
+    return False
+
+
+backend = None
+if retry:
+    backend_pid = int((directory / "backend-first.pid").read_text(encoding="utf-8"))
+    worker_pid = int((directory / "worker-first.pid").read_text(encoding="utf-8"))
+    gone = _gone(backend_pid) and _gone(worker_pid)
+    (directory / "previous-gone").write_text("yes" if gone else "no", encoding="utf-8")
+else:
+    (directory / "worker-first.pid").write_text(str(os.getpid()), encoding="utf-8")
+    backend = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    (directory / "backend-first.pid").write_text(str(backend.pid), encoding="utf-8")
+
+
+def handler(request):
+    if not retry:
+        return {
+            "status": "failed",
+            "failure_class": "infrastructure",
+            "recycle_worker": True,
+            "seconds_since_close": 42.5,
+            "session_reused": False,
+        }
+    return {"status": "ok", "session_reused": False, "geo_id": request.get("geo_id")}
+
+
+def on_stop():
+    if backend is None or backend.poll() is not None:
+        return
+    os.kill(backend.pid, signal.SIGKILL)
+    backend.wait(timeout=5)
+
+
+serve(
+    directory,
+    handler=handler,
+    session_open=lambda: False,
+    sleep_s=0.02,
+    on_stop=on_stop,
+)
+"""
+
+
+def test_shutdown_log_is_the_worker_stop_path(tmp_path: Path) -> None:
+    """``session closed: shutdown`` is ``serve``'s finally, not keep-alive.
+
+    ``on_stop`` calls ``DiscoverySession.close`` (discovery_session.py), and
+    that method sets the reason to ``shutdown``. Keep-alive logs
+    ``session dropped`` and leaves the worker ``ready``. The Discovery exit
+    code is read after ``close``: it is still unset when the worker decides
+    to stop.
+    """
+
+    class _Process:
+        def __init__(self):
+            self.returncode = None
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+    class _Modeler:
+        def __init__(self):
+            self.process = _Process()
+
+        def ping(self):
+            return None
+
+        def close(self):
+            return None
+
+    modeler = _Modeler()
+    session = DiscoverySession(
+        lambda: modeler,
+        process_lister=lambda: [],
+        process_killer=lambda _pid: None,
+    )
+    session.modeler = modeler
+    worker = tmp_path / "geometry_worker"
+    thread = threading.Thread(
+        target=serve,
+        kwargs={
+            "directory": worker,
+            "handler": lambda request: {"status": "ok"},
+            "session_open": lambda: session.modeler is not None,
+            "session_keepalive": session.touch,
+            "session_reason": lambda: session.close_reason,
+            "keepalive_s": 0,
+            "sleep_s": 0.01,
+            "on_stop": session.close,
+        },
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        log_path = worker / "worker.log"
+        if log_path.is_file() and "keep-alive result=ok" in log_path.read_text(encoding="utf-8"):
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("keep-alive did not report ok")
+    (worker / "shutdown").write_text("", encoding="utf-8")
+    thread.join(2)
+    assert not thread.is_alive()
+    log = (worker / "worker.log").read_text(encoding="utf-8")
+    assert "session dropped" not in log
+    assert "session closed: shutdown" in log
+    assert "stop=shutdown_file" in log
+    assert "discovery_exit_code=0" in log
+    assert "discovery_exit_at=" in log
+    assert "last_keepalive=ok" in log
+    assert modeler.process.returncode == 0
+    health = json.loads((worker / "health.json").read_text(encoding="utf-8"))
+    assert health["status"] == "stopped"
+    assert health["session_open"] is False
+
+
+def test_failed_reopen_restarts_a_fresh_interpreter_before_backoff(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed reopen exits, the old backend is gone, then a new interpreter answers.
+
+    ``submit_generate`` does that retry itself. The infrastructure backoff
+    has not started: this call returns the fresh-process success.
+    """
+    script = tmp_path / "recycle_worker.py"
+    script.write_text(_RECYCLE_WORKER, encoding="utf-8")
+    monkeypatch.setattr(GeometryWorkerSupervisor, "_command", _command(script))
+    worker = tmp_path / "worker"
+    supervisor = GeometryWorkerSupervisor(worker, ready_timeout_s=5)
+    supervisor.start()
+    try:
+        response = submit_generate(
+            worker,
+            {"geo_id": "MFP_d0800_h0000_f0400"},
+            supervisor=supervisor,
+            poll_s=0.02,
+        )
+        assert response["status"] == "ok"
+        assert (worker / "previous-gone").read_text(encoding="utf-8") == "yes"
+        log = (worker / "worker.log").read_text(encoding="utf-8")
+        assert "reopen failed path=in-process seconds_since_close=42.500" in log
+        assert "recycling worker" in log
+        assert "restarting worker recycle=true" in log
+        assert "session open path=fresh-process" in log
+        assert not (worker / RECYCLE_MARKER).exists()
+    finally:
+        supervisor.shutdown()
+

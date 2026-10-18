@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -197,10 +198,42 @@ def generate_pillar_batch(
     return results
 
 
-def serve_pillar_worker(directory, *, stop_file=None, launch=None, process_lister=None, process_killer=None, sleep_s=0.2):
-    """Serve generate requests until shutdown, Ctrl+C, or ``stop_file``."""
+_KEEPALIVE_DESIGN = "_keepalive"
+_KEEPALIVE_MODES = ("design", "close")
+_KEEPALIVE_MODE_ENV = "RO_GEOMETRY_KEEPALIVE_MODE"
+_KEEPALIVE_S_ENV = "RO_GEOMETRY_KEEPALIVE_S"
+_SESSION_STATE = "session_state.json"
+
+
+def serve_pillar_worker(
+    directory,
+    *,
+    stop_file=None,
+    launch=None,
+    process_lister=None,
+    process_killer=None,
+    sleep_s=0.2,
+    keepalive_mode=None,
+    keepalive_s=None,
+):
+    """Serve generate requests until shutdown, Ctrl+C, or ``stop_file``.
+
+    ``keepalive_mode`` ``design`` (the default) keeps Discovery open and
+    creates then closes a trivial design every ``keepalive_s`` seconds
+    (default 600). A licence server can see that as use; ``ping`` and
+    ``backend_version`` do not count. ``close`` drops the backend after
+    each geometry and opens it again on the next request.
+
+    The default is ``design`` because a second launch in the same
+    interpreter keeps the first backend's port and times out even when the
+    licence is free. A fresh interpreter opens. A failed reopen exits this
+    process so the supervisor can start that interpreter before the
+    infrastructure backoff. Set ``RO_GEOMETRY_KEEPALIVE_MODE`` or
+    ``RO_GEOMETRY_KEEPALIVE_S`` to override the defaults.
+    """
     from ro.geometry_worker import serve
 
+    mode, period = _resolve_keepalive(keepalive_mode, keepalive_s)
     _bind_geometry_symbols()
     if launch is None:
         def launch():
@@ -212,21 +245,156 @@ def serve_pillar_worker(directory, *, stop_file=None, launch=None, process_liste
         process_lister=process_lister,
         process_killer=process_killer,
     )
+    root = Path(directory)
 
     def handler(request):
         spec = _pillar_spec_from_entry(request)
-        return _generate_one(session, spec)
+        result = _generate_one(session, spec)
+        if result.get("status") != "ok" and session.failed_reopen():
+            seconds = _seconds_since_close(session, root)
+            result["recycle_worker"] = True
+            result["seconds_since_close"] = seconds
+            if seconds is not None and isinstance(result.get("error"), str):
+                if "seconds_since_close=" not in result["error"]:
+                    result["error"] = (
+                        f"{result['error']}; seconds_since_close={seconds:.3f}"
+                    )
+            _annotate_reopen_delay(request, seconds)
+            for key in ("pmdb", "scdocx", "meta"):
+                path = spec.paths[key]
+                if path.is_file():
+                    path.unlink()
+        elif mode == "close" and result.get("status") == "ok":
+            session.release()
+        _write_session_state(root, session)
+        return result
+
+    def keepalive():
+        alive = session.touch(_keepalive_design)
+        if not alive:
+            _write_session_state(root, session)
+        return alive
+
+    def _on_stop():
+        session.close()
+        _write_session_state(root, session)
 
     serve(
         directory,
         handler=handler,
         stop_file=stop_file,
         session_open=lambda: session.modeler is not None,
-        session_keepalive=session.touch,
+        session_keepalive=None if mode == "close" else keepalive,
         session_reason=lambda: session.close_reason,
+        keepalive_s=period,
         sleep_s=sleep_s,
-        on_stop=session.close,
+        on_stop=_on_stop,
     )
+
+
+def _resolve_keepalive(mode, period):
+    """Return ``(mode, seconds)``. Explicit arguments win over the environment."""
+    from ro.geometry_worker import KEEPALIVE_S
+
+    if mode is None:
+        mode = os.environ.get(_KEEPALIVE_MODE_ENV, "design")
+    if mode not in _KEEPALIVE_MODES:
+        raise ValueError(
+            f"keepalive mode must be 'design' or 'close', got {mode!r}."
+        )
+    if period is None:
+        raw = os.environ.get(_KEEPALIVE_S_ENV)
+        period = KEEPALIVE_S if raw is None or not str(raw).strip() else raw
+    if isinstance(period, bool) or not isinstance(period, (int, float, str)):
+        raise TypeError(
+            f"keepalive seconds must be a number, got {period!r}."
+        )
+    try:
+        seconds = float(period)
+    except ValueError as exc:
+        raise ValueError(
+            f"keepalive seconds must be a number, got {period!r}."
+        ) from exc
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(
+            f"keepalive seconds must be finite and >= 0, got {period!r}."
+        )
+    return mode, seconds
+
+
+def _keepalive_design(modeler) -> None:
+    """Create and close one empty design so the licence server sees use."""
+    design = modeler.create_design(_KEEPALIVE_DESIGN)
+    if not _close_design_quietly(design):
+        raise RuntimeError("keep-alive design did not close.")
+
+
+def _seconds_since_close(session, directory: Path):
+    seconds = session.seconds_since_close()
+    if seconds is not None:
+        return seconds
+    payload = _read_session_state(directory)
+    closed = payload.get("closed_at_unix") if isinstance(payload, dict) else None
+    if isinstance(closed, bool) or not isinstance(closed, (int, float)):
+        return None
+    return max(0.0, time.time() - float(closed))
+
+
+def _annotate_reopen_delay(request, seconds) -> None:
+    if not isinstance(request, dict):
+        return
+    out_dir = request.get("out_dir")
+    geo_id = request.get("geo_id")
+    if not isinstance(out_dir, str) or not isinstance(geo_id, str):
+        return
+    path = Path(out_dir) / f"{geo_id}_error.json"
+    if not path.is_file():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    payload["seconds_since_close"] = seconds
+    error = payload.get("error")
+    if seconds is not None and isinstance(error, str) and "seconds_since_close=" not in error:
+        payload["error"] = f"{error}; seconds_since_close={seconds:.3f}"
+    write_json(path, payload)
+
+
+def _write_session_state(directory: Path, session) -> None:
+    path = Path(directory) / _SESSION_STATE
+    if session.closed_at is None:
+        # A live modeler means an older close is no longer the clock.
+        # A failed launch that never held a modeler must leave the previous
+        # process's close time on disk.
+        if session.modeler is not None and path.is_file():
+            path.unlink()
+        return
+    write_json(
+        path,
+        {
+            "closed_at_unix": session.closed_at,
+            "closed_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(session.closed_at)
+            ),
+            "close_reason": session.close_reason,
+            "discovery_exit_code": session.discovery_exit_code,
+            "discovery_exit_at": session.discovery_exit_at,
+            "last_keepalive": session.last_keepalive,
+            "last_keepalive_at": session.last_keepalive_at,
+        },
+    )
+
+
+def _read_session_state(directory: Path):
+    path = Path(directory) / _SESSION_STATE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload
 
 
 def write_generate_timing(out_dir, geo_id, seconds, *, session_reused=None):

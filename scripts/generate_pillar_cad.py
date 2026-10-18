@@ -5,8 +5,11 @@ The backend start timeout is 300 s. A backend timeout is cleaned up and
 retried once. Attempts are written on the meta, or on ``<geo_id>_error.json``.
 
 ``--batch`` keeps one session for every entry. ``--serve`` keeps that session
-and answers generate requests from a worker directory. Without either flag,
-one geometry still gets its own session.
+and answers generate requests from a worker directory. While idle it creates
+and closes a trivial design every 10 minutes so the licence stays in use
+(``RO_GEOMETRY_KEEPALIVE_MODE=close`` drops the session after each geometry
+instead; ``RO_GEOMETRY_KEEPALIVE_S`` is the design interval). Without either
+flag, one geometry still gets its own session.
 """
 
 from __future__ import annotations

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -414,3 +415,82 @@ def test_driver_reads_the_infrastructure_class(tmp_path):
             out_dir=tmp_path / "geo",
         )
     assert caught.value.failure_class == FAILURE_INFRASTRUCTURE
+
+
+def test_in_process_reopen_keeps_a_stale_backend_port():
+    """Closing the modeler leaves the launcher's port in this process.
+
+    The next launch waits on that port and raises the backend-ready timeout.
+    A new launcher, as in a new interpreter, gets a new port and opens.
+    This is the failure behind a worker that cannot reopen Discovery after
+    its first session closed, while a hand-started Discovery on the same
+    machine opens at once.
+    """
+
+    class _Launcher:
+        def __init__(self):
+            self.port = None
+            self.opens = 0
+
+        def __call__(self):
+            if self.port is not None:
+                raise TimeoutError("Timeout while waiting for backend to be ready")
+            self.port = 50051 + self.opens
+            self.opens += 1
+            modeler = SimpleNamespace(
+                port=self.port,
+                process=SimpleNamespace(returncode=None),
+                close=lambda: None,
+            )
+
+            def _close():
+                modeler.process.returncode = 0
+
+            modeler.close = _close
+            return modeler
+
+    def build(modeler):
+        return {"port": modeler.port}
+
+    stale = _Launcher()
+    session = DiscoverySession(
+        stale,
+        process_lister=lambda: [],
+        process_killer=lambda _pid: None,
+    )
+    record, reused = session.run(build)
+    assert reused is False
+    assert record["port"] == 50051
+    session.release()
+    assert stale.port == 50051
+    with pytest.raises(DiscoveryAttemptError, match="backend to be ready"):
+        session.run(build)
+    assert session.failed_reopen() is True
+    fresh = _Launcher()
+    opened = DiscoverySession(
+        fresh,
+        process_lister=lambda: [],
+        process_killer=lambda _pid: None,
+    )
+    again, _reused = opened.run(build)
+    assert again["port"] == 50051
+    assert fresh.port == 50051
+
+
+def test_failed_reopen_measures_time_since_the_session_closed():
+    def launch():
+        raise TimeoutError("Timeout while waiting for backend to be ready")
+
+    session = DiscoverySession(
+        lambda: SimpleNamespace(close=lambda: None),
+        process_lister=lambda: [],
+        process_killer=lambda _pid: None,
+    )
+    session._launch = launch
+    session.closed_at = time.time() - 90
+    with pytest.raises(DiscoveryAttemptError, match="backend to be ready"):
+        session.run(lambda _modeler: {})
+    assert session.seconds_since_close() == pytest.approx(90, abs=1.5)
+    assert session.failed_reopen() is True
+    assert session.closed_at is not None
+
