@@ -45,6 +45,7 @@ from ro.mfbo_adapter import (
     STATUS_INVALID,
     STATUS_VALID,
     PillarDesign,
+    PregeneratedGeometryMissing,
     _result_from_leaves,
     _run_state,
     evaluate,
@@ -107,7 +108,11 @@ OPTIONAL_FIELDS = (
     "infrastructure_backoff_s",
     "infrastructure_cap_s",
     "note",
+    "geometry",
 )
+GEOMETRY_GENERATE = "generate"
+GEOMETRY_PREGENERATED = "pregenerated"
+_GEOMETRY_MODES = frozenset({GEOMETRY_GENERATE, GEOMETRY_PREGENERATED})
 DEFAULT_INFRASTRUCTURE_BACKOFF_S = (300.0, 600.0, 1200.0)
 DEFAULT_INFRASTRUCTURE_CAP_S = 7200.0
 _SESSION_MARKERS = (
@@ -382,6 +387,7 @@ class Experiment3D:
     infrastructure_backoff_s: tuple[float, ...] = DEFAULT_INFRASTRUCTURE_BACKOFF_S
     infrastructure_cap_s: float = DEFAULT_INFRASTRUCTURE_CAP_S
     note: str | None = None
+    geometry: str = GEOMETRY_GENERATE
 
 
 @dataclass(frozen=True)
@@ -424,12 +430,14 @@ class LiveEvaluator:
         run_id: str,
         d_f_mm: float,
         drivers: Any,
+        geometry: str = GEOMETRY_GENERATE,
     ) -> None:
         self.data_root = data_root
         self.fidelity_settings = dict(fidelity_settings)
         self.run_id = run_id
         self.d_f_mm = d_f_mm
         self.drivers = drivers
+        self.geometry = geometry
 
     def __call__(self, design: PillarPoint, fidelity: str) -> PillarOutcome:
         point = PillarDesign(design.d_p_mm, design.d_h_mm, self.d_f_mm)
@@ -453,8 +461,11 @@ class LiveEvaluator:
                 data_root=self.data_root,
                 fidelity_table=self.fidelity_settings,
                 drivers=self.drivers,
+                geometry=self.geometry,
             )
         except InfrastructureUnavailable:
+            raise
+        except PregeneratedGeometryMissing:
             raise
         except Exception as exc:
             if _session_infrastructure(exc):
@@ -711,6 +722,7 @@ def load_experiment(
         infrastructure_backoff_s=backoff,
         infrastructure_cap_s=cap_s,
         note=note,
+        geometry=_geometry_mode(payload),
     )
 
 
@@ -767,6 +779,12 @@ def format_plan(config: Experiment3D) -> str:
     lines.append(
         "A leaf already on disk is reused and charged its recorded mesh+solver+extraction wall time."
     )
+    if config.geometry == GEOMETRY_PREGENERATED:
+        lines.append(
+            "geometry=pregenerated: Discovery is not launched. "
+            "A missing geometry is an error. "
+            "The geometry's recorded generate time is still charged the same way as an on-demand run."
+        )
     lines.append(
         "Initial evaluations are charged even when they exceed the budget. "
         "Sequential queries stop when the next expected cost does not fit."
@@ -897,6 +915,19 @@ def _infrastructure_cap(payload: Mapping[str, Any]) -> float:
     if "infrastructure_cap_s" not in payload:
         return DEFAULT_INFRASTRUCTURE_CAP_S
     return _positive("infrastructure_cap_s", payload["infrastructure_cap_s"])
+
+
+def _geometry_mode(payload: Mapping[str, Any]) -> str:
+    """``geometry`` is not part of the problem identity, so a run can resume."""
+    if "geometry" not in payload:
+        return GEOMETRY_GENERATE
+    value = payload["geometry"]
+    if value not in _GEOMETRY_MODES:
+        raise ValueError(
+            "geometry must be 'generate' or 'pregenerated', "
+            f"got {value!r}."
+        )
+    return value
 
 
 def _experiment_note(payload: Mapping[str, Any]) -> str | None:

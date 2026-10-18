@@ -126,6 +126,10 @@ _RESULT_FIELDS = (
 )
 
 
+class PregeneratedGeometryMissing(ValueError):
+    """A pregenerated run has no passing geometry for this design."""
+
+
 @dataclass(frozen=True)
 class PillarDesign:
     """Pillar diameters in millimetres. ``d_h_mm`` is 0 when there is no bore."""
@@ -256,8 +260,19 @@ def evaluate(
     data_root: str | Path,
     fidelity_table: Mapping[str, Mapping[str, Any]],
     drivers: Drivers,
+    geometry: str = "generate",
 ) -> dict[str, Any]:
-    """Run or reuse one pillar case and return the 2D-shaped result record."""
+    """Run or reuse one pillar case and return the 2D-shaped result record.
+
+    ``geometry="pregenerated"`` never calls ``drivers.generate``. A geometry
+    that is not already a success raises ``PregeneratedGeometryMissing``.
+    ``generate_wall_time_s`` still comes from the geometry's timing file.
+    """
+    if geometry not in ("generate", "pregenerated"):
+        raise ValueError(
+            "geometry must be 'generate' or 'pregenerated', "
+            f"got {geometry!r}."
+        )
     point = _design(design)
     root = resolve_data_root(data_root)
     settings = _require_fidelity(fidelity_table, fidelity)
@@ -290,6 +305,10 @@ def evaluate(
     geo_dir = root / "geometries" / FAMILY / geo_id
     mesh_dir = root / "meshes" / FAMILY / geo_id / mesh_id
     run_dir = root / "runs" / FAMILY / geo_id / mesh_id / checked_run
+    if geometry == "pregenerated" and _geometry_state(geo_dir, geo_id, point) != "success":
+        raise PregeneratedGeometryMissing(
+            f"pregenerated geometry is missing or did not pass: {geo_dir}"
+        )
     archived: list[str] = []
     failed, geo_archived = _ensure_geometry(
         drivers, point, geo_id, geo_dir, n_active=n_active

@@ -2,6 +2,7 @@
   "experiment_id": "v2",
   "method": "mfbo",
   "mode": "live",
+  "geometry": "pregenerated",
   "seed": 0,
   "run_id": "u0p2_p6M",
   "d_f_mm": 0.4,

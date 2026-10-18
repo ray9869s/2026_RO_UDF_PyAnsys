@@ -18,6 +18,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from ro.mfbo_3d import (  # noqa: E402
+    GEOMETRY_PREGENERATED,
     METHOD_HF,
     METHOD_MF,
     LiveEvaluator,
@@ -117,6 +118,10 @@ def _run(args) -> int:
         return 0
     destination = experiment_dir(root, config.method, config.experiment_id)
     supervisor = None
+    if config.geometry == GEOMETRY_PREGENERATED and args.geometry_worker:
+        raise ValueError(
+            "geometry pregenerated does not launch Discovery. Omit --geometry-worker."
+        )
     try:
         if config.mode == MODE_LIVE:
             from ro.mfbo_drivers import make_drivers
@@ -141,6 +146,7 @@ def _run(args) -> int:
                 config.run_id,
                 config.d_f_mm,
                 drivers,
+                geometry=config.geometry,
             )
         else:
             if args.geometry_worker:
@@ -186,21 +192,23 @@ def _emit_queue(args) -> int:
     script = "scripts/mfbo/run_3d_mfbo.py"
     jobs = []
     for config in configs:
+        argv = [
+            "{python}",
+            script,
+            "run",
+            "--config",
+            config_text,
+            "--data-root",
+            root.as_posix(),
+            "--method",
+            config.method,
+        ]
+        if config.geometry != GEOMETRY_PREGENERATED:
+            argv.append("--geometry-worker")
         jobs.append(
             {
                 "id": f"{config.experiment_id}-{config.method}",
-                "argv": [
-                    "{python}",
-                    script,
-                    "run",
-                    "--config",
-                    config_text,
-                    "--data-root",
-                    root.as_posix(),
-                    "--method",
-                    config.method,
-                    "--geometry-worker",
-                ],
+                "argv": argv,
                 "cwd": str(_REPO),
                 "env": {"RO_DATA_ROOT": root.as_posix()},
             }
