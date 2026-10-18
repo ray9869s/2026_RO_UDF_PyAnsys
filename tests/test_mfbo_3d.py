@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,9 @@ from helpers import REPO_ROOT, load_module
 from ro.mfbo_3d import (
     REQUIRED_FIELDS,
     STATUS_DIVERGED,
+    STATUS_EXECUTION_FAILED,
+    InfrastructureUnavailable,
+    PillarOutcome,
     build_campaign_replay_table,
     campaign_pillar_diameter_mm,
     campaign_pillar_geo_ids,
@@ -41,6 +45,10 @@ def test_opening_gap_sliver_is_blocked_and_a_campaign_bore_is_not() -> None:
     assert geometry_block_reason(0.8, 0.2, 0.4, 0.006) is not None
     assert geometry_block_reason(0.8, 0.15, 0.4, 0.006) is None
     assert geometry_block_reason(0.8, 0.9, 0.4, 0.006) is not None
+    assert geometry_block_reason(0.6, 0.0375, 0.4, 0.006) is not None
+    assert geometry_block_reason(0.6, 0.1125, 0.4, 0.006) is None
+    assert geometry_block_reason(0.775, 0.1875, 0.4, 0.006) is not None
+    assert geometry_block_reason(0.8, 0.1875, 0.4, 0.006) is None
 
 
 def test_example_config_has_every_field_and_refuses_placeholders(tmp_path: Path) -> None:
@@ -247,6 +255,27 @@ def test_live_evaluator_records_a_driver_failure(tmp_path: Path, monkeypatch) ->
     assert "solver down" in (outcome.failure_reason or "")
 
 
+def test_live_evaluator_raises_when_generate_is_infrastructure(tmp_path: Path, monkeypatch) -> None:
+    from ro.mfbo_3d import LiveEvaluator
+
+    def fake(*_args, **_kwargs):
+        return {
+            "status": "execution_failed",
+            "failure_class": "infrastructure",
+            "failure_reason": "leaf_not_successful",
+            "leaf_path": str(tmp_path / "geometries" / "pillar" / "MFP"),
+            "d_p_mm": 0.8,
+            "d_h_mm": 0.15,
+            "fidelity": "HF",
+        }
+
+    monkeypatch.setattr("ro.mfbo_3d.evaluate", fake)
+    monkeypatch.setattr("ro.mfbo_3d._run_state", lambda _path: "absent")
+    evaluator = LiveEvaluator(tmp_path, {"HF": MESH}, RUN_ID, 0.4, drivers=object())
+    with pytest.raises(InfrastructureUnavailable, match="leaf_not_successful"):
+        evaluator(type("Point", (), {"d_p_mm": 0.8, "d_h_mm": 0.15})(), "HF")
+
+
 def test_script_import_does_not_import_drivers_and_example_run_refuses(tmp_path: Path) -> None:
     source = (REPO_ROOT / "src" / "ro" / "mfbo_3d.py").read_text(encoding="utf-8")
     script_source = (REPO_ROOT / "scripts" / "mfbo" / "run_3d_mfbo.py").read_text(encoding="utf-8")
@@ -293,6 +322,97 @@ def test_script_import_does_not_import_drivers_and_example_run_refuses(tmp_path:
     assert experiment_dir(tmp_path, "hf_bo", "example") == (
         tmp_path / "studies" / "optimization" / "3d" / "hf_bo" / "example"
     )
+
+
+def test_infrastructure_wait_is_not_charged_and_the_cap_stops_the_run(tmp_path: Path) -> None:
+    config = replace(
+        _load(tmp_path, method="hf_bo", name="infra", max_sequential=1),
+        infrastructure_backoff_s=(5.0, 10.0),
+        infrastructure_cap_s=12.0,
+    )
+    destination = tmp_path / "infra_run"
+    waits: list[float] = []
+
+    def evaluator(design, fidelity):
+        raise InfrastructureUnavailable("Timeout while waiting for backend to be ready")
+
+    summary = run_optimization(config, evaluator, destination, pause=waits.append)
+    assert waits == [5.0]
+    assert summary["stop_reason"] == "infrastructure"
+    assert summary["cumulative_wall_s"] == 0.0
+    assert summary["n_failures"] == 0
+    assert summary["infrastructure_wall_s"] == pytest.approx(5.0)
+    history = json.loads((destination / "history.json").read_text(encoding="utf-8"))
+    assert history == []
+    logged = json.loads((destination / "infrastructure.json").read_text(encoding="utf-8"))
+    assert logged["infrastructure_wall_s"] == pytest.approx(5.0)
+    assert logged["events"][-1]["action"] == "stop"
+
+
+def test_infrastructure_retry_records_the_design_once(tmp_path: Path) -> None:
+    config = replace(
+        _load(tmp_path, method="hf_bo", name="retry", max_sequential=0),
+        infrastructure_backoff_s=(5.0,),
+        infrastructure_cap_s=100.0,
+    )
+    destination = tmp_path / "retry_run"
+    waits: list[float] = []
+    calls = {"n": 0}
+
+    def evaluator(design, fidelity):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise InfrastructureUnavailable("geometry worker died while generating")
+        return config.replay(design, fidelity)
+
+    summary = run_optimization(config, evaluator, destination, pause=waits.append)
+    assert waits == [5.0]
+    assert summary["stop_reason"] is None
+    history = json.loads((destination / "history.json").read_text(encoding="utf-8"))
+    assert len(history) == len(config.initial_hf)
+    assert summary["infrastructure_wall_s"] == pytest.approx(5.0)
+    assert summary["cumulative_wall_s"] == pytest.approx(sum(row["charged_wall_s"] for row in history))
+    assert summary["infrastructure_wall_s"] not in {
+        row["charged_wall_s"] for row in history
+    }
+
+
+def test_design_failure_is_charged_recorded_time_not_a_reference_hf(tmp_path: Path) -> None:
+    config = _load(tmp_path, method="hf_bo", name="failwall", max_sequential=0)
+    destination = tmp_path / "failwall_run"
+
+    def evaluator(design, fidelity):
+        return PillarOutcome(
+            d_p_mm=design.d_p_mm,
+            d_h_mm=design.d_h_mm,
+            fidelity=fidelity,
+            status=STATUS_EXECUTION_FAILED,
+            generate_wall_time_s=4.0,
+            mesh_wall_time_s=6.0,
+            failure_reason="leaf_not_successful",
+            failure_class="mesh",
+        )
+
+    summary = run_optimization(config, evaluator, destination)
+    history = json.loads((destination / "history.json").read_text(encoding="utf-8"))
+    assert history
+    assert all(row["charged_wall_s"] == pytest.approx(10.0) for row in history)
+    assert all(row["cost_imputed"] is False for row in history)
+    assert all(row["wall_s"] == pytest.approx(10.0) for row in history)
+    assert summary["cumulative_wall_s"] == pytest.approx(10.0 * len(history))
+    assert summary["cumulative_wall_s"] != pytest.approx(config.reference_hf_wall_s * len(history))
+
+
+def test_v2_grid_is_17_and_keeps_the_v1_box_and_initial_designs() -> None:
+    v1 = json.loads((REPO_ROOT / "configs" / "mfbo_3d_experiment.v1.json").read_text(encoding="utf-8"))
+    v2 = json.loads((REPO_ROOT / "configs" / "mfbo_3d_experiment.v2.json").read_text(encoding="utf-8"))
+    assert v2["experiment_id"] == "v2"
+    assert v2["candidate_grid"] == 17
+    assert v2["design_box"] == v1["design_box"]
+    assert v2["initial_hf"] == v1["initial_hf"]
+    assert v2["initial_lf"] == v1["initial_lf"]
+    assert v2["infrastructure_backoff_s"] == [300, 600, 1200]
+    assert v2["infrastructure_cap_s"] == 7200
 
 
 def _load(directory: Path, *, method: str, name: str, max_sequential: int = 4):

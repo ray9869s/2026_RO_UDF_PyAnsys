@@ -222,6 +222,8 @@ def serve_pillar_worker(directory, *, stop_file=None, launch=None, process_liste
         handler=handler,
         stop_file=stop_file,
         session_open=lambda: session.modeler is not None,
+        session_keepalive=session.touch,
+        session_reason=lambda: session.close_reason,
         sleep_s=sleep_s,
         on_stop=session.close,
     )

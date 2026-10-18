@@ -160,9 +160,13 @@ def _run(args) -> int:
         f"method={summary['method']} mode={summary['mode']} "
         f"hf_equivalent={summary['cumulative_hf_equivalent']} "
         f"n_lf={summary['n_lf']} n_hf={summary['n_hf']} "
-        f"hf_lmh={final['hf_lmh']} stopped={summary['stopped']}"
+        f"hf_lmh={final['hf_lmh']} stopped={summary['stopped']} "
+        f"stop_reason={summary.get('stop_reason')} "
+        f"infrastructure_wall_s={summary.get('infrastructure_wall_s')}"
     )
     print(f"wrote {destination}")
+    if summary.get("stop_reason") == "infrastructure":
+        return 1
     return 0
 
 

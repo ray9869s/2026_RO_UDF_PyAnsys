@@ -15,7 +15,9 @@ manifest object exists and ``post/reports/summary_metrics_wide.csv``
 exists. A missing field is not success. A geometry error, a mesh record, or a
 run that already has solver output stays ``execution_failed`` and is not
 run again. A leaf with no CAD or Fluent output is an infrastructure
-failure: it is archived and the next evaluate retries it.
+failure: it is archived and the next evaluate retries it. A Fluent
+crash (segmentation fault, or a meshing or solver process that dies)
+is retried once; the second crash stays a design failure.
 ``convergence_quality`` ``FAIL`` becomes ``diverged`` when
 ``stop_reason`` is ``diverged``, and ``invalid`` otherwise. Missing
 quantities stay missing; they are not stored as LMH = 0.
@@ -171,6 +173,17 @@ def opening_gap_mm(d_p_mm: float, d_h_mm: float, d_f_mm: float) -> float:
     )
 
 
+def opening_is_near_contact(gap_mm: float, m_min_mm: float) -> bool:
+    """True when ``|G|`` is below the surface mesher's minimum size.
+
+    A positive gap smaller than ``m_min`` cannot be meshed. A negative gap
+    of the same size is the cusp on the other side of contact. A wider
+    merged opening is left for the solver.
+    """
+    limit = _positive_mm("m_min_mm", m_min_mm)
+    return abs(float(gap_mm)) < limit
+
+
 def lmh_module_area(
     lmh_mass_balance: float,
     area_mem: float,
@@ -266,7 +279,7 @@ def evaluate(
         run_id=checked_run,
         fidelity=fidelity,
     )
-    if 0.0 < gap < settings["m_min"]:
+    if opening_is_near_contact(gap, settings["m_min"]):
         return _finish(
             base,
             status=STATUS_INVALID,
@@ -281,8 +294,7 @@ def evaluate(
     failed, geo_archived = _ensure_geometry(
         drivers, point, geo_id, geo_dir, n_active=n_active
     )
-    if geo_archived is not None:
-        archived.append(geo_archived)
+    _remember_archived(archived, geo_archived)
     if failed is not None:
         return _finish(
             base,
@@ -292,6 +304,7 @@ def evaluate(
             failure_class=failed[2],
             archived_leaves=archived,
             fidelity_settings=used,
+            data_root=root,
         )
     failed, mesh_archived = _ensure_mesh(
         drivers,
@@ -302,8 +315,7 @@ def evaluate(
         mesh_dir,
         n_lead_excluded=settings.get("n_lead_excluded"),
     )
-    if mesh_archived is not None:
-        archived.append(mesh_archived)
+    _remember_archived(archived, mesh_archived)
     if failed is not None:
         return _finish(
             base,
@@ -313,6 +325,7 @@ def evaluate(
             failure_class=failed[2],
             archived_leaves=archived,
             fidelity_settings=used,
+            data_root=root,
         )
     failed, run_archived = _ensure_solve(
         drivers,
@@ -323,8 +336,7 @@ def evaluate(
         run_dir,
         level=settings,
     )
-    if run_archived is not None:
-        archived.append(run_archived)
+    _remember_archived(archived, run_archived)
     if failed is not None:
         return _finish(
             base,
@@ -334,6 +346,7 @@ def evaluate(
             failure_class=failed[2],
             archived_leaves=archived,
             fidelity_settings=used,
+            data_root=root,
         )
     summary_path = run_dir / _SUMMARY_CSV
     if not summary_path.is_file():
@@ -389,7 +402,7 @@ def record_from_leaves(
         run_id=checked_run,
         fidelity=fidelity,
     )
-    if 0.0 < gap < settings["m_min"]:
+    if opening_is_near_contact(gap, settings["m_min"]):
         return _finish(
             base,
             status=STATUS_INVALID,
@@ -547,6 +560,108 @@ def _ensure_geometry(
     return None, archived
 
 
+_CRASH_MARKERS = (
+    "segmentation violation",
+    "segmentation fault",
+    "fatal signal",
+)
+_WINDOWS_CRASH_CODES = frozenset({3221225477, 3221225725, 3221226505})
+
+
+def fluent_process_crash(directory: Path | None = None, exc: BaseException | None = None) -> bool:
+    """True for a Fluent segfault or a meshing/solver process that died."""
+    if exc is not None and _exception_is_process_crash(exc):
+        return True
+    if directory is not None and Path(directory).is_dir():
+        return _directory_has_crash(Path(directory))
+    return False
+
+
+def _exception_is_process_crash(exc: BaseException) -> bool:
+    code = getattr(exc, "returncode", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        if code < 0 or code in _WINDOWS_CRASH_CODES:
+            return True
+    text = f"{type(exc).__name__}: {exc}".casefold()
+    if any(marker in text for marker in _CRASH_MARKERS):
+        return True
+    log_path = getattr(exc, "log_path", None)
+    if isinstance(log_path, Path) and log_path.is_file() and _file_has_crash(log_path):
+        return True
+    return False
+
+
+def _directory_has_crash(directory: Path) -> bool:
+    for path in directory.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.casefold()
+        if name != "cortexerror.log" and not name.endswith((".log", ".txt", ".err", ".json")):
+            continue
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue
+        except OSError:
+            continue
+        if _file_has_crash(path):
+            return True
+    return False
+
+
+def _file_has_crash(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").casefold()
+    except OSError:
+        return False
+    return any(marker in text for marker in _CRASH_MARKERS)
+
+
+def _fill_missing_stage_wall(record: dict[str, Any], directory: Path) -> None:
+    for key, value in _leaf_stage_seconds(directory).items():
+        if record.get(key) is None:
+            record[key] = value
+
+
+def _add_crash_archive_wall(record: dict[str, Any], archived: list[str]) -> None:
+    for item in archived:
+        path = Path(item)
+        if not fluent_process_crash(path):
+            continue
+        extra = _leaf_stage_seconds(path)
+        for key, value in extra.items():
+            current = record.get(key)
+            base = 0.0 if current is None else float(current)
+            record[key] = base + value
+
+
+def _leaf_stage_seconds(directory: Path) -> dict[str, float]:
+    record = _read_object(directory / "mesh_run_record.json") or {}
+    manifest = _read_object(directory / "manifest.json") or {}
+    if not isinstance(record, Mapping):
+        record = {}
+    if not isinstance(manifest, Mapping):
+        manifest = {}
+    found = {
+        "mesh_wall_time_s": _first_finite(
+            manifest.get("mesh_wall_time_s"),
+            record.get("mesh_wall_time_s"),
+            record.get("wall_time_seconds"),
+        ),
+        "solver_wall_time_s": _first_finite(manifest.get("solver_wall_time_s")),
+        "extraction_wall_time_s": _first_finite(manifest.get("extraction_wall_time_s")),
+    }
+    return {key: float(value) for key, value in found.items() if value is not None}
+
+
+def _remember_archived(bucket: list[str], extra) -> None:
+    if extra is None:
+        return
+    if isinstance(extra, str):
+        bucket.append(extra)
+        return
+    bucket.extend(path for path in extra if path)
+
+
 def _ensure_mesh(
     drivers,
     design,
@@ -556,65 +671,119 @@ def _ensure_mesh(
     mesh_dir: Path,
     n_lead_excluded: int | None = None,
 ):
-    archived = None
+    archived: list[str] = []
     state = _mesh_state(mesh_dir)
     if state == "success":
-        return None, None
-    if state == "failed" and _mesh_attempt_class(mesh_dir) != FAILURE_INFRASTRUCTURE:
-        return ("leaf_not_successful", str(mesh_dir), FAILURE_MESH), None
+        return None, archived
+    prior_crash = False
     if state == "failed":
-        archived = str(archive_failed_leaf(mesh_dir, "mesh_failed"))
-    try:
-        drivers.mesh(
-            design=design,
-            geo_id=geo_id,
-            mesh_id=mesh_id,
-            mesh_settings=settings,
-            mesh_dir=mesh_dir,
-            n_lead_excluded=n_lead_excluded,
-        )
-    except Exception as exc:
-        if type(exc).__name__ != "DriverFailed":
-            raise
-        kind = FAILURE_MESH if _mesh_has_fluent_output(mesh_dir) else FAILURE_INFRASTRUCTURE
-        return ("leaf_not_successful", str(mesh_dir), kind), archived
-    if _mesh_state(mesh_dir) != "success":
+        prior_crash = fluent_process_crash(mesh_dir)
+        kind = _mesh_attempt_class(mesh_dir)
+        if kind != FAILURE_INFRASTRUCTURE and not prior_crash:
+            return ("leaf_not_successful", str(mesh_dir), FAILURE_MESH), archived
+        archived.append(str(archive_failed_leaf(mesh_dir, "mesh_failed")))
+
+    def invoke():
+        try:
+            drivers.mesh(
+                design=design,
+                geo_id=geo_id,
+                mesh_id=mesh_id,
+                mesh_settings=settings,
+                mesh_dir=mesh_dir,
+                n_lead_excluded=n_lead_excluded,
+            )
+        except Exception as exc:
+            if type(exc).__name__ != "DriverFailed":
+                raise
+            if fluent_process_crash(mesh_dir, exc):
+                return exc, FAILURE_MESH
+            kind = FAILURE_MESH if _mesh_has_fluent_output(mesh_dir) else FAILURE_INFRASTRUCTURE
+            return exc, kind
+        if _mesh_state(mesh_dir) == "success":
+            return None
+        if fluent_process_crash(mesh_dir):
+            return None, FAILURE_MESH
         kind = _mesh_attempt_class(mesh_dir)
         if kind in ("absent", "success"):
             kind = FAILURE_MESH
-        return ("leaf_not_successful", str(mesh_dir), kind), archived
-    return None, archived
+        return None, kind
+
+    failure = invoke()
+    if failure is None:
+        return None, archived
+    exc, kind = failure
+    crash = kind == FAILURE_MESH and fluent_process_crash(mesh_dir, exc)
+    if crash and not prior_crash:
+        if mesh_dir.exists():
+            archived.append(str(archive_failed_leaf(mesh_dir, "mesh_failed")))
+        failure = invoke()
+        if failure is None:
+            return None, archived
+        exc, kind = failure
+        if fluent_process_crash(mesh_dir, exc):
+            kind = FAILURE_MESH
+    elif prior_crash and fluent_process_crash(mesh_dir, exc):
+        kind = FAILURE_MESH
+    return ("leaf_not_successful", str(mesh_dir), kind), archived
 
 
 def _ensure_solve(drivers, design, geo_id, mesh_id, run_id, run_dir: Path, level=None):
-    archived = None
+    archived: list[str] = []
     state = _run_state(run_dir)
     if state in ("success", "needs_extract"):
-        return None, None
-    if state == "failed" and _run_attempt_class(run_dir) != FAILURE_INFRASTRUCTURE:
-        return ("leaf_not_successful", str(run_dir), FAILURE_SOLVER), None
+        return None, archived
+    prior_crash = False
     if state == "failed":
-        archived = str(archive_failed_leaf(run_dir, "run_failed"))
-    try:
-        drivers.solve(
-            design=design,
-            geo_id=geo_id,
-            mesh_id=mesh_id,
-            run_id=run_id,
-            run_dir=run_dir,
-            level=level,
-        )
-    except Exception as exc:
-        if type(exc).__name__ != "DriverFailed":
-            raise
-        kind = FAILURE_SOLVER if _run_has_fluent_output(run_dir) else FAILURE_INFRASTRUCTURE
-        return ("leaf_not_successful", str(run_dir), kind), archived
-    if _run_state(run_dir) not in ("success", "needs_extract"):
+        prior_crash = fluent_process_crash(run_dir)
+        kind = _run_attempt_class(run_dir)
+        if kind != FAILURE_INFRASTRUCTURE and not prior_crash:
+            return ("leaf_not_successful", str(run_dir), FAILURE_SOLVER), archived
+        archived.append(str(archive_failed_leaf(run_dir, "run_failed")))
+
+    def invoke():
+        try:
+            drivers.solve(
+                design=design,
+                geo_id=geo_id,
+                mesh_id=mesh_id,
+                run_id=run_id,
+                run_dir=run_dir,
+                level=level,
+            )
+        except Exception as exc:
+            if type(exc).__name__ != "DriverFailed":
+                raise
+            if fluent_process_crash(run_dir, exc):
+                return exc, FAILURE_SOLVER
+            kind = FAILURE_SOLVER if _run_has_fluent_output(run_dir) else FAILURE_INFRASTRUCTURE
+            return exc, kind
+        if _run_state(run_dir) in ("success", "needs_extract"):
+            return None
+        if fluent_process_crash(run_dir):
+            return None, FAILURE_SOLVER
         kind = _run_attempt_class(run_dir)
         if kind in ("absent", "success", "needs_extract"):
             kind = FAILURE_SOLVER
-        return ("leaf_not_successful", str(run_dir), kind), archived
-    return None, archived
+        return None, kind
+
+    failure = invoke()
+    if failure is None:
+        return None, archived
+    exc, kind = failure
+    crash = kind == FAILURE_SOLVER and fluent_process_crash(run_dir, exc)
+    if crash and not prior_crash:
+        if run_dir.exists():
+            archived.append(str(archive_failed_leaf(run_dir, "run_failed")))
+        failure = invoke()
+        if failure is None:
+            return None, archived
+        exc, kind = failure
+        if fluent_process_crash(run_dir, exc):
+            kind = FAILURE_SOLVER
+    elif prior_crash and fluent_process_crash(run_dir, exc):
+        kind = FAILURE_SOLVER
+    return ("leaf_not_successful", str(run_dir), kind), archived
 
 
 def _geometry_state(directory: Path, geo_id: str, design: PillarDesign) -> str:
@@ -1098,6 +1267,11 @@ def _finish(
                 record[key] = run_manifest[key]
     if isinstance(run_manifest.get("hf_solve_phases"), list):
         record["hf_solve_phases"] = list(run_manifest["hf_solve_phases"])
+    leaf = record.get("leaf_path")
+    if isinstance(leaf, str) and Path(leaf).is_dir():
+        _fill_missing_stage_wall(record, Path(leaf))
+    if archived_leaves:
+        _add_crash_archive_wall(record, archived_leaves)
     return record
 
 

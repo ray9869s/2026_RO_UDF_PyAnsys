@@ -155,6 +155,7 @@ class DiscoverySession:
         self._terminated: list[int] = []
         self._completed = 0
         self._closed = False
+        self.close_reason = None
 
     def run(
         self,
@@ -216,6 +217,17 @@ class DiscoverySession:
         failure.session_reused = False
         raise failure
 
+    def touch(self) -> bool:
+        """Cheap call so an idle session stays up. False when it has died."""
+        if self._closed or self.modeler is None:
+            return False
+        try:
+            _probe_modeler(self.modeler)
+        except Exception as exc:
+            self._drop([], exc, 1)
+            return False
+        return True
+
     def close(self) -> None:
         """Close the modeler and stop processes this session started."""
         if self._closed:
@@ -224,6 +236,10 @@ class DiscoverySession:
         modeler = self.modeler
         self.modeler = None
         self._completed = 0
+        if modeler is not None:
+            self.close_reason = _close_text("shutdown", None, modeler)
+        elif self.close_reason is None:
+            self.close_reason = "shutdown"
         _close_quietly(modeler)
         if self._before is None:
             return
@@ -260,6 +276,7 @@ class DiscoverySession:
         modeler = self.modeler
         self.modeler = None
         self._completed = 0
+        self.close_reason = _close_text("session dropped", exc, modeler)
         _close_quietly(modeler)
         before = self._before if self._before is not None else []
         after = self._lister()
@@ -293,6 +310,44 @@ def _discovery_processes():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _probe_modeler(modeler) -> None:
+    """One inexpensive backend call. ``ping`` wins when the modeler has it."""
+    probe = getattr(modeler, "ping", None)
+    if callable(probe):
+        probe()
+        return
+    client = getattr(modeler, "client", None)
+    if client is None:
+        return
+    getattr(client, "backend_version")
+
+
+def _modeler_exit_code(modeler):
+    if modeler is None:
+        return None
+    for name in ("returncode", "exit_code"):
+        value = getattr(modeler, name, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    process = getattr(modeler, "process", None)
+    if process is None:
+        return None
+    value = getattr(process, "returncode", None)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _close_text(prefix: str, exc: BaseException | None, modeler) -> str:
+    text = prefix
+    if exc is not None:
+        text = f"{prefix}: {type(exc).__name__}: {exc}"
+    code = _modeler_exit_code(modeler)
+    if code is not None:
+        text = f"{text}; discovery_exit_code={code}"
+    return text
 
 
 def _close_quietly(modeler) -> None:

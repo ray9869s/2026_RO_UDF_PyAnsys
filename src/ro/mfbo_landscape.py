@@ -172,6 +172,7 @@ def analyze(
     *,
     cp_excess_max: float,
     dp_max_pa_per_m: float,
+    search_grid: int | None = None,
 ) -> dict[str, Any]:
     """HF constrained optimum, feasible fraction, and PoF on the screen points."""
     fitted = {level: fit_level(designs, level, box) for level in _LEVELS if _has_valid(designs, level)}
@@ -183,6 +184,7 @@ def analyze(
         box,
         cp_excess_max=cp_excess_max,
         dp_max_pa_per_m=dp_max_pa_per_m,
+        search_grid=search_grid,
     )
     sweep = []
     for cp_limit in SWEEP_CP_EXCESS:
@@ -194,6 +196,7 @@ def analyze(
                     box,
                     cp_excess_max=cp_limit,
                     dp_max_pa_per_m=dp_limit,
+                    search_grid=search_grid,
                 )
             )
     return {
@@ -344,8 +347,15 @@ def _at_thresholds(
     *,
     cp_excess_max: float,
     dp_max_pa_per_m: float,
+    search_grid: int | None = None,
 ) -> dict[str, Any]:
-    search = _search(hf, box, cp_excess_max=cp_excess_max, dp_max_pa_per_m=dp_max_pa_per_m)
+    search = _search(
+        hf,
+        box,
+        cp_excess_max=cp_excess_max,
+        dp_max_pa_per_m=dp_max_pa_per_m,
+        grid=search_grid,
+    )
     grid = []
     for design in sorted(designs, key=lambda item: (item.d_p_mm, item.d_h_mm)):
         probability = _pof(
@@ -375,14 +385,16 @@ def _search(
     *,
     cp_excess_max: float,
     dp_max_pa_per_m: float,
+    grid: int | None = None,
 ) -> dict[str, Any]:
+    n_p, n_h = _search_shape(grid)
     cells: dict[tuple[int, int], dict[str, Any]] = {}
     best: dict[str, Any] | None = None
     n_blocked = 0
-    for i_p in range(_GRID_P):
-        for i_h in range(_GRID_H):
-            d_p = box.d_p_min + (box.d_p_max - box.d_p_min) * i_p / (_GRID_P - 1)
-            d_h = box.d_h_min + (box.d_h_max - box.d_h_min) * i_h / (_GRID_H - 1)
+    for i_p in range(n_p):
+        for i_h in range(n_h):
+            d_p = box.d_p_min + (box.d_p_max - box.d_p_min) * i_p / (n_p - 1)
+            d_h = box.d_h_min + (box.d_h_max - box.d_h_min) * i_h / (n_h - 1)
             blocked = geometry_block_reason(d_p, d_h, box.d_f_mm, box.m_min_mm) is not None
             lmh, _lmh_var = _predict(hf["lmh"], d_p, d_h, box)
             dp, _dp_var = _predict(hf["dp"], d_p, d_h, box)
@@ -404,7 +416,7 @@ def _search(
             cells[(i_p, i_h)] = cell
             if feasible and (best is None or lmh > best["lmh"]):
                 best = cell
-    n_cells = _GRID_P * _GRID_H
+    n_cells = n_p * n_h
     n_feasible = sum(1 for cell in cells.values() if cell["feasible"])
     optimum = None
     if best is not None:
@@ -424,6 +436,14 @@ def _search(
         "feasible_fraction": n_feasible / n_cells,
         "optimum": optimum,
     }
+
+
+def _search_shape(grid: int | None) -> tuple[int, int]:
+    if grid is None:
+        return _GRID_P, _GRID_H
+    if isinstance(grid, bool) or not isinstance(grid, int) or grid < 2:
+        raise ValueError(f"search grid must be an integer >= 2, got {grid!r}.")
+    return grid, grid
 
 
 def _active(

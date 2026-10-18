@@ -13,6 +13,7 @@ from helpers import SCRIPTS_DIR, load_module
 from ro.discovery_session import (
     BACKEND_START_TIMEOUT_S,
     DiscoveryAttemptError,
+    DiscoverySession,
     discovery_launch_arguments,
     run_discovery_job,
 )
@@ -52,6 +53,31 @@ def test_launch_arguments_wait_300_seconds():
     assert arguments["timeout"] == BACKEND_START_TIMEOUT_S
     assert arguments["hidden"] is True
     assert arguments["version"] == 251
+
+
+def test_keep_alive_records_why_the_session_closed():
+    class _Modeler:
+        def __init__(self):
+            self.pings = 0
+            self.process = SimpleNamespace(returncode=None)
+
+        def ping(self):
+            self.pings += 1
+            if self.pings >= 2:
+                self.process.returncode = 1
+                raise TimeoutError("Timeout while waiting for backend to be ready")
+
+        def close(self):
+            return None
+
+    modeler = _Modeler()
+    session = DiscoverySession(lambda: modeler, process_lister=lambda: [], process_killer=lambda _pid: None)
+    session.modeler = modeler
+    assert session.touch() is True
+    assert session.touch() is False
+    assert session.modeler is None
+    assert "TimeoutError" in session.close_reason
+    assert "discovery_exit_code=1" in session.close_reason
 
 
 def test_backend_timeout_is_retried_once_and_only_new_pids_are_killed():

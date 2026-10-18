@@ -241,6 +241,24 @@ def test_opening_gap_sliver_launches_nothing(tmp_path):
     assert not (tmp_path / "geometries").exists()
 
 
+def test_negative_near_contact_is_invalid_and_a_merged_opening_is_not(tmp_path):
+    from ro.mfbo_adapter import opening_is_near_contact
+
+    near = PillarDesign(d_p_mm=0.6, d_h_mm=0.0375, d_f_mm=0.4)
+    gap = opening_gap_mm(near.d_p_mm, near.d_h_mm, near.d_f_mm)
+    assert gap < 0.0
+    assert opening_is_near_contact(gap, 0.006)
+    drivers = _drivers()
+    record = _evaluate(tmp_path, near, "LF", drivers)
+    assert drivers.calls == []
+    assert record["status"] == "invalid"
+    assert record["failure_reason"] == "opening_gap_sliver"
+    merged = PillarDesign(d_p_mm=0.6, d_h_mm=0.1125, d_f_mm=0.4)
+    merged_gap = opening_gap_mm(merged.d_p_mm, merged.d_h_mm, merged.d_f_mm)
+    assert merged_gap == pytest.approx(-0.03988376370147668)
+    assert not opening_is_near_contact(merged_gap, 0.006)
+
+
 def test_call_order_when_leaves_are_absent(tmp_path):
     drivers = _drivers()
     record = _evaluate(tmp_path, WIDE, "LF", drivers)
@@ -262,6 +280,39 @@ def test_reuse_skips_drivers_when_manifests_record_success(tmp_path):
     assert drivers.calls == []
     assert record["status"] == "valid"
     assert record["lmh"] == pytest.approx(18.0)
+
+
+def test_fluent_crash_is_retried_once_and_the_second_is_a_design_failure(tmp_path):
+    from ro.geometry_registry import format_mfbo_pillar_geo_id
+    from ro.mfbo_drivers import DriverFailed
+
+    geo_id = format_mfbo_pillar_geo_id(WIDE.d_p_mm, WIDE.d_h_mm, WIDE.d_f_mm)
+    _write_geometry(tmp_path / "geometries" / "pillar" / geo_id, geo_id, WIDE)
+    calls = {"n": 0}
+
+    class _Crash(RecordingDrivers):
+        def mesh(self, *, design, geo_id, mesh_id, mesh_settings, mesh_dir, n_lead_excluded=None):
+            calls["n"] += 1
+            mesh_dir.mkdir(parents=True, exist_ok=True)
+            (mesh_dir / "cortexerror.log").write_text(
+                "Cortex received a fatal signal (SEGMENTATION VIOLATION)\n",
+                encoding="utf-8",
+            )
+            seconds = 10.0 if calls["n"] == 1 else 4.0
+            _write_json(
+                mesh_dir / "mesh_run_record.json",
+                {"status": "FAILED", "wall_time_seconds": seconds},
+            )
+            _write_json(mesh_dir / "manifest.json", {"mesh_wall_time_s": seconds})
+            log = tmp_path / "crash.log"
+            log.write_text("segmentation violation\n", encoding="utf-8")
+            raise DriverFailed("mesh", -11, log)
+
+    record = _evaluate(tmp_path, WIDE, "LF", _Crash())
+    assert calls["n"] == 2
+    assert record["status"] == "execution_failed"
+    assert record["failure_class"] == "mesh"
+    assert record["mesh_wall_time_s"] == pytest.approx(14.0)
 
 
 def test_existing_failed_leaf_is_not_rerun(tmp_path):

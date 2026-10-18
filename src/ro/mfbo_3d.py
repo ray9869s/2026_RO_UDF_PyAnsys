@@ -11,8 +11,10 @@ a ``TBD`` placeholder is an error.
 
 HF-equivalent cost is cumulative wall seconds divided by
 ``reference_hf_wall_s``. Wall seconds are mesh plus solver plus extraction.
-A missing part is imputed from the fidelity's expected cost and marked
-``cost_imputed``.
+A missing part of a successful run is imputed from the fidelity's expected
+cost and marked ``cost_imputed``. A design failure is charged the recorded
+generate, mesh, solver, and extraction time, and never a reference HF.
+Infrastructure waits are logged and are not charged.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import math
 import platform
 import re
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -35,6 +38,7 @@ import numpy as np
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 from ro.geometry_registry import format_mfbo_pillar_geo_id
 from ro.mfbo_adapter import (
+    FAILURE_INFRASTRUCTURE,
     REASON_OPENING_GAP_SLIVER,
     STATUS_DIVERGED,
     STATUS_EXECUTION_FAILED,
@@ -46,6 +50,7 @@ from ro.mfbo_adapter import (
     evaluate,
     mesh_id_for_settings,
     opening_gap_mm,
+    opening_is_near_contact,
     record_from_leaves,
 )
 from ro.mfbo_fidelity import parse_fidelity_level, run_id_for_level
@@ -99,6 +104,18 @@ REQUIRED_FIELDS = (
 OPTIONAL_FIELDS = (
     "cost_proxy_ratio",
     "screen_csv",
+    "infrastructure_backoff_s",
+    "infrastructure_cap_s",
+)
+DEFAULT_INFRASTRUCTURE_BACKOFF_S = (300.0, 600.0, 1200.0)
+DEFAULT_INFRASTRUCTURE_CAP_S = 7200.0
+_SESSION_MARKERS = (
+    "timeout while waiting for backend",
+    "backend to be ready",
+    "geometry worker died",
+    "geometry worker timed out",
+    "did not become ready",
+    "exited before it was ready",
 )
 
 _FAILURE = frozenset({STATUS_DIVERGED, STATUS_INVALID, STATUS_EXECUTION_FAILED})
@@ -116,11 +133,13 @@ _HISTORY_FIELDS = (
     "fidelity",
     "status",
     "failure_reason",
+    "failure_class",
     "lmh",
     "cp_average",
     "cp_excess",
     "pressure_drop_per_length_pa_per_m",
     "feasible",
+    "generate_wall_time_s",
     "mesh_wall_time_s",
     "solver_wall_time_s",
     "extraction_wall_time_s",
@@ -139,6 +158,10 @@ _EXPERIMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 class ReplayMiss(KeyError):
     """The offline table has no CFD result for this design and fidelity."""
+
+
+class InfrastructureUnavailable(RuntimeError):
+    """Generate reported infrastructure, or the geometry worker has no session."""
 
 
 @dataclass(frozen=True)
@@ -162,9 +185,11 @@ class PillarOutcome:
     mesh_wall_time_s: float | None = None
     solver_wall_time_s: float | None = None
     extraction_wall_time_s: float | None = None
+    generate_wall_time_s: float | None = None
     reused_existing: bool = False
     cost_imputed: bool = False
     failure_reason: str | None = None
+    failure_class: str | None = None
 
     @property
     def key(self) -> tuple[float, float, str]:
@@ -353,6 +378,8 @@ class Experiment3D:
     problem: dict[str, Any]
     cost_proxy_ratio: float | None = None
     screen_csv: str | None = None
+    infrastructure_backoff_s: tuple[float, ...] = DEFAULT_INFRASTRUCTURE_BACKOFF_S
+    infrastructure_cap_s: float = DEFAULT_INFRASTRUCTURE_CAP_S
 
 
 @dataclass(frozen=True)
@@ -425,7 +452,11 @@ class LiveEvaluator:
                 fidelity_table=self.fidelity_settings,
                 drivers=self.drivers,
             )
+        except InfrastructureUnavailable:
+            raise
         except Exception as exc:
+            if _session_infrastructure(exc):
+                raise InfrastructureUnavailable(str(exc)) from exc
             return PillarOutcome(
                 d_p_mm=design.d_p_mm,
                 d_h_mm=design.d_h_mm,
@@ -434,6 +465,9 @@ class LiveEvaluator:
                 reused_existing=False,
                 failure_reason=f"{type(exc).__name__}: {exc}",
             )
+        if _generate_infrastructure(record):
+            detail = record.get("failure_reason") or FAILURE_INFRASTRUCTURE
+            raise InfrastructureUnavailable(str(detail))
         return outcome_from_record(record, reused_existing=reused)
 
 
@@ -588,6 +622,8 @@ def load_experiment(
     ratio = _positive("lf_over_hf_cost_ratio", payload["lf_over_hf_cost_ratio"])
     budget = _budget_limit(payload["budget_hf_equivalent"], reference)
     proxy = _optional_cost_proxy(payload)
+    backoff = _infrastructure_backoff(payload)
+    cap_s = _infrastructure_cap(payload)
     grid = payload["candidate_grid"]
     if isinstance(grid, bool) or not isinstance(grid, int) or grid < 2:
         raise ValueError(f"candidate_grid must be an integer >= 2, got {grid!r}.")
@@ -669,6 +705,8 @@ def load_experiment(
         problem=problem,
         cost_proxy_ratio=proxy,
         screen_csv=screen_csv,
+        infrastructure_backoff_s=backoff,
+        infrastructure_cap_s=cap_s,
     )
 
 
@@ -729,6 +767,12 @@ def format_plan(config: Experiment3D) -> str:
         "Initial evaluations are charged even when they exceed the budget. "
         "Sequential queries stop when the next expected cost does not fit."
     )
+    waits = ", ".join(str(item) for item in config.infrastructure_backoff_s)
+    lines.append(
+        "Infrastructure failures pause and retry the same design "
+        f"(backoff_s={waits}, cap_s={config.infrastructure_cap_s}). "
+        "That wait is not charged. A design failure is charged its recorded wall time."
+    )
     return "\n".join(lines)
 
 
@@ -768,6 +812,97 @@ def format_recorded_initial_charges(config: Experiment3D, data_root: Path) -> st
     return "\n".join(lines)
 
 
+def _recorded_failure_wall_s(outcome: PillarOutcome) -> float:
+    """Sum recorded stage times. A missing stage is zero, not a reference HF."""
+    total = 0.0
+    for part in (
+        outcome.generate_wall_time_s,
+        outcome.mesh_wall_time_s,
+        outcome.solver_wall_time_s,
+        outcome.extraction_wall_time_s,
+    ):
+        if part is not None:
+            total += float(part)
+    return total
+
+
+def _session_infrastructure(exc: BaseException) -> bool:
+    if getattr(exc, "failure_class", None) == FAILURE_INFRASTRUCTURE:
+        return True
+    text = f"{type(exc).__name__}: {exc}"
+    cause = exc.__cause__
+    if cause is not None:
+        text = f"{text} {type(cause).__name__}: {cause}"
+    folded = text.casefold()
+    return any(marker in folded for marker in _SESSION_MARKERS)
+
+
+def _generate_infrastructure(record: Mapping[str, Any]) -> bool:
+    if record.get("failure_class") != FAILURE_INFRASTRUCTURE:
+        return False
+    leaf = str(record.get("leaf_path") or "").replace("\\", "/")
+    return "/geometries/" in f"/{leaf}"
+
+
+def _infrastructure_event(
+    design: PillarPoint,
+    fidelity: str,
+    exc: BaseException,
+    *,
+    spent: float,
+    wait_s: float,
+    action: str,
+) -> dict[str, Any]:
+    return {
+        "d_p_mm": design.d_p_mm,
+        "d_h_mm": design.d_h_mm,
+        "fidelity": fidelity,
+        "action": action,
+        "wait_s": wait_s,
+        "spent_s": spent,
+        "error": str(exc),
+    }
+
+
+def _write_infrastructure(
+    destination: Path,
+    events: list[dict[str, Any]],
+    infrastructure_wall_s: float,
+) -> None:
+    _write_json(
+        destination / "infrastructure.json",
+        {"infrastructure_wall_s": infrastructure_wall_s, "events": events},
+    )
+
+
+def _infrastructure_backoff(payload: Mapping[str, Any]) -> tuple[float, ...]:
+    if "infrastructure_backoff_s" not in payload:
+        return DEFAULT_INFRASTRUCTURE_BACKOFF_S
+    value = payload["infrastructure_backoff_s"]
+    if not isinstance(value, list) or not value:
+        raise ValueError(
+            "infrastructure_backoff_s must be a non-empty list of seconds, "
+            f"got {value!r}."
+        )
+    return tuple(_positive("infrastructure_backoff_s", item) for item in value)
+
+
+def _infrastructure_cap(payload: Mapping[str, Any]) -> float:
+    if "infrastructure_cap_s" not in payload:
+        return DEFAULT_INFRASTRUCTURE_CAP_S
+    return _positive("infrastructure_cap_s", payload["infrastructure_cap_s"])
+
+
+def _same_backoff(stored: Any, current: tuple[float, ...]) -> bool:
+    if not isinstance(stored, list) or len(stored) != len(current):
+        return False
+    try:
+        parsed = tuple(float(item) for item in stored)
+    except (TypeError, ValueError):
+        return False
+    return parsed == current
+
+
 def _recorded_wall_s(record: Mapping[str, Any]) -> float | None:
     parts = [
         _optional_real(record.get(name))
@@ -782,6 +917,8 @@ def run_optimization(
     config: Experiment3D,
     evaluator: Callable[[PillarPoint, str], PillarOutcome],
     destination: Path,
+    *,
+    pause: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     dataset = Dataset()
@@ -793,25 +930,81 @@ def run_optimization(
     )
     history = _load_history(destination, config, dataset, budget)
     if _stopped(destination) and not history:
-        return {"stopped": True, "wrote": False, "experiment_id": config.experiment_id}
+        return {
+            "stopped": True,
+            "stop_reason": "stop_file",
+            "wrote": False,
+            "experiment_id": config.experiment_id,
+        }
+    waiter = time.sleep if pause is None else pause
     stopped = False
+    stop_reason: str | None = None
+    infrastructure: list[dict[str, Any]] = []
+    infrastructure_wall_s = 0.0
 
     def absorb(outcome: PillarOutcome, *, sequential: bool) -> None:
         _absorb(config, dataset, budget, history, outcome, sequential=sequential)
-        _write(destination, config, dataset, budget, history, stopped=False)
+        _write(
+            destination,
+            config,
+            dataset,
+            budget,
+            history,
+            stopped=False,
+            stop_reason=None,
+            infrastructure_wall_s=infrastructure_wall_s,
+        )
+
+    def attempt(design: PillarPoint, fidelity: str, *, sequential: bool) -> bool:
+        nonlocal stopped, stop_reason, infrastructure_wall_s
+        schedule = config.infrastructure_backoff_s
+        index = 0
+        spent = 0.0
+        while True:
+            if _stopped(destination):
+                stopped = True
+                stop_reason = "stop_file"
+                return False
+            try:
+                outcome = evaluator(design, fidelity)
+            except InfrastructureUnavailable as exc:
+                delay = schedule[min(index, len(schedule) - 1)]
+                index += 1
+                if spent + delay > config.infrastructure_cap_s + 1.0e-9:
+                    stop_reason = "infrastructure"
+                    infrastructure.append(
+                        _infrastructure_event(design, fidelity, exc, spent=spent, wait_s=0.0, action="stop")
+                    )
+                    _write_infrastructure(destination, infrastructure, infrastructure_wall_s)
+                    return False
+                waiter(float(delay))
+                spent += float(delay)
+                infrastructure_wall_s += float(delay)
+                infrastructure.append(
+                    _infrastructure_event(
+                        design, fidelity, exc, spent=spent, wait_s=float(delay), action="retry"
+                    )
+                )
+                _write_infrastructure(destination, infrastructure, infrastructure_wall_s)
+                continue
+            absorb(outcome, sequential=sequential)
+            return True
 
     for design, fidelity in _initial_plan(config):
         if dataset.seen(design.d_p_mm, design.d_h_mm, fidelity):
             continue
         if _stopped(destination):
             stopped = True
+            stop_reason = "stop_file"
             break
         _require_evaluable(config, design, fidelity)
-        absorb(evaluator(design, fidelity), sequential=False)
-    if not stopped:
+        if not attempt(design, fidelity, sequential=False):
+            break
+    if stop_reason is None and not stopped:
         while True:
             if _stopped(destination):
                 stopped = True
+                stop_reason = "stop_file"
                 break
             proposal = _propose(config, dataset)
             if proposal is None:
@@ -819,18 +1012,32 @@ def run_optimization(
             design, fidelity = proposal
             if not budget.can_afford(fidelity):
                 break
-            absorb(evaluator(design, fidelity), sequential=True)
-    if not stopped:
+            if not attempt(design, fidelity, sequential=True):
+                break
+    if stop_reason is None and not stopped:
         recommended = _recommend(config, dataset)
         if recommended is not None and not dataset.seen(
             recommended.d_p_mm, recommended.d_h_mm, HF
         ):
             if _stopped(destination):
                 stopped = True
+                stop_reason = "stop_file"
             else:
                 _require_evaluable(config, recommended, HF)
-                absorb(evaluator(recommended, HF), sequential=True)
-    summary = _write(destination, config, dataset, budget, history, stopped=stopped or _stopped(destination))
+                attempt(recommended, HF, sequential=True)
+    if _stopped(destination):
+        stopped = True
+        stop_reason = stop_reason or "stop_file"
+    summary = _write(
+        destination,
+        config,
+        dataset,
+        budget,
+        history,
+        stopped=stopped,
+        stop_reason=stop_reason,
+        infrastructure_wall_s=infrastructure_wall_s,
+    )
     return summary
 
 
@@ -840,14 +1047,21 @@ def geometry_block_reason(
     d_f_mm: float,
     m_min_mm: float,
 ) -> str | None:
-    """Reason the design is excluded, or None when the opening can be meshed."""
+    """Reason the design is excluded, or None when the opening can be meshed.
+
+    ``|G| < m_min`` is near contact. On the 17-point grid the D_p 0.60
+    zero crossing lies between d_h 0.01875 mm (G about +7.3 µm) and
+    d_h 0.0375 mm (G about -2.1 µm). m_min is 6 µm, which the surface
+    mesher cannot resolve. (0.60, 0.1125) is about -40 µm, a merged
+    opening, so this check does not reject it.
+    """
     try:
         gap = opening_gap_mm(d_p_mm, d_h_mm, d_f_mm)
     except ValueError as exc:
         return str(exc)
-    if 0.0 < gap < m_min_mm:
+    if opening_is_near_contact(gap, m_min_mm):
         return (
-            f"opening gap {gap} mm is below m_min {m_min_mm} mm "
+            f"opening gap {gap} mm is within m_min {m_min_mm} mm of contact "
             f"({REASON_OPENING_GAP_SLIVER})."
         )
     return None
@@ -868,8 +1082,10 @@ def outcome_from_record(record: Mapping[str, Any], *, reused_existing: bool) -> 
         mesh_wall_time_s=_optional_real(record.get("mesh_wall_time_s")),
         solver_wall_time_s=_optional_real(record.get("solver_wall_time_s")),
         extraction_wall_time_s=_optional_real(record.get("extraction_wall_time_s")),
+        generate_wall_time_s=_optional_real(record.get("generate_wall_time_s")),
         reused_existing=reused_existing,
         failure_reason=_optional_text(record.get("failure_reason")),
+        failure_class=_optional_text(record.get("failure_class")),
     )
 
 
@@ -1043,15 +1259,30 @@ def _absorb(
     sequential: bool,
 ) -> None:
     dataset.add(outcome)
-    charged = budget.charge(
-        outcome.fidelity,
-        measured_wall_s=outcome.measured_wall_s(),
-        sequential=sequential,
-        failed=outcome.failed,
-        imputed=outcome.cost_imputed,
-    )
-    if outcome.measured_wall_s() is None:
-        outcome.cost_imputed = True
+    if outcome.status in _FAILURE:
+        charged = _recorded_failure_wall_s(outcome)
+        budget.charge_known(
+            outcome.fidelity,
+            charged,
+            sequential=sequential,
+            failed=outcome.failed,
+            imputed=False,
+        )
+        shown_wall: float | None = charged
+        imputed = False
+        outcome.cost_imputed = False
+    else:
+        charged = budget.charge(
+            outcome.fidelity,
+            measured_wall_s=outcome.measured_wall_s(),
+            sequential=sequential,
+            failed=outcome.failed,
+            imputed=outcome.cost_imputed,
+        )
+        if outcome.measured_wall_s() is None:
+            outcome.cost_imputed = True
+        shown_wall = outcome.measured_wall_s()
+        imputed = outcome.cost_imputed or shown_wall is None
     x1, x2 = _x(config, outcome)
     history.append(
         {
@@ -1065,18 +1296,20 @@ def _absorb(
             "fidelity": outcome.fidelity,
             "status": outcome.status,
             "failure_reason": outcome.failure_reason,
+            "failure_class": outcome.failure_class,
             "lmh": outcome.lmh,
             "cp_average": outcome.cp_average,
             "cp_excess": outcome.cp_excess,
             "pressure_drop_per_length_pa_per_m": outcome.dp_per_l,
             "feasible": _feasible(outcome, config),
+            "generate_wall_time_s": outcome.generate_wall_time_s,
             "mesh_wall_time_s": outcome.mesh_wall_time_s,
             "solver_wall_time_s": outcome.solver_wall_time_s,
             "extraction_wall_time_s": outcome.extraction_wall_time_s,
-            "wall_s": outcome.measured_wall_s(),
+            "wall_s": shown_wall,
             "charged_wall_s": charged,
             "reused_existing": outcome.reused_existing,
-            "cost_imputed": outcome.cost_imputed or outcome.measured_wall_s() is None,
+            "cost_imputed": imputed,
             "cumulative_wall_s": budget.wall_s,
             "cumulative_hf_equivalent": budget.hf_equivalent,
             "n_lf": budget.n_lf,
@@ -1092,6 +1325,8 @@ def _summary(
     budget: WallBudget,
     *,
     stopped: bool,
+    stop_reason: str | None,
+    infrastructure_wall_s: float,
 ) -> dict[str, Any]:
     incumbent = dataset.best_hf_feasible(config)
     if incumbent is None or not isinstance(incumbent, PillarOutcome):
@@ -1121,6 +1356,7 @@ def _summary(
             "fidelity": item.fidelity,
             "status": item.status,
             "failure_reason": item.failure_reason,
+            "failure_class": item.failure_class,
         }
         for item in dataset.outcomes
         if item.failed
@@ -1132,6 +1368,8 @@ def _summary(
         "seed": config.seed,
         "run_id": config.run_id,
         "stopped": stopped,
+        "stop_reason": stop_reason,
+        "infrastructure_wall_s": infrastructure_wall_s,
         "acquisition": HF_METHOD if config.method == METHOD_HF else MF_METHOD,
         "d_f_mm": config.d_f_mm,
         "cp_excess_max": config.cp_excess_max,
@@ -1150,7 +1388,10 @@ def _summary(
         "note": (
             "offline_replay does not measure new CFD savings."
             if config.mode == MODE_REPLAY
-            else "Live costs count reused results, including failures, as benchmark spend."
+            else (
+                "Live costs charge recorded wall time, including failures. "
+                "Infrastructure waits are logged and are not charged."
+            )
         ),
     }
 
@@ -1163,13 +1404,24 @@ def _write(
     history: list[dict[str, Any]],
     *,
     stopped: bool,
+    stop_reason: str | None = None,
+    infrastructure_wall_s: float = 0.0,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
-    summary = _summary(config, dataset, budget, stopped=stopped)
+    summary = _summary(
+        config,
+        dataset,
+        budget,
+        stopped=stopped,
+        stop_reason=stop_reason,
+        infrastructure_wall_s=infrastructure_wall_s,
+    )
     payload = {
         "problem": config.problem,
         "budget_hf_equivalent": config.budget_hf_equivalent,
         "max_sequential": config.max_sequential,
+        "infrastructure_backoff_s": list(config.infrastructure_backoff_s),
+        "infrastructure_cap_s": config.infrastructure_cap_s,
         "objective": "maximize lmh (lmh_window_module)",
         "constraints": [
             f"cp_average - 1 <= {config.cp_excess_max}",
@@ -1177,7 +1429,9 @@ def _write(
         ],
         "acquisition": summary["acquisition"],
         "hf_equivalent_definition": (
-            "cumulative wall seconds (mesh + solver + extraction) / reference_hf_wall_s"
+            "cumulative wall seconds (mesh + solver + extraction; "
+            "design failures also include generate) / reference_hf_wall_s. "
+            "Infrastructure waits are excluded."
         ),
         "python": sys.version,
         "platform": platform.platform(),
@@ -1258,6 +1512,12 @@ def _require_same_stored_limits(stored: Mapping[str, Any], config: Experiment3D)
         "max_sequential": config.max_sequential,
     }
     changed = [key for key in expected if stored.get(key) != expected[key]]
+    if "infrastructure_cap_s" in stored and stored.get("infrastructure_cap_s") != config.infrastructure_cap_s:
+        changed.append("infrastructure_cap_s")
+    if "infrastructure_backoff_s" in stored and not _same_backoff(
+        stored.get("infrastructure_backoff_s"), config.infrastructure_backoff_s
+    ):
+        changed.append("infrastructure_backoff_s")
     if changed:
         raise ValueError(f"Refusing to resume because the experiment changed: {changed}.")
 
@@ -1274,9 +1534,11 @@ def _outcome_from_history_row(row: Mapping[str, Any]) -> PillarOutcome:
         mesh_wall_time_s=_optional_real(row.get("mesh_wall_time_s")),
         solver_wall_time_s=_optional_real(row.get("solver_wall_time_s")),
         extraction_wall_time_s=_optional_real(row.get("extraction_wall_time_s")),
+        generate_wall_time_s=_optional_real(row.get("generate_wall_time_s")),
         reused_existing=bool(row["reused_existing"]),
         cost_imputed=bool(row["cost_imputed"]),
         failure_reason=_optional_text(row.get("failure_reason")),
+        failure_class=_optional_text(row.get("failure_class")),
     )
 
 

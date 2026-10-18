@@ -23,6 +23,7 @@ from ro.geometry_registry import format_mfbo_pillar_geo_id
 from ro.mfbo_fidelity import parse_fidelity_level
 from ro.mfbo_adapter import (
     opening_gap_mm,
+    opening_is_near_contact,
     PillarDesign,
     _design,
     evaluate,
@@ -155,12 +156,12 @@ def require_designs_clear_opening_gap(
     designs: Sequence[PillarDesign],
     table: Mapping[str, Any],
 ) -> None:
-    """Refuse a design whose opening gap is a positive sliver under m_min."""
+    """Refuse a design whose opening gap is within ``m_min`` of contact."""
     limits = [float(table[name]["m_min"]) for name in V1_LEVELS]
     limit = min(limits)
     for design in designs:
         gap = opening_gap_mm(design.d_p_mm, design.d_h_mm, design.d_f_mm)
-        if 0.0 < gap < limit:
+        if opening_is_near_contact(gap, limit):
             raise ValueError(
                 "opening-gap sliver: "
                 f"d_p_mm={design.d_p_mm} d_h_mm={design.d_h_mm} "

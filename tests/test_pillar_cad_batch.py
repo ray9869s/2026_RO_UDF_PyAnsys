@@ -380,6 +380,51 @@ def test_worker_request_response_shutdown_and_stop_file(tmp_path):
     assert all(item == "stopped" for item in again)
 
 
+def test_keep_alive_logs_a_dead_session_and_health_says_closed(tmp_path):
+    worker = tmp_path / "geometry_worker"
+    state = {"open": True}
+
+    def keepalive():
+        state["open"] = False
+        return False
+
+    def reason():
+        return (
+            "session dropped: TimeoutError: Timeout while waiting for backend to be ready"
+            "; discovery_exit_code=1"
+        )
+
+    stop = {"flag": False}
+    thread = threading.Thread(
+        target=serve,
+        kwargs={
+            "directory": worker,
+            "handler": lambda request: {"status": "ok"},
+            "session_open": lambda: state["open"],
+            "session_keepalive": keepalive,
+            "session_reason": reason,
+            "keepalive_s": 0,
+            "sleep_s": 0.01,
+            "stop": stop,
+        },
+        daemon=True,
+    )
+    thread.start()
+    _wait_ready(worker)
+    health = {}
+    for _ in range(100):
+        health = json.loads((worker / "health.json").read_text(encoding="utf-8"))
+        if health.get("session_open") is False:
+            break
+        time.sleep(0.01)
+    stop["flag"] = True
+    thread.join(2)
+    assert health["session_open"] is False
+    log = (worker / "worker.log").read_text(encoding="utf-8")
+    assert "discovery_exit_code=1" in log
+    assert "session_open=false" in log
+
+
 def test_sigint_sets_the_stop_flag_the_worker_watches():
     stop = {"flag": False}
     installed = _install_stop_signals(stop)

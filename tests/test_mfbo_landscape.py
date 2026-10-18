@@ -17,6 +17,7 @@ from ro.mfbo_3d import (
     LiveEvaluator,
     format_plan,
     format_recorded_initial_charges,
+    geometry_block_reason,
     load_experiment,
     mesh_id_for_settings,
 )
@@ -50,6 +51,29 @@ class _Surface:
         rows = np.atleast_2d(np.asarray(x, dtype=float))
         mean = np.array([self.function(row[0], row[1]) for row in rows], dtype=float)
         return mean, np.full(len(rows), 1.0e-18)
+
+
+def test_seventeen_grid_blocks_near_contact_and_keeps_the_merged_crash_point():
+    hf = {
+        "lmh": _Surface(lambda x1, x2: 10.0 + x1 + x2),
+        "dp": _Surface(lambda _x1, _x2: 1000.0),
+        "cp_excess": _Surface(lambda _x1, _x2: 0.01),
+    }
+    found = _search(hf, BOX, cp_excess_max=0.04, dp_max_pa_per_m=71000.0, grid=17)
+    assert found["n_cells"] == 17 * 17
+    assert found["n_blocked"] == 16
+    blocked = []
+    span = 16
+    for index_p in range(17):
+        for index_h in range(17):
+            d_p = 0.6 + 0.4 * index_p / span
+            d_h = 0.3 * index_h / span
+            if geometry_block_reason(d_p, d_h, 0.4, 0.006) is not None:
+                blocked.append((round(d_p, 4), round(d_h, 4)))
+    assert (0.6, 0.0375) in blocked
+    assert (0.775, 0.1875) in blocked
+    assert (0.6, 0.1125) not in blocked
+    assert (0.8, 0.1875) not in blocked
 
 
 def test_linear_surface_optimum_sits_on_the_tighter_constraint():

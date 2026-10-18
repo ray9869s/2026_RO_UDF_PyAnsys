@@ -51,6 +51,12 @@ def build_parser():
     parser.add_argument("--d-p-max", type=float, default=1.00)
     parser.add_argument("--d-h-min", type=float, default=0.00)
     parser.add_argument("--d-h-max", type=float, default=0.30)
+    parser.add_argument(
+        "--grid",
+        type=int,
+        default=None,
+        help="Square search grid for the feasible count and optimum. Contours stay fine.",
+    )
     return parser
 
 
@@ -64,6 +70,7 @@ def main(argv=None) -> int:
             box,
             cp_excess_max=args.cp_excess_max,
             dp_max_pa_per_m=args.dp_max,
+            search_grid=args.grid,
         )
         text = format_report(report)
         print(text, end="", flush=True)

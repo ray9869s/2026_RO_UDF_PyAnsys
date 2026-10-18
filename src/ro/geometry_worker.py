@@ -28,6 +28,9 @@ READY_TIMEOUT_S = 120
 DISCOVERY_START_RETRIES = 1
 # Pad after the worst-case Discovery open so the geometry build can finish.
 FIRST_REQUEST_MARGIN_S = 60
+# Idle Discovery sessions die. A cheap call on this period keeps one open.
+KEEPALIVE_S = 60.0
+WORKER_LOG = "worker.log"
 
 
 def serve(
@@ -40,6 +43,9 @@ def serve(
     stop=None,
     on_stop=None,
     token=None,
+    session_keepalive=None,
+    keepalive_s=KEEPALIVE_S,
+    session_reason=None,
 ):
     """Handle one request at a time until stop, shutdown, or ``stop_file``.
 
@@ -47,6 +53,8 @@ def serve(
     then the loop exits. ``handler`` returns the response object.
     ``token`` is the supervisor's per-launch id. The environment variable is
     the same id when this process was spawned by the supervisor.
+    ``session_keepalive`` is called while idle. A false result or an
+    exception is the session closing; the reason is appended to ``worker.log``.
     """
     root = Path(directory)
     _prepare(root)
@@ -54,14 +62,30 @@ def serve(
     flag = {"flag": False} if stop is None else stop
     installed = _install_stop_signals(flag)
     launch_token = os.environ.get(_TOKEN_ENV) if token is None else token
+    last_keepalive = time.monotonic()
     try:
-        _write_health(root, status="ready", session_open=bool(session_open()), token=launch_token)
+        _write_health(
+            root,
+            status="ready",
+            session_open=bool(session_open()),
+            token=launch_token,
+            session_reason=session_reason,
+        )
         while not _stop_requested(flag, root, stop_file):
             claimed = _claim(root)
             if claimed is None:
+                if session_keepalive is not None and time.monotonic() - last_keepalive >= float(keepalive_s):
+                    last_keepalive = time.monotonic()
+                    _keepalive(root, session_keepalive, session_reason, launch_token)
                 time.sleep(sleep_s)
                 continue
-            _write_health(root, status="busy", session_open=bool(session_open()), token=launch_token)
+            _write_health(
+                root,
+                status="busy",
+                session_open=bool(session_open()),
+                token=launch_token,
+                session_reason=session_reason,
+            )
             try:
                 payload = json.loads(claimed.read_text(encoding="utf-8"))
                 if not isinstance(payload, dict):
@@ -76,16 +100,35 @@ def serve(
                     "error": f"{type(exc).__name__}: {exc}",
                     "session_reused": False,
                 }
+                _log(root, f"request failed: {type(exc).__name__}: {exc}")
             response.setdefault("request_id", claimed.name[: -len(".json")])
             _atomic_json(root / "responses" / claimed.name, response)
             claimed.unlink()
-            _write_health(root, status="ready", session_open=bool(session_open()), token=launch_token)
+            _write_health(
+                root,
+                status="ready",
+                session_open=bool(session_open()),
+                token=launch_token,
+                session_reason=session_reason,
+            )
     finally:
         for sig, previous in installed:
             signal.signal(sig, previous)
         if on_stop is not None:
-            on_stop()
-        _write_health(root, status="stopped", session_open=False, token=launch_token)
+            try:
+                on_stop()
+            except Exception as exc:
+                _log(root, f"session closed: {type(exc).__name__}: {exc}")
+        reason = session_reason() if callable(session_reason) else None
+        if reason:
+            _log(root, f"session closed: {reason}")
+        _write_health(
+            root,
+            status="stopped",
+            session_open=False,
+            token=launch_token,
+            session_reason=session_reason,
+        )
 
 
 def first_request_timeout_s(
@@ -401,7 +444,31 @@ def _first_request_timeout_message(directory: Path) -> str:
     return f"geometry worker timed out waiting for the first request. health.json: {body}"
 
 
-def _write_health(directory: Path, *, status: str, session_open: bool, token) -> None:
+def _keepalive(directory: Path, session_keepalive, session_reason, token) -> None:
+    try:
+        alive = bool(session_keepalive())
+    except Exception as exc:
+        _log(directory, f"session closed: {type(exc).__name__}: {exc}")
+        alive = False
+    else:
+        previous = _read_json(directory / "health.json")
+        already_down = isinstance(previous, dict) and previous.get("session_open") is False
+        if not alive and not already_down:
+            reported = session_reason() if callable(session_reason) else None
+            if not reported:
+                reported = "keep-alive reported the session down"
+            _log(directory, f"session closed: {reported}")
+    _write_health(
+        directory,
+        status="ready",
+        session_open=alive,
+        token=token,
+        session_reason=session_reason,
+    )
+
+
+def _write_health(directory: Path, *, status: str, session_open: bool, token, session_reason=None) -> None:
+    previous = _read_json(directory / "health.json")
     _atomic_json(
         directory / "health.json",
         {
@@ -411,6 +478,28 @@ def _write_health(directory: Path, *, status: str, session_open: bool, token) ->
             "session_open": bool(session_open),
         },
     )
+    changed = (
+        not isinstance(previous, dict)
+        or previous.get("status") != status
+        or previous.get("session_open") is not bool(session_open)
+    )
+    if not changed:
+        return
+    extra = ""
+    if isinstance(previous, dict) and previous.get("session_open") is True and not session_open:
+        if callable(session_reason):
+            reason = session_reason()
+            if reason:
+                extra = f" reason={reason}"
+    _log(directory, f"health status={status} session_open={str(bool(session_open)).lower()}{extra}")
+
+
+def _log(directory: Path, message: str) -> None:
+    path = Path(directory) / WORKER_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{stamp} {message}\n")
 
 
 def _pid_alive(pid) -> bool:
