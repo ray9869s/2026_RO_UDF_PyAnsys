@@ -21,6 +21,7 @@ from ro.mfbo_3d import (
     campaign_pillar_diameter_mm,
     campaign_pillar_geo_ids,
     experiment_dir,
+    format_plan,
     geometry_block_reason,
     load_experiment,
     run_optimization,
@@ -413,6 +414,29 @@ def test_v2_grid_is_17_and_keeps_the_v1_box_and_initial_designs() -> None:
     assert v2["initial_lf"] == v1["initial_lf"]
     assert v2["infrastructure_backoff_s"] == [300, 600, 1200]
     assert v2["infrastructure_cap_s"] == 7200
+    assert v2["seed"] == v1["seed"] == 0
+    assert v2["cp_excess_max"] == 0.04
+    assert v2["dp_max_pa_per_m"] == 72000
+    assert "(0.75, 0.0375)" in v2["note"]
+    assert "(0.75, 0.075)" in v2["note"]
+    assert "Both methods run v2 from scratch." in v2["note"]
+
+
+def test_experiment_note_loads_and_stays_out_of_the_problem(tmp_path: Path) -> None:
+    path = tmp_path / "note.json"
+    _load(tmp_path, method="hf_bo", name="note", max_sequential=0)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["note"] = "dp_max is 72000 because the v1 points sit just above 71000."
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_experiment(path, repo_root=REPO_ROOT, data_root=tmp_path)
+    assert loaded.note == payload["note"]
+    assert "note" not in loaded.problem
+    assert payload["note"] in format_plan(loaded)
+
+    payload["note"] = "  "
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="note"):
+        load_experiment(path, repo_root=REPO_ROOT, data_root=tmp_path)
 
 
 def _load(directory: Path, *, method: str, name: str, max_sequential: int = 4):

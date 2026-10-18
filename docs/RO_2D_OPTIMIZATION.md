@@ -556,3 +556,35 @@ python scripts/mfbo/run_3d_mfbo.py emit-queue \
 python scripts/mfbo/job_queue.py run \
   /c/ro_data_mfbo/mfbo3d/studies/optimization/3d/v1_queue.json
 ```
+
+## 3D v2 experiment
+
+`configs/mfbo_3d_experiment.v2.json` keeps the v1 box, seed 0, run id,
+fidelity table, and the same four HF and LF initial points. The candidate
+grid is 17 by 17. `cp_excess_max` stays 0.040. `dp_max_pa_per_m` is 72000.
+
+On that grid, 71000 Pa/m predicts 6 feasible points, all on the
+near-contact diagonal, where `|G|` is a few micrometres up to about 20 µm.
+None of the 9 valid `hf_bo` v1 HF points were feasible at 71000. At 72000
+the v1 points `(0.75, 0.0375)` (CP-1 0.0398, dP/L 71595 Pa/m, LMH 24.40)
+and `(0.75, 0.075)` (CP-1 0.0397, dP/L 71749 Pa/m, LMH 24.41) become
+feasible. The config `note` records that choice.
+
+`experiment_id` is `v2`, so `hf_bo` and `mfbo` each start with an empty
+history under `studies/optimization/3d/{hf_bo|mfbo}/v2`. They do not
+continue the v1 runs.
+
+```bash
+python scripts/mfbo/run_3d_mfbo.py run \
+  --config configs/mfbo_3d_experiment.v2.json \
+  --data-root /c/ro_data_mfbo/mfbo3d \
+  --dry-run
+
+python scripts/mfbo/run_3d_mfbo.py emit-queue \
+  --config configs/mfbo_3d_experiment.v2.json \
+  --data-root /c/ro_data_mfbo/mfbo3d \
+  --out /c/ro_data_mfbo/mfbo3d/studies/optimization/3d/v2_queue.json
+
+python scripts/mfbo/job_queue.py run \
+  /c/ro_data_mfbo/mfbo3d/studies/optimization/3d/v2_queue.json
+```

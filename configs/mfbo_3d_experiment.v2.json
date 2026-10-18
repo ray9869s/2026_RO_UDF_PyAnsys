@@ -10,7 +10,8 @@
     "d_h_mm": [0.0, 0.3]
   },
   "cp_excess_max": 0.04,
-  "dp_max_pa_per_m": 71000,
+  "dp_max_pa_per_m": 72000,
+  "note": "On the 17 x 17 grid, dp_max 71000 predicts only 6 feasible points, all along the near-contact diagonal (|G| of a few to ~20 µm), and none of the 9 valid hf_bo v1 HF points were feasible. At 72000 the v1 points (0.75, 0.0375) [CP-1 0.0398, dP/L 71595, LMH 24.40] and (0.75, 0.075) [0.0397, 71749, 24.41] become feasible. Both methods run v2 from scratch.",
   "budget_hf_equivalent": "11h",
   "max_sequential": 24,
   "reference_hf_wall_s": "screen_median",

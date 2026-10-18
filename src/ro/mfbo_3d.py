@@ -106,6 +106,7 @@ OPTIONAL_FIELDS = (
     "screen_csv",
     "infrastructure_backoff_s",
     "infrastructure_cap_s",
+    "note",
 )
 DEFAULT_INFRASTRUCTURE_BACKOFF_S = (300.0, 600.0, 1200.0)
 DEFAULT_INFRASTRUCTURE_CAP_S = 7200.0
@@ -380,6 +381,7 @@ class Experiment3D:
     screen_csv: str | None = None
     infrastructure_backoff_s: tuple[float, ...] = DEFAULT_INFRASTRUCTURE_BACKOFF_S
     infrastructure_cap_s: float = DEFAULT_INFRASTRUCTURE_CAP_S
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -624,6 +626,7 @@ def load_experiment(
     proxy = _optional_cost_proxy(payload)
     backoff = _infrastructure_backoff(payload)
     cap_s = _infrastructure_cap(payload)
+    note = _experiment_note(payload)
     grid = payload["candidate_grid"]
     if isinstance(grid, bool) or not isinstance(grid, int) or grid < 2:
         raise ValueError(f"candidate_grid must be an integer >= 2, got {grid!r}.")
@@ -707,6 +710,7 @@ def load_experiment(
         screen_csv=screen_csv,
         infrastructure_backoff_s=backoff,
         infrastructure_cap_s=cap_s,
+        note=note,
     )
 
 
@@ -773,6 +777,8 @@ def format_plan(config: Experiment3D) -> str:
         f"(backoff_s={waits}, cap_s={config.infrastructure_cap_s}). "
         "That wait is not charged. A design failure is charged its recorded wall time."
     )
+    if config.note:
+        lines.append(config.note)
     return "\n".join(lines)
 
 
@@ -891,6 +897,15 @@ def _infrastructure_cap(payload: Mapping[str, Any]) -> float:
     if "infrastructure_cap_s" not in payload:
         return DEFAULT_INFRASTRUCTURE_CAP_S
     return _positive("infrastructure_cap_s", payload["infrastructure_cap_s"])
+
+
+def _experiment_note(payload: Mapping[str, Any]) -> str | None:
+    if "note" not in payload or payload["note"] is None:
+        return None
+    note = payload["note"]
+    if not isinstance(note, str) or not note.strip():
+        raise ValueError(f"note must be a non-empty string, got {note!r}.")
+    return note
 
 
 def _same_backoff(stored: Any, current: tuple[float, ...]) -> bool:
@@ -1438,6 +1453,8 @@ def _write(
         "numpy": version("numpy"),
         "botorch": None,
     }
+    if config.note:
+        payload["note"] = config.note
     _write_json(destination / "config.json", payload)
     _write_json(destination / "history.json", history)
     _write_json(destination / "final_summary.json", summary)
