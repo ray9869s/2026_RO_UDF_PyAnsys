@@ -526,6 +526,7 @@ def test_queue_id_mismatch_refuses_and_releases_the_lock(tmp_path, capsys):
         ([{"id": "ok", "argv": ["x"], "env": {"A": 1}}], "string"),
         ([{"id": "ok", "argv": ["x"], "cwd": ""}], "cwd"),
         ([{"id": "ok", "argv": ["x"], "extra": 1}], "unknown"),
+        ([{"id": "ok", "argv": ["x"], "console": False}], "console"),
     ],
 )
 def test_invalid_queue_is_refused(tmp_path, payload, match):
@@ -533,3 +534,60 @@ def test_invalid_queue_is_refused(tmp_path, payload, match):
     _write(queue, payload)
     with pytest.raises(job_queue.QueueError, match=match):
         job_queue.load_queue(queue)
+
+
+def test_console_job_gets_a_discovery_console_and_a_plain_job_keeps_the_log(
+    tmp_path, monkeypatch
+):
+    _pin_head(monkeypatch)
+    from ro.discovery_session import (
+        CREATE_NEW_CONSOLE,
+        CREATE_NEW_PROCESS_GROUP,
+        CREATE_NO_WINDOW,
+        DETACHED_PROCESS,
+        discovery_stdio_kwargs,
+    )
+
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        del argv
+        seen.append(kwargs)
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(job_queue.subprocess, "run", fake_run)
+    plain = (tmp_path / "plain.json").resolve()
+    _write(plain, [{"id": "plain", "argv": _py("print(1)")}])
+    assert job_queue.main(["run", str(plain)]) == job_queue.EXIT_OK
+    plain_kwargs = seen[0]
+    assert plain_kwargs["stdout"] is not None
+    assert plain_kwargs["stderr"] is subprocess.STDOUT
+    assert plain_kwargs.get("stdin") is None
+    assert "creationflags" not in plain_kwargs
+    assert "RO_DISCOVERY_LOG" not in plain_kwargs["env"]
+
+    seen.clear()
+    console = (tmp_path / "console.json").resolve()
+    _write(
+        console,
+        [{"id": "convert-one", "argv": _py("print(1)"), "console": True}],
+    )
+    assert job_queue.main(["run", str(console)]) == job_queue.EXIT_OK
+    kwargs = seen[0]
+    expected = discovery_stdio_kwargs()
+    assert kwargs["stdin"] is None
+    assert kwargs["stdout"] is None
+    assert kwargs["stderr"] is None
+    assert kwargs["shell"] is False
+    if os.name == "nt":
+        flags = kwargs["creationflags"]
+        assert flags == expected["creationflags"] == CREATE_NEW_CONSOLE
+        assert flags & CREATE_NO_WINDOW == 0
+        assert flags & DETACHED_PROCESS == 0
+        assert flags & CREATE_NEW_PROCESS_GROUP == 0
+    else:
+        assert "creationflags" not in kwargs
+    log = Path(kwargs["env"]["RO_DISCOVERY_LOG"])
+    assert log.name == "convert-one.log"
+    assert kwargs["env"]["RO_DISCOVERY_CONSOLE"] == "1"
+    assert "Discovery job" in log.read_text(encoding="utf-8")

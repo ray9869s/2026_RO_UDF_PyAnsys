@@ -8,7 +8,8 @@ A session that fails is closed, Discovery and SpaceClaim processes that
 session started are terminated, and the geometry is tried once more.
 
 Importing this module does not launch Discovery. ``--emit-queue`` writes a
-job-queue JSON file and does not convert.
+job-queue JSON file and does not convert. Each conversion job asks the
+queue for its own console, because this process launches Discovery.
 
 Production meshing stays on ``.dsco`` under ``RO_DATA_ROOT/geometries``.
 To mesh from this tree, leave those defaults and pass
@@ -27,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
+from ro.discovery_session import attach_queued_discovery_log
 from ro.solver_common import sha256_file
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -155,6 +157,7 @@ def conversion_jobs() -> list[dict]:
                 geo_id,
             ],
             "cwd": root,
+            "console": True,
         }
         for geo_id in CAMPAIGN_GEO_ID_ORDER
     ]
@@ -439,6 +442,7 @@ def build_parser():
 
 
 def main(argv=None, launch=None) -> int:
+    attach_queued_discovery_log()
     args = build_parser().parse_args(argv)
     if args.emit_queue is not None:
         if args.only is not None:

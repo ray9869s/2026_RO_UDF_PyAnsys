@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -129,6 +131,7 @@ def test_emit_queue_lists_every_campaign_geometry(tmp_path):
     assert len(jobs) == len(CAMPAIGN_GEO_ID_ORDER) == 31
     assert jobs[0]["id"] == f"parity-{CAMPAIGN_GEO_ID_ORDER[0]}"
     assert jobs[0]["argv"][1].endswith("parity_campaign_pmdb.py")
+    assert all(job["console"] is True for job in jobs)
 
 
 def test_work_root_under_manual_cad_is_refused():
@@ -356,3 +359,45 @@ def test_reevaluate_uses_the_record_and_does_not_probe(tmp_path, capsys):
     assert code == 2
     assert json.loads(one_sided.read_text(encoding="utf-8"))["status"] == "failed"
     assert (geo_dir / "parity_reevaluated_20261011T050100Z.json").is_file()
+
+
+def test_probe_is_started_on_a_discovery_console(monkeypatch, tmp_path):
+    from ro.discovery_session import (
+        CREATE_NEW_CONSOLE,
+        CREATE_NEW_PROCESS_GROUP,
+        CREATE_NO_WINDOW,
+        DETACHED_PROCESS,
+        discovery_stdio_kwargs,
+    )
+
+    work = tmp_path / "work"
+    log = work / parity.PROBE_STDOUT_LOG
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("PROBE FAILED: backend\n", encoding="utf-8")
+        return type("Completed", (), {"returncode": 1})()
+
+    monkeypatch.setattr(parity.subprocess, "run", fake_run)
+    command = parity.probe_command(tmp_path / "a.pmdb", work)
+    result = parity.subprocess_runner(command)
+    kwargs = seen["kwargs"]
+    assert "capture_output" not in kwargs
+    assert kwargs["stdin"] is None
+    assert kwargs["stdout"] is None
+    assert kwargs["stderr"] is None
+    assert kwargs["env"]["RO_DISCOVERY_LOG"] == str(log)
+    if os.name == "nt":
+        flags = kwargs["creationflags"]
+        assert flags == discovery_stdio_kwargs()["creationflags"] == CREATE_NEW_CONSOLE
+        assert flags & CREATE_NO_WINDOW == 0
+        assert flags & DETACHED_PROCESS == 0
+        assert flags & CREATE_NEW_PROCESS_GROUP == 0
+    else:
+        assert "creationflags" not in kwargs
+    assert result["returncode"] == 1
+    assert "PROBE FAILED: backend" in result["output"]
+    assert Path(seen["argv"][1]).name == "_probe_reference_geometry.py"

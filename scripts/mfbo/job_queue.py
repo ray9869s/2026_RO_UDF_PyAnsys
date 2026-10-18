@@ -1,10 +1,14 @@
 """Sequential queue for long MFBO workstation jobs.
 
 The queue file is a JSON list. Each job has a unique filename-safe ``id``,
-an ``argv`` list, and optional ``cwd`` and ``env``. The token ``{python}``
-in argv is replaced with ``sys.executable``. Commands run with
+an ``argv`` list, and optional ``cwd``, ``env``, and ``console``. The token
+``{python}`` in argv is replaced with ``sys.executable``. Commands run with
 ``shell=False``. Omitted ``cwd`` keeps the runner's working directory.
-``env`` is merged onto a copy of the runner environment.
+``env`` is merged onto a copy of the runner environment. ``console`` true
+starts the job on its own console and does not pass the queue log handles
+to it. The job still appends to ``logs/<id>.log`` through
+``RO_DISCOVERY_LOG``. Discovery jobs need that console. Other jobs keep
+the log redirection.
 
 Sidecars use the queue path ``<queue>`` as a prefix:
 
@@ -12,7 +16,8 @@ Sidecars use the queue path ``<queue>`` as a prefix:
 - ``<queue>.stop`` — finish the current job, then stop before the next
 - ``<queue>.lock`` — runner pid; a live pid refuses another start
 - ``<queue>.summary.log`` — one line per finished attempt, also printed
-- ``<queue dir>/logs/<id>.log`` — that job's stdout and stderr
+- ``<queue dir>/logs/<id>.log`` — that job's stdout and stderr.
+  A console job writes the same file from inside the process.
 
 ``run`` records the repo HEAD when the state file is created. A later job
 whose HEAD differs prints a warning and still runs. A job left ``running``
@@ -36,13 +41,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from ro.discovery_session import discovery_stdio_kwargs  # noqa: E402
+
 EXIT_OK = 0
 EXIT_PREFLIGHT = 1
 EXIT_JOB_FAILED = 2
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _JOB_REQUIRED = ("id", "argv")
-_JOB_OPTIONAL = ("cwd", "env")
+_JOB_OPTIONAL = ("cwd", "env", "console")
 _RECORD_FIELDS = (
     "id",
     "status",
@@ -203,6 +214,10 @@ def load_queue(queue_path: Path) -> list[dict]:
             job["cwd"] = cwd
         if "env" in item:
             job["env"] = _validate_env(item["env"], label)
+        if item.get("console") is True:
+            job["console"] = True
+        elif "console" in item:
+            raise QueueError(f"{label} console must be true.")
         jobs.append(job)
     return jobs
 
@@ -373,17 +388,40 @@ def _execute_job(job: dict, record: dict, state: dict, files: QueueFiles) -> Non
     env = os.environ.copy()
     if "env" in job:
         env.update(job["env"])
+    console = job.get("console") is True
     try:
-        with log_path.open("wb") as handle:
+        if console:
+            # The process that starts Discovery needs a console. Holding the
+            # log open here would hand those handles to Discovery.
+            env["RO_DISCOVERY_CONSOLE"] = "1"
+            env["RO_DISCOVERY_LOG"] = str(log_path.resolve())
+            log_path.write_text(
+                "Discovery job. Output is also on its console.\n",
+                encoding="utf-8",
+            )
             completed = subprocess.run(
                 argv,
                 cwd=job.get("cwd"),
                 env=env,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
                 shell=False,
                 check=False,
+                **discovery_stdio_kwargs(),
             )
+        else:
+            with log_path.open("wb") as handle:
+                # stdout and stderr are the job log, and stdin is inherited.
+                # No CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, or
+                # CREATE_NO_WINDOW. A child that starts Discovery cannot
+                # inherit this redirection: the backend process never appears.
+                completed = subprocess.run(
+                    argv,
+                    cwd=job.get("cwd"),
+                    env=env,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    shell=False,
+                    check=False,
+                )
     except OSError as exc:
         with log_path.open("ab") as handle:
             message = f"job failed to start: {exc}\n"

@@ -2,11 +2,11 @@
 
 Importing this module does not launch Discovery. ``emit-queue`` writes one
 ``job_queue`` job per chunk, so ``<queue>.stop`` finishes the current chunk
-and does not start the next. ``run-chunk`` builds that chunk with
-``generate_pillar_cad.py --batch`` in a new process (one Discovery session)
-and, if that process fails, retries once in another process. A geometry
-that already passed is skipped. The batch path writes
-``<geo_id>_generate_wall_time.json``.
+and does not start the next. The queue log replaces that job's stdout and
+stderr. ``run-chunk`` does not pass those handles on: ``generate_pillar_cad.py
+--batch`` is a new process with a console (one Discovery session), and a
+failed process is retried once. A geometry that already passed is skipped.
+The batch path writes ``<geo_id>_generate_wall_time.json``.
 """
 
 from __future__ import annotations
@@ -20,6 +20,14 @@ _SRC = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from ro.discovery_session import (  # noqa: E402
+    CREATE_NEW_CONSOLE as _CREATE_NEW_CONSOLE,
+    CREATE_NEW_PROCESS_GROUP as _CREATE_NEW_PROCESS_GROUP,
+    CREATE_NO_WINDOW as _CREATE_NO_WINDOW,
+    DETACHED_PROCESS as _DETACHED_PROCESS,
+    discovery_launch_flags,
+    discovery_stdio_kwargs,
+)
 from ro.geometry_registry import format_mfbo_pillar_geo_id  # noqa: E402
 from ro.mfbo_3d import (  # noqa: E402
     HF,
@@ -84,6 +92,13 @@ def clear_incomplete(entry: dict) -> None:
 def default_batch_command(batch_path: Path) -> list[str]:
     """One new interpreter. ``--batch`` is one Discovery session for the file."""
     return [sys.executable, str(_GENERATE), "--batch", str(batch_path)]
+
+
+def batch_subprocess_kwargs() -> dict:
+    """Stdio stays on the console. The queue log is not inherited."""
+    kwargs = discovery_stdio_kwargs()
+    kwargs["check"] = False
+    return kwargs
 
 
 def execute_chunk(batch_path: Path, *, command=None, attempts: int = _CHUNK_ATTEMPTS) -> int:
@@ -230,7 +245,7 @@ def _entry(config, data_root: Path, point: PillarPoint, fidelity: str) -> dict |
 
 def _run_batch(argv: list[str]) -> int:
     try:
-        completed = subprocess.run(argv, check=False)
+        completed = subprocess.run(argv, **batch_subprocess_kwargs())
     except OSError as exc:
         print(f"batch process failed to start: {exc}", file=sys.stderr)
         return 1

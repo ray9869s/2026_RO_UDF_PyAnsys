@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,17 @@ SETTINGS = {
 
 def _ok_runner(calls):
     def runner(argv, **kwargs):
-        calls.append({"argv": argv, "env": kwargs["env"], "shell": kwargs["shell"]})
+        calls.append(
+            {
+                "argv": argv,
+                "env": kwargs["env"],
+                "shell": kwargs["shell"],
+                "stdin": kwargs.get("stdin"),
+                "stdout": kwargs.get("stdout"),
+                "stderr": kwargs.get("stderr"),
+                "creationflags": kwargs.get("creationflags"),
+            }
+        )
         stdout = kwargs.get("stdout")
         if stdout is not None:
             stdout.write(b"ok\n")
@@ -45,6 +56,10 @@ def test_child_gets_data_root_and_parent_env_stays(monkeypatch, tmp_path):
     assert os.environ["RO_DATA_ROOT"] == "C:/keep-me"
     assert calls[0]["env"]["RO_DATA_ROOT"] == tmp_path.resolve().as_posix()
     assert calls[0]["shell"] is False
+    assert calls[0]["stdin"] is subprocess.DEVNULL
+    assert calls[0]["stderr"] is subprocess.STDOUT
+    assert calls[0]["stdout"] is not None
+    assert calls[0]["creationflags"] is None
     argv = calls[0]["argv"]
     assert argv[1].endswith("scripts/generate_pillar_cad.py")
     assert "--d-p-mm" in argv

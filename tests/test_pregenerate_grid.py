@@ -396,6 +396,51 @@ def test_batch_command_is_a_new_interpreter() -> None:
     assert argv[2:] == ["--batch", "chunk.json"]
 
 
+def test_batch_process_gets_a_console_and_not_the_queue_log(tmp_path, monkeypatch) -> None:
+    script = _script()
+    if hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+        assert script._CREATE_NEW_CONSOLE == subprocess.CREATE_NEW_CONSOLE
+        assert script._CREATE_NO_WINDOW == subprocess.CREATE_NO_WINDOW
+        assert script._DETACHED_PROCESS == subprocess.DETACHED_PROCESS
+        assert script._CREATE_NEW_PROCESS_GROUP == subprocess.CREATE_NEW_PROCESS_GROUP
+    flags = script.discovery_launch_flags("nt")
+    assert flags & script._CREATE_NEW_CONSOLE
+    assert flags & script._CREATE_NO_WINDOW == 0
+    assert flags & script._DETACHED_PROCESS == 0
+    assert flags & script._CREATE_NEW_PROCESS_GROUP == 0
+    assert script.discovery_launch_flags("posix") == 0
+    kwargs = script.batch_subprocess_kwargs()
+    assert kwargs["stdin"] is None
+    assert kwargs["stdout"] is None
+    assert kwargs["stderr"] is None
+    if os.name == "nt":
+        assert kwargs["creationflags"] == flags
+    else:
+        assert "creationflags" not in kwargs
+
+    entries = _two_entries(tmp_path)
+    batch = tmp_path / "chunk.json"
+    batch.write_text(json.dumps(entries), encoding="utf-8")
+    seen: dict = {}
+
+    def fake_run(argv, **run_kwargs):
+        seen["argv"] = list(argv)
+        seen["kwargs"] = run_kwargs
+        pending = json.loads(Path(argv[argv.index("--batch") + 1]).read_text(encoding="utf-8"))
+        for entry in pending:
+            _write_passed(entry)
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+    assert script.execute_chunk(batch) == 0
+    assert seen["argv"][0] == sys.executable
+    assert seen["argv"][1].endswith("generate_pillar_cad.py")
+    assert seen["argv"][2:4] == ["--batch", str(batch.with_suffix(".pending.json"))]
+    assert seen["kwargs"] == kwargs
+    assert "env" not in seen["kwargs"]
+    assert "cwd" not in seen["kwargs"]
+
+
 def test_unknown_geometry_is_refused(tmp_path: Path) -> None:
     path = _live_file(tmp_path, name="badgeo", geometry="cached")
     with pytest.raises(ValueError, match="geometry"):

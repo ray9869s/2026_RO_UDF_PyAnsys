@@ -27,6 +27,7 @@ from pathlib import Path
 import ansys.fluent.core as pyfluent
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
+from ro.discovery_session import attach_queued_discovery_log
 from ro.paths import geometry_dir, project_root
 
 FAMILY = "pillar"
@@ -1244,6 +1245,7 @@ def _run_diamond_batch(args):
 
 
 def main(argv=None):
+    attach_queued_discovery_log()
     args = build_parser().parse_args(argv)
     if isinstance(args.bbox_tol_mm, bool) or not math.isfinite(args.bbox_tol_mm):
         raise ValueError(f"--bbox-tol-mm must be finite, got {args.bbox_tol_mm!r}.")

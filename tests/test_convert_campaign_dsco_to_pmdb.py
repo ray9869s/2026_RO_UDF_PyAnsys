@@ -184,6 +184,7 @@ def test_emit_queue_lists_every_campaign_geometry(tmp_path):
     assert jobs[0]["id"] == f"convert-{CAMPAIGN_GEO_ID_ORDER[0]}"
     assert jobs[-1]["argv"][-1] == CAMPAIGN_GEO_ID_ORDER[-1]
     assert "convert_campaign_dsco_to_pmdb.py" in jobs[0]["argv"][1]
+    assert all(job["console"] is True for job in jobs)
     assert convert.production_meshing_overrides() == {
         "geometry_suffix": ".pmdb",
         "geometry_root": "C:/ro_data_mfbo/geometries_pmdb",

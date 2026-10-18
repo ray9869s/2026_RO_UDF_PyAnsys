@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -17,6 +19,15 @@ from ro.paths import project_root
 BACKEND_START_TIMEOUT_S = 300
 FAILURE_INFRASTRUCTURE = "infrastructure"
 FAILURE_GEOMETRY = "geometry"
+# Win32 creation flags. A queue log replaces the parent's stdout and stderr.
+# Discovery never appears unless the process that launches it has a console
+# and does not inherit those handles. The other three flags leave a GUI
+# child with no window.
+CREATE_NEW_CONSOLE = 0x00000010
+CREATE_NO_WINDOW = 0x08000000
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+_ATTACHED_LOG: Path | None = None
 
 _INFRASTRUCTURE_NAMES = {
     "connectionerror",
@@ -32,6 +43,84 @@ _INFRASTRUCTURE_TEXT = (
     "waiting for backend",
     "connectionerror",
 )
+
+
+def discovery_launch_flags(platform_name: str) -> int:
+    """Flags for a process that will start Discovery.
+
+    ``nt`` gets a new console only. ``CREATE_NO_WINDOW``,
+    ``DETACHED_PROCESS``, and ``CREATE_NEW_PROCESS_GROUP`` stay unset.
+    """
+    if platform_name == "nt":
+        return CREATE_NEW_CONSOLE
+    return 0
+
+
+def discovery_stdio_kwargs(platform_name: str | None = None) -> dict:
+    """Leave stdin, stdout, and stderr on that console.
+
+    ``None`` does not inherit a redirected queue log when combined with
+    ``CREATE_NEW_CONSOLE``. Callers add ``check`` or ``cwd`` themselves.
+    """
+    name = os.name if platform_name is None else platform_name
+    kwargs = {"stdin": None, "stdout": None, "stderr": None}
+    flags = discovery_launch_flags(name)
+    if flags:
+        kwargs["creationflags"] = flags
+    return kwargs
+
+
+class _Tee:
+    """Python-level copy of a stream. The process std handles stay put."""
+
+    def __init__(self, stream, handle):
+        self._stream = stream
+        self._handle = handle
+
+    def write(self, data):
+        if self._stream is not None:
+            self._stream.write(data)
+        self._handle.write(data)
+        self._handle.flush()
+        if isinstance(data, str):
+            return len(data)
+        return 0
+
+    def flush(self):
+        if self._stream is not None:
+            self._stream.flush()
+        self._handle.flush()
+
+    def isatty(self):
+        isatty = getattr(self._stream, "isatty", None)
+        if not callable(isatty):
+            return False
+        return bool(isatty())
+
+    def fileno(self):
+        if self._stream is None:
+            raise OSError("stdout is not a console")
+        return self._stream.fileno()
+
+
+def attach_discovery_log(path) -> None:
+    """Append stdout and stderr to ``path`` without replacing the OS handles."""
+    global _ATTACHED_LOG
+    destination = Path(path)
+    if _ATTACHED_LOG == destination:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle = destination.open("a", encoding="utf-8", newline="\n")
+    sys.stdout = _Tee(sys.stdout, handle)
+    sys.stderr = _Tee(sys.stderr, handle)
+    _ATTACHED_LOG = destination
+
+
+def attach_queued_discovery_log() -> None:
+    """Tee to ``RO_DISCOVERY_LOG`` when a queue job started this process."""
+    path = os.environ.get("RO_DISCOVERY_LOG")
+    if path:
+        attach_discovery_log(path)
 
 
 class DiscoveryAttemptError(RuntimeError):

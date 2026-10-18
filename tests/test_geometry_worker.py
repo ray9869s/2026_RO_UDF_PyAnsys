@@ -442,3 +442,87 @@ def test_failed_reopen_restarts_a_fresh_interpreter_before_backoff(
     finally:
         supervisor.shutdown()
 
+
+def test_worker_spawn_gets_a_discovery_console(tmp_path: Path, monkeypatch) -> None:
+    from ro.discovery_session import (
+        CREATE_NEW_CONSOLE,
+        CREATE_NEW_PROCESS_GROUP,
+        CREATE_NO_WINDOW,
+        DETACHED_PROCESS,
+        discovery_stdio_kwargs,
+    )
+
+    seen = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+
+        class Proc:
+            pid = 1
+
+            def poll(self):
+                return None
+
+        return Proc()
+
+    monkeypatch.setattr("ro.geometry_worker.subprocess.Popen", fake_popen)
+    supervisor = GeometryWorkerSupervisor(tmp_path / "geometry_worker")
+    supervisor._token = "token"
+    supervisor._spawn()
+    kwargs = seen["kwargs"]
+    assert kwargs["stdin"] is None
+    assert kwargs["stdout"] is None
+    assert kwargs["stderr"] is None
+    assert kwargs["env"]["RO_GEOMETRY_WORKER_TOKEN"] == "token"
+    assert kwargs["env"]["RO_GEOMETRY_WORKER_LOG"].endswith("worker.log")
+    assert "RO_GEOMETRY_WORKER_RECYCLE" not in kwargs["env"]
+    assert seen["argv"][2] == "--serve"
+    if os.name == "nt":
+        flags = kwargs["creationflags"]
+        assert flags == discovery_stdio_kwargs()["creationflags"] == CREATE_NEW_CONSOLE
+        assert flags & CREATE_NO_WINDOW == 0
+        assert flags & DETACHED_PROCESS == 0
+        assert flags & CREATE_NEW_PROCESS_GROUP == 0
+        assert kwargs.get("start_new_session") is not True
+    else:
+        assert "creationflags" not in kwargs
+        assert kwargs["start_new_session"] is True
+
+
+def test_spawned_worker_tees_worker_log_and_keeps_the_console(tmp_path, monkeypatch):
+    import ro.discovery_session as session
+    from ro.discovery_session import attach_discovery_log
+
+    seen = []
+    monkeypatch.setenv("RO_GEOMETRY_WORKER_LOG", str(tmp_path / "worker.log"))
+    monkeypatch.setattr(
+        "ro.geometry_worker.attach_discovery_log",
+        lambda path: seen.append(Path(path)),
+    )
+    serve(
+        tmp_path,
+        handler=lambda request: {},
+        session_open=lambda: False,
+        stop={"flag": True},
+        sleep_s=0,
+    )
+    assert seen == [tmp_path / "worker.log"]
+
+    original_out = sys.stdout
+    original_err = sys.stderr
+    attached = session._ATTACHED_LOG
+    path = tmp_path / "geometry_worker" / "worker.log"
+    try:
+        attach_discovery_log(path)
+        wrapped = sys.stdout
+        attach_discovery_log(path)
+        assert sys.stdout is wrapped
+        assert wrapped._stream is original_out
+        print("worker-line", flush=True)
+    finally:
+        sys.stdout = original_out
+        sys.stderr = original_err
+        session._ATTACHED_LOG = attached
+    assert "worker-line" in path.read_text(encoding="utf-8")
+

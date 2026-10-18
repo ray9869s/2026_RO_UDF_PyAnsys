@@ -13,7 +13,9 @@ terminated, and that probe is tried once more. The parity record names
 the probe and the CAD-import text.
 
 Importing this module does not launch Fluent. ``--emit-queue`` writes a
-job-queue JSON file and does not probe.
+job-queue JSON file and does not probe. Each parity job asks the queue
+for its own console. The reference probe is started the same way, and
+its text is read back from ``probe_stdout.log`` in the work directory.
 """
 
 from __future__ import annotations
@@ -22,12 +24,17 @@ import argparse
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
+from ro.discovery_session import (
+    attach_queued_discovery_log,
+    discovery_stdio_kwargs,
+)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
@@ -132,6 +139,7 @@ def parity_jobs() -> list[dict]:
                 geo_id,
             ],
             "cwd": root,
+            "console": True,
         }
         for geo_id in CAMPAIGN_GEO_ID_ORDER
     ]
@@ -378,25 +386,38 @@ def write_parity_record(path: Path, record: dict, now=None) -> Path | None:
     return archived
 
 
+PROBE_STDOUT_LOG = "probe_stdout.log"
+
+
 def subprocess_runner(command: list[str]) -> dict:
+    """Start the probe on a console. Pipes hide Discovery the way a queue log does."""
     argv = [sys.executable if item == "{python}" else item for item in command]
+    env = os.environ.copy()
+    log_path = _probe_stdout_path(argv)
+    if log_path is not None:
+        env["RO_DISCOVERY_LOG"] = str(log_path)
     completed = subprocess.run(
         argv,
         check=False,
         shell=False,
-        capture_output=True,
-        text=True,
+        env=env,
+        **discovery_stdio_kwargs(),
     )
-    output = (completed.stdout or "") + (completed.stderr or "")
-    if completed.stdout:
-        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
-    if completed.stderr:
-        print(
-            completed.stderr,
-            file=sys.stderr,
-            end="" if completed.stderr.endswith("\n") else "\n",
-        )
+    output = ""
+    if log_path is not None and log_path.is_file():
+        output = log_path.read_text(encoding="utf-8", errors="replace")
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n")
     return {"returncode": int(completed.returncode), "output": output}
+
+
+def _probe_stdout_path(argv: list[str]) -> Path | None:
+    if "--work-dir" not in argv:
+        return None
+    index = argv.index("--work-dir") + 1
+    if index >= len(argv):
+        return None
+    return Path(argv[index]) / PROBE_STDOUT_LOG
 
 
 def _probe_result(value) -> dict:
@@ -639,6 +660,7 @@ def build_parser():
 
 
 def main(argv=None, runner=None, probe=None, now=None) -> int:
+    attach_queued_discovery_log()
     args = build_parser().parse_args(argv)
     if args.emit_queue is not None and args.reevaluate:
         raise ValueError("--reevaluate does not take --emit-queue.")

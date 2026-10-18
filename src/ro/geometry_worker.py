@@ -1,7 +1,9 @@
 """One local geometry worker. Request and response are JSON files.
 
 Importing this module does not launch Discovery. The worker process is
-``scripts/generate_pillar_cad.py --serve``.
+``scripts/generate_pillar_cad.py --serve``. A supervisor start gives that
+process its own console, so it does not inherit a queue log, and tees
+its output onto ``worker.log`` in the worker directory.
 """
 
 from __future__ import annotations
@@ -16,7 +18,11 @@ import threading
 import time
 from pathlib import Path
 
-from ro.discovery_session import BACKEND_START_TIMEOUT_S
+from ro.discovery_session import (
+    BACKEND_START_TIMEOUT_S,
+    attach_discovery_log,
+    discovery_stdio_kwargs,
+)
 from ro.paths import project_root
 
 _READY = ("ready", "busy")
@@ -34,6 +40,7 @@ KEEPALIVE_S = 600.0
 WORKER_LOG = "worker.log"
 RECYCLE_MARKER = "recycle"
 _RECYCLE_ENV = "RO_GEOMETRY_WORKER_RECYCLE"
+_LOG_ENV = "RO_GEOMETRY_WORKER_LOG"
 
 
 def serve(
@@ -63,6 +70,9 @@ def serve(
     exits so the supervisor can start a fresh one before any backoff.
     """
     root = Path(directory)
+    log_path = os.environ.get(_LOG_ENV)
+    if log_path:
+        attach_discovery_log(log_path)
     _prepare(root)
     _recover_inflight(root)
     flag = {"flag": False} if stop is None else stop
@@ -360,18 +370,15 @@ class GeometryWorkerSupervisor:
     def _spawn(self):
         env = os.environ.copy()
         env[_TOKEN_ENV] = self._token
+        env[_LOG_ENV] = str(self.directory / WORKER_LOG)
         if self._recycle_launch:
             env[_RECYCLE_ENV] = "1"
         else:
             env.pop(_RECYCLE_ENV, None)
-        kwargs = {
-            "cwd": str(project_root()),
-            "stdin": subprocess.DEVNULL,
-            "env": env,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
+        kwargs = discovery_stdio_kwargs()
+        kwargs["cwd"] = str(project_root())
+        kwargs["env"] = env
+        if os.name != "nt":
             kwargs["start_new_session"] = True
         return subprocess.Popen(self._command(), **kwargs)
 
