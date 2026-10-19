@@ -82,6 +82,11 @@ def test_invalid_ids_raise(monkeypatch, tmp_path, family, geo_id, mesh_id, messa
         "max085_min006_cpg5_bl8_f120_peel0",
         "max085_min006_cpg5_bl8s4_peel2",
         "max085_min006_cpg5_bl8s4_f020_peel2",
+        "max045_min006_cpg5_bl4_peel2_lpx9m003",
+        "max045_min006_cpg5_bl4_peel2_lpx13m002",
+        "max045_min006_cpg5_bl4_peel2_fs020",
+        "max045_min006_cpg5_bl4_peel2_lpx9m003_fs020",
+        "max045_min006_cpg5_bl4_f020_peel2_fs020g115",
     ],
 )
 def test_mesh_id_accepts_campaign_and_optional_bl_height_factor(mesh_id):
@@ -99,6 +104,10 @@ def test_mesh_id_accepts_campaign_and_optional_bl_height_factor(mesh_id):
         "max085_min006_cpg5_bl4",  # missing peel
         "max085_min006_cpg5_bl8_s4_peel2",
         "max085_min006_cpg5_bl8s_peel2",
+        "max085_min006_cpg5_bl4_peel2_lpx9m03",
+        "max085_min006_cpg5_bl4_peel2_fs20",
+        "max085_min006_cpg5_bl4_peel2_fs020_lpx9m003",
+        "max085_min006_cpg5_bl4_lpx9m003_peel2",
     ],
 )
 def test_mesh_id_rejects_malformed_bl_height_factor_token(mesh_id):

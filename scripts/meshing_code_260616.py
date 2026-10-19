@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 
 from ro.domain_layout import DomainLayout, require_layout_matches_measured_x_extent
+from ro.local_sizing import (
+    extra_local_sizing_arguments,
+    parse_local_face_size,
+    parse_local_proximity,
+)
 from ro.geometry_registry import require_mfp_geometry_sha256
 from ro.manifest import (
     MESH_PHASE_NAMES,
@@ -624,6 +629,9 @@ if __name__ == "__main__":
     # [Local sizing controls]
     boi_curvature_normal_angle = cfg.boi_curvature_normal_angle
     boi_growth_rate = cfg.boi_growth_rate
+    # None keeps the single proximity child below byte-for-byte.
+    local_proximity = parse_local_proximity(getattr(cfg, "local_proximity", None))
+    local_face_size = parse_local_face_size(getattr(cfg, "local_face_size", None))
 
     # [Boundary layer]
     bl_height_factor = cfg.bl_height_factor
@@ -850,6 +858,7 @@ def print_meshing_input_summary():
         ),
         f"BOI curvature normal angle [deg]: {boi_curvature_normal_angle}",
         f"BOI growth rate [-]: {boi_growth_rate}",
+        *local_sizing_summary_lines(local_proximity, local_face_size),
         f"Boundary layer labels: {boundary_layer_labels}",
         f"Boundary layer offset method: {bl_offset_method}",
         f"Boundary layer first height factor [-]: {bl_height_factor}",
@@ -873,6 +882,22 @@ def print_meshing_input_summary():
         log_handle.write(text)
         if not text.endswith("\n"):
             log_handle.write("\n")
+
+
+def local_sizing_summary_lines(local_proximity, local_face_size):
+    """Input-summary lines. Omitted when no extra local sizing is set."""
+    lines = []
+    if local_proximity is not None:
+        lines.append(
+            "Local proximity: "
+            + json.dumps(local_proximity, sort_keys=True, separators=(",", ":"))
+        )
+    if local_face_size is not None:
+        lines.append(
+            "Local face size: "
+            + json.dumps(local_face_size, sort_keys=True, separators=(",", ":"))
+        )
+    return lines
 
 
 def get_available_labels(task, complete_label_key):
@@ -1258,6 +1283,33 @@ if __name__ == "__main__":
             workflow.TaskObject["Add Local Sizing"].AddChildAndUpdate(
                 DeferUpdate=False
             )
+
+            extra_local_sizing = extra_local_sizing_arguments(
+                local_proximity,
+                local_face_size,
+                max_size_mm=m_max,
+                growth_rate=boi_growth_rate,
+                curvature_normal_angle=boi_curvature_normal_angle,
+            )
+            if extra_local_sizing:
+                extra_labels = [
+                    label
+                    for arguments in extra_local_sizing
+                    for label in arguments["BOIFaceLabelList"]
+                ]
+                validate_requested_labels(
+                    workflow.TaskObject["Add Local Sizing"],
+                    r"CompleteFaceLabelList",
+                    extra_labels,
+                    "extra local sizing face labels",
+                )
+                for arguments in extra_local_sizing:
+                    workflow.TaskObject["Add Local Sizing"].Arguments.set_state(
+                        arguments
+                    )
+                    workflow.TaskObject["Add Local Sizing"].AddChildAndUpdate(
+                        DeferUpdate=False
+                    )
 
         # ======================================================
         # ##### [8] Setup Periodic Boundaries (default: before surface mesh) #####

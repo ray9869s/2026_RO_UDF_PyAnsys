@@ -44,6 +44,11 @@ Optional mesh timing, absent on older mesh leaves. A phase that did not run
 is omitted; ``mesh_wall_time_s`` is the sum of the phases that are present:
   mesh_wall_time_s:           seconds
   mesh_phase_wall_time_s:     {phase: seconds} for phases in MESH_PHASE_NAMES
+
+Optional local sizing, omitted when unset. The ``mesh_id`` suffix after
+``_peelN`` must match these objects (``_lpx…`` / ``_fs…``):
+  local_proximity:            {pairs, cells_per_gap, min_size_mm}
+  local_face_size:            {labels, size_mm, growth_rate}
 """
 
 from __future__ import annotations
@@ -59,6 +64,7 @@ from pathlib import Path
 from typing import Any
 
 from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
+from ro.local_sizing import local_sizing_suffix
 from ro.manifest_validation import (
     validate_mesh_geometry_fields,
     validate_run_geometry_fields,
@@ -355,12 +361,18 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
     ):
         _require_integer(payload, field, "Mesh", minimum=0)
     mesh_id = payload["mesh_id"]
-    if not isinstance(mesh_id, str) or not mesh_id.endswith(
-        f"_peel{payload['peel']}"
-    ):
+    if not isinstance(mesh_id, str):
+        raise ManifestError(
+            "Mesh manifest field 'mesh_id' must be a string, "
+            f"got {mesh_id!r}."
+        )
+    local_suffix = _mesh_local_sizing_suffix(payload)
+    peel_token = f"_peel{payload['peel']}{local_suffix}"
+    if not mesh_id.endswith(peel_token):
         raise ManifestError(
             "Mesh manifest mesh_id peel token must match field 'peel'. "
-            f"mesh_id={mesh_id!r}, peel={payload['peel']!r}."
+            f"mesh_id={mesh_id!r}, peel={payload['peel']!r}, "
+            f"local sizing suffix={local_suffix!r}."
         )
     if "spacer_bl" in payload:
         _require_integer(payload, "spacer_bl", "Mesh", minimum=1)
@@ -901,6 +913,47 @@ def _changed_fields(
     )
 
 
+_OPTIONAL_MESH_PARAMETER_FIELDS = (
+    "local_proximity",
+    "local_face_size",
+)
+
+
+def _changed_optional_fields(
+    existing: Mapping[str, Any],
+    incoming: Mapping[str, Any],
+    fields: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Compare fields that older manifests omit."""
+    changed = []
+    for field in fields:
+        if field not in existing and field not in incoming:
+            continue
+        if existing.get(field) != incoming.get(field):
+            changed.append(field)
+    return tuple(changed)
+
+
+def _mesh_local_sizing_suffix(payload: Mapping[str, Any]) -> str:
+    """Suffix required by optional local-sizing fields. Empty when omitted."""
+    proximity = payload["local_proximity"] if "local_proximity" in payload else None
+    face = payload["local_face_size"] if "local_face_size" in payload else None
+    if proximity is None and "local_proximity" in payload:
+        raise ManifestError(
+            "Mesh manifest local_proximity must be omitted when unset, not null."
+        )
+    if face is None and "local_face_size" in payload:
+        raise ManifestError(
+            "Mesh manifest local_face_size must be omitted when unset, not null."
+        )
+    try:
+        return local_sizing_suffix(proximity, face)
+    except ValueError as exc:
+        raise ManifestError(
+            f"Mesh manifest local sizing is invalid: {exc}"
+        ) from exc
+
+
 def _changed_after_fill(
     existing: Mapping[str, Any],
     incoming: Mapping[str, Any],
@@ -978,6 +1031,9 @@ def write_mesh_manifest(
         changed = (
             _changed_fields(existing, payload, _MESH_PARAMETER_FIELDS)
             + _changed_after_fill(existing, payload, "inlet_profile_G")
+            + _changed_optional_fields(
+                existing, payload, _OPTIONAL_MESH_PARAMETER_FIELDS
+            )
         )
         if changed:
             raise ManifestError(

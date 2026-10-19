@@ -14,8 +14,10 @@ from ro.geometry_registry import validate_known_geo_id
 
 FAMILY_RE = re.compile(r"^(?:diamond|ml|pillar|sin|empty)$")
 GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
+# Optional local-sizing tokens after peel: _lpx{cpg}m{min} then _fs{size}[g{rate}].
 MESH_ID_RE = re.compile(
-    r"^max\d{3}_min\d{3}_cpg\d+_bl(\d+)(?:s(\d+))?(?:_f\d{3})?_peel\d+$"
+    r"^max\d{3}_min\d{3}_cpg\d+_bl(\d+)(?:s(\d+))?(?:_f\d{3})?_peel\d+"
+    r"(?:_lpx\d+m\d{3})?(?:_fs\d{3}(?:g\d{3})?)?$"
 )
 # Optional _label suffix (letter-led). Bare u0p2_p6M remains the campaign form.
 # A digits-only suffix is rejected so u0p2_p6M_20 cannot look like a new u or p.

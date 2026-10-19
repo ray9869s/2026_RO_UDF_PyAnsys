@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
+from ro.local_sizing import parse_local_face_size, parse_local_proximity
 from ro.manifest import MANIFEST_SCHEMA_VERSION
 from ro.mesh_common import boundary_layers_are_split
 
@@ -70,6 +71,12 @@ def build_mesh_manifest_payload(
     }
     if boundary_layers_are_split(cfg.bl_layers, cfg.spacer_bl_layers):
         base["spacer_bl"] = cfg.spacer_bl_layers
+    proximity = parse_local_proximity(getattr(cfg, "local_proximity", None))
+    face_size = parse_local_face_size(getattr(cfg, "local_face_size", None))
+    if proximity is not None:
+        base["local_proximity"] = proximity
+    if face_size is not None:
+        base["local_face_size"] = face_size
     merged = merge_geometry_into_mesh_manifest(base, cfg.geo_id)
     # Measured porosity from fluid volume / bounding box; never a registry constant.
     measured_porosity = mesh_metrics.get("porosity")

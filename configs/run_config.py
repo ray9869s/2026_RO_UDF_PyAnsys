@@ -18,6 +18,7 @@ import re
 import types
 from pathlib import Path
 
+from ro.local_sizing import local_sizing_suffix as _local_sizing_suffix
 from ro.mesh_common import (
     boundary_layers_are_split as _boundary_layers_are_split,
     make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
@@ -133,6 +134,11 @@ periodic_shift_z = 0.0
 # Local sizing controls
 boi_curvature_normal_angle = 18
 boi_growth_rate = 1.2
+
+# None keeps the single global proximity child. A dict adds children, a
+# mesh_id suffix after _peel, and the same object on the mesh manifest.
+local_proximity = None
+local_face_size = None
 
 # Boundary layer controls
 bl_height_factor = 0.4
@@ -737,10 +743,21 @@ def validate_for_meshing():
                 f"{include_spacer_in_boundary_layers!r}."
             )
     _require_integer("peel_layers", peel_layers, minimum=0)
-    if not mesh_id.endswith(f"_peel{peel_layers}"):
+    try:
+        local_suffix = _local_sizing_suffix(
+            globals().get("local_proximity", None),
+            globals().get("local_face_size", None),
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"run_config.py local sizing is invalid: {exc}"
+        ) from exc
+    peel_token = f"_peel{int(peel_layers)}{local_suffix}"
+    if not mesh_id.endswith(peel_token):
         raise ValueError(
             "run_config.py mesh_id peel token must match peel_layers. "
-            f"mesh_id={mesh_id!r}, peel_layers={peel_layers!r}"
+            f"mesh_id={mesh_id!r}, peel_layers={peel_layers!r}, "
+            f"local sizing suffix={local_suffix!r}."
         )
 
     if m_min > m_max:
@@ -760,15 +777,16 @@ def validate_for_meshing():
         bl_layers,
         spacer_bl_layers,
     ).removeprefix("mesh_")
-    # Optional _fNNN (bl_height_factor ×1000 token) between bl and peel.
+    # Optional _fNNN (bl_height_factor token) between bl and peel.
+    # Local-sizing tokens, when set, are the suffix after _peel.
     expected_mesh_id = re.compile(
-        rf"^{re.escape(mesh_stem)}(?:_f\d{{3}})?_peel{int(peel_layers)}$"
+        rf"^{re.escape(mesh_stem)}(?:_f\d{{3}})?{re.escape(peel_token)}$"
     )
     if expected_mesh_id.fullmatch(mesh_id) is None:
         raise ValueError(
             "run_config.py mesh_id does not match the supplied mesh parameters: "
-            f"mesh_id={mesh_id!r}, expected {mesh_stem}_peel{peel_layers} "
-            f"or {mesh_stem}_fNNN_peel{peel_layers}."
+            f"mesh_id={mesh_id!r}, expected {mesh_stem}{peel_token} "
+            f"or {mesh_stem}_fNNN{peel_token}."
         )
 
     _require_set("wall_spacer_labels", wall_spacer_labels)

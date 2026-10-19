@@ -19,6 +19,9 @@ default first-height factor. A factor that differs from the template is
 inserted as ``_fNNN`` (``round(factor * 100)``, so 0.40 is ``f040``) before
 ``_peel``, which is the token ``MESH_ID_RE`` already accepts. A spacer
 layer count that differs from ``bl_layers`` is ``bl{membrane}s{spacer}``.
+``--local-proximity`` and ``--local-face-size`` append ``_lpx…`` / ``_fs…``
+after ``_peel``. ``--mesh-only`` prints the mesh cell count and does not
+solve.
 
 ``--reuse-mesh`` skips meshing when that mesh leaf already exists, its
 ``mesh_run_record.json`` status is ``SUCCESS``, and the manifest settings
@@ -46,6 +49,11 @@ import batch_solver_sweep
 import mfbo._common as mfbo_common
 import mfbo.solve_campaign_case as campaign
 from ro.campaign_matrix import format_production_mesh_id
+from ro.local_sizing import (
+    local_sizing_suffix,
+    parse_local_face_size,
+    parse_local_proximity,
+)
 from ro.convergence_quality import continuity_final_from_case_dir
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
@@ -109,6 +117,8 @@ def collect_overrides(
     bl_layers=None,
     bl_height_factor=None,
     spacer_bl_layers=None,
+    local_proximity=None,
+    local_face_size=None,
 ):
     """Return the mesh knobs the caller set. At least one is required."""
     changes = {}
@@ -130,11 +140,16 @@ def collect_overrides(
     if spacer_bl_layers is not None:
         _require_positive_int("spacer_bl_layers", spacer_bl_layers)
         changes["spacer_bl_layers"] = int(spacer_bl_layers)
+    if local_proximity is not None:
+        changes["local_proximity"] = parse_local_proximity(local_proximity)
+    if local_face_size is not None:
+        changes["local_face_size"] = parse_local_face_size(local_face_size)
     if not changes:
         raise ValueError(
             "At least one mesh override is required "
             "(--m-max, --m-min, --m-cpg, --bl-layers, "
-            "--bl-first-height-factor, --spacer-bl-layers). "
+            "--bl-first-height-factor, --spacer-bl-layers, "
+            "--local-proximity, --local-face-size). "
             "The production baseline is "
             "reextract_runs.py --copy-from-production."
         )
@@ -192,8 +207,10 @@ def study_mesh_id(
     bl_height_factor,
     template_factor,
     spacer_bl_layers=None,
+    local_proximity=None,
+    local_face_size=None,
 ):
-    """Production formatter, plus ``_fNNN`` when the factor is not the template."""
+    """Production formatter, plus ``_fNNN`` and local-sizing tokens."""
     mesh_id = format_production_mesh_id(
         m_max=m_max,
         m_min=m_min,
@@ -209,6 +226,7 @@ def study_mesh_id(
         abs_tol=_FLOAT_ABS_TOL,
     ):
         mesh_id = with_height_factor_token(mesh_id, bl_height_factor)
+    mesh_id += local_sizing_suffix(local_proximity, local_face_size)
     if MESH_ID_RE.fullmatch(mesh_id) is None:
         raise ValueError(f"study mesh_id is invalid: {mesh_id!r}.")
     return mesh_id
@@ -259,6 +277,14 @@ def apply_study_overrides(template, changes):
     """Copy the template, apply knobs, and set the study mesh_id."""
     overrides = dict(template)
     overrides.update(changes)
+    if "local_proximity" in overrides:
+        overrides["local_proximity"] = parse_local_proximity(
+            overrides["local_proximity"]
+        )
+    if "local_face_size" in overrides:
+        overrides["local_face_size"] = parse_local_face_size(
+            overrides["local_face_size"]
+        )
     factor = float(
         overrides.get("bl_height_factor", template_bl_height_factor(template))
     )
@@ -277,6 +303,8 @@ def apply_study_overrides(template, changes):
         bl_height_factor=factor,
         template_factor=template_bl_height_factor(template),
         spacer_bl_layers=overrides.get("spacer_bl_layers"),
+        local_proximity=overrides.get("local_proximity"),
+        local_face_size=overrides.get("local_face_size"),
     )
     require_distinct_mesh_id(mesh_id, template["mesh_id"])
     overrides["mesh_id"] = mesh_id
@@ -681,6 +709,14 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
             f"{_setting_text(on_disk_sha256)}, "
             f"requested {_setting_text(geometry_sha256)}"
         )
+    for key in ("local_proximity", "local_face_size"):
+        recorded = manifest[key] if key in manifest else None
+        requested = overrides[key] if key in overrides else None
+        if not _values_equal(recorded, requested):
+            mismatches.append(
+                f"{key}: recorded {_setting_text(recorded)}, "
+                f"requested {_setting_text(requested)}"
+            )
     if mismatches:
         raise ValueError(
             f"Refusing to reuse mesh leaf {directory}: " + "; ".join(mismatches) + "."
@@ -803,6 +839,27 @@ def study_report(mesh_directory, mesh_id, run_directory):
     return report
 
 
+def mesh_cell_count(mesh_directory):
+    """Cell count recorded on the mesh manifest after a successful mesh."""
+    manifest_path = Path(mesh_directory) / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Mesh manifest not found: {manifest_path}")
+    count = _read_json(manifest_path).get("cell_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise RuntimeError(
+            "Mesh manifest cell_count is not a positive integer: "
+            f"{count!r} ({manifest_path})."
+        )
+    return count
+
+
+def print_mesh_cell_count(mesh_directory, mesh_id):
+    """Print the cell count before any solve."""
+    count = mesh_cell_count(mesh_directory)
+    print(f"Mesh cell count before solve: {mesh_id} {count}")
+    return count
+
+
 def print_study_report(report):
     fields = (
         "mesh_id",
@@ -848,6 +905,27 @@ def build_parser():
     parser.add_argument("--bl-first-height-factor", type=float, default=None)
     parser.add_argument("--spacer-bl-layers", type=int, default=None)
     parser.add_argument(
+        "--local-proximity",
+        default=None,
+        help=(
+            "JSON object: pairs of label lists, cells_per_gap, min_size_mm. "
+            "Encoded as _lpx{cpg}m{min} after _peel."
+        ),
+    )
+    parser.add_argument(
+        "--local-face-size",
+        default=None,
+        help=(
+            "JSON object: labels, size_mm, growth_rate. "
+            "Encoded as _fs{size} after _peel (gNNN when growth is not 1.2)."
+        ),
+    )
+    parser.add_argument(
+        "--mesh-only",
+        action="store_true",
+        help="Mesh, print the cell count, and do not solve or extract.",
+    )
+    parser.add_argument(
         "--reuse-mesh",
         action="store_true",
         help=(
@@ -871,6 +949,16 @@ def build_parser():
     return parser
 
 
+def _json_object(flag, text):
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{flag} is not valid JSON: {exc}") from exc
+    return value
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     data_root = resolve_data_root(args.data_root)
@@ -882,6 +970,8 @@ def main(argv=None):
         bl_layers=args.bl_layers,
         bl_height_factor=args.bl_first_height_factor,
         spacer_bl_layers=args.spacer_bl_layers,
+        local_proximity=_json_object("--local-proximity", args.local_proximity),
+        local_face_size=_json_object("--local-face-size", args.local_face_size),
     )
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]
@@ -930,6 +1020,10 @@ def main(argv=None):
         )
         if mesh_result.returncode != 0:
             return _exit_code(mesh_result.returncode)
+
+    print_mesh_cell_count(leaf, study_id)
+    if args.mesh_only:
+        return 0
 
     _entry, solver_template, solver_retries, settle_s = campaign.load_template(
         args.geo_id,
