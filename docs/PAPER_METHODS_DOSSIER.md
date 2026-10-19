@@ -7,12 +7,12 @@ Paper decisions already fixed, and where the code records them:
 | Decision | Value used here | Source |
 | --- | --- | --- |
 | Flow regime | laminar | `configs/run_config.py:291` |
-| Concentration polarisation | concentration-statistics average and `CP_q999` | `src/ro/cp_concentration_stats.py:201–234` |
-| LMH | window module area `lmh_window_module` is the paper and MFBO value; window exposed area is reported alongside; `lmh_mass_balance` is the gate only | `src/ro/evaluation_window_table.py` |
+| Concentration polarisation | `cpc_window_avg_flux` and `cp_q999_window_flux` | `src/ro/cp_concentration_stats.py:201–234`; `src/ro/extract_profile.py:74–75` |
+| LMH | window module area `lmh_window_module` is the paper and MFBO value; window exposed area is reported alongside; `lmh_mass_balance` is the gate only | `src/ro/evaluation_window_table.py:429–461`; `src/ro/mfbo_adapter.py:1157` |
 | Convergence gate | post-hoc gate, independent of the solver stop | `src/ro/convergence_quality.py:1–32` |
 | Production UDF | `udfs/260822_RO_UDF.c` | `configs/run_config.py:243` |
-| Mesh used in the paper | **OPEN** | user decision; production mesh id is recorded below and is not the paper mesh |
-| Diamond evaluation window | per-geometry `configs/evaluation_window_table.json` (2026-10-09). The fixed lead of 3 is superseded; mesh manifests still store it | `scripts/mfbo/development_length.py` |
+| Mesh used in the paper | **OPEN.** Family proposals 2026-10-19: Pillar `max085_min006_cpg5_bl12s4_peel2`; ML BL 10. Diamond not converged. Production campaign id is not the paper mesh | `docs/MESH_STUDY_RESULTS.md`; production id `src/ro/campaign_matrix.py:58–59` |
+| Evaluation window | per-geometry `configs/evaluation_window_table.json` (≥ 10.395 mm, whole cells and spacer periods, max over PASS speeds). The table and `docs/EVALUATION_WINDOW.md` were generated on the host and are not in this checkout | `scripts/mfbo/development_length.py:23–35`, `:65`, `:78`; `src/ro/evaluation_window_table.py:81–83` |
 
 The 2D pilot UDF `udfs/260929_RO_UDF.c` is not the 3D campaign UDF.
 
@@ -312,7 +312,16 @@ Energy on/off, the pressure–velocity scheme, the convective schemes, and the u
 
 ## 5. Meshing workflow
 
-The paper mesh is **OPEN**. The rows below are the current production campaign settings, not a mesh-independence choice. `D0817_a60` is the one production exception: `m_max = 0.060` mm, mesh id `max060_min006_cpg5_bl4_peel2`. Every other production geometry uses `m_max = 0.085` mm and `max085_min006_cpg5_bl4_peel2` (`src/ro/campaign_matrix.py:55–59`).
+The paper mesh is **OPEN**. Family-wise tests after the 2026-10-08 meeting
+are `docs/MESH_STUDY_RESULTS.md` (host report 2026-10-19). Proposed, not
+written into the campaign matrix: Pillar
+`max085_min006_cpg5_bl12s4_peel2`; ML `M_c267` BL 10. Diamond is not
+converged. The supervisor's bar is a mesh-to-mesh change within about
+5–7%. The rows below are the current production campaign settings, not
+that choice. `D0817_a60` is the one production exception: `m_max = 0.060`
+mm, mesh id `max060_min006_cpg5_bl4_peel2`. Every other production
+geometry uses `m_max = 0.085` mm and `max085_min006_cpg5_bl4_peel2`
+(`src/ro/campaign_matrix.py:55–59`).
 
 ### 5.1 Fixed on the production template
 
@@ -348,7 +357,7 @@ The paper mesh is **OPEN**. The rows below are the current production campaign s
 | `m_min`, `m_cpg`, `bl_layers`, `spacer_bl_layers`, `peel_layers` | required case fields; mesh-study leaves change them. Not varied inside the production id above. | `configs/run_config.py:107–109`, `:135` |
 | `bl_height_factor` | optional mesh-id token `_fNNN`; absent on the production id | `configs/run_config.py:728–730` |
 
-Mesh-independence reduction (Richardson, GCI, safety factor 1.25) is implemented in `scripts/mfbo/mesh_convergence.py` and described in `docs/MESH_LANDSCAPE.md`. No paper mesh has been selected. **OPEN.**
+Mesh-independence reduction (Richardson, GCI, safety factor 1.25) is implemented in `scripts/mfbo/mesh_convergence.py` and described in `docs/MESH_LANDSCAPE.md`. Family-wise numbers are `docs/MESH_STUDY_RESULTS.md`. No paper mesh has been selected. **OPEN.**
 
 ---
 
@@ -357,6 +366,18 @@ Mesh-independence reduction (Richardson, GCI, safety factor 1.25) is implemented
 ### 6.1 Evaluation window
 
 **Paper window (2026-10-09).** Extract (`scripts/pyfluent_report_extract.py`, full and `--profile mfbo`) reads `configs/evaluation_window_table.json`. The row for the run's `geo_id` sets `n_lead_excluded`. A missing campaign `geo_id` is an error. Registered MFBO pillar ids use `family_defaults.pillar` only; diamond, ml, sin, and empty have no family default. Production campaign extraction (`RO_DATA_ROOT` `C:/ro_data`) requires that row's `mesh_id` to match the run, and `window_source` is `geo_id`. Any other data root uses the same geo row for every mesh (`window_source` `geo_row_production_mesh`) so a mesh study shares one window; pillar family defaults stay `family_default` and do not compare `mesh_id`. A fidelity level that sets `n_lead_excluded` does not read the table: the window is that count on the run mesh, and `window_source` is `fidelity_table`. `--legacy-3-cell-window` scores lead 3 and records `window_table_version` `legacy-3-cell`; it does not read the table. Trail exclusion is 0. The same cells are the CP window (`cpc_window_avg_flux`, `cp_q999_window_flux`) and the LMH window in §6.3. The run manifest and the wide summary record `n_lead_excluded`, `excluded_length_m`, `window_length_m`, `window_table_version`, `window_source`, `window_table_mesh_id`, and `run_mesh_id`.
+
+The table and `docs/EVALUATION_WINDOW.md` were generated on the host and
+are not in this checkout. The rule that writes the table
+(`scripts/mfbo/development_length.py:23–35`, `:65`, `:78`): exclusion is
+at least `L_base = 10.395` mm (three 3.465 mm reference cells), on a
+whole-cell boundary, then extended so the remaining window is a whole
+number of spacer periods. `d` is the maximum over PASS speeds
+`u0p1_p6M` / `u0p2_p6M` / `u0p3_p6M`. A geometry that is not developed
+at every speed uses `not_developed_fallback` (`:332–352`). The host
+report names a fallback for 6.93 mm sinusoids (`L_REF_M` is 6.93 mm,
+`:64`). `docs/EVALUATION_WINDOW.md` names the rows. The window is never
+empty.
 
 **Superseded 2026-10-09.** The fixed lead of 3 below is not the paper window. Mesh manifests still store lead 3; extract overwrites that with the table unless the legacy flag is set.
 
@@ -435,13 +456,14 @@ CP = (cm_num - cp_ref) / (c_b - cp_ref)
 
 The function raises if `c_b - cp_ref` is not positive. It does not return an infinite per-face value.
 
-Quantile: smallest `cm` whose cumulative area fraction is at least `p`, after sorting by `cm` (`src/ro/cp_concentration_stats.py:19–21`, `:100–113`). `p = 0.999` is `CP_q999`. `p = 0.99` is also computed and is not the paper metric (`docs/metrics_conventions.md:297–299`).
+Quantile: smallest `cm` whose cumulative area fraction is at least `p`, after sorting by `cm` (`src/ro/cp_concentration_stats.py:19–21`, `:100–113`). `p = 0.999` is `CP_q999`. `p = 0.99` is also computed and is not the paper metric (`docs/metrics_conventions.md`, **Iteration-robust QoIs**).
 
 The window quantile is computed on the window face set. Per-cell quantiles are not averaged into it (`src/ro/cp_concentration_stats.py:248–249`).
 
-Columns exist for both references: `cpc_window_avg_area`, `cpc_window_avg_flux`, `cp_q999_window_area`, `cp_q999_window_flux` (`src/ro/cp_concentration_stats.py:224–231`). The 2026-10-08 note says the meeting did not choose area versus flux (`docs/metrics_conventions.md:254–256`). That choice is **OPEN**. The MFBO extract profile’s required names are the flux columns; that is an extract-profile list, not a recorded paper decision.
+Columns exist for both references: `cpc_window_avg_area`, `cpc_window_avg_flux`, `cp_q999_window_area`, `cp_q999_window_flux` (`src/ro/cp_concentration_stats.py:224–231`).
+**Superseded 2026-10-19.** The 2026-10-08 meeting did not choose area versus flux. Comparison and MFBO now use the flux columns `cpc_window_avg_flux` and `cp_q999_window_flux` (`src/ro/extract_profile.py:74–75`; `src/ro/mfbo_adapter.py:1181–1182`). `p = 0.999` is the area-weighted 99.9th percentile of `c_m` with one window-level `c_p` reference (`src/ro/cp_concentration_stats.py:17–21`, `:78–114`). It replaces the facet maximum. `CP_q999` is auxiliary and mesh-sensitive (`docs/MESH_LANDSCAPE.md`; `docs/MESH_STUDY_RESULTS.md`). `CP_q99` is still not the paper metric.
 
-`cp_canon_window_avg` is a different definition (scalar rescale against the mid-plane `c_b`). It remains in the extract. The paper metric is the concentration-statistics pair, not the canonical column (`docs/metrics_conventions.md:251–256`, superseded sentence).
+`cp_canon_window_avg` is a different definition (scalar rescale against the mid-plane `c_b`). It remains in the extract. The paper metric is the concentration-statistics pair, not the canonical column (`docs/metrics_conventions.md`, superseded 2026-10-08 sentence).
 
 ### 6.6 Singularity of the per-face form
 

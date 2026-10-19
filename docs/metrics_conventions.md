@@ -140,9 +140,10 @@ D2450_a45 at `u0p2_p6M`, varying mesh parameters around the campaign baseline
 
 The 2026-10-07..08 pillar series in `docs/MESH_LANDSCAPE.md` reports
 CP-excess from cpc flux, not `cm_mol_m3_avg`. The table above is the
-D2450_a45 exploration. The 2026-10-08 meeting adopts the
-concentration-statistics average and `CP_q999` for comparison; see
-**Iteration-robust QoIs**.
+D2450_a45 exploration. Later family-wise numbers are
+`docs/MESH_STUDY_RESULTS.md`. The 2026-10-08 meeting adopts the
+concentration-statistics average and `CP_q999` for comparison; the
+2026-10-19 record uses the flux columns. See **Iteration-robust QoIs**.
 
 ## Averaging order
 
@@ -302,7 +303,13 @@ read that uses those columns is `docs/P6M_COMPARISON.md`.
 **Superseded for comparison (2026-10-08 meeting).** Spacer comparison
 uses the concentration-statistics average and `CP_q999`. The meeting
 did not choose the area versus flux reference. The sentence above stays
-as the rule those p6M tables were built with. **`cp_canon_window_max` is not usable** for
+as the rule those p6M tables were built with.
+**Area versus flux chosen (2026-10-19).** Comparison uses
+`cpc_window_avg_flux` and `cp_q999_window_flux`
+(`src/ro/extract_profile.py:74–75`). `CP_q999` is the area-weighted
+99.9th percentile of \(c_m\) with one window-level \(c_p\) reference
+(`src/ro/cp_concentration_stats.py:17–21`, `:78–114`, `:229–231`). It
+replaces the facet maximum. It is auxiliary and mesh-sensitive. **`cp_canon_window_max` is not usable** for
 that purpose: between the 301-iteration QoI stop and a 2000-iteration solve on
 D2450_a45 u0p1 (p = 6 MPa) it moved \(2.73751 \rightarrow 125.245\)
 (\(+4475\%\)) while `cp_canon_window_avg` moved only \(0.25\%\). The window
@@ -346,6 +353,10 @@ columns are not the spacer-ranking metric.
 adopts the average and `CP_q999` from this family. It does not name the
 area versus flux reference, and it does not adopt `CP_q99`. The column
 definitions below are unchanged. `cp_canon_window_avg` is still written.
+**Flux columns (2026-10-19).** Ranking and MFBO read
+`cpc_window_avg_flux` and `cp_q999_window_flux`
+(`src/ro/mfbo_adapter.py:1181–1182`). Area columns remain in the extract.
+`CP_q99` is still not adopted. `CP_q999` is auxiliary and mesh-sensitive.
 
 On the evaluation-window x-clip of both membranes together, each face
 contributes cell-stored `udm-7` (\(c_m\)), `udm-6` (\(J_w\)), and its
@@ -394,6 +405,8 @@ until a campaign comparison says so.
 **Substitution decided (2026-10-08 meeting).** Comparison uses this
 average and `CP_q999`. The ratio-of-aggregates distinction in the
 previous sentences stays. Area versus flux was not chosen.
+**Flux reference (2026-10-19).** The comparison columns are the `_flux`
+forms. The area forms stay written.
 
 **Three-geometry comparison (commit `720ec4c`, session 2026-09-29 ..
 2026-10-02, recorded 2026-10-04).** On `REF_empty`, `P_p100_h30`, and
@@ -477,7 +490,16 @@ does not report a salt-path observation.
 
 **Paper window (2026-10-09).** Each geometry uses the evaluation window in
 `configs/evaluation_window_table.json`, produced by
-`scripts/mfbo/development_length.py`. Extract (full and `--profile mfbo`)
+`scripts/mfbo/development_length.py`. The table and
+`docs/EVALUATION_WINDOW.md` were generated on the host and are not in
+this checkout. The rule (`scripts/mfbo/development_length.py:23–35`,
+`:64–65`, `:78`): lead exclusion is at least `L_base = 10.395` mm,
+on a whole-cell boundary, then aligned to a whole number of spacer
+periods. Development distance `d` is the maximum over PASS
+`u0p1_p6M` / `u0p2_p6M` / `u0p3_p6M`. A geometry that is not developed
+at every speed uses `not_developed_fallback` (`:332–352`). The host
+report names a fallback for 6.93 mm sinusoids (`L_REF_M` is 6.93 mm).
+Extract (full and `--profile mfbo`)
 reads that table. A campaign `geo_id` that is not in the table is an error.
 Registered MFBO pillar ids (`MFP_d####_h####_f####`) use the table's
 `family_defaults.pillar` entry, written from the campaign pillars, and

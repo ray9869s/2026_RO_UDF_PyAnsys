@@ -70,7 +70,9 @@ Marked **not** a normal human campaign entry. All have `__main__` but are one-of
 
 These re-mesh, re-solve, or re-extract under a data root that is not
 `C:/ro_data`. They call the production workers. They are not a Bayesian
-optimizer. Child processes receive `RO_DATA_ROOT`; the parent is restored.
+optimizer.
+**Superseded 2026-10-19.** The 3D loop is `scripts/mfbo/run_3d_mfbo.py`.
+Child processes receive `RO_DATA_ROOT`; the parent is restored.
 Fluent is not pointed at `C:/ro_data`.
 
 | Script | Purpose |
@@ -407,11 +409,16 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
 
 4. **Surface-size grid independence not closed**  
    `AGENTS.md` / restructure notes: bl4-vs-bl6 LMH/CP figures are wall-normal, not an `m_max` study. The `m_max` exploration on D2450_a45 is recorded in `docs/MESH_LANDSCAPE.md`; neither the `bl` nor the `m_max` axis is converged. The 2026-10 screening on D0817_a30 and P_p80_h15 is in that file and does not close these axes.
+   **Superseded in part 2026-10-19.** Family-wise tests are `docs/MESH_STUDY_RESULTS.md`. Pillar proposed `max085_min006_cpg5_bl12s4_peel2`; ML proposed BL 10; Diamond is not converged. The D2450_a45 axes above stay open.
 
 5. **MFBO optimizer**  
    Drivers in `scripts/mfbo/` copy, mesh, solve, and re-extract outside
    `C:/ro_data` (section 1.4). The optimizer that would choose the next
    geometry is not implemented.
+   **Superseded 2026-10-19.** The 3D loop is `scripts/mfbo/run_3d_mfbo.py`
+   (`src/ro/mfbo_3d.py`). Screen, v1 lessons, v2 `hf_bo` result, and
+   infrastructure are in `docs/RO_2D_OPTIMIZATION.md`. `mfbo` v2 is in
+   progress.
 
 6. **`batch_solver_rerun` ↔ report extract CLI mismatch**  
    Rerun optionally wants `pyfluent_report_extract.py --geo-name/--case-name`; report worker is env/`PYFLUENT_POST_*` driven. Auto report-after-rerun is deferred in code.
@@ -427,3 +434,63 @@ Things the code does not yet handle that the campaign needs. No fixes proposed.
 
 10. **Solver sweep list is two named sets**  
     Exploratory `mesh_batch_cases` is the isolated `P_p100_h00` `max060_min006_cpg5_bl4_peel2` mesh; `solver_sweep_cases` is that leaf's `u0p2_p6M` solve. Production is `production_mesh_batch_cases` (31) and `production_solver_sweep_cases` (279). `python scripts/batch_solver_sweep.py` without `--case-set production` cannot launch 279.
+
+---
+
+## Status 2026-10-19
+
+Record of decisions, open items, and pending host work since the
+2026-10-08 supervisor meeting. Numbers live in
+`docs/MESH_STUDY_RESULTS.md` and `docs/RO_2D_OPTIMIZATION.md`.
+`configs/evaluation_window_table.json` and `docs/EVALUATION_WINDOW.md`
+were generated on the host and are not in this checkout.
+
+### Decided
+
+- Per-geometry evaluation window: ≥ 10.395 mm, whole cells and spacer
+  periods, max over PASS speeds, fallback for 6.93 mm sinusoids
+  (`scripts/mfbo/development_length.py:23–35`, `:65`, `:78`, `:332–352`).
+- Paper / comparison CP: `cpc_window_avg_flux` and `cp_q999_window_flux`
+  (`src/ro/extract_profile.py:74–75`). `CP_q999` replaces the facet max
+  and is auxiliary / mesh-sensitive. Area versus flux was **OPEN** after
+  2026-10-08; flux is the 2026-10-19 choice.
+- Paper / MFBO LMH: `lmh_window_module` primary, `lmh_window_exposed`
+  alongside (`src/ro/evaluation_window_table.py:429–461`;
+  `src/ro/mfbo_adapter.py:1157`).
+- Pillar mesh proposal: `max085_min006_cpg5_bl12s4_peel2`. ML proposal:
+  BL 10. Neither is written into `src/ro/campaign_matrix.py:58–59`.
+- `P_p100_h00` FAIL at 5.3 M cells (`m_max` 0.045, BL 12s4) is not a
+  mesh issue on that evidence. The 2026-10-08 coarse-mesh hypothesis for
+  that geometry does not hold.
+- 3D fidelities `HF_m` / `LF_d` (`configs/mfbo_fidelity_table.3d_v1.json`).
+- v2 problem: 17 × 17, CP excess ≤ 0.040, dP/L ≤ 72000 Pa/m, 11 h
+  HF-equivalent, pregenerated geometry (`configs/mfbo_3d_experiment.v2.json:5–22`).
+  `hf_bo` v2 optimum \(D_p = 0.75\), \(d_h = 0.05625\), LMH 24.414
+  (`C:/ro_data_mfbo/mfbo3d/studies/optimization/3d/hf_bo/v2/`).
+- Discovery console (`2671300`), grid pregeneration (`2945b51`), Fluent
+  crash retry and recorded-PID kill (`6220d39`).
+
+### Open
+
+- Diamond paper mesh (contact-geometry change / exclusion band / report
+  with uncertainty).
+- Paper mesh for ML and Pillar: proposed, not adopted in the campaign
+  matrix.
+- Sinusoidal mesh study: not run.
+- Mass-imbalance localization: script exists
+  (`scripts/mfbo/locate_mass_imbalance.py`), not completed.
+- `mfbo` v2 in progress
+  (`C:/ro_data_mfbo/mfbo3d/studies/optimization/3d/mfbo/v2`).
+- Family min–max at `u0p2` from `campaign_reextract_v2` and
+  `campaign_bl12s4`: named, not pasted; this checkout cannot read the
+  leaves (`docs/MESH_STUDY_RESULTS.md`).
+
+### Pending on the host
+
+- Meshstudy re-extract: 6 pending + 1 failed.
+- ML BL-10 campaign.
+- Sinusoidal mesh study.
+- Diamond mesh decision.
+- Mass-imbalance localization.
+- Commit of `configs/evaluation_window_table.json` and
+  `docs/EVALUATION_WINDOW.md` from the host.

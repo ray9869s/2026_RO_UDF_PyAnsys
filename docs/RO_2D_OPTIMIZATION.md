@@ -339,6 +339,11 @@ extraction wall time, and solver time. `convergence_quality` `FAIL` is
 A failed evaluation is not stored as LMH = 0.
 
 High fidelity is not defined yet.
+**Superseded 2026-10-19.** 3D MFBO uses `configs/mfbo_fidelity_table.3d_v1.json`.
+`HF_m` is 7 cells, membrane BL 12 / spacer BL 4, HF monitor stop, then
+the production convergence gate. `LF_d` is 3 cells, BL 4, LF monitor
+stop after `ramp_end` 150. The shipped `EXAMPLE_FIDELITY_TABLE["LF"]`
+row above stays the production-mesh example; it is not the v1 screen.
 
 ### Host check (recorded 2026-10-08)
 
@@ -388,6 +393,9 @@ evaluate. The host runs that queue one job at a time.
 mesh `max085_min006_cpg5_bl4_peel2`. HF is the string `TBD` and is
 refused before any driver starts. A screen needs both levels to be mesh
 settings.
+**Superseded for the 3D screen (2026-10-19).** The v1 table
+`configs/mfbo_fidelity_table.3d_v1.json` names `LF_d` and `HF_m`. The
+example file still marks `HF` as `TBD`.
 
 Real drivers are `src/ro/mfbo_drivers.py`. They call
 `scripts/generate_pillar_cad.py`, `scripts/mfbo/mesh_mfbo_case.py`,
@@ -588,3 +596,92 @@ python scripts/mfbo/run_3d_mfbo.py emit-queue \
 python scripts/mfbo/job_queue.py run \
   /c/ro_data_mfbo/mfbo3d/studies/optimization/3d/v2_queue.json
 ```
+
+## 3D fidelities `HF_m` and `LF_d`
+
+`configs/mfbo_fidelity_table.3d_v1.json`. Mesh ids from
+`format_production_mesh_id` (`src/ro/campaign_matrix.py:66–84`).
+`ramp_end` is `#define RAMP_ITER_3` in the compiled case UDF
+(`udfs/260822_RO_UDF.c:61`; `src/ro/lf_monitor_stop.py:6–10`). It is
+not `configs/run_config.py` `ramp_full_iteration`.
+
+| | `HF_m` | `LF_d` |
+|---|---|---|
+| `n_active` | 7 (`:31`) | 3 (`:8`) |
+| mesh | `max085_min006_cpg5_bl12s4_peel2` (`bl_layers` 12, `spacer_bl_layers` 4, `:28–29`) | `max085_min006_cpg5_bl4_peel2` (`bl_layers` 4, `:6`) |
+| window | `window_source` `family_default` (`:32`) | `n_lead_excluded` 1 (`:9`) |
+| stop | `hf_monitor_stop` (`tol_lmh` 1e-4, `tol_dp` 1e-4, `n` 200, `continuity_max` 1e-5, `:37–42`) | `lf_monitor_stop` after `ramp_end` 150 (`tol_lmh` 0.001, `tol_dp` 0.005, `n` 100, `:14–18`) |
+| gate | production (`convergence_gate` omitted; `src/ro/mfbo_fidelity.py:378–380`, `:455–472`) | `lf_monitor` (`:20–22`) |
+| extract | `--profile mfbo` | `--profile mfbo` |
+| run-id suffix | `hfm` | `lfd` |
+
+`hf_monitor_stop` cannot take `convergence_gate` mode `lf_monitor`
+(`src/ro/mfbo_fidelity.py:425–428`). The production gate is
+`src/ro/convergence_quality.py:30–32`.
+
+## 3D fidelity screen v1 (measured)
+
+Data root
+`C:/ro_data_mfbo/mfbo3d/studies/fidelity_screen_3d_v1/3d_fidelity_screen_v1.csv`.
+Nine designs \(D_p \in \{0.6, 0.8, 1.0\}\) mm × \(d_h \in \{0, 0.15, 0.30\}\)
+mm, \(d_f = 0.40\) mm, `u0p2_p6M`. Eight valid at both `HF_m` and `LF_d`.
+\(D_p = 1.0\), \(d_h = 0\) is HF invalid (gate FAIL after 2000 iterations)
+and LF valid. **From host report 2026-10-16**, restated 2026-10-19.
+This checkout cannot re-read the CSV.
+
+Over the eight valid pairs (`src/ro/mfbo_fidelity_screen.py:1–10`):
+
+| | value |
+|---|---|
+| Spearman, LMH | 1.00 |
+| Spearman, dP/L | 1.00 |
+| Spearman, CP−1 | 1.00 |
+| CP−1 bias (LF − HF) / HF | −9.1% ± 2.9% |
+| wall-time ratio median (LF/HF) | 0.54 |
+| cell × iteration ratio | 0.25 |
+
+Wall time is mesh + solver + extraction
+(`src/ro/mfbo_fidelity_screen.py:8–9`). Acquisition uses the wall-time
+ratio (`configs/mfbo_3d_experiment.v1.json:17`; `cost_proxy_ratio` 0.25
+is the cell × iteration number, `:18`).
+
+## 3D v1 live run (lessons)
+
+`configs/mfbo_3d_experiment.v1.json`, `candidate_grid` 9 (`:20`),
+`dp_max_pa_per_m` 71000 (`:13`), data root `C:/ro_data_mfbo/mfbo3d`.
+**From host report 2026-10-17.** `hf_bo` finished in about 5.5 h of an
+11 h budget: 17 sequential queries, 8 of them
+`execution_failed` / `leaf_not_successful` with 0 s wall in
+`history.csv`, yet cumulative wall charged a reference HF per failure.
+No feasible point at 71000 Pa/m. Near-feasible examples:
+`(0.75, 0.0375)` CP−1 0.0398, dP/L 71595 Pa/m, LMH 24.40;
+`(0.75, 0.075)` CP−1 0.0397, dP/L 71749 Pa/m, LMH 24.41.
+
+Lessons used in v2: the 9 × 9 grid is too coarse; infrastructure
+failures must not be charged as a reference HF
+(`src/ro/mfbo_3d.py:15–17`). Discovery parents need their own console
+so a queue log cannot hide the backend (commit `2671300`;
+`src/ro/discovery_session.py:22–26`, `:48–55`).
+
+## 3D v2 `hf_bo` result
+
+`configs/mfbo_3d_experiment.v2.json`: 17 × 17 grid (`:22`), CP excess
+≤ 0.040 (`:13`), dP/L ≤ 72000 Pa/m (`:14`), 11 h HF-equivalent budget
+(`:16`), `geometry` `pregenerated` (`:5`). Generate time is still
+charged from `<geo_id>_generate_wall_time.json`
+(`src/ro/mfbo_adapter.py:267–269`; `scripts/mfbo/pregenerate_grid.py:9`).
+Pregeneration is commit `2945b51`. Data root
+`C:/ro_data_mfbo/mfbo3d/studies/optimization/3d/hf_bo/v2/`.
+
+**From host report 2026-10-19.** Optimum \(D_p = 0.75\) mm,
+\(d_h = 0.05625\) mm, LMH 24.414. Both constraints nearly active.
+This checkout cannot read `final_summary.json`. `mfbo` v2 is in
+progress under `studies/optimization/3d/mfbo/v2`.
+
+## Infrastructure (2026-10-18 .. 2026-10-19)
+
+| | commit | source |
+|---|---|---|
+| Discovery parent on its own console; a queue log does not inherit stdout/stderr | `2671300` | `src/ro/discovery_session.py:22–26`, `:48–69` |
+| Pregenerate the 17 × 17 grid so the loop does not launch Discovery | `2945b51` | `scripts/mfbo/pregenerate_grid.py:1–9`; `configs/mfbo_3d_experiment.v2.json:5` |
+| Crashed solve retries once; only the Fluent PID recorded at that launch is stopped | `6220d39` | `src/ro/session_retry.py:73–88`, `:104–125`; `src/ro/mfbo_adapter.py:18–20` |

@@ -26,6 +26,11 @@ geometry comparison is `docs/P6M_COMPARISON.md`.
 MFBO is for the AIChE 2026 presentation only. Mesh, \(u = 0.3\), CP,
 and LMH decisions from that meeting are in `docs/MESH_LANDSCAPE.md`,
 `docs/metrics_conventions.md`, and `docs/RO_2D_OPTIMIZATION.md`.
+**2026-10-19.** Family-wise mesh numbers and proposals are
+`docs/MESH_STUDY_RESULTS.md`. Pipeline status (decided / open / pending)
+is `docs/PIPELINE_MAP.md`. The evaluation-window table and
+`docs/EVALUATION_WINDOW.md` were generated on the host and are not in
+this checkout.
 
 Production UDF is `260822_RO_UDF.c` (`run_config.udf_source_file_name`).
 `260816_RO_UDF.c` is a frozen ASCII compile-fix sibling; new runs use 260822.
@@ -44,6 +49,8 @@ mixing-cup \(c_b\) (`surface-massavg`) on the evaluation window. See
 concentration-statistics average and `CP_q999` for comparison. The
 modulus above remains the definition of `cp_canon_window_avg`. The
 meeting did not choose the area versus flux reference.
+**2026-10-19.** Comparison uses `cpc_window_avg_flux` and
+`cp_q999_window_flux`. `CP_q999` is auxiliary and mesh-sensitive.
 
 **CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
 \(c_m\) and \(c_p\) when the denominator is face-dependent.
@@ -69,12 +76,17 @@ pillar membrane-BL series (spacer BL held at 4) is in the same file and
 also does not close them. The 2026-10-08 meeting treats the campaign
 mesh as too coarse and asks for `m_max` refinement and family-wise
 tests, not BL count alone.
+**2026-10-19.** Pillar proposed `max085_min006_cpg5_bl12s4_peel2`; ML
+proposed BL 10; Diamond is not converged. `P_p100_h00` still FAIL at
+5.3 M cells. See `docs/MESH_STUDY_RESULTS.md`.
 
 **Mesh / geometry session notes:** `docs/MESH_LANDSCAPE.md` (parameter
 landscape, 31-mesh inventory, convergence gate, meshing determinism,
 2026-10 mesh screening, 2026-10-07..08 mesh study, turbulence check
 and follow-up, and the 2026-10-08 meeting decisions on mesh refinement
 and the \(u = 0.3\) re-test),
+`docs/MESH_STUDY_RESULTS.md` (2026-10-19 family-wise tests and
+proposals),
 `docs/GEOMETRY_DESIGN.md` (joint-sphere rule, Pillar bore, Pillar CAD
 generator parity, sinusoidal CAD and curvature gate, REF_empty,
 import-zone counts),

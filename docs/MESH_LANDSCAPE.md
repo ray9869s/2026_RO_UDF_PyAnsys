@@ -5,8 +5,9 @@ campaign. All exploration numbers below are on **D2450_a45** unless stated.
 Campaign baseline mesh_id: `max085_min006_cpg5_bl4_peel2` (796,009 cells).
 
 See also `docs/GEOMETRY_DESIGN.md` (joint spheres, Pillar bore, sinusoidal
-curvature margin) and `docs/metrics_conventions.md` (coordinates, QoI
-reliability).
+curvature margin), `docs/metrics_conventions.md` (coordinates, QoI
+reliability), and `docs/MESH_STUDY_RESULTS.md` (2026-10-19 family-wise
+tests).
 
 ---
 
@@ -283,6 +284,11 @@ change this contact-geometry conclusion.
 
 ## Mesh study (session 2026-10-07 .. 2026-10-08)
 
+**Superseded as the live family-wise record (2026-10-19).** Later
+numbers, the Pillar / ML proposals, the Diamond non-convergence, and
+the `P_p100_h00` 5.3 M FAIL are `docs/MESH_STUDY_RESULTS.md`. The
+tables below stay as the 2026-10-08 paste.
+
 Recorded 2026-10-08 from the workstation paste. This section does not
 replace the 2026-10-04 screening or the D2450_a45 parameter landscape.
 
@@ -410,6 +416,9 @@ meeting's comparison.
   replaces the working treatment, under Convergence, that those laminar
   failures have no steady solution because the flow is unsteady. That
   paragraph stays.
+  **Superseded for `P_p100_h00` (2026-10-19).** That geometry still FAIL
+  at 5.3 M cells (`m_max` 0.045, BL 12s4) at `u0p2` and `u0p3`. Not a
+  mesh issue on that evidence. `docs/MESH_STUDY_RESULTS.md`.
 
 CP, LMH, and the paper scope from the same meeting are in
 `docs/metrics_conventions.md`, `docs/RO_2D_OPTIMIZATION.md`, and
