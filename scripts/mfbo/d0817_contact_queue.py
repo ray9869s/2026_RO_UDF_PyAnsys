@@ -9,7 +9,11 @@ Four leaves, u0p2_p6M, on ``C:/ro_data_mfbo/meshstudy`` with geometry from
 - the cpg-9 proximity plus that face size
 
 ``--mesh-only`` writes jobs that mesh and print the cell count. Without
-it, each job meshes, prints the cell count, then solves and extracts.
+it, each job passes ``--reuse-mesh``: a mesh-only leaf is reused when
+its record is SUCCESS and the stored settings match, including local
+sizing, and a mismatch is refused. A missing leaf is meshed.
+``--max-cells N`` drops variants whose mesh-only manifest cell count
+is greater than N.
 
 Importing this module does not launch Fluent. ``--emit-queue`` writes a
 job-queue JSON file and does not mesh.
@@ -97,11 +101,59 @@ def _json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def contact_jobs(mesh_only=False):
-    """Job-queue records. Mesh-only ids end in ``-mesh`` so logs do not collide."""
+def mesh_only_cell_count(data_root, family, mesh_id):
+    """Cell count on the mesh-only manifest for one variant."""
+    path = (
+        Path(data_root) / "meshes" / family / GEO_ID / mesh_id / "manifest.json"
+    )
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"mesh-only manifest is missing for {mesh_id}: {path}"
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    count = payload.get("cell_count") if isinstance(payload, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(
+            f"mesh-only cell_count for {mesh_id} is not a positive integer: "
+            f"{count!r}."
+        )
+    return count
+
+
+def variants_under_cell_cap(studies, max_cells, data_root):
+    """Split studies into those at or under ``max_cells`` and those over it.
+
+    ``dropped`` entries are ``(name, mesh_id, cell_count)``. A missing
+    manifest raises; it is not treated as under the cap.
+    """
+    if isinstance(max_cells, bool) or not isinstance(max_cells, int) or max_cells < 1:
+        raise ValueError(
+            f"--max-cells must be an integer >= 1, got {max_cells!r}."
+        )
+    kept = []
+    dropped = []
+    for name, overrides in studies:
+        count = mesh_only_cell_count(
+            data_root, overrides["family"], overrides["mesh_id"]
+        )
+        if count > max_cells:
+            dropped.append((name, overrides["mesh_id"], count))
+        else:
+            kept.append((name, overrides))
+    return kept, dropped
+
+
+def contact_jobs(mesh_only=False, *, studies=None, data_root=None):
+    """Job-queue records. Mesh-only ids end in ``-mesh`` so logs do not collide.
+
+    Full jobs pass ``--reuse-mesh``. Mesh-only jobs do not.
+    """
+    if studies is None:
+        studies = contact_study_overrides()
+    root = DATA_ROOT if data_root is None else str(data_root)
     jobs = []
     seen = set()
-    for name, overrides in contact_study_overrides():
+    for name, overrides in studies:
         job_id = f"D0817_a30-{name}"
         if mesh_only:
             job_id += "-mesh"
@@ -112,7 +164,7 @@ def contact_jobs(mesh_only=False):
             "{python}",
             "scripts/mfbo/mesh_study_case.py",
             "--data-root",
-            DATA_ROOT,
+            root,
             "--geo-id",
             GEO_ID,
             "--case",
@@ -132,6 +184,8 @@ def contact_jobs(mesh_only=False):
             argv.extend(["--local-face-size", _json(overrides["local_face_size"])])
         if mesh_only:
             argv.append("--mesh-only")
+        else:
+            argv.append("--reuse-mesh")
         jobs.append(
             {
                 "id": job_id,
@@ -169,14 +223,41 @@ def build_parser():
         action="store_true",
         help="Jobs mesh and print the cell count. They do not solve.",
     )
+    parser.add_argument(
+        "--max-cells",
+        type=int,
+        default=None,
+        help=(
+            "Drop variants whose mesh-only manifest cell_count exceeds this. "
+            "The manifests are under the meshstudy data root."
+        ),
+    )
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    jobs = contact_jobs(mesh_only=args.mesh_only)
+    if args.mesh_only and args.max_cells is not None:
+        raise ValueError(
+            "--max-cells reads completed mesh-only manifests. Omit --mesh-only."
+        )
+    studies = contact_study_overrides()
+    if args.max_cells is not None:
+        studies, dropped = variants_under_cell_cap(
+            studies, args.max_cells, DATA_ROOT
+        )
+        for name, mesh_id, count in dropped:
+            print(
+                f"dropped {name} {mesh_id}: "
+                f"cell_count {count} > {args.max_cells}"
+            )
+        if not studies:
+            raise ValueError(
+                f"every variant exceeds --max-cells {args.max_cells}."
+            )
+    jobs = contact_jobs(mesh_only=args.mesh_only, studies=studies)
     path = write_queue(args.emit_queue, jobs)
-    for name, overrides in contact_study_overrides():
+    for name, overrides in studies:
         print(f"{name}: {overrides['mesh_id']}")
     print(f"Wrote {len(jobs)} jobs to {path}")
     return 0

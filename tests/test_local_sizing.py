@@ -315,7 +315,9 @@ def test_contact_queue_ids_and_mesh_only_flag():
         "D0817_a30-lpx9m003-fs020-mesh",
     ]
     assert all(job["argv"][-1] == "--mesh-only" for job in mesh_jobs)
+    assert all("--reuse-mesh" not in job["argv"] for job in mesh_jobs)
     assert all("--mesh-only" not in job["argv"] for job in full_jobs)
+    assert all(job["argv"][-1] == "--reuse-mesh" for job in full_jobs)
     for job in mesh_jobs:
         argv = job["argv"]
         assert argv[1] == "scripts/mfbo/mesh_study_case.py"
@@ -344,6 +346,140 @@ def test_contact_queue_ids_and_mesh_only_flag():
     both = mesh_jobs[3]["argv"]
     assert "--local-proximity" in both
     assert "--local-face-size" in both
+
+
+def _plant_mesh_manifest(root, family, mesh_id, cell_count):
+    leaf = root / "meshes" / family / "D0817_a30" / mesh_id
+    leaf.mkdir(parents=True)
+    (leaf / "manifest.json").write_text(
+        json.dumps({"cell_count": cell_count}),
+        encoding="utf-8",
+    )
+    return leaf
+
+
+def test_max_cells_drops_variants_over_the_mesh_only_count(tmp_path):
+    studies = queue.contact_study_overrides()
+    counts = {
+        "lpx9m003": 100,
+        "lpx13m002": 200,
+        "fs020": 150,
+        "lpx9m003-fs020": 300,
+    }
+    for name, overrides in studies:
+        _plant_mesh_manifest(
+            tmp_path,
+            overrides["family"],
+            overrides["mesh_id"],
+            counts[name],
+        )
+    kept, dropped = queue.variants_under_cell_cap(studies, 150, tmp_path)
+    assert [name for name, _overrides in kept] == ["lpx9m003", "fs020"]
+    assert [item[0] for item in dropped] == ["lpx13m002", "lpx9m003-fs020"]
+    assert dropped[0][2] == 200
+    jobs = queue.contact_jobs(studies=kept, data_root=tmp_path)
+    assert [job["id"] for job in jobs] == [
+        "D0817_a30-lpx9m003",
+        "D0817_a30-fs020",
+    ]
+    assert all(job["argv"][-1] == "--reuse-mesh" for job in jobs)
+    with pytest.raises(FileNotFoundError, match="mesh-only manifest is missing"):
+        queue.variants_under_cell_cap(studies, 150, tmp_path / "empty")
+
+
+def test_emitter_max_cells_omits_over_cap_jobs(monkeypatch, tmp_path, capsys):
+    studies = queue.contact_study_overrides()
+    counts = {
+        "lpx9m003": 100,
+        "lpx13m002": 200,
+        "fs020": 150,
+        "lpx9m003-fs020": 300,
+    }
+    for name, overrides in studies:
+        _plant_mesh_manifest(
+            tmp_path,
+            overrides["family"],
+            overrides["mesh_id"],
+            counts[name],
+        )
+    monkeypatch.setattr(queue, "DATA_ROOT", str(tmp_path))
+    destination = tmp_path / "queue.json"
+    code = queue.main(
+        ["--emit-queue", str(destination), "--max-cells", "150"]
+    )
+    assert code == 0
+    jobs = json.loads(destination.read_text(encoding="utf-8"))
+    assert [job["id"] for job in jobs] == [
+        "D0817_a30-lpx9m003",
+        "D0817_a30-fs020",
+    ]
+    printed = capsys.readouterr().out
+    assert "dropped lpx13m002" in printed
+    assert "cell_count 200 > 150" in printed
+    assert "dropped lpx9m003-fs020" in printed
+    with pytest.raises(ValueError, match="every variant exceeds"):
+        queue.main(
+            ["--emit-queue", str(tmp_path / "empty.json"), "--max-cells", "1"]
+        )
+    assert not (tmp_path / "empty.json").exists()
+
+
+def test_max_cells_does_not_apply_to_mesh_only(tmp_path):
+    with pytest.raises(ValueError, match="Omit --mesh-only"):
+        queue.main(
+            [
+                "--emit-queue",
+                str(tmp_path / "queue.json"),
+                "--mesh-only",
+                "--max-cells",
+                "1000",
+            ]
+        )
+    assert not (tmp_path / "queue.json").exists()
+
+
+def test_reuse_accepts_a_matching_mesh_only_leaf_and_refuses_a_different_one(
+    tmp_path,
+):
+    geometry = tmp_path / "D0817_a30.pmdb"
+    geometry.write_bytes(b"pmdb")
+    digest = driver.sha256_file(geometry)
+    proximity = parse_local_proximity(PROXIMITY)
+    mesh_id = "max045_min006_cpg5_bl4_peel2_lpx9m003"
+    leaf = tmp_path / "mesh"
+    leaf.mkdir()
+    (leaf / "manifest.json").write_text(
+        json.dumps(
+            {
+                "max_size_mm": 0.045,
+                "min_size_mm": 0.006,
+                "cpg": 5,
+                "bl": 4,
+                "peel": 2,
+                "cell_count": 100,
+                "local_proximity": proximity,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (leaf / "mesh_run_record.json").write_text(
+        json.dumps({"status": "SUCCESS"}),
+        encoding="utf-8",
+    )
+    overrides = {
+        "m_max": 0.045,
+        "m_min": 0.006,
+        "m_cpg": 5,
+        "bl_layers": 4,
+        "peel_layers": 2,
+        "local_proximity": proximity,
+    }
+    driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+    overrides["local_proximity"] = parse_local_proximity(
+        {**PROXIMITY, "cells_per_gap": 13, "min_size_mm": 0.002}
+    )
+    with pytest.raises(ValueError, match="local_proximity"):
+        driver.require_reusable_mesh(leaf, overrides, geometry, digest)
 
 
 def test_mesh_only_prints_the_cell_count_and_does_not_solve(
