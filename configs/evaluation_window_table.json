@@ -1,0 +1,320 @@
+{
+  "family_defaults": {
+    "pillar": {
+      "n_lead_excluded": 4,
+      "excluded_length_m": 0.01386,
+      "basis": "most conservative campaign pillar P_p60_h00 at u0p1_p6M",
+      "date": "2026-10-11"
+    }
+  },
+  "REF_empty": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D2450_a30": {
+    "n_lead_excluded": 5,
+    "excluded_length_m": 0.014145803261,
+    "window_length_m": 0.0113166426088,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D2450_a45": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.013859999999999999,
+    "window_length_m": 0.010395,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D2450_a60": {
+    "n_lead_excluded": 2,
+    "excluded_length_m": 0.009800499984,
+    "window_length_m": 0.014700749976,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "D1225_a30": {
+    "n_lead_excluded": 15,
+    "excluded_length_m": 0.0212187048915,
+    "window_length_m": 0.0042437409783,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D1225_a45": {
+    "n_lead_excluded": 9,
+    "excluded_length_m": 0.015592499999999999,
+    "window_length_m": 0.0086625,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D1225_a60": {
+    "n_lead_excluded": 6,
+    "excluded_length_m": 0.014700749976,
+    "window_length_m": 0.009800499984,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D0817_a30": {
+    "n_lead_excluded": 14,
+    "excluded_length_m": 0.0132027497098,
+    "window_length_m": 0.0122596961591,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "D0817_a45": {
+    "n_lead_excluded": 9,
+    "excluded_length_m": 0.010395,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "D0817_a60": {
+    "n_lead_excluded": 11,
+    "excluded_length_m": 0.017967583304,
+    "window_length_m": 0.0065336666560000005,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max060_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "M_c160": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "M_c267": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "M_c400": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "P_p60_h00": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "P_p60_h15": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "P_p60_h30": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "P_p80_h00": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "P_p80_h15": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "P_p80_h30": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "P_p100_h00": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "P_p100_h15": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "P_p100_h30": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "S_a072_l1733": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "S_a072_l3465": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "S_a072_l6930": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": true,
+    "rule": "not_developed_fallback"
+  },
+  "S_a144_l1733": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "S_a144_l3465": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "S_a144_l6930": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": true,
+    "rule": "boundary_below_l_base"
+  },
+  "S_a193_l1733": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "boundary_below_l_base"
+  },
+  "S_a193_l3465": {
+    "n_lead_excluded": 4,
+    "excluded_length_m": 0.01386,
+    "window_length_m": 0.010395000000000001,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": false,
+    "rule": "at_least_max_l_base_d"
+  },
+  "S_a193_l6930": {
+    "n_lead_excluded": 3,
+    "excluded_length_m": 0.010395000000000001,
+    "window_length_m": 0.01386,
+    "source_data_root": "C:/ro_data",
+    "mesh_id": "max085_min006_cpg5_bl4_peel2",
+    "date": "2026-10-11",
+    "short_window": true,
+    "rule": "not_developed_fallback"
+  }
+}
