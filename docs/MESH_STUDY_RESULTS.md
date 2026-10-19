@@ -168,23 +168,60 @@ hypothesis does not hold for this geometry.
 Monitor reporting when the gate fails is
 `docs/metrics_conventions.md` (steady monitor, 2026-10-09).
 
+**Hypothesis (supervisor, unverified; 2026-10-19).** Failures correlate
+with \(\mathrm{Re}_D = \rho u D_p / \mu\) above about 200–270:
+`P_p100` at `u0p2` / `u0p3`, `P_p80_h15` at `u0p3`. Bores of 0.30 mm
+converge at the same \(\mathrm{Re}_D\). Estimate, to be confirmed.
+\(\rho = 998.2\,\mathrm{kg\,m^{-3}}\), \(\mu = 8.93\times 10^{-4}\,\mathrm{Pa\,s}\)
+(`configs/run_config.py:282–283`). \(D_p\) from the geo_id token
+(`src/ro/campaign_geometry.py:355–360`). Transient check (pathlines,
+transient run) is open (`docs/PIPELINE_MAP.md`, Status 2026-10-19).
+
 ---
 
-## Benchmark extracts (ranges not invented)
+## Benchmark extracts
 
-The host report named two extracts and asked for family min–max at
-`u0p2` of `pressure_drop_spacer_per_m`, CP excess
-(`cpc_window_avg_flux − 1`), `cp_q999_window_flux − 1`,
-`lmh_window_module`, and `lmh_window_exposed`. Those ranges were not in
-the paste. This checkout cannot read the leaves. Do not fill them from
-the 2026-10-03 `docs/P6M_COMPARISON.md` tables: those used
-`cp_canon_window_avg` and whole-active `lmh_mass_balance`.
+**From host report 2026-10-19.** Per-leaf
+`post/reports/summary_metrics_wide.csv` under the named roots. Columns:
+`pressure_drop_spacer_per_m`, `cpc_window_avg_flux − 1`,
+`cp_q999_window_flux − 1`, `lmh_window_module`, `lmh_window_exposed`
+(`src/ro/extract_profile.py:65–66`, `:73–75`;
+`scripts/mfbo/summarize_results.py:115–126`). Digits are as printed;
+do not round further. Do not substitute the 2026-10-03
+`docs/P6M_COMPARISON.md` tables (`cp_canon_window_avg` and whole-active
+`lmh_mass_balance`). A one-leaf family is a single value, not a range.
+`n` is leaves in that extract at that speed; `FAIL` is the gate count
+on those leaves.
 
-| extract | data root | contents |
-|---|---|---|
-| `campaign_reextract_v2` | `C:/ro_data_mfbo/campaign_reextract_v2` | 93 runs, production mesh `max085_min006_cpg5_bl4_peel2` (`D0817_a60` `max060_min006_cpg5_bl4_peel2`) |
-| `campaign_bl12s4` | `C:/ro_data_mfbo/campaign_bl12s4` | 27 pillar runs at `max085_min006_cpg5_bl12s4_peel2` |
+`campaign_reextract_v2` leaves lack the `window_source` column. That
+field was added after that re-extract (commit `e9ff8cb`;
+`src/ro/extract_profile.py:70`;
+`src/ro/evaluation_window_table.py:65`, `:75`). They were extracted
+with the per-geometry window table.
 
-`scripts/mfbo/summarize_results.py:115–126` writes the columns. Window
-source on a non-production root is `geo_row_production_mesh`
-(`src/ro/evaluation_window_table.py:33`, `:244–252`).
+### Production mesh, BL 4 (`campaign_reextract_v2`)
+
+Data root `C:/ro_data_mfbo/campaign_reextract_v2`. Production mesh
+`max085_min006_cpg5_bl4_peel2` (`D0817_a60`
+`max060_min006_cpg5_bl4_peel2`). Run id `u0p2_p6M`. The extract as a
+whole is 93 runs (31 geos × three p6M speeds). This table is the
+`u0p2` column.
+
+| family | n | FAIL | dP/L [Pa/m] | CP excess | CP_q999−1 | LMH module | LMH exposed |
+|---|---:|---:|---|---|---|---|---|
+| diamond | 9 | 0 | 16511 – 273130 | 0.04231 – 0.1033 | 0.1439 – 0.521 | 20.09 – 24.39 | 24.68 – 26.25 |
+| empty | 1 | 0 | 3707 | 0.1551 | 0.1683 | 23.32 | 23.32 |
+| ml | 3 | 0 | 43397 – 92814 | 0.05158 – 0.06054 | 0.2806 – 0.3615 | 24.36 – 24.90 | 25.78 – 26.02 |
+| pillar | 9 | 1 | 52157 – 93928 | 0.03102 – 0.04865 | 0.05718 – 0.09277 | 23.08 – 25.07 | 26.12 – 26.56 |
+| sin | 9 | 0 | 21633 – 79052 | 0.06039 – 0.1444 | 0.6962 – 0.9683 | 22.13 – 24.00 | 23.63 – 25.79 |
+
+### Pillar BL 12/4 (`campaign_bl12s4`)
+
+Data root `C:/ro_data_mfbo/campaign_bl12s4`. Nine pillar geos at
+`max085_min006_cpg5_bl12s4_peel2`. 27 runs (9 × 3 speeds).
+
+| run_id | n | FAIL | dP/L [Pa/m] | CP excess | CP_q999−1 | LMH module | LMH exposed |
+|---|---:|---:|---|---|---|---|---|
+| `u0p1_p6M` | 9 | 0 | 19730 – 31583 | 0.05736 – 0.1104 | 0.1248 – 0.1917 | 22.34 – 23.63 | 24.49 – 25.86 |
+| `u0p2_p6M` | 9 | 2 | 51845 – 94667 | 0.03367 – 0.05043 | 0.08025 – 0.1027 | 22.98 – 24.99 | 26.07 – 26.49 |
+| `u0p3_p6M` | 9 | 3 | 95860 – 184656 | 0.02636 – 0.03692 | 0.06857 – 0.08187 | 23.17 – 25.24 | 26.42 – 26.70 |

@@ -481,9 +481,12 @@ were generated on the host and are not in this checkout.
   (`scripts/mfbo/locate_mass_imbalance.py`), not completed.
 - `mfbo` v2 in progress
   (`C:/ro_data_mfbo/mfbo3d/studies/optimization/3d/mfbo/v2`).
-- Family min–max at `u0p2` from `campaign_reextract_v2` and
-  `campaign_bl12s4`: named, not pasted; this checkout cannot read the
-  leaves (`docs/MESH_STUDY_RESULTS.md`).
+- Transient check of non-converging pillars (pathlines, transient run),
+  requested by the supervisor. Failures correlate with
+  \(\mathrm{Re}_D = \rho u D_p / \mu\) above about 200–270 (`P_p100` at
+  `u0p2` / `u0p3`, `P_p80_h15` at `u0p3`); 0.30 mm bores converge at the
+  same \(\mathrm{Re}_D\). Estimate, to be confirmed.
+  `docs/MESH_STUDY_RESULTS.md`.
 
 ### Pending on the host
 
