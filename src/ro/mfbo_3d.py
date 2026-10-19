@@ -15,12 +15,29 @@ A missing part of a successful run is imputed from the fidelity's expected
 cost and marked ``cost_imputed``. A design failure is charged the recorded
 generate, mesh, solver, and extraction time, and never a reference HF.
 Infrastructure waits are logged and are not charged.
+
+``budget_stop`` ``expected`` (the default) starts a sequential query only
+when the cumulative HF-equivalent plus that fidelity's expected cost still
+fits. The query is charged its recorded wall time, so a gate-failing HF
+run can carry the total past the budget. The final HF recommendation is
+not part of that gate. ``budget_stop`` ``cumulative`` starts a sequential
+query, including that recommendation, only while the cumulative cost is
+still below the budget, charges the recorded cost of the query that
+crosses the budget, and then stops.
+
+Seed 0 keeps the initial points in the experiment file. Any other live
+seed draws that many points with a maximin Latin hypercube on candidate-grid
+points that pass the opening-gap check. The same seed gives ``hf_bo`` and
+``mfbo`` the same points, and ``mfbo`` evaluates them at LF as well. An
+exact acquisition tie keeps the first candidate when the seed is 0. Any
+other seed breaks that tie with a stable hash of the seed and the candidate.
 """
 
 from __future__ import annotations
 
 import csv
 import hashlib
+import itertools
 import json
 import math
 import platform
@@ -81,6 +98,10 @@ TBD = "TBD"
 SCREEN_MEDIAN = "screen_median"
 BUDGET_11H = "11h"
 TARGET_BUDGET_WALL_H = 11.0
+BUDGET_STOP_EXPECTED = "expected"
+BUDGET_STOP_CUMULATIVE = "cumulative"
+_BUDGET_STOPS = frozenset({BUDGET_STOP_EXPECTED, BUDGET_STOP_CUMULATIVE})
+_LHS_FILLS = 4
 
 REQUIRED_FIELDS = (
     "experiment_id",
@@ -109,6 +130,7 @@ OPTIONAL_FIELDS = (
     "infrastructure_cap_s",
     "note",
     "geometry",
+    "budget_stop",
 )
 GEOMETRY_GENERATE = "generate"
 GEOMETRY_PREGENERATED = "pregenerated"
@@ -388,6 +410,7 @@ class Experiment3D:
     infrastructure_cap_s: float = DEFAULT_INFRASTRUCTURE_CAP_S
     note: str | None = None
     geometry: str = GEOMETRY_GENERATE
+    budget_stop: str = BUDGET_STOP_EXPECTED
 
 
 @dataclass(frozen=True)
@@ -638,6 +661,7 @@ def load_experiment(
     backoff = _infrastructure_backoff(payload)
     cap_s = _infrastructure_cap(payload)
     note = _experiment_note(payload)
+    budget_stop = _budget_stop(payload)
     grid = payload["candidate_grid"]
     if isinstance(grid, bool) or not isinstance(grid, int) or grid < 2:
         raise ValueError(f"candidate_grid must be an integer >= 2, got {grid!r}.")
@@ -657,6 +681,21 @@ def load_experiment(
     fidelity_path = _resolve_repo_path(payload["fidelity_table"], repo_root, "fidelity_table")
     needed = (HF,) if method == METHOD_HF else FIDELITIES
     settings = _load_fidelity_settings(fidelity_path, needed)
+    if seed != 0 and mode == MODE_LIVE:
+        drawn = draw_maximin_lhs(
+            d_p_min_mm=d_p_min,
+            d_p_max_mm=d_p_max,
+            d_h_min_mm=d_h_min,
+            d_h_max_mm=d_h_max,
+            d_f_mm=d_f_mm,
+            candidate_grid=grid,
+            n=len(initial_hf),
+            seed=seed,
+            m_min_mm=max(float(entry["m_min"]) for entry in settings.values()),
+        )
+        initial_hf = drawn
+        if initial_lf:
+            initial_lf = drawn
     replay: ReplayTable | None
     replay_token: str | None
     if mode == MODE_REPLAY:
@@ -723,6 +762,7 @@ def load_experiment(
         infrastructure_cap_s=cap_s,
         note=note,
         geometry=_geometry_mode(payload),
+        budget_stop=budget_stop,
     )
 
 
@@ -761,6 +801,7 @@ def format_plan(config: Experiment3D) -> str:
         ),
         (
             f"budget_hf_equivalent={config.budget_hf_equivalent} "
+            f"budget_stop={config.budget_stop} "
             f"budget_wall_h={hours} max_sequential={config.max_sequential}"
         ),
         (
@@ -785,9 +826,23 @@ def format_plan(config: Experiment3D) -> str:
             "A missing geometry is an error. "
             "The geometry's recorded generate time is still charged the same way as an on-demand run."
         )
+    if config.mode == MODE_LIVE and config.seed != 0:
+        lines.append(
+            "initial_design=maximin Latin hypercube on candidate-grid points "
+            "that pass the opening-gap check. "
+            f"seed={config.seed} draws {len(config.initial_hf)} points. "
+            "hf_bo and mfbo share them, and mfbo evaluates each at LF."
+        )
+    else:
+        lines.append(
+            "initial_design=experiment file. "
+            "Seed 0 keeps these points so an existing run stays reproducible."
+        )
+    lines.append(_budget_rule_text(config.budget_stop))
     lines.append(
-        "Initial evaluations are charged even when they exceed the budget. "
-        "Sequential queries stop when the next expected cost does not fit."
+        "Compare runs at the same cumulative HF-equivalent by the best "
+        "feasible HF LMH on that curve. A point past the budget is the "
+        "recorded cost of the query that crossed it."
     )
     waits = ", ".join(str(item) for item in config.infrastructure_backoff_s)
     lines.append(
@@ -1052,25 +1107,42 @@ def run_optimization(
                 stopped = True
                 stop_reason = "stop_file"
                 break
+            if config.budget_stop == BUDGET_STOP_CUMULATIVE and _budget_reached(budget):
+                stop_reason = "budget"
+                break
             proposal = _propose(config, dataset)
             if proposal is None:
                 break
             design, fidelity = proposal
-            if not budget.can_afford(fidelity):
+            if not _sequential_budget_allows(config, budget, fidelity):
                 break
             if not attempt(design, fidelity, sequential=True):
                 break
+            if (
+                stop_reason is None
+                and config.budget_stop == BUDGET_STOP_CUMULATIVE
+                and _budget_reached(budget)
+            ):
+                stop_reason = "budget"
+                break
     if stop_reason is None and not stopped:
-        recommended = _recommend(config, dataset)
-        if recommended is not None and not dataset.seen(
-            recommended.d_p_mm, recommended.d_h_mm, HF
-        ):
-            if _stopped(destination):
-                stopped = True
-                stop_reason = "stop_file"
-            else:
-                _require_evaluable(config, recommended, HF)
-                attempt(recommended, HF, sequential=True)
+        if config.budget_stop == BUDGET_STOP_CUMULATIVE and _budget_reached(budget):
+            stop_reason = "budget"
+        else:
+            recommended = _recommend(config, dataset)
+            if recommended is not None and not dataset.seen(
+                recommended.d_p_mm, recommended.d_h_mm, HF
+            ):
+                if _stopped(destination):
+                    stopped = True
+                    stop_reason = "stop_file"
+                else:
+                    _require_evaluable(config, recommended, HF)
+                    if attempt(recommended, HF, sequential=True) and (
+                        config.budget_stop == BUDGET_STOP_CUMULATIVE
+                        and _budget_reached(budget)
+                    ):
+                        stop_reason = "budget"
     if _stopped(destination):
         stopped = True
         stop_reason = stop_reason or "stop_file"
@@ -1159,7 +1231,8 @@ def _require_evaluable(config: Experiment3D, design: PillarPoint, fidelity: str)
 def _propose(config: Experiment3D, dataset: Dataset) -> tuple[PillarPoint, str] | None:
     objective, pressure, excess = _fit(config, dataset)
     incumbent = dataset.best_hf_feasible_lmh(config)
-    best: tuple[float, PillarPoint, str] | None = None
+    best: tuple[float, float, PillarPoint, str] | None = None
+    fidelities = (HF,) if config.method == METHOD_HF else (HF, LF)
     for design in _candidates(config):
         mean_l, var_l, mean_p, var_p, mean_c, var_c, correlation = _predict(
             config, objective, pressure, excess, design
@@ -1183,7 +1256,9 @@ def _propose(config: Experiment3D, dataset: Dataset) -> tuple[PillarPoint, str] 
                 high_name=HF,
                 low_name=LF,
             )
-        for fidelity, value in choices.items():
+        for fidelity in fidelities:
+            priority = _tie_priority(config.seed, design.d_p_mm, design.d_h_mm, fidelity)
+            value = choices[fidelity]
             if dataset.seen(design.d_p_mm, design.d_h_mm, fidelity):
                 continue
             if geometry_block_reason(
@@ -1192,18 +1267,20 @@ def _propose(config: Experiment3D, dataset: Dataset) -> tuple[PillarPoint, str] 
                 continue
             if config.mode == MODE_REPLAY and not _replay_has(config, design, fidelity):
                 continue
-            if best is None or value > best[0]:
-                best = (value, design, fidelity)
+            if best is None or value > best[0] or (value == best[0] and priority > best[1]):
+                best = (value, priority, design, fidelity)
     if best is None:
         return None
-    return best[1], best[2]
+    return best[2], best[3]
 
 
 def _recommend(config: Experiment3D, dataset: Dataset) -> PillarPoint | None:
     objective, pressure, excess = _fit(config, dataset)
     best_design: PillarPoint | None = None
     best_mean = -1.0e300
+    best_priority = -1.0
     for design in _candidates(config):
+        priority = _tie_priority(config.seed, design.d_p_mm, design.d_h_mm, HF)
         if geometry_block_reason(
             design.d_p_mm, design.d_h_mm, config.d_f_mm, _m_min(config, HF)
         ):
@@ -1215,8 +1292,9 @@ def _recommend(config: Experiment3D, dataset: Dataset) -> PillarPoint | None:
         )
         if mean_p > config.dp_max_pa_per_m or mean_c > config.cp_excess_max:
             continue
-        if mean_l > best_mean:
+        if mean_l > best_mean or (mean_l == best_mean and priority > best_priority):
             best_mean = mean_l
+            best_priority = priority
             best_design = design
     if best_design is not None:
         return best_design
@@ -1287,6 +1365,223 @@ def _candidates(config: Experiment3D) -> list[PillarPoint]:
     for design in (*config.initial_hf, *config.initial_lf):
         found[design.key()] = design
     return [found[key] for key in sorted(found)]
+
+
+def _budget_reached(budget: WallBudget) -> bool:
+    return budget.hf_equivalent >= budget.limit_hf_equivalent - 1.0e-9
+
+
+def _sequential_budget_allows(config: Experiment3D, budget: WallBudget, fidelity: str) -> bool:
+    """Whether another sequential query may start.
+
+    ``expected`` asks if the fidelity's expected cost still fits.
+    ``cumulative`` asks only whether the recorded cost is still under
+    the budget. Neither check clips the cost once the query has run.
+    """
+    if config.budget_stop == BUDGET_STOP_CUMULATIVE:
+        if budget.n_sequential >= budget.max_sequential:
+            return False
+        return not _budget_reached(budget)
+    return budget.can_afford(fidelity)
+
+
+def _budget_rule_text(budget_stop: str) -> str:
+    if budget_stop == BUDGET_STOP_CUMULATIVE:
+        return (
+            "budget_stop=cumulative: a sequential query, including the final "
+            "HF recommendation, starts only while the cumulative HF-equivalent "
+            "is below the budget. The query that crosses the budget is charged "
+            "its recorded wall time, and the loop then stops."
+        )
+    return (
+        "budget_stop=expected: a sequential query starts only when the "
+        "cumulative HF-equivalent plus the expected cost (HF 1, LF "
+        "lf_over_hf_cost_ratio) still fits. Recorded wall time is charged "
+        "in full, so one query can pass the budget. The final HF "
+        "recommendation is still evaluated and charged."
+    )
+
+
+def _budget_stop(payload: Mapping[str, Any]) -> str:
+    if "budget_stop" not in payload:
+        return BUDGET_STOP_EXPECTED
+    value = payload["budget_stop"]
+    if value not in _BUDGET_STOPS:
+        raise ValueError(
+            "budget_stop must be 'expected' or 'cumulative', "
+            f"got {value!r}."
+        )
+    return str(value)
+
+
+def _tie_priority(seed: int, d_p_mm: float, d_h_mm: float, fidelity: str) -> float:
+    """Higher wins an exact acquisition tie.
+
+    Seed 0 returns 0 for every candidate, so the first one in grid order
+    wins and an existing seed-0 run stays reproducible. Any other seed
+    uses a stable hash, so the priority does not depend on which other
+    candidates were already evaluated.
+    """
+    if seed == 0:
+        return 0.0
+    d_p, d_h = _design_key(d_p_mm, d_h_mm)
+    payload = f"{seed}|{d_p:.6f}|{d_h:.6f}|{fidelity}"
+    digest = hashlib.sha256(payload.encode("ascii")).digest()
+    return int.from_bytes(digest[:8], "big") / float(2**64)
+
+
+def draw_maximin_lhs(
+    *,
+    d_p_min_mm: float,
+    d_p_max_mm: float,
+    d_h_min_mm: float,
+    d_h_max_mm: float,
+    d_f_mm: float,
+    candidate_grid: int,
+    n: int,
+    seed: int,
+    m_min_mm: float,
+    fills: int = _LHS_FILLS,
+) -> tuple[PillarPoint, ...]:
+    """Maximin Latin hypercube on the valid candidate grid.
+
+    Each axis is split into ``n`` contiguous index strata. A trial pairs
+    those strata with a permutation and picks one opening-gap-valid grid
+    point in each cell. The trial with the largest minimum pairwise
+    distance in the unit design box wins. Seed 0 is not drawn here; the
+    caller keeps the points in the experiment file.
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError(f"initial design needs at least one point, got {n!r}.")
+    if n > candidate_grid:
+        raise ValueError(
+            f"Cannot draw {n} Latin-hypercube points on a grid of {candidate_grid}."
+        )
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed <= 0:
+        raise ValueError(f"draw_maximin_lhs seed must be an integer >= 1, got {seed!r}.")
+    strata = _index_strata(candidate_grid, n)
+    valid = _valid_grid(
+        d_p_min_mm,
+        d_p_max_mm,
+        d_h_min_mm,
+        d_h_max_mm,
+        d_f_mm,
+        candidate_grid,
+        m_min_mm,
+    )
+    if len(valid) < n:
+        raise ValueError(
+            f"seed {seed} needs {n} valid grid points, and the opening-gap "
+            f"check left {len(valid)}."
+        )
+    cells: dict[tuple[int, int], list[PillarPoint]] = {}
+    for index_p, stratum_p in enumerate(strata):
+        for index_h, stratum_h in enumerate(strata):
+            cells[(index_p, index_h)] = [
+                valid[(i_p, i_h)]
+                for i_p in stratum_p
+                for i_h in stratum_h
+                if (i_p, i_h) in valid
+            ]
+    rng = np.random.default_rng(seed)
+    best: tuple[float, float, tuple[tuple[float, float], ...], tuple[PillarPoint, ...]] | None = None
+    permutations = (
+        list(itertools.permutations(range(n)))
+        if n <= 6
+        else [tuple(int(item) for item in rng.permutation(n)) for _ in range(64)]
+    )
+    for perm in permutations:
+        groups = [cells[(index, perm[index])] for index in range(n)]
+        if any(not group for group in groups):
+            continue
+        for _fill in range(fills):
+            chosen = tuple(group[int(rng.integers(len(group)))] for group in groups)
+            minimum, total = _pairwise_distance(
+                chosen,
+                d_p_min_mm,
+                d_p_max_mm,
+                d_h_min_mm,
+                d_h_max_mm,
+            )
+            rank = tuple(sorted(point.key() for point in chosen))
+            if best is None or (minimum, total, tuple(-item for item in _flat_rank(rank))) > (
+                best[0],
+                best[1],
+                best[2],
+            ):
+                best = (minimum, total, tuple(-item for item in _flat_rank(rank)), chosen)
+    if best is None:
+        raise ValueError(
+            f"No Latin hypercube of {n} points fits the valid grid at seed {seed}."
+        )
+    return best[3]
+
+
+def _flat_rank(rank: tuple[tuple[float, float], ...]) -> tuple[float, ...]:
+    flat: list[float] = []
+    for d_p, d_h in rank:
+        flat.extend((d_p, d_h))
+    return tuple(flat)
+
+
+def _index_strata(grid: int, n: int) -> tuple[range, ...]:
+    base, extra = divmod(grid, n)
+    strata = []
+    start = 0
+    for index in range(n):
+        width = base + (1 if index >= n - extra else 0)
+        strata.append(range(start, start + width))
+        start += width
+    return tuple(strata)
+
+
+def _valid_grid(
+    d_p_min_mm: float,
+    d_p_max_mm: float,
+    d_h_min_mm: float,
+    d_h_max_mm: float,
+    d_f_mm: float,
+    candidate_grid: int,
+    m_min_mm: float,
+) -> dict[tuple[int, int], PillarPoint]:
+    span = candidate_grid - 1
+    found: dict[tuple[int, int], PillarPoint] = {}
+    for index_p in range(candidate_grid):
+        for index_h in range(candidate_grid):
+            d_p = d_p_min_mm + (d_p_max_mm - d_p_min_mm) * index_p / span
+            d_h = d_h_min_mm + (d_h_max_mm - d_h_min_mm) * index_h / span
+            if geometry_block_reason(d_p, d_h, d_f_mm, m_min_mm) is not None:
+                continue
+            found[(index_p, index_h)] = PillarPoint(d_p, d_h)
+    return found
+
+
+def _pairwise_distance(
+    points: tuple[PillarPoint, ...],
+    d_p_min_mm: float,
+    d_p_max_mm: float,
+    d_h_min_mm: float,
+    d_h_max_mm: float,
+) -> tuple[float, float]:
+    coords = [
+        (
+            (point.d_p_mm - d_p_min_mm) / (d_p_max_mm - d_p_min_mm),
+            (point.d_h_mm - d_h_min_mm) / (d_h_max_mm - d_h_min_mm),
+        )
+        for point in points
+    ]
+    if len(coords) < 2:
+        return (math.inf, 0.0)
+    distances = []
+    for left in range(len(coords)):
+        for right in range(left + 1, len(coords)):
+            distances.append(
+                math.hypot(
+                    coords[left][0] - coords[right][0],
+                    coords[left][1] - coords[right][1],
+                )
+            )
+    return min(distances), float(sum(distances))
 
 
 def _replay_has(config: Experiment3D, design: PillarPoint, fidelity: str) -> bool:
@@ -1423,6 +1718,7 @@ def _summary(
         "reference_hf_wall_s": config.reference_hf_wall_s,
         "lf_over_hf_cost_ratio": config.lf_over_hf_cost_ratio,
         "budget_hf_equivalent": config.budget_hf_equivalent,
+        "budget_stop": config.budget_stop,
         "cumulative_wall_s": budget.wall_s,
         "cumulative_hf_equivalent": budget.hf_equivalent,
         "n_lf": budget.n_lf,
@@ -1465,6 +1761,7 @@ def _write(
     payload = {
         "problem": config.problem,
         "budget_hf_equivalent": config.budget_hf_equivalent,
+        "budget_stop": config.budget_stop,
         "max_sequential": config.max_sequential,
         "infrastructure_backoff_s": list(config.infrastructure_backoff_s),
         "infrastructure_cap_s": config.infrastructure_cap_s,
@@ -1559,7 +1856,11 @@ def _require_same_stored_limits(stored: Mapping[str, Any], config: Experiment3D)
         "budget_hf_equivalent": config.budget_hf_equivalent,
         "max_sequential": config.max_sequential,
     }
-    changed = [key for key in expected if stored.get(key) != expected[key]]
+    changed = []
+    stored_stop = stored.get("budget_stop", BUDGET_STOP_EXPECTED)
+    if stored_stop != config.budget_stop:
+        changed.append("budget_stop")
+    changed.extend(key for key in expected if stored.get(key) != expected[key])
     if "infrastructure_cap_s" in stored and stored.get("infrastructure_cap_s") != config.infrastructure_cap_s:
         changed.append("infrastructure_cap_s")
     if "infrastructure_backoff_s" in stored and not _same_backoff(

@@ -15,8 +15,14 @@ from ro.mfbo_3d import (
     REQUIRED_FIELDS,
     STATUS_DIVERGED,
     STATUS_EXECUTION_FAILED,
+    STATUS_VALID,
+    Dataset,
     InfrastructureUnavailable,
     PillarOutcome,
+    PillarPoint,
+    _candidates,
+    _index_strata,
+    _propose,
     build_campaign_replay_table,
     campaign_pillar_diameter_mm,
     campaign_pillar_geo_ids,
@@ -422,6 +428,142 @@ def test_v2_grid_is_17_and_keeps_the_v1_box_and_initial_designs() -> None:
     assert "Both methods run v2 from scratch." in v2["note"]
 
 
+def test_seed_0_keeps_the_file_points_and_other_seeds_share_a_latin_design(tmp_path: Path) -> None:
+    file_points = [
+        (0.8, 0.15),
+        (0.6, 0.0),
+        (1.0, 0.3),
+        (0.6, 0.3),
+    ]
+    seed_0 = _live(tmp_path, method="mfbo", name="seed0", seed=0)
+    assert _pairs(seed_0.initial_hf) == file_points
+    assert _pairs(seed_0.initial_lf) == file_points
+    assert "budget_stop" not in seed_0.problem
+    assert seed_0.budget_stop == "expected"
+    plan = format_plan(seed_0)
+    assert "initial_design=experiment file" in plan
+    assert "budget_stop=expected" in plan
+    assert "best feasible HF LMH" in plan
+
+    hf = _live(tmp_path, method="hf_bo", name="seed1_hf", seed=1)
+    mf = _live(tmp_path, method="mfbo", name="seed1_mf", seed=1)
+    again = _live(tmp_path, method="mfbo", name="seed1_again", seed=1)
+    other = _live(tmp_path, method="mfbo", name="seed2", seed=2)
+    assert _pairs(hf.initial_hf) == _pairs(mf.initial_hf) == _pairs(mf.initial_lf)
+    assert _pairs(again.initial_hf) == _pairs(mf.initial_hf)
+    assert set(_pairs(mf.initial_hf)) != set(file_points)
+    assert set(_pairs(other.initial_hf)) != set(_pairs(mf.initial_hf))
+    assert len(mf.initial_hf) == 4
+    _assert_latin(mf.initial_hf, grid=17)
+    for point in mf.initial_hf:
+        assert geometry_block_reason(point.d_p_mm, point.d_h_mm, 0.4, 0.006) is None
+    assert "initial_design=maximin Latin hypercube" in format_plan(mf)
+
+
+def test_seed_0_keeps_the_first_candidate_and_other_seeds_break_ties(tmp_path: Path) -> None:
+    seed_0 = _live(tmp_path, method="hf_bo", name="tie0", seed=0)
+    first = _propose(seed_0, Dataset())
+    assert first is not None
+    expected = next(
+        design
+        for design in _candidates(seed_0)
+        if geometry_block_reason(design.d_p_mm, design.d_h_mm, 0.4, 0.006) is None
+    )
+    assert first[1] == "HF"
+    assert first[0].key() == expected.key()
+    again = _propose(seed_0, Dataset())
+    assert again is not None and again[0].key() == first[0].key()
+
+    winners = {first[0].key()}
+    for seed in (1, 2, 3, 4):
+        config = _live(tmp_path, method="hf_bo", name=f"tie{seed}", seed=seed)
+        chosen = _propose(config, Dataset())
+        assert chosen is not None and chosen[1] == "HF"
+        repeat = _propose(config, Dataset())
+        assert repeat is not None and repeat[0].key() == chosen[0].key()
+        winners.add(chosen[0].key())
+    assert len(winners) > 1
+
+
+def test_expected_budget_charges_the_overshoot_and_cumulative_stops(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("ro.mfbo_3d._propose", lambda _config, _dataset: (PillarPoint(1.0, 0.0), "HF"))
+    recommended = {"n": 0}
+
+    def recommend(_config, _dataset):
+        recommended["n"] += 1
+        return PillarPoint(0.6, 0.3)
+
+    monkeypatch.setattr("ro.mfbo_3d._recommend", recommend)
+
+    def evaluator(design, fidelity):
+        if (round(design.d_p_mm, 6), round(design.d_h_mm, 6)) == (1.0, 0.0):
+            return PillarOutcome(
+                d_p_mm=design.d_p_mm,
+                d_h_mm=design.d_h_mm,
+                fidelity=fidelity,
+                status=STATUS_EXECUTION_FAILED,
+                mesh_wall_time_s=400.0,
+                failure_reason="convergence_gate",
+                failure_class="solver",
+            )
+        return PillarOutcome(
+            d_p_mm=design.d_p_mm,
+            d_h_mm=design.d_h_mm,
+            fidelity=fidelity,
+            status=STATUS_VALID,
+            lmh=12.0,
+            cp_average=1.01,
+            dp_per_l=1000.0,
+            mesh_wall_time_s=40.0,
+            solver_wall_time_s=50.0,
+            extraction_wall_time_s=10.0,
+        )
+
+    expected = _live(tmp_path, method="hf_bo", name="budget_expected", seed=0, budget=2.0, initial_one=True)
+    expected_summary = run_optimization(expected, evaluator, tmp_path / "expected_run")
+    expected_history = json.loads((tmp_path / "expected_run" / "history.json").read_text(encoding="utf-8"))
+    assert expected_summary["budget_stop"] == "expected"
+    assert expected_summary["stop_reason"] is None
+    assert recommended["n"] == 1
+    failure = next(row for row in expected_history if row["status"] == STATUS_EXECUTION_FAILED)
+    assert failure["charged_wall_s"] == pytest.approx(400.0)
+    assert failure["charged_wall_s"] != pytest.approx(expected.reference_hf_wall_s)
+    assert expected_summary["cumulative_hf_equivalent"] > expected.budget_hf_equivalent
+
+    recommended["n"] = 0
+    payload = json.loads((tmp_path / "budget_expected.json").read_text(encoding="utf-8"))
+    payload["budget_stop"] = "cumulative"
+    cumulative_path = tmp_path / "budget_cumulative.json"
+    cumulative_path.write_text(json.dumps(payload), encoding="utf-8")
+    cumulative = load_experiment(cumulative_path, repo_root=REPO_ROOT, data_root=tmp_path)
+    cumulative_summary = run_optimization(cumulative, evaluator, tmp_path / "cumulative_run")
+    cumulative_history = json.loads((tmp_path / "cumulative_run" / "history.json").read_text(encoding="utf-8"))
+    assert cumulative_summary["stop_reason"] == "budget"
+    assert recommended["n"] == 0
+    assert cumulative_history[-1]["charged_wall_s"] == pytest.approx(400.0)
+    assert cumulative_summary["cumulative_hf_equivalent"] == pytest.approx(5.0)
+    assert cumulative_summary["cumulative_hf_equivalent"] > cumulative.budget_hf_equivalent
+    assert "budget_stop=cumulative" in format_plan(cumulative)
+
+    stored = json.loads((tmp_path / "expected_run" / "config.json").read_text(encoding="utf-8"))
+    del stored["budget_stop"]
+    (tmp_path / "expected_run" / "config.json").write_text(json.dumps(stored), encoding="utf-8")
+    resumed = run_optimization(expected, evaluator, tmp_path / "expected_run")
+    assert resumed["stopped"] is False
+    with pytest.raises(ValueError, match="budget_stop"):
+        run_optimization(cumulative, evaluator, tmp_path / "expected_run")
+
+
+def test_budget_stop_rejects_an_unknown_rule(tmp_path: Path) -> None:
+    path = tmp_path / "bad_stop.json"
+    _live(tmp_path, method="hf_bo", name="bad_stop", seed=0)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["budget_stop"] = "clip"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="budget_stop"):
+        load_experiment(path, repo_root=REPO_ROOT, data_root=tmp_path)
+
+
 def test_experiment_note_loads_and_stays_out_of_the_problem(tmp_path: Path) -> None:
     path = tmp_path / "note.json"
     _load(tmp_path, method="hf_bo", name="note", max_sequential=0)
@@ -437,6 +579,82 @@ def test_experiment_note_loads_and_stays_out_of_the_problem(tmp_path: Path) -> N
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="note"):
         load_experiment(path, repo_root=REPO_ROOT, data_root=tmp_path)
+
+
+def _pairs(points) -> list[tuple[float, float]]:
+    return [(point.d_p_mm, point.d_h_mm) for point in points]
+
+
+def _assert_latin(points, *, grid: int) -> None:
+    strata = _index_strata(grid, len(points))
+
+    def stratum(index: int) -> int:
+        for ident, span in enumerate(strata):
+            if index in span:
+                return ident
+        raise AssertionError(index)
+
+    width = grid - 1
+    p_ids = []
+    h_ids = []
+    for point in points:
+        index_p = int(round((point.d_p_mm - 0.6) / 0.4 * width))
+        index_h = int(round(point.d_h_mm / 0.3 * width))
+        assert 0 <= index_p <= width
+        assert 0 <= index_h <= width
+        p_ids.append(stratum(index_p))
+        h_ids.append(stratum(index_h))
+    assert len(set(p_ids)) == len(points)
+    assert len(set(h_ids)) == len(points)
+
+
+def _live(
+    directory: Path,
+    *,
+    method: str,
+    name: str,
+    seed: int,
+    budget: float = 8.0,
+    budget_stop: str | None = None,
+    initial_one: bool = False,
+    max_sequential: int = 8,
+):
+    fidelity = directory / f"{name}_fidelity.json"
+    fidelity.write_text(json.dumps({"LF": MESH, "HF": MESH}), encoding="utf-8")
+    if initial_one:
+        initial = [{"d_p_mm": 0.8, "d_h_mm": 0.15}]
+    else:
+        initial = [
+            {"d_p_mm": 0.8, "d_h_mm": 0.15},
+            {"d_p_mm": 0.6, "d_h_mm": 0.0},
+            {"d_p_mm": 1.0, "d_h_mm": 0.3},
+            {"d_p_mm": 0.6, "d_h_mm": 0.3},
+        ]
+    payload = {
+        "experiment_id": "pilot3d",
+        "method": method,
+        "mode": "live",
+        "seed": seed,
+        "run_id": RUN_ID,
+        "d_f_mm": 0.4,
+        "design_box": {"d_p_mm": [0.6, 1.0], "d_h_mm": [0.0, 0.3]},
+        "cp_excess_max": CP_LIMIT,
+        "dp_max_pa_per_m": DP_LIMIT,
+        "budget_hf_equivalent": budget,
+        "max_sequential": max_sequential,
+        "reference_hf_wall_s": REFERENCE,
+        "lf_over_hf_cost_ratio": 0.54,
+        "candidate_grid": 17,
+        "initial_hf": initial,
+        "initial_lf": initial,
+        "fidelity_table": str(fidelity),
+        "replay_table": None,
+    }
+    if budget_stop is not None:
+        payload["budget_stop"] = budget_stop
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return load_experiment(path, repo_root=REPO_ROOT, data_root=directory)
 
 
 def _load(directory: Path, *, method: str, name: str, max_sequential: int = 4):
