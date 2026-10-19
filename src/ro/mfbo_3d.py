@@ -31,6 +31,11 @@ points that pass the opening-gap check. The same seed gives ``hf_bo`` and
 ``mfbo`` the same points, and ``mfbo`` evaluates them at LF as well. An
 exact acquisition tie keeps the first candidate when the seed is 0. Any
 other seed breaks that tie with a stable hash of the seed and the candidate.
+
+``failure_aware=True`` multiplies constrained EI by the probability of a
+valid HF run. That probability is a GP classifier fit to this run's own
+HF outcomes, valid against failed. Until both classes have been seen the
+multiplier is 1, so an untouched run matches the default acquisition.
 """
 
 from __future__ import annotations
@@ -86,7 +91,7 @@ from ro_2d_pilot.optimization.experiment import (
     MODE_LIVE,
     MODE_REPLAY,
 )
-from ro_2d_pilot.optimization.gp import AutoregressiveModel
+from ro_2d_pilot.optimization.gp import AutoregressiveModel, GaussianProcess, normal_cdf
 
 D_F_MM = 0.40
 LF = "LF"
@@ -1020,6 +1025,7 @@ def run_optimization(
     destination: Path,
     *,
     pause: Callable[[float], None] | None = None,
+    failure_aware: bool = False,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     dataset = Dataset()
@@ -1110,7 +1116,7 @@ def run_optimization(
             if config.budget_stop == BUDGET_STOP_CUMULATIVE and _budget_reached(budget):
                 stop_reason = "budget"
                 break
-            proposal = _propose(config, dataset)
+            proposal = _propose(config, dataset, failure_aware=failure_aware)
             if proposal is None:
                 break
             design, fidelity = proposal
@@ -1155,6 +1161,7 @@ def run_optimization(
         stopped=stopped,
         stop_reason=stop_reason,
         infrastructure_wall_s=infrastructure_wall_s,
+        failure_aware=failure_aware,
     )
     return summary
 
@@ -1228,9 +1235,23 @@ def _require_evaluable(config: Experiment3D, design: PillarPoint, fidelity: str)
         )
 
 
-def _propose(config: Experiment3D, dataset: Dataset) -> tuple[PillarPoint, str] | None:
+def probit_validity(mean: float, variance: float) -> float:
+    """Probability a latent GP label is at least 0.5. Labels are 0 or 1."""
+    sigma = math.sqrt(max(variance, 0.0))
+    if sigma < 1.0e-12:
+        return 1.0 if mean >= 0.5 else 0.0
+    return float(normal_cdf((mean - 0.5) / sigma))
+
+
+def _propose(
+    config: Experiment3D,
+    dataset: Dataset,
+    *,
+    failure_aware: bool = False,
+) -> tuple[PillarPoint, str] | None:
     objective, pressure, excess = _fit(config, dataset)
     incumbent = dataset.best_hf_feasible_lmh(config)
+    validity = _run_validity_model(config, dataset) if failure_aware else None
     best: tuple[float, float, PillarPoint, str] | None = None
     fidelities = (HF,) if config.method == METHOD_HF else (HF, LF)
     for design in _candidates(config):
@@ -1246,6 +1267,10 @@ def _propose(config: Experiment3D, dataset: Dataset) -> tuple[PillarPoint, str] 
             limit=config.dp_max_pa_per_m,
             extra_constraints=((mean_c, var_c, config.cp_excess_max),),
         )
+        if validity is not None:
+            x = np.asarray([_x(config, design)], dtype=float)
+            valid_mean, valid_var = validity.predict(x)
+            score *= probit_validity(float(valid_mean[0]), float(valid_var[0]))
         if config.method == METHOD_HF:
             choices = {HF: score}
         else:
@@ -1272,6 +1297,29 @@ def _propose(config: Experiment3D, dataset: Dataset) -> tuple[PillarPoint, str] 
     if best is None:
         return None
     return best[2], best[3]
+
+
+def _run_validity_model(config: Experiment3D, dataset: Dataset) -> GaussianProcess | None:
+    """GP on this run's HF outcomes. None until a valid run and a failure exist."""
+    xs: list[tuple[float, float]] = []
+    labels: list[float] = []
+    for item in dataset.outcomes:
+        if item.fidelity != HF:
+            continue
+        if item.status == STATUS_VALID:
+            label = 1.0
+        elif item.failed:
+            label = 0.0
+        else:
+            continue
+        xs.append(_x(config, item))
+        labels.append(label)
+    if len(labels) < 2 or min(labels) == max(labels):
+        return None
+    return GaussianProcess().fit(
+        stack_xy(xs),
+        np.asarray(labels, dtype=float),
+    )
 
 
 def _recommend(config: Experiment3D, dataset: Dataset) -> PillarPoint | None:
@@ -1660,6 +1708,13 @@ def _absorb(
     )
 
 
+def _acquisition_name(method: str, failure_aware: bool) -> str:
+    name = HF_METHOD if method == METHOD_HF else MF_METHOD
+    if failure_aware:
+        return f"{name}*P(valid HF)"
+    return name
+
+
 def _summary(
     config: Experiment3D,
     dataset: Dataset,
@@ -1668,6 +1723,7 @@ def _summary(
     stopped: bool,
     stop_reason: str | None,
     infrastructure_wall_s: float,
+    failure_aware: bool = False,
 ) -> dict[str, Any]:
     incumbent = dataset.best_hf_feasible(config)
     if incumbent is None or not isinstance(incumbent, PillarOutcome):
@@ -1711,7 +1767,8 @@ def _summary(
         "stopped": stopped,
         "stop_reason": stop_reason,
         "infrastructure_wall_s": infrastructure_wall_s,
-        "acquisition": HF_METHOD if config.method == METHOD_HF else MF_METHOD,
+        "acquisition": _acquisition_name(config.method, failure_aware),
+        "failure_aware": failure_aware,
         "d_f_mm": config.d_f_mm,
         "cp_excess_max": config.cp_excess_max,
         "dp_max_pa_per_m": config.dp_max_pa_per_m,
@@ -1748,6 +1805,7 @@ def _write(
     stopped: bool,
     stop_reason: str | None = None,
     infrastructure_wall_s: float = 0.0,
+    failure_aware: bool = False,
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=True)
     summary = _summary(
@@ -1757,6 +1815,7 @@ def _write(
         stopped=stopped,
         stop_reason=stop_reason,
         infrastructure_wall_s=infrastructure_wall_s,
+        failure_aware=failure_aware,
     )
     payload = {
         "problem": config.problem,

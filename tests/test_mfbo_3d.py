@@ -486,7 +486,10 @@ def test_seed_0_keeps_the_first_candidate_and_other_seeds_break_ties(tmp_path: P
 
 
 def test_expected_budget_charges_the_overshoot_and_cumulative_stops(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("ro.mfbo_3d._propose", lambda _config, _dataset: (PillarPoint(1.0, 0.0), "HF"))
+    monkeypatch.setattr(
+        "ro.mfbo_3d._propose",
+        lambda _config, _dataset, failure_aware=False: (PillarPoint(1.0, 0.0), "HF"),
+    )
     recommended = {"n": 0}
 
     def recommend(_config, _dataset):
