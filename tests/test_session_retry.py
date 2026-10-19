@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from ro.session_retry import (
     RETRY_KIND_LAUNCH_SPAWN,
     RETRY_KIND_SCHEME_HEAP,
     RETRY_KIND_SOCKET_RESET,
     classify_retryable_session_crash,
     describe_attempt_orphans,
+    format_fluent_launch_line,
+    parse_fluent_launch_pids,
     parse_sifile_names,
+    terminate_recorded_fluent_pids,
 )
 
 SOCKET_RESET = (
@@ -95,6 +100,41 @@ def test_orphan_log_lists_only_sifile_matches():
     joined = "\n".join(lines)
     assert "ORPHAN-PID: 1234 fluent.exe" in joined
     assert "do not kill other fluent.exe" in joined
+
+
+def test_launch_line_records_the_session_pid_only():
+    class _Process:
+        pid = 4242
+
+    class _Session:
+        _process = _Process()
+
+    assert format_fluent_launch_line(_Session()) == "FLUENT_LAUNCH pid=4242"
+    assert format_fluent_launch_line(object()) == "FLUENT_LAUNCH pid=unknown"
+    text = (
+        "FLUENT_LAUNCH pid=4242\n"
+        "fluent-20261019-114250-19328.trn\n"
+        "-sifile=serverinfo-other.txt\n"
+    )
+    assert parse_fluent_launch_pids(text) == [4242]
+
+
+def test_recorded_pid_kill_does_not_use_the_transcript_pid(monkeypatch):
+    monkeypatch.setattr("ro.session_retry.os.name", "nt")
+    seen = {}
+
+    def runner(argv, **kwargs):
+        del kwargs
+        seen["argv"] = argv
+        return SimpleNamespace(returncode=0, stdout="SUCCESS", stderr="")
+
+    lines = terminate_recorded_fluent_pids(
+        "FLUENT_LAUNCH pid=4242\nfluent-20261019-114250-19328.trn\n",
+        runner=runner,
+    )
+    assert seen["argv"] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    assert any("4242" in line for line in lines)
+    assert not any("19328" in line for line in lines)
 
 
 def test_orphan_scan_failure_is_not_no_process():

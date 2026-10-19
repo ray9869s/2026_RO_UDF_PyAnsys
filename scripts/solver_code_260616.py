@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_run_manifest
+from ro.session_retry import print_fluent_launch_identity
 from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
     read_mesh_manifest,
@@ -244,6 +245,33 @@ def apply_viscous_setup(setup, solution, viscous_model, *, set_model):
     return state, read_discretization_schemes(solution)
 
 
+def _archive_attempt_solver_settings(existing, payload):
+    """Keep the previous attempt's settings off the run-identity check.
+
+    The live ``solver_settings`` stay the run parameters. Session readbacks
+    from an earlier attempt, including a phase that filled them, stay on
+    ``solver_settings_attempts``.
+    """
+    attempt_id = existing.get(SOLVER_ATTEMPT_ID_FIELD)
+    prior = [
+        item
+        for item in (existing.get("solver_settings_attempts") or [])
+        if isinstance(item, dict)
+    ]
+    if isinstance(attempt_id, str) and attempt_id.strip():
+        if not any(item.get("solver_attempt_id") == attempt_id for item in prior):
+            prior.append(
+                {
+                    "solver_attempt_id": attempt_id,
+                    "solver_settings": json.loads(
+                        json.dumps(existing["solver_settings"])
+                    ),
+                }
+            )
+    if prior:
+        payload["solver_settings_attempts"] = prior
+
+
 def stamp_viscous_setup_on_run_manifest(
     run_directory,
     viscous_state,
@@ -347,6 +375,7 @@ def write_worker_run_manifest(
             payload["solver_wall_time_s"] = existing["solver_wall_time_s"]
         if existing.get("processor_count") is not None:
             payload["processor_count"] = existing["processor_count"]
+        _archive_attempt_solver_settings(existing, payload)
         for kept in (
             "hf_solve_phases",
             "generate_wall_time_s",
@@ -4404,6 +4433,7 @@ if __name__ == "__main__":
                 start_timeout=fluent_start_timeout,
                 cwd=as_fluent_path(case_path),
             )
+            print_fluent_launch_identity(meshing)
 
             print("Meshing session launched successfully.", flush=True)
             print("Switching from meshing mode to solver mode...", flush=True)
@@ -4487,6 +4517,7 @@ if __name__ == "__main__":
                 start_timeout=fluent_start_timeout,
                 cwd=as_fluent_path(case_path),
             )
+            print_fluent_launch_identity(meshing)
 
             print("Meshing session launched successfully.", flush=True)
             print("Switching from meshing mode to solver mode...", flush=True)

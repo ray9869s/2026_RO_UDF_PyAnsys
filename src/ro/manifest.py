@@ -558,6 +558,7 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
         _optional_positive_int(payload, field, "Run")
     _optional_processor_count(payload)
     _optional_solver_wall_time_attempts(payload)
+    _optional_solver_settings_attempts(payload)
     _optional_hf_solve_phases(payload)
 
 
@@ -693,6 +694,45 @@ def _optional_processor_count(payload: Mapping[str, Any]) -> None:
     _require_integer(payload, "processor_count", "Run", minimum=1)
 
 
+def _optional_solver_settings_attempts(payload: Mapping[str, Any]) -> None:
+    if (
+        "solver_settings_attempts" not in payload
+        or payload["solver_settings_attempts"] is None
+    ):
+        return
+    attempts = payload["solver_settings_attempts"]
+    if not isinstance(attempts, list) or not attempts:
+        raise ManifestError(
+            "Run manifest field 'solver_settings_attempts' must be a "
+            f"non-empty list, got {attempts!r}."
+        )
+    seen: set[str] = set()
+    for item in attempts:
+        if not isinstance(item, Mapping):
+            raise ManifestError(
+                "Run manifest solver_settings_attempts entries must be "
+                f"objects, got {item!r}."
+            )
+        attempt_id = item.get("solver_attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id.strip():
+            raise ManifestError(
+                "Run manifest solver_settings_attempts solver_attempt_id "
+                f"must be a non-empty string, got {attempt_id!r}."
+            )
+        if attempt_id in seen:
+            raise ManifestError(
+                "Run manifest solver_settings_attempts repeats "
+                f"solver_attempt_id {attempt_id!r}."
+            )
+        seen.add(attempt_id)
+        settings = item.get("solver_settings")
+        if not isinstance(settings, Mapping):
+            raise ManifestError(
+                "Run manifest solver_settings_attempts solver_settings "
+                f"must be an object, got {settings!r}."
+            )
+
+
 def _optional_solver_wall_time_attempts(payload: Mapping[str, Any]) -> None:
     if (
         "solver_wall_time_attempts" not in payload
@@ -811,23 +851,25 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _solver_settings_parameter_changed(existing: Any, incoming: Any) -> bool:
-    """True when solver_settings changed beyond a one-time viscous fill.
+def _solver_settings_identity(settings: Any) -> Any:
+    """Parameter entries. Session readbacks are not run identity."""
+    if not isinstance(settings, Mapping):
+        return settings
+    return {
+        key: value
+        for key, value in settings.items()
+        if key not in _SOLVER_SETTINGS_FILL_KEYS
+    }
 
-    ``viscous_state`` and ``discretization_schemes`` may be added after the
-    RUNNING manifest is written. Every other solver_settings entry, including
-    ``viscous_model``, is a parameter and must stay equal.
+
+def _solver_settings_parameter_changed(existing: Any, incoming: Any) -> bool:
+    """True when a run parameter inside solver_settings changed.
+
+    ``viscous_state`` and ``discretization_schemes`` are filled after the
+    session exists. A later attempt may omit them or replace them. Every
+    other entry, including ``viscous_model``, must stay equal.
     """
-    if existing == incoming:
-        return False
-    if not isinstance(existing, Mapping) or not isinstance(incoming, Mapping):
-        return True
-    left = dict(existing)
-    right = dict(incoming)
-    for key in _SOLVER_SETTINGS_FILL_KEYS:
-        if key not in left:
-            right.pop(key, None)
-    return left != right
+    return _solver_settings_identity(existing) != _solver_settings_identity(incoming)
 
 
 def require_viscous_model(manifest: Mapping[str, Any]) -> str:

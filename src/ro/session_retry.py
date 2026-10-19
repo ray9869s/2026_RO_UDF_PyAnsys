@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 from typing import Optional
 
@@ -39,6 +40,7 @@ FLUENT_LAUNCH_SPAWN_PATTERNS = (
 )
 
 SIFILE_RE = re.compile(r"-sifile(?:=|\s+)\"?([^\s\"]+)\"?", re.IGNORECASE)
+FLUENT_LAUNCH_PID_RE = re.compile(r"FLUENT_LAUNCH pid=(\d+)\b")
 
 
 def _any_pattern(text: str, patterns) -> bool:
@@ -66,6 +68,85 @@ def classify_retryable_session_crash(text: str) -> Optional[str]:
     if _any_pattern(text, FLUENT_LAUNCH_SPAWN_PATTERNS):
         return RETRY_KIND_LAUNCH_SPAWN
     return None
+
+
+def format_fluent_launch_line(session) -> str:
+    """One line naming the Fluent process this session launched.
+
+    The PID is the PyFluent process handle. A later retry terminates that
+    PID only. ``pid=unknown`` is printed when the handle has no PID.
+    """
+    process = getattr(session, "_process", None)
+    pid = getattr(process, "pid", None) if process is not None else None
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return "FLUENT_LAUNCH pid=unknown"
+    return f"FLUENT_LAUNCH pid={pid}"
+
+
+def print_fluent_launch_identity(session) -> None:
+    """Write the launch line to stdout before any Scheme command."""
+    print(format_fluent_launch_line(session), flush=True)
+
+
+def parse_fluent_launch_pids(text: str) -> list[int]:
+    """PIDs from ``FLUENT_LAUNCH`` lines. Other numbers are ignored."""
+    pids: list[int] = []
+    seen: set[int] = set()
+    for match in FLUENT_LAUNCH_PID_RE.finditer(text or ""):
+        pid = int(match.group(1))
+        if pid <= 0 or pid == os.getpid() or pid in seen:
+            continue
+        seen.add(pid)
+        pids.append(pid)
+    return pids
+
+
+def terminate_recorded_fluent_pids(
+    evidence: str,
+    *,
+    killer=None,
+    runner=None,
+) -> list[str]:
+    """Stop Fluent processes this attempt recorded at launch.
+
+    PIDs that are not on a ``FLUENT_LAUNCH`` line are left alone, including
+    other Fluent sessions and a PID that appears only in a transcript name.
+    """
+    messages: list[str] = []
+    for pid in parse_fluent_launch_pids(evidence):
+        if killer is None:
+            messages.append(_kill_recorded_fluent_pid(pid, runner=runner))
+        else:
+            outcome = killer(pid)
+            if isinstance(outcome, str):
+                messages.append(outcome)
+            else:
+                messages.append(f"ORPHAN: terminated Fluent pid {pid}.")
+    return messages
+
+
+def _kill_recorded_fluent_pid(pid: int, *, runner=None) -> str:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return f"ORPHAN: refused to terminate pid {pid}."
+    if runner is None:
+        runner = subprocess.run
+    if os.name == "nt":
+        result = runner(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        detail = ((result.stdout or "") + (result.stderr or "")).strip()
+        suffix = f" {detail}" if detail else ""
+        return f"ORPHAN: terminated Fluent pid {pid} with taskkill /T.{suffix}"
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return f"ORPHAN: Fluent pid {pid} was already gone."
+    except PermissionError as exc:
+        return f"ORPHAN: could not terminate Fluent pid {pid}: {exc}"
+    return f"ORPHAN: terminated Fluent pid {pid}."
 
 
 def parse_sifile_names(text: str) -> list[str]:

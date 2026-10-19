@@ -13,7 +13,7 @@ from helpers import (
 )
 from test_post_aggregate_paths import load_report_extract
 from test_worker_manifests import load_meshing_code, _matching_extent_metrics
-from ro.manifest import read_run_manifest
+from ro.manifest import ManifestError, read_run_manifest, update_run_manifest_fields
 
 
 def _written_run(monkeypatch, tmp_path):
@@ -93,6 +93,70 @@ def test_solver_stamp_adds_wall_time_and_processor_count(monkeypatch, tmp_path):
         solver.stamp_solver_timing_on_run_manifest(
             run_directory, -1.0, 50, reached_final_write=True
         )
+
+
+def test_retry_after_phase_fill_archives_settings_and_keeps_identity(
+    monkeypatch, tmp_path
+):
+    solver, run_cfg, mesh_directory, run_directory = _written_run(
+        monkeypatch, tmp_path
+    )
+    first = read_run_manifest(run_directory)
+    solver.stamp_viscous_setup_on_run_manifest(
+        run_directory,
+        {"model": "laminar"},
+        {"momentum": "second-order-upwind"},
+    )
+    update_run_manifest_fields(
+        run_directory,
+        {
+            "hf_solve_phases": [
+                {
+                    "name": "hf_monitor",
+                    "stop_reason": "hf_monitor_stable",
+                    "iterations_run": 594,
+                    "convergence_quality": "FAIL",
+                }
+            ]
+        },
+    )
+    solver.write_worker_run_manifest(
+        run_cfg,
+        mesh_directory,
+        run_directory,
+        created_utc="2026-08-21T09:00:00Z",
+    )
+    carried = read_run_manifest(run_directory)
+    assert carried["solver_attempt_id"] != first["solver_attempt_id"]
+    archived = carried["solver_settings_attempts"]
+    assert len(archived) == 1
+    assert archived[0]["solver_attempt_id"] == first["solver_attempt_id"]
+    assert archived[0]["solver_settings"]["viscous_state"]["model"] == "laminar"
+    assert archived[0]["solver_settings"]["discretization_schemes"]["momentum"] == (
+        "second-order-upwind"
+    )
+    assert (
+        archived[0]["solver_settings"]["max_iterations"]
+        == first["solver_settings"]["max_iterations"]
+    )
+    assert "viscous_state" not in carried["solver_settings"]
+    assert (
+        carried["solver_settings"]["max_iterations"]
+        == first["solver_settings"]["max_iterations"]
+    )
+    assert carried["hf_solve_phases"][0]["name"] == "hf_monitor"
+    run_cfg.max_iterations = int(first["solver_settings"]["max_iterations"]) + 1
+    with pytest.raises(ManifestError, match="solver_settings"):
+        solver.write_worker_run_manifest(
+            run_cfg,
+            mesh_directory,
+            run_directory,
+            created_utc="2026-08-21T09:10:00Z",
+        )
+    assert (
+        read_run_manifest(run_directory)["solver_settings"]["max_iterations"]
+        == first["solver_settings"]["max_iterations"]
+    )
 
 
 def test_retried_solve_totals_every_fluent_launch(monkeypatch, tmp_path):

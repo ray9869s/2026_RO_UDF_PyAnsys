@@ -27,6 +27,7 @@ from ro.paths import mesh_dir, project_root, run_dir
 from ro.session_retry import (
     classify_retryable_session_crash,
     describe_attempt_orphans,
+    terminate_recorded_fluent_pids,
 )
 from ro.solver_common import (
     FINAL_CASE_SHA256_FIELD,
@@ -225,6 +226,7 @@ def run_solver_attempts(
     runner=None,
     sleeper=None,
     process_lister=None,
+    killer=None,
 ):
     """Run the solver worker, retrying Fluent session deaths.
 
@@ -266,6 +268,8 @@ def run_solver_attempts(
         for line in describe_attempt_orphans(
             evidence, process_lister=process_lister
         ):
+            print(line)
+        for line in terminate_recorded_fluent_pids(evidence, killer=killer):
             print(line)
         preserve_solver_worker_logs(run_directory, case_name, attempt)
 

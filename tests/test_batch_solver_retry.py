@@ -98,6 +98,43 @@ def test_socket_reset_retries_on_new_subprocess(monkeypatch, tmp_path, capsys):
     assert "transient session_socket_reset on attempt 1" in captured
 
 
+def test_retry_terminates_only_the_recorded_fluent_pid(
+    monkeypatch, tmp_path, capsys
+):
+    sweep = load_batch_solver_sweep()
+    run_directory = _paths(monkeypatch, tmp_path)
+    calls = []
+    killed = []
+
+    def runner(cmd, env=None, cwd=None, log_path=None):
+        calls.append(1)
+        if len(calls) == 1:
+            log_path.write_text(
+                "FLUENT_LAUNCH pid=4242\n"
+                "fluent-20261019-114250-19328.trn\n"
+                "RuntimeError: wta(1st) to string->symbol\n"
+                "Error Object: #[free (3 cells)]\n",
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=1)
+        log_path.write_text("ok", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    def killer(pid):
+        killed.append(pid)
+        return f"ORPHAN: terminated Fluent pid {pid}."
+
+    (result, attempts, kinds, _), sleeps = _run_attempts(
+        sweep, run_directory, runner, killer=killer
+    )
+    assert result.returncode == 0
+    assert attempts == 2
+    assert kinds == ["scheme_heap_corruption"]
+    assert killed == [4242]
+    assert sleeps == [15.0]
+    assert "terminated Fluent pid 4242" in capsys.readouterr().out
+
+
 def test_launch_spawn_is_retryable(monkeypatch, tmp_path):
     sweep = load_batch_solver_sweep()
     run_directory = _paths(monkeypatch, tmp_path)
