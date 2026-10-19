@@ -675,8 +675,72 @@ Pregeneration is commit `2945b51`. Data root
 
 **From host report 2026-10-19.** Optimum \(D_p = 0.75\) mm,
 \(d_h = 0.05625\) mm, LMH 24.414. Both constraints nearly active.
-This checkout cannot read `final_summary.json`. `mfbo` v2 is in
-progress under `studies/optimization/3d/mfbo/v2`.
+The run used 14 HF evaluations and about 22.14 HF-equivalent.
+`mfbo` v2 used 13 HF and 10 LF and finished at about 25.98
+HF-equivalent. The budget is about 22.98. See **3D seeds** and
+**3D budget** below. This checkout cannot read `final_summary.json`.
+
+## 3D seeds
+
+`seed` 0 uses the four initial points in the experiment file. That is
+the v2 design, so a seed-0 run stays the one already recorded.
+`hf_bo` and `mfbo` share those points, and `mfbo` evaluates each at LF.
+
+Any other live seed draws that many points with a maximin Latin
+hypercube on the candidate-grid points that pass the opening-gap
+check (`draw_maximin_lhs` in `src/ro/mfbo_3d.py`). The draw does not
+depend on the method, so the two methods still share the initial
+design. Each axis of the grid is split into four contiguous index
+strata, a permutation pairs the strata, and one valid grid point is
+taken from each cell. The sample with the largest minimum pairwise
+distance in the unit design box is kept. Replay mode keeps the file
+points, because its candidate set is the replay table.
+
+An exact tie in the acquisition argmax keeps the first grid candidate
+when the seed is 0. Any other seed breaks the tie with a stable hash
+of `(seed, d_p_mm, d_h_mm, fidelity)`. The hash does not change as
+other candidates are evaluated.
+
+A replicate is a copy of `configs/mfbo_3d_experiment.v2.json` with a
+new `experiment_id` (for example `v2_seed1`) and `seed` set to that
+replicate. The initial points left in the file are the seed-0 design;
+a live non-zero seed does not evaluate them.
+
+## 3D budget
+
+The rule in use is `budget_stop` `expected`. That is the default when
+the field is omitted, and it is the rule the v2 runs used. A sequential
+query starts only when the cumulative HF-equivalent plus the expected
+cost still fits. Expected HF cost is 1. Expected LF cost is
+`lf_over_hf_cost_ratio` (0.54). The query is then charged its recorded
+wall time, not that expected cost. The final HF recommendation is
+outside this gate: it is still evaluated and charged.
+
+A gate-failing HF run can cost several times one HF-equivalent.
+`mfbo` v2 finished at about 25.98 HF-equivalent against the 11 h budget
+of about 22.98 because a gate-failing HF run cost more than the
+expected 1. `hf_bo` v2 finished under the budget, at about 22.14.
+The excess is the recorded wall time. It is not an imputed reference HF.
+
+`budget_stop` `cumulative` starts a sequential query, including the
+final HF recommendation, only while the cumulative cost is still below
+the budget. The query that crosses the budget is charged its full
+recorded wall time, and the loop then stops. That overshoot stays in
+the history. It is not clipped to the budget and it is not replaced
+by the expected cost.
+
+Compare methods at equal budget by the best feasible HF LMH against
+cumulative HF-equivalent, not by the final totals and not by the number
+of evaluations. Read both curves at the same cumulative cost. A point
+past the budget is the recorded cost of the query that crossed it.
+
+```bash
+python scripts/mfbo/plot_budget_curves.py \
+  --out-csv curves.csv \
+  --out-png curves.png \
+  "$RO_DATA_ROOT/studies/optimization/3d/hf_bo/v2" \
+  "$RO_DATA_ROOT/studies/optimization/3d/mfbo/v2"
+```
 
 ## Infrastructure (2026-10-18 .. 2026-10-19)
 
