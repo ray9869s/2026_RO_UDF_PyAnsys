@@ -467,6 +467,10 @@ were generated on the host and are not in this checkout.
   HF-equivalent, pregenerated geometry (`configs/mfbo_3d_experiment.v2.json:5–22`).
   `hf_bo` v2 optimum \(D_p = 0.75\), \(d_h = 0.05625\), LMH 24.414
   (`C:/ro_data_mfbo/mfbo3d/studies/optimization/3d/hf_bo/v2/`).
+  When multi-fidelity pays off, as a function of the LF/HF cost ratio,
+  is the synthetic replay in `docs/RO_2D_OPTIMIZATION.md` (export the
+  host leaves, then `scripts/mfbo/synthetic_3d_benchmark.py`). This
+  checkout does not contain those leaves.
 - Discovery console (`2671300`), grid pregeneration (`2945b51`), Fluent
   crash retry and recorded-PID kill (`6220d39`).
 

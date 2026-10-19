@@ -734,6 +734,89 @@ cumulative HF-equivalent, not by the final totals and not by the number
 of evaluations. Read both curves at the same cumulative cost. A point
 past the budget is the recorded cost of the query that crossed it.
 
+## When 3D multi-fidelity pays off
+
+The live v2 pair is one cost ratio. Both methods reached the same
+point, and `mfbo` was not cheaper there. The synthetic benchmark asks
+when it would be, by replaying the same loop on Gaussian-process truths
+fit to every evaluated `HF_m` and `LF_d` leaf.
+
+`scripts/mfbo/export_3d_dataset.py` is the host collector. It walks
+`runs/pillar` for `<run-id>_hfm` and `<run-id>_lfd`, including
+`_run_failed_` archives (`src/ro/mfbo_dataset.py:98–129`). Screen, v1,
+v2, and later seeds share those leaves, so a design that was evaluated
+once is one row. Diameters come from the geometry meta when it is
+present, which keeps `d_h` 0.05625 mm instead of the 56 µm geo-id
+token. `lmh` is `lmh_window_module`. Status is `valid`, `gate_fail`
+(convergence quality `FAIL` and the solve did not diverge), or `crash`
+(`src/ro/mfbo_dataset.py:236–242`). The script does not launch Fluent
+and does not write manifests.
+
+`scripts/mfbo/synthetic_3d_benchmark.py` runs on WSL. It does not need
+the data root, only that CSV.
+
+| piece | fit |
+|---|---|
+| HF truth | GP of LMH, CP excess, and dP/L on valid `HF_m` rows (`src/ro/mfbo_synthetic.py:191–216`) |
+| LF truth | HF truth plus a GP of LF − HF on co-located valid pairs |
+| HF gate | GP classifier of valid against gate-fail. A grid point fails when P(valid) < 0.5 (`src/ro/mfbo_synthetic.py:104–108`) |
+
+Crashes are not part of the gate. The classifier and the response GPs
+are the same `GaussianProcess` the loop uses. Coordinates are scaled to
+the v2 box.
+
+The loop is `run_optimization` in `offline_replay` on the opening-gap
+17 × 17 grid (`configs/mfbo_3d_experiment.v2.json:9–22`). Seed 0 keeps
+the four v2 initial points. Any other seed draws the live maximin Latin
+hypercube, which replay mode would otherwise not draw. A valid HF query
+costs the median valid `HF_m` wall time (one HF-equivalent). A valid LF
+query costs the scenario ratio times that wall time. A gate failure
+costs the median recorded HF gate-fail cost, generate included when it
+was stored (`src/ro/mfbo_synthetic.py:110–120`). The budget is the v2
+11 h rule. Ratios are 0.54, 0.4, 0.25, and 0.1
+(`src/ro/mfbo_synthetic.py:65`). Default seeds are 0 through 19.
+
+For each method and ratio the tables report the median and the
+interquartile range of three costs: HF-equivalent to the first feasible
+HF point, HF-equivalent to a feasible HF point within 0.1% of the best
+feasible truth on the grid (`src/ro/mfbo_synthetic.py:67`), and the
+fraction of charged wall time spent on failures. `cost_ratio.png` plots
+median cost-to-near-optimum against the cost ratio. A break-even mark
+is the ratio where the `mfbo` median crosses `hf_bo`
+(`src/ro/mfbo_synthetic.py:349–363`). No mark means the curves do not
+cross inside those four ratios.
+
+Failure-aware acquisition is optional and off unless the caller passes
+it. It multiplies constrained EI by P(valid HF) from a GP fit to that
+run's own HF outcomes, valid against failed
+(`src/ro/mfbo_3d.py:35–39`, `:1238–1273`). Until the run has seen both
+a valid HF point and a failure, the multiplier is 1. The benchmark
+reports every metric with and without it. The final HF recommendation
+is still the constrained posterior mean; the multiplier applies to the
+sequential score only.
+
+Seed 0 at ratio 0.54 is the live comparison. The truth's best feasible
+grid point and both recommendations are in the same region as the live
+optimum when each is within one grid step of \(D_p = 0.75\) mm,
+\(d_h = 0.05625\) mm. `validation.md` puts the synthetic first-feasible
+cost, near-optimum cost, and failure fraction next to the live figures
+8.0 vs 9.1, 10.6 vs 14.6, and 30–37%.
+
+This WSL checkout cannot read `C:/ro_data_mfbo/mfbo3d`. Run the export
+on the host, copy the CSV, then run the benchmark here.
+
+```bash
+python scripts/mfbo/export_3d_dataset.py \
+  --data-root C:/ro_data_mfbo/mfbo3d \
+  --out C:/ro_data_mfbo/mfbo3d/studies/optimization/3d/hf_m_lf_d_leaves.csv
+
+python scripts/mfbo/synthetic_3d_benchmark.py \
+  --csv /path/to/hf_m_lf_d_leaves.csv \
+  --out-dir /path/to/synthetic_3d
+```
+
+The live v2 curves, at equal cumulative HF-equivalent, are still:
+
 ```bash
 python scripts/mfbo/plot_budget_curves.py \
   --out-csv curves.csv \
