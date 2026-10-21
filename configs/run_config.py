@@ -19,6 +19,8 @@ import types
 from pathlib import Path
 
 from ro.local_sizing import local_sizing_suffix as _local_sizing_suffix
+from ro.membrane_bl import membrane_bl_request_um as _membrane_bl_request_um
+from ro.membrane_bl import membrane_bl_suffix as _membrane_bl_suffix
 from ro.mesh_common import (
     boundary_layers_are_split as _boundary_layers_are_split,
     make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
@@ -157,6 +159,12 @@ include_spacer_in_boundary_layers = True
 #   "uniform"
 bl_offset_method = "smooth-transition"
 bl_growth_rate = 1.2
+
+# None keeps smooth-transition on every boundary-layer label.
+# A target wall-to-centroid y1 in micrometres (2.0 -> mesh_id _y1h020)
+# or the derived stack object puts a last-ratio control on the active
+# membrane labels only. Buffer and spacer stay on smooth-transition.
+membrane_bl_y1 = None
 
 # Volume mesh controls
 vol_hex_max_factor = 0.7
@@ -752,12 +760,21 @@ def validate_for_meshing():
         raise ValueError(
             f"run_config.py local sizing is invalid: {exc}"
         ) from exc
-    peel_token = f"_peel{int(peel_layers)}{local_suffix}"
+    try:
+        y1_suffix = _membrane_bl_suffix(
+            _membrane_bl_request_um(globals().get("membrane_bl_y1", None))
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"run_config.py membrane_bl_y1 is invalid: {exc}"
+        ) from exc
+    peel_token = f"_peel{int(peel_layers)}{local_suffix}{y1_suffix}"
     if not mesh_id.endswith(peel_token):
         raise ValueError(
             "run_config.py mesh_id peel token must match peel_layers. "
             f"mesh_id={mesh_id!r}, peel_layers={peel_layers!r}, "
-            f"local sizing suffix={local_suffix!r}."
+            f"local sizing suffix={local_suffix!r}, "
+            f"membrane y1 suffix={y1_suffix!r}."
         )
 
     if m_min > m_max:
@@ -778,7 +795,7 @@ def validate_for_meshing():
         spacer_bl_layers,
     ).removeprefix("mesh_")
     # Optional _fNNN (bl_height_factor token) between bl and peel.
-    # Local-sizing tokens, when set, are the suffix after _peel.
+    # Local-sizing tokens, then _y1hNNN, are the suffix after _peel.
     expected_mesh_id = re.compile(
         rf"^{re.escape(mesh_stem)}(?:_f\d{{3}})?{re.escape(peel_token)}$"
     )

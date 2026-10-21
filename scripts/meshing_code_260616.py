@@ -17,6 +17,11 @@ from ro.local_sizing import (
     parse_local_face_size,
     parse_local_proximity,
 )
+from ro.membrane_bl import (
+    membrane_bl_controls,
+    membrane_bl_summary_lines,
+    resolve_membrane_bl,
+)
 from ro.geometry_registry import require_mfp_geometry_sha256
 from ro.manifest import (
     MESH_PHASE_NAMES,
@@ -394,6 +399,113 @@ def _assert_membrane_control_layer_count(
         )
 
 
+def _assert_boundary_layer_arguments(state, arguments):
+    """The child Fluent stored must still carry the control we set."""
+    control_name = arguments["BLControlName"]
+    for key in (
+        "NumberOfLayers",
+        "OffsetMethodType",
+        "Rate",
+        "FirstHeight",
+        "BLControlName",
+    ):
+        got = state.get(key)
+        expected = arguments[key]
+        if isinstance(expected, float) or isinstance(got, float):
+            if not isinstance(got, (int, float)) or isinstance(got, bool):
+                raise RuntimeError(
+                    f"{control_name} {key} is {got!r}; expected {expected!r}. "
+                    f"State: {state!r}."
+                )
+            if abs(float(got) - float(expected)) > 1.0e-9 * max(1.0, abs(float(expected))):
+                raise RuntimeError(
+                    f"{control_name} {key} is {got!r}; expected {expected!r}. "
+                    f"State: {state!r}."
+                )
+            continue
+        if got != expected:
+            raise RuntimeError(
+                f"{control_name} {key} is {got!r}; expected {expected!r}. "
+                f"State: {state!r}."
+            )
+    got_labels = state.get("BlLabelList")
+    expected_labels = list(arguments["BlLabelList"])
+    if not isinstance(got_labels, (list, tuple)) or list(got_labels) != expected_labels:
+        raise RuntimeError(
+            f"{control_name} BlLabelList is {got_labels!r}; "
+            f"expected {expected_labels!r}. State: {state!r}."
+        )
+
+
+def _assert_membrane_bl_override(workflow, controls):
+    """Open each override control by name and check the arguments stuck."""
+    task_container = workflow.TaskObject
+    keys = _task_object_keys(task_container)
+    missing = [
+        arguments["BLControlName"]
+        for arguments in controls
+        if arguments["BLControlName"] not in keys
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing boundary-layer controls {missing!r}. "
+            f"TaskObject keys: {keys!r}."
+        )
+    for arguments in controls:
+        control_name = arguments["BLControlName"]
+        try:
+            child = task_container[control_name]
+        except LookupError as exc:
+            raise RuntimeError(
+                f"TaskObject[{control_name!r}] failed. "
+                f"TaskObject keys: {keys!r}."
+            ) from exc
+        state = child.Arguments.get_state()
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                f"Child {control_name!r} Arguments.get_state() is not a dict: "
+                f"{state!r}."
+            )
+        print(
+            f"Boundary layer child {control_name!r} "
+            f"Arguments.get_state(): {state}"
+        )
+        _assert_boundary_layer_arguments(state, arguments)
+
+
+def _configure_membrane_bl_override(
+    workflow,
+    *,
+    membrane_bl,
+    buffer_wall_labels,
+    wall_spacer_labels,
+    bl_height,
+    bl_layers,
+    spacer_bl_layers,
+    bl_offset_method,
+    bl_growth_rate,
+    include_spacer_in_boundary_layers,
+):
+    """Membrane last-ratio control. Spacer and buffer stay smooth-transition."""
+    controls = membrane_bl_controls(
+        membrane_bl,
+        buffer_labels=buffer_wall_labels,
+        wall_spacer_labels=wall_spacer_labels,
+        bl_height=bl_height,
+        bl_layers=bl_layers,
+        spacer_bl_layers=spacer_bl_layers,
+        bl_offset_method=bl_offset_method,
+        bl_growth_rate=bl_growth_rate,
+        include_spacer_in_boundary_layers=include_spacer_in_boundary_layers,
+    )
+    task = workflow.TaskObject["Add Boundary Layers"]
+    for arguments in controls:
+        task.Arguments.set_state(arguments)
+        task.AddChildAndUpdate(DeferUpdate=False)
+        _print_boundary_layer_task_state(task, arguments["BLControlName"])
+    _assert_membrane_bl_override(workflow, controls)
+
+
 def configure_boundary_layers(
     workflow,
     *,
@@ -406,8 +518,28 @@ def configure_boundary_layers(
     bl_offset_method,
     bl_growth_rate,
     include_spacer_in_boundary_layers,
+    membrane_bl=None,
+    buffer_wall_labels=None,
 ):
-    """One control when spacer layers are unset or equal; two controls otherwise."""
+    """One control when spacer layers are unset or equal; two controls otherwise.
+
+    ``membrane_bl`` replaces that path with a last-ratio control on the
+    membrane labels. ``None`` is the historical single- or split-control path.
+    """
+    if membrane_bl is not None:
+        _configure_membrane_bl_override(
+            workflow,
+            membrane_bl=membrane_bl,
+            buffer_wall_labels=buffer_wall_labels,
+            wall_spacer_labels=wall_spacer_labels,
+            bl_height=bl_height,
+            bl_layers=bl_layers,
+            spacer_bl_layers=spacer_bl_layers,
+            bl_offset_method=bl_offset_method,
+            bl_growth_rate=bl_growth_rate,
+            include_spacer_in_boundary_layers=include_spacer_in_boundary_layers,
+        )
+        return
     task = workflow.TaskObject["Add Boundary Layers"]
     if not boundary_layers_are_split(bl_layers, spacer_bl_layers):
         task.Arguments.set_state(
@@ -640,6 +772,13 @@ if __name__ == "__main__":
     spacer_bl_layers = cfg.spacer_bl_layers
     bl_offset_method = cfg.bl_offset_method
     bl_growth_rate = cfg.bl_growth_rate
+    membrane_bl = resolve_membrane_bl(
+        getattr(cfg, "membrane_bl_y1", None),
+        size_mm=m_max,
+        bl_layers=bl_layers,
+        growth_rate=bl_growth_rate,
+        labels=active_membrane_wall_labels,
+    )
 
     # [Volume mesh]
     vol_hex_max_factor = cfg.vol_hex_max_factor
@@ -859,6 +998,7 @@ def print_meshing_input_summary():
         f"BOI curvature normal angle [deg]: {boi_curvature_normal_angle}",
         f"BOI growth rate [-]: {boi_growth_rate}",
         *local_sizing_summary_lines(local_proximity, local_face_size),
+        *membrane_bl_summary_lines(membrane_bl),
         f"Boundary layer labels: {boundary_layer_labels}",
         f"Boundary layer offset method: {bl_offset_method}",
         f"Boundary layer first height factor [-]: {bl_height_factor}",
@@ -1459,6 +1599,8 @@ if __name__ == "__main__":
                 include_spacer_in_boundary_layers=(
                     cfg.include_spacer_in_boundary_layers
                 ),
+                membrane_bl=membrane_bl,
+                buffer_wall_labels=buffer_wall_labels,
             )
 
             workflow.TaskObject["Generate the Volume Mesh"].Arguments.set_state({
@@ -1493,6 +1635,8 @@ if __name__ == "__main__":
             print(f"  Boundary layer first height [mm] = {bl_height}")
             print(f"  Boundary layer number of layers = {bl_layers}")
             print(f"  Boundary layer growth rate = {bl_growth_rate}")
+            for line in membrane_bl_summary_lines(membrane_bl):
+                print(f"  {line}")
             print("=" * 72 + "\n")
 
             # Stop the transcript to flush mesh quality output before parsing the log file.

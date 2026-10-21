@@ -49,6 +49,25 @@ Optional local sizing, omitted when unset. The ``mesh_id`` suffix after
 ``_peelN`` must match these objects (``_lpx…`` / ``_fs…``):
   local_proximity:            {pairs, cells_per_gap, min_size_mm}
   local_face_size:            {labels, size_mm, growth_rate}
+
+Optional membrane first-height stack, omitted when unset. The ``mesh_id``
+suffix ``_y1hNNN`` (``round(y1_um * 10)``) follows the local-sizing tokens.
+``bl`` stays the smooth-transition layer count. ``layers`` is the
+last-ratio count on the membrane labels only:
+  membrane_bl_y1:             {y1_um, first_height_mm, offset_method,
+                               layers, growth_rate,
+                               reference_total_thickness_mm,
+                               total_thickness_mm, labels}
+
+Optional, parsed from the solver transcript. Absent when the UDF line
+was not in the transcript (and, for the request fields, when the mesh
+id has no ``_y1hNNN`` token):
+  y1_udf_area_mean_um:        area-weighted mean from the first
+                              "y1 area-weighted mean" print, micrometres
+  y1_request_um:              target decoded from ``_y1hNNN``
+  y1_request_rel_error:       abs(realised - request) / request
+  y1_request_mismatch:        true when the diagnostic is missing or the
+                              relative error is above 20%
 """
 
 from __future__ import annotations
@@ -65,6 +84,13 @@ from typing import Any
 
 from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
 from ro.local_sizing import local_sizing_suffix
+from ro.membrane_bl import (
+    Y1_REQUEST_REL_TOLERANCE,
+    membrane_bl_suffix,
+    resolve_membrane_bl,
+    specs_match,
+    y1_request_mismatch,
+)
 from ro.manifest_validation import (
     validate_mesh_geometry_fields,
     validate_run_geometry_fields,
@@ -367,12 +393,14 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
             f"got {mesh_id!r}."
         )
     local_suffix = _mesh_local_sizing_suffix(payload)
-    peel_token = f"_peel{payload['peel']}{local_suffix}"
+    y1_suffix = _mesh_membrane_bl_suffix(payload)
+    peel_token = f"_peel{payload['peel']}{local_suffix}{y1_suffix}"
     if not mesh_id.endswith(peel_token):
         raise ManifestError(
             "Mesh manifest mesh_id peel token must match field 'peel'. "
             f"mesh_id={mesh_id!r}, peel={payload['peel']!r}, "
-            f"local sizing suffix={local_suffix!r}."
+            f"local sizing suffix={local_suffix!r}, "
+            f"membrane y1 suffix={y1_suffix!r}."
         )
     if "spacer_bl" in payload:
         _require_integer(payload, "spacer_bl", "Mesh", minimum=1)
@@ -572,6 +600,7 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_solver_wall_time_attempts(payload)
     _optional_solver_settings_attempts(payload)
     _optional_hf_solve_phases(payload)
+    _optional_y1_diagnostic(payload)
 
 
 def _optional_mesh_wall_times(payload: Mapping[str, Any]) -> None:
@@ -916,6 +945,7 @@ def _changed_fields(
 _OPTIONAL_MESH_PARAMETER_FIELDS = (
     "local_proximity",
     "local_face_size",
+    "membrane_bl_y1",
 )
 
 
@@ -932,6 +962,117 @@ def _changed_optional_fields(
         if existing.get(field) != incoming.get(field):
             changed.append(field)
     return tuple(changed)
+
+
+def _mesh_membrane_bl_suffix(payload: Mapping[str, Any]) -> str:
+    """``_y1hNNN`` required by ``membrane_bl_y1``. Empty when the field is omitted."""
+    if "membrane_bl_y1" not in payload:
+        return ""
+    spec = payload["membrane_bl_y1"]
+    if spec is None:
+        raise ManifestError(
+            "Mesh manifest membrane_bl_y1 must be omitted when unset, not null."
+        )
+    if not isinstance(spec, Mapping):
+        raise ManifestError(
+            "Mesh manifest membrane_bl_y1 must be an object, "
+            f"got {type(spec).__name__}."
+        )
+    try:
+        expected = resolve_membrane_bl(
+            dict(spec),
+            size_mm=payload["max_size_mm"],
+            bl_layers=payload["bl"],
+            growth_rate=spec["growth_rate"],
+            labels=list(payload["membrane_wall_base_names"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"Mesh manifest membrane_bl_y1 is invalid: {exc}"
+        ) from exc
+    if expected is None or not specs_match(spec, expected):
+        raise ManifestError(
+            "Mesh manifest membrane_bl_y1 does not match the stack derived "
+            f"from max_size_mm, bl, and membrane_wall_base_names: {spec!r}."
+        )
+    return membrane_bl_suffix(expected["y1_um"])
+
+
+def _optional_y1_diagnostic(payload: Mapping[str, Any]) -> None:
+    """Transcript y1 fields. Absent on runs that never parsed the diagnostic."""
+    realised_key = "y1_udf_area_mean_um"
+    request_key = "y1_request_um"
+    error_key = "y1_request_rel_error"
+    flag_key = "y1_request_mismatch"
+    for key in (realised_key, request_key, error_key, flag_key):
+        if key in payload and payload[key] is None:
+            raise ManifestError(
+                f"Run manifest {key} must be omitted when unknown, not null."
+            )
+    realised = payload.get(realised_key)
+    requested = payload.get(request_key)
+    relative = payload.get(error_key)
+    flag = payload.get(flag_key)
+    if realised_key in payload:
+        _require_number(payload, realised_key, "Run")
+        if float(realised) <= 0.0:
+            raise ManifestError(
+                "Run manifest y1_udf_area_mean_um must be positive, "
+                f"got {realised!r}."
+            )
+    if request_key in payload:
+        _require_number(payload, request_key, "Run")
+        if float(requested) <= 0.0:
+            raise ManifestError(
+                "Run manifest y1_request_um must be positive, "
+                f"got {requested!r}."
+            )
+    if error_key in payload:
+        _require_number(payload, error_key, "Run")
+        if float(relative) < 0.0:
+            raise ManifestError(
+                "Run manifest y1_request_rel_error must be >= 0, "
+                f"got {relative!r}."
+            )
+    if flag_key in payload and not isinstance(flag, bool):
+        raise ManifestError(
+            "Run manifest y1_request_mismatch must be a bool, "
+            f"got {flag!r}."
+        )
+    if request_key not in payload:
+        if error_key in payload or flag_key in payload:
+            raise ManifestError(
+                "Run manifest y1 request fields require y1_request_um."
+            )
+        return
+    if flag_key not in payload:
+        raise ManifestError(
+            "Run manifest y1_request_um requires y1_request_mismatch."
+        )
+    expected_flag = y1_request_mismatch(realised, requested)
+    if flag is not expected_flag:
+        raise ManifestError(
+            "Run manifest y1_request_mismatch does not match the "
+            f"{Y1_REQUEST_REL_TOLERANCE:.0%} check: "
+            f"realised={realised!r}, requested={requested!r}, flag={flag!r}."
+        )
+    if realised_key in payload:
+        expected_error = abs(float(realised) - float(requested)) / float(requested)
+        if error_key not in payload or not math.isclose(
+            float(relative),
+            expected_error,
+            rel_tol=1.0e-9,
+            abs_tol=1.0e-12,
+        ):
+            raise ManifestError(
+                "Run manifest y1_request_rel_error must be "
+                "abs(realised - request) / request, "
+                f"got {relative!r}, expected {expected_error!r}."
+            )
+    elif error_key in payload:
+        raise ManifestError(
+            "Run manifest y1_request_rel_error requires y1_udf_area_mean_um."
+        )
 
 
 def _mesh_local_sizing_suffix(payload: Mapping[str, Any]) -> str:

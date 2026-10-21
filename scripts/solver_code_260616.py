@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_run_manifest
+from ro.membrane_bl import (
+    first_y1_transcript_text,
+    format_y1_request_flag,
+    y1_diagnostic_fields,
+)
 from ro.session_retry import print_fluent_launch_identity
 from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
@@ -437,6 +442,18 @@ def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=
             payload["u_target_ms"],
             inlet_bc_type=payload["inlet_bc_type"],
         )
+    y1_text = first_y1_transcript_text(run_directory)
+    if y1_text:
+        y1_fields = y1_diagnostic_fields(payload["mesh_id"], y1_text)
+        payload.update(y1_fields)
+        y1_flag = format_y1_request_flag(y1_fields)
+        if y1_flag:
+            print(y1_flag)
+        elif "y1_udf_area_mean_um" in y1_fields:
+            print(
+                "UDF y1 area-weighted mean: "
+                f"{y1_fields['y1_udf_area_mean_um']} um"
+            )
     return write_run_manifest(run_directory, payload)
 
 

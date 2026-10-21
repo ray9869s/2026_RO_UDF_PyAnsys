@@ -154,7 +154,7 @@ def _manifest_layout_overrides(manifest: dict[str, Any]) -> dict[str, Any]:
             overrides[cfg_key] = manifest[manifest_field]
     if "spacer_bl" in manifest:
         overrides["spacer_bl_layers"] = manifest["spacer_bl"]
-    for field in ("local_proximity", "local_face_size"):
+    for field in ("local_proximity", "local_face_size", "membrane_bl_y1"):
         if field in manifest:
             overrides[field] = manifest[field]
     return overrides

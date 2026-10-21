@@ -126,7 +126,7 @@ Domain extents.
 
 
 def _from_log_text(*, extents=True):
-    from tests.test_mesh_ledger import REAL_SURFACE_SKEWNESS_TABLE, SYNTHETIC_MESH_LOG
+    from test_mesh_ledger import REAL_SURFACE_SKEWNESS_TABLE, SYNTHETIC_MESH_LOG
 
     text = SYNTHETIC_MESH_LOG + REAL_SURFACE_SKEWNESS_TABLE
     if extents:

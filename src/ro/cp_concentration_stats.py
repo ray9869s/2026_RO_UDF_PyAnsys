@@ -271,11 +271,22 @@ def _row(metric, value, unit):
     return {"metric": metric, "value": value, "unit": unit}
 
 
-def concentration_cp_summary_rows(report):
-    """New summary columns only. Does not repeat existing CP or c_b names."""
+def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
+    """New summary columns only. Does not repeat existing CP or c_b names.
+
+    ``c1_area_mean_window`` is the raw first-cell concentration on the same
+    faces as ``cm_area_mean_window`` (reconstructed UDM_CM). It is omitted
+    when the salt mass fraction was not read.
+    """
     window = report["window"]
     rows = [
         _row("cm_area_mean_window", window["cm_area_mean"], "mol/m3"),
+    ]
+    if c1_area_mean_window is not None:
+        rows.append(
+            _row("c1_area_mean_window", c1_area_mean_window, "mol/m3")
+        )
+    rows.extend([
         _row("cm_q999_window", window["cm_q999"], "mol/m3"),
         _row("cm_q99_window", window["cm_q99"], "mol/m3"),
         _row("cp_ref_area", window["cp_ref_area"], "mol/m3"),
@@ -288,7 +299,7 @@ def concentration_cp_summary_rows(report):
         _row("cp_q999_window_flux", window["cp_q999_flux"], "-"),
         _row("cp_q99_window_area", window["cp_q99_area"], "-"),
         _row("cp_q99_window_flux", window["cp_q99_flux"], "-"),
-    ]
+    ])
     for cell, metrics in sorted(report["cells"].items()):
         rows.extend(
             [

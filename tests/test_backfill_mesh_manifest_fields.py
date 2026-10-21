@@ -10,7 +10,7 @@ from helpers import SCRIPTS_DIR, load_module
 from ro.domain_layout import require_mesh_manifest_x_extent_matches_layout
 from ro.manifest import read_mesh_manifest
 from ro.paths import mesh_dir
-from tests.test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
+from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
 
 backfill = load_module(
     "backfill_mesh_manifest_fields_under_test",

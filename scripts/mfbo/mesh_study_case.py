@@ -20,8 +20,10 @@ inserted as ``_fNNN`` (``round(factor * 100)``, so 0.40 is ``f040``) before
 ``_peel``, which is the token ``MESH_ID_RE`` already accepts. A spacer
 layer count that differs from ``bl_layers`` is ``bl{membrane}s{spacer}``.
 ``--local-proximity`` and ``--local-face-size`` append ``_lpx…`` / ``_fs…``
-after ``_peel``. ``--mesh-only`` prints the mesh cell count and does not
-solve.
+after ``_peel``. ``--membrane-bl-y1-um`` appends ``_y1hNNN`` after those
+(``round(um * 10)``, so 2.0 um is ``_y1h020``) and records the last-ratio
+stack on the mesh manifest. ``--mesh-only`` prints the mesh cell count
+and does not solve.
 
 ``--reuse-mesh`` skips meshing when that mesh leaf already exists, its
 ``mesh_run_record.json`` status is ``SUCCESS``, and the manifest settings
@@ -54,6 +56,7 @@ from ro.local_sizing import (
     parse_local_face_size,
     parse_local_proximity,
 )
+from ro.membrane_bl import membrane_bl_suffix, resolve_membrane_bl, specs_match
 from ro.convergence_quality import continuity_final_from_case_dir
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
@@ -119,6 +122,7 @@ def collect_overrides(
     spacer_bl_layers=None,
     local_proximity=None,
     local_face_size=None,
+    membrane_bl_y1_um=None,
 ):
     """Return the mesh knobs the caller set. At least one is required."""
     changes = {}
@@ -144,12 +148,16 @@ def collect_overrides(
         changes["local_proximity"] = parse_local_proximity(local_proximity)
     if local_face_size is not None:
         changes["local_face_size"] = parse_local_face_size(local_face_size)
+    if membrane_bl_y1_um is not None:
+        _require_positive("membrane_bl_y1_um", membrane_bl_y1_um)
+        changes["membrane_bl_y1_um"] = float(membrane_bl_y1_um)
     if not changes:
         raise ValueError(
             "At least one mesh override is required "
             "(--m-max, --m-min, --m-cpg, --bl-layers, "
             "--bl-first-height-factor, --spacer-bl-layers, "
-            "--local-proximity, --local-face-size). "
+            "--local-proximity, --local-face-size, "
+            "--membrane-bl-y1-um). "
             "The production baseline is "
             "reextract_runs.py --copy-from-production."
         )
@@ -166,6 +174,18 @@ def _require_positive(name, value):
 def _require_positive_int(name, value):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+
+
+def default_bl_growth_rate():
+    """``run_config.bl_growth_rate``. The production template does not set it."""
+    path = project_root() / "configs" / "run_config.py"
+    spec = importlib.util.spec_from_file_location(
+        "mesh_study_run_config_growth",
+        path,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return float(module.bl_growth_rate)
 
 
 def default_bl_height_factor():
@@ -209,8 +229,9 @@ def study_mesh_id(
     spacer_bl_layers=None,
     local_proximity=None,
     local_face_size=None,
+    membrane_bl_y1_um=None,
 ):
-    """Production formatter, plus ``_fNNN`` and local-sizing tokens."""
+    """Production formatter, plus ``_fNNN``, local-sizing, and ``_y1h`` tokens."""
     mesh_id = format_production_mesh_id(
         m_max=m_max,
         m_min=m_min,
@@ -227,6 +248,7 @@ def study_mesh_id(
     ):
         mesh_id = with_height_factor_token(mesh_id, bl_height_factor)
     mesh_id += local_sizing_suffix(local_proximity, local_face_size)
+    mesh_id += membrane_bl_suffix(membrane_bl_y1_um)
     if MESH_ID_RE.fullmatch(mesh_id) is None:
         raise ValueError(f"study mesh_id is invalid: {mesh_id!r}.")
     return mesh_id
@@ -305,13 +327,35 @@ def apply_study_overrides(template, changes):
         spacer_bl_layers=overrides.get("spacer_bl_layers"),
         local_proximity=overrides.get("local_proximity"),
         local_face_size=overrides.get("local_face_size"),
+        membrane_bl_y1_um=overrides.get("membrane_bl_y1_um"),
     )
+    if overrides.get("membrane_bl_y1_um") is not None:
+        y1_um = overrides.pop("membrane_bl_y1_um")
+        labels = overrides.get("active_membrane_wall_labels")
+        if not labels:
+            labels = ["wall_top_mem", "wall_bottom_mem"]
+        growth = overrides.get("bl_growth_rate", default_bl_growth_rate())
+        overrides["membrane_bl_y1"] = resolve_membrane_bl(
+            y1_um,
+            size_mm=m_max,
+            bl_layers=int(overrides["bl_layers"]),
+            growth_rate=growth,
+            labels=labels,
+        )
     require_distinct_mesh_id(mesh_id, template["mesh_id"])
     overrides["mesh_id"] = mesh_id
     overrides["case_name"] = mesh_id
     if "bl_height_factor" in changes:
         overrides["bl_height_factor"] = factor
     return overrides
+
+
+def _membrane_bl_equal(recorded, requested):
+    if recorded is None and requested is None:
+        return True
+    if not isinstance(recorded, dict) or not isinstance(requested, dict):
+        return False
+    return specs_match(recorded, requested)
 
 
 def _values_equal(left, right):
@@ -709,10 +753,14 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
             f"{_setting_text(on_disk_sha256)}, "
             f"requested {_setting_text(geometry_sha256)}"
         )
-    for key in ("local_proximity", "local_face_size"):
+    for key in ("local_proximity", "local_face_size", "membrane_bl_y1"):
         recorded = manifest[key] if key in manifest else None
         requested = overrides[key] if key in overrides else None
-        if not _values_equal(recorded, requested):
+        if key == "membrane_bl_y1":
+            matches = _membrane_bl_equal(recorded, requested)
+        else:
+            matches = _values_equal(recorded, requested)
+        if not matches:
             mismatches.append(
                 f"{key}: recorded {_setting_text(recorded)}, "
                 f"requested {_setting_text(requested)}"
@@ -921,6 +969,16 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--membrane-bl-y1-um",
+        type=float,
+        default=None,
+        help=(
+            "Target membrane wall-to-centroid y1 in micrometres. "
+            "Encoded as _y1hNNN after _peel (2.0 um is _y1h020). "
+            "Last-ratio on the membrane labels; spacer BL unchanged."
+        ),
+    )
+    parser.add_argument(
         "--mesh-only",
         action="store_true",
         help="Mesh, print the cell count, and do not solve or extract.",
@@ -972,6 +1030,7 @@ def main(argv=None):
         spacer_bl_layers=args.spacer_bl_layers,
         local_proximity=_json_object("--local-proximity", args.local_proximity),
         local_face_size=_json_object("--local-face-size", args.local_face_size),
+        membrane_bl_y1_um=args.membrane_bl_y1_um,
     )
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]

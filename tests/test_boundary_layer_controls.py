@@ -459,3 +459,72 @@ def test_manifest_records_spacer_bl_only_for_a_split(monkeypatch, tmp_path):
     default_directory.mkdir(parents=True)
     with pytest.raises(ManifestError, match="mesh_id tokens"):
         write_mesh_manifest(default_directory, on_default_id)
+
+
+def test_membrane_first_height_override_is_last_ratio_on_membrane_only():
+    from ro.membrane_bl import membrane_bl_stack
+
+    meshing = load_meshing_code()
+    workflow = _Workflow()
+    meshing.configure_boundary_layers(
+        workflow,
+        boundary_layer_labels=LABELS,
+        membrane_and_buffer_labels=MEMBRANE_AND_BUFFER,
+        wall_spacer_labels=SPACER,
+        bl_height=0.002,
+        bl_layers=4,
+        spacer_bl_layers=None,
+        bl_offset_method="smooth-transition",
+        bl_growth_rate=1.2,
+        include_spacer_in_boundary_layers=True,
+        membrane_bl=None,
+    )
+    task = workflow.TaskObject["Add Boundary Layers"]
+    assert task.updates == [{"DeferUpdate": False, "state": SINGLE_ARGUMENTS}]
+    assert task.TaskList.reads == 0
+
+    spec = membrane_bl_stack(
+        2.0,
+        size_mm=0.085,
+        bl_layers=4,
+        growth_rate=1.2,
+        labels=["wall_top_mem", "wall_bottom_mem"],
+    )
+    override = _Workflow()
+    meshing.configure_boundary_layers(
+        override,
+        boundary_layer_labels=LABELS,
+        membrane_and_buffer_labels=MEMBRANE_AND_BUFFER,
+        wall_spacer_labels=SPACER,
+        bl_height=0.002,
+        bl_layers=4,
+        spacer_bl_layers=None,
+        bl_offset_method="smooth-transition",
+        bl_growth_rate=1.2,
+        include_spacer_in_boundary_layers=True,
+        membrane_bl=spec,
+        buffer_wall_labels=["wall_top_buffer", "wall_bottom_buffer"],
+    )
+    states = [
+        item["state"]
+        for item in override.TaskObject["Add Boundary Layers"].updates
+    ]
+    assert states[0]["BLControlName"] == "last_ratio_mem"
+    assert states[0]["OffsetMethodType"] == "last-ratio"
+    assert states[0]["FirstHeight"] == pytest.approx(0.004)
+    assert states[0]["NumberOfLayers"] == spec["layers"]
+    assert states[0]["Rate"] == pytest.approx(1.2)
+    assert states[0]["BlLabelList"] == ["wall_top_mem", "wall_bottom_mem"]
+    assert states[1]["BLControlName"] == "smooth_transition_rest"
+    assert states[1]["OffsetMethodType"] == "smooth-transition"
+    assert states[1]["FirstHeight"] == 0.002
+    assert states[1]["NumberOfLayers"] == 4
+    assert states[1]["Rate"] == pytest.approx(1.2)
+    assert states[1]["BlLabelList"] == [
+        "wall_top_buffer",
+        "wall_bottom_buffer",
+        "wall_spacer",
+    ]
+    stored = override.TaskObject["last_ratio_mem"].Arguments.get_state()
+    assert stored["OffsetMethodType"] == "last-ratio"
+    assert stored["FirstHeight"] == pytest.approx(0.004)

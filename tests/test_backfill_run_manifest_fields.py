@@ -24,7 +24,7 @@ RUN_ID = "u0p2_p6M"
 
 
 def _full_run_payload() -> dict:
-    from tests.test_manifest import run_payload
+    from test_manifest import run_payload
 
     return run_payload()
 

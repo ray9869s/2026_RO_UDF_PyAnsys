@@ -132,7 +132,14 @@ from ro.cp_concentration_stats import (  # noqa: E402
     polygon_area,
     window_x_bounds,
 )
+from ro.membrane_bl import (  # noqa: E402
+    first_y1_transcript_text,
+    format_y1_request_flag,
+    y1_diagnostic_fields,
+    y1_diagnostic_summary_rows,
+)
 from ro.membrane_y1 import (  # noqa: E402
+    raw_cell_concentration_mean,
     y1_window_resolution,
     y1_window_summary_rows,
 )
@@ -777,6 +784,7 @@ _MEMBRANE_FACE_FIELD_KEYS = {
     FIELD_UDM_CM: "cm",
     FIELD_UDM_JW: "jw",
     FIELD_UDM_Y1: "y1",
+    "nacl": "yi",
 }
 
 
@@ -858,12 +866,15 @@ def collect_concentration_cp_faces(
     *,
     include_cells=True,
     include_y1=True,
+    include_raw_concentration=False,
 ):
     """Window clip of both walls, plus one clip per evaluation cell.
 
     ``include_cells=False`` skips the per-cell clips. The window metrics
     are read from the window clip, not from those cells.
     ``include_y1=False`` omits the y1 field on that window clip.
+    ``include_raw_concentration=True`` reads the adjacent-cell salt mass
+    fraction (``nacl``) on that same window clip as ``yi``.
     """
     cell_faces = {}
     if include_cells:
@@ -880,13 +891,18 @@ def collect_concentration_cp_faces(
         unit_cell_boundary_x_m,
         evaluation_cell_numbers,
     )
+    extra_fields = []
+    if include_y1:
+        extra_fields.append(FIELD_UDM_Y1)
+    if include_raw_concentration:
+        extra_fields.append("nacl")
     window_faces = read_membrane_clip_faces(
         solver,
         wall_surface_names,
         x_min_m,
         x_max_m,
         "pp_cpc_window",
-        extra_fields=(FIELD_UDM_Y1,) if include_y1 else (),
+        extra_fields=tuple(extra_fields),
     )
     return window_faces, cell_faces
 
@@ -2116,6 +2132,7 @@ if __name__ == "__main__":
             evaluation_cells,
             include_cells=report_profile != PROFILE_MFBO,
             include_y1=report_profile != PROFILE_MFBO,
+            include_raw_concentration=report_profile != PROFILE_MFBO,
         )
         concentration_cp_metrics = concentration_cp_report(
             window_faces,
@@ -2131,6 +2148,31 @@ if __name__ == "__main__":
             f"cpc_window_avg_flux="
             f"{concentration_cp_metrics['window']['cpc_avg_flux']}"
         )
+        c1_area_mean_window = None
+        if report_profile != PROFILE_MFBO:
+            c1_area_mean_window = raw_cell_concentration_mean(
+                window_faces,
+                density_kg_per_m3=rho,
+                molecular_weight_kg_per_mol=salt_molecular_weight_kg_per_mol,
+            )
+            print(
+                "Film correction window: "
+                f"c1_area_mean_mol_m3={c1_area_mean_window}, "
+                "cm_area_mean_mol_m3="
+                f"{concentration_cp_metrics['window']['cm_area_mean']}"
+            )
+        y1_diagnostic = y1_diagnostic_fields(
+            cfg.mesh_id,
+            first_y1_transcript_text(case_path),
+        )
+        y1_flag_line = format_y1_request_flag(y1_diagnostic)
+        if y1_flag_line:
+            print(y1_flag_line)
+        elif "y1_udf_area_mean_um" in y1_diagnostic:
+            print(
+                "UDF y1 area-weighted mean: "
+                f"{y1_diagnostic['y1_udf_area_mean_um']} um"
+            )
         if report_profile == PROFILE_MFBO:
             membrane_y1_metrics = None
         else:
@@ -2731,9 +2773,15 @@ if __name__ == "__main__":
         summary_rows.extend(unit_cell_summary_rows)
         if turbulence_metrics is not None:
             summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
-        summary_rows.extend(concentration_cp_summary_rows(concentration_cp_metrics))
+        summary_rows.extend(
+            concentration_cp_summary_rows(
+                concentration_cp_metrics,
+                c1_area_mean_window=c1_area_mean_window,
+            )
+        )
         if membrane_y1_metrics is not None:
             summary_rows.extend(y1_window_summary_rows(membrane_y1_metrics))
+        summary_rows.extend(y1_diagnostic_summary_rows(y1_diagnostic))
 
         # ----------------------------------------------------------
         # Mass balance table
@@ -3035,6 +3083,7 @@ if __name__ == "__main__":
                     **manifest_quality_payload(quality_result),
                     **_evaluation_window_selection.manifest_fields(),
                     **campaign_midplane_manifest_fields(_found_center_z),
+                    **y1_diagnostic,
                 },
             )
             print(

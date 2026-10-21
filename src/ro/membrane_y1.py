@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 from ro.cp_concentration_stats import area_weighted_quantile
+from ro.fluent_report_helpers import mass_fraction_to_molar_concentration
 
 METRES_TO_UM = 1.0e6
 Y1_QUANTILE_Q10 = 0.10
@@ -86,6 +87,47 @@ def y1_window_resolution(faces):
             area_weighted_quantile(positive_values, positive_areas, Y1_QUANTILE_Q90)
         ),
     }
+
+
+def raw_cell_concentration_mean(faces, *, density_kg_per_m3, molecular_weight_kg_per_mol):
+    """Area-weighted mean of the adjacent-cell concentration, in mol/m3.
+
+    ``yi`` is the cell-centre salt mass fraction (the raw ``c_1`` the film
+    reconstruction starts from). ``cm`` on the same faces is the
+    reconstructed UDM_CM. Non-positive areas are ignored.
+    """
+    if not faces:
+        raise ValueError("raw concentration needs at least one membrane face.")
+    weighted = 0.0
+    total = 0.0
+    saw_positive = False
+    for face in faces:
+        if "yi" not in face:
+            raise ValueError(
+                "membrane window face is missing yi; the salt mass fraction "
+                "was not read."
+            )
+        area = float(face["area"])
+        if not math.isfinite(area):
+            raise ValueError(f"face area must be finite, got {area!r}.")
+        if area <= 0.0:
+            continue
+        yi = float(face["yi"])
+        if not math.isfinite(yi) or yi < 0.0:
+            raise ValueError(
+                f"salt mass fraction must be finite and >= 0, got {yi!r}."
+            )
+        molar = mass_fraction_to_molar_concentration(
+            yi,
+            density_kg_per_m3,
+            molecular_weight_kg_per_mol,
+        )
+        weighted += molar * area
+        total += area
+        saw_positive = True
+    if not saw_positive:
+        raise ValueError("membrane window has no positive face area.")
+    return weighted / total
 
 
 def y1_window_summary_rows(metrics):

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
 from ro.local_sizing import parse_local_face_size, parse_local_proximity
+from ro.membrane_bl import resolve_membrane_bl
 from ro.manifest import MANIFEST_SCHEMA_VERSION
 from ro.mesh_common import boundary_layers_are_split
 
@@ -77,6 +78,15 @@ def build_mesh_manifest_payload(
         base["local_proximity"] = proximity
     if face_size is not None:
         base["local_face_size"] = face_size
+    raw_membrane_bl = getattr(cfg, "membrane_bl_y1", None)
+    if raw_membrane_bl is not None:
+        base["membrane_bl_y1"] = resolve_membrane_bl(
+            raw_membrane_bl,
+            size_mm=cfg.m_max,
+            bl_layers=cfg.bl_layers,
+            growth_rate=cfg.bl_growth_rate,
+            labels=list(cfg.active_membrane_wall_labels),
+        )
     merged = merge_geometry_into_mesh_manifest(base, cfg.geo_id)
     # Measured porosity from fluid volume / bounding box; never a registry constant.
     measured_porosity = mesh_metrics.get("porosity")
