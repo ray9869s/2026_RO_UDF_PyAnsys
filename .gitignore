@@ -56,3 +56,12 @@ _scratch/
 
 notebooks/
 configs/batch_config.py.*.bak
+
+# Archify local receipts (machine evidence; keep *.architecture.json and *.html)
+.archify/
+docs/architecture/*.delivery.json
+docs/architecture/*.finalize.json
+docs/architecture/*.finalize-summary.json
+docs/architecture/*.browser-check.json
+docs/architecture/review-*/
+docs/architecture/visual-check/
