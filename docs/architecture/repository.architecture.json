@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "RO CFD 저장소 · 코드 구조와 실행 흐름",
+    "locale": "ko",
+    "output": "docs/architecture/repository.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:ray9869s/2026_RO_UDF_PyAnsys.git",
+      "revision": "7bb5b6f2fa599907232dbcbe2c48a73da4934810",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "config", "type": "backend", "label": "실행 설정·케이스 행렬",
+      "sublabel": "configs/", "pos": [40, 40], "size": [220, 76],
+      "sources": [
+        {"path": "configs/batch_config.py", "line": 98, "end_line": 125},
+        {"path": "configs/run_config.py", "line": 1, "end_line": 29},
+        {"path": "configs/run_config.py", "line": 246, "end_line": 253}
+      ]
+    },
+    {
+      "id": "core", "type": "backend", "label": "공유 Python 모듈",
+      "sublabel": "src/ro/", "pos": [350, 40], "size": [220, 76],
+      "sources": [
+        {"path": "src/ro/paths.py", "line": 31, "end_line": 93},
+        {"path": "src/ro/manifest.py", "line": 968, "end_line": 1007},
+        {"path": "scripts/meshing_code_260616.py", "line": 14, "end_line": 39}
+      ]
+    },
+    {
+      "id": "mfbo", "type": "backend", "label": "3D 최적화 진입점",
+      "sublabel": "scripts/mfbo/", "pos": [660, 40], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/mfbo/run_3d_mfbo.py", "line": 103, "end_line": 157},
+        {"path": "src/ro/mfbo_drivers.py", "line": 181, "end_line": 253},
+        {"path": "src/ro/mfbo_3d.py", "line": 80, "end_line": 94}
+      ]
+    },
+    {
+      "id": "physics", "type": "backend", "label": "막 물리·해석 템플릿",
+      "sublabel": "udfs/ + templates/", "pos": [970, 40], "size": [220, 76],
+      "sources": [
+        {"path": "configs/run_config.py", "line": 246, "end_line": 253},
+        {"path": "udfs/260822_RO_UDF.c", "line": 976, "end_line": 1013},
+        {"path": "scripts/solver_code_260616.py", "line": 4972, "end_line": 4995}
+      ]
+    },
+    {
+      "id": "batch", "type": "backend", "label": "① 배치 CLI 실행",
+      "sublabel": "scripts/batch_*.py", "pos": [40, 260], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/batch_meshing.py", "line": 893, "end_line": 930},
+        {"path": "scripts/batch_meshing.py", "line": 1020, "end_line": 1064},
+        {"path": "scripts/batch_solver_sweep.py", "line": 563, "end_line": 631}
+      ]
+    },
+    {
+      "id": "mesh", "type": "backend", "label": "② 격자 생성·품질 검사",
+      "sublabel": "meshing_code_260616.py", "pos": [350, 260], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/meshing_code_260616.py", "line": 1192, "end_line": 1244},
+        {"path": "scripts/meshing_code_260616.py", "line": 1505, "end_line": 1533},
+        {"path": "scripts/meshing_code_260616.py", "line": 14, "end_line": 39}
+      ]
+    },
+    {
+      "id": "mesh-files", "type": "database", "label": "격자 파일·메타데이터",
+      "sublabel": "RO_DATA_ROOT/meshes/", "pos": [660, 260], "size": [220, 76],
+      "sources": [
+        {"path": "src/ro/paths.py", "line": 137, "end_line": 155},
+        {"path": "scripts/meshing_code_260616.py", "line": 1519, "end_line": 1533}
+      ]
+    },
+    {
+      "id": "solver", "type": "backend", "label": "③ Fluent 해석 워커",
+      "sublabel": "solver_code_260616.py", "pos": [970, 260], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/solver_code_260616.py", "line": 4465, "end_line": 4479},
+        {"path": "scripts/solver_code_260616.py", "line": 4972, "end_line": 4995},
+        {"path": "scripts/solver_code_260616.py", "line": 548, "end_line": 594}
+      ]
+    },
+    {
+      "id": "pilot", "type": "backend", "label": "별도 2D 실험·BO",
+      "sublabel": "src/ro_2d_pilot/", "pos": [40, 480], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/run_ro_2d_mfbo.py", "line": 32, "end_line": 56},
+        {"path": "src/ro_2d_pilot/execute.py", "line": 71, "end_line": 142},
+        {"path": "src/ro_2d_pilot/paths.py", "line": 46, "end_line": 100}
+      ]
+    },
+    {
+      "id": "figures", "type": "backend", "label": "⑤ 비교표·요약 그림",
+      "sublabel": "make_summary_figures.py", "pos": [350, 480], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/make_summary_figures.py", "line": 634, "end_line": 703},
+        {"path": "scripts/make_summary_figures.py", "line": 190, "end_line": 209}
+      ]
+    },
+    {
+      "id": "post", "type": "backend", "label": "④ 인벤토리·후처리",
+      "sublabel": "scripts/ · 보고서·컨투어", "pos": [660, 480], "size": [220, 76],
+      "sources": [
+        {"path": "scripts/case_inventory.py", "line": 560, "end_line": 582},
+        {"path": "scripts/pyfluent_report_extract.py", "line": 2855, "end_line": 2893},
+        {"path": "scripts/batch_report_extract.py", "line": 935, "end_line": 1005}
+      ]
+    },
+    {
+      "id": "run-files", "type": "database", "label": "해석 결과·실행 기록",
+      "sublabel": "RO_DATA_ROOT/runs/", "pos": [970, 480], "size": [220, 76],
+      "sources": [
+        {"path": "src/ro/paths.py", "line": 150, "end_line": 155},
+        {"path": "scripts/solver_code_260616.py", "line": 548, "end_line": 575},
+        {"path": "scripts/batch_postprocess_all_cases.py", "line": 541, "end_line": 553}
+      ]
+    }
+  ],
+  "connections": [
+    {"id": "settings", "from": "config", "to": "batch", "label": "설정 로드"},
+    {"id": "mesh-launch", "from": "batch", "to": "mesh", "label": "별도 실행", "variant": "emphasis"},
+    {"id": "solve-launch", "from": "batch", "to": "solver", "label": "해석 실행"},
+    {"id": "shared-mesh", "from": "mesh", "to": "core", "label": "공통 함수"},
+    {"id": "mesh-save", "from": "mesh", "to": "mesh-files", "label": "검사 통과", "variant": "emphasis"},
+    {"id": "mesh-input", "from": "mesh-files", "to": "solver", "label": "초기화 입력", "variant": "emphasis"},
+    {"id": "physics-load", "from": "physics", "to": "solver", "label": "로드·컴파일"},
+    {"id": "final-save", "from": "solver", "to": "run-files", "label": "최종 저장", "variant": "emphasis"},
+    {"id": "post-read", "from": "run-files", "to": "post", "label": "결과 읽기", "variant": "emphasis"},
+    {"id": "post-write", "from": "post", "to": "run-files", "label": "post 저장"},
+    {"id": "summary-input", "from": "post", "to": "figures", "label": "집계 CSV 존재 시", "variant": "emphasis"},
+    {"id": "bo-mesh", "from": "mfbo", "to": "mesh", "label": "live 격자"},
+    {"id": "bo-solve", "from": "mfbo", "to": "solver", "label": "live 해석"},
+    {"id": "bo-library", "from": "mfbo", "to": "pilot", "label": "GP 재사용"}
+  ],
+  "cards": [
+    {"dot": "cyan", "title": "읽는 법 · 확인 범위", "items": [
+      "핵심 구성요소 12개를 묶은 코드 개요입니다. ①→②→격자 파일→③→해석 결과→④→⑤ 순서로 읽으세요. 배치 격자·해석·인벤토리·후처리는 단계마다 해당 CLI를 호출합니다.",
+      "화살표는 라벨에 따라 실행 요청, 파일 입력·저장, Python 의존성을 나타냅니다. post 저장은 후처리 그룹 안의 개별 워커가 수행합니다.",
+      "HEAD 7bb5b6f2fa599907232dbcbe2c48a73da4934810의 코드를 정적으로 확인했습니다. Fluent/EnSight 실행 결과나 현재 캠페인 성공 상태를 검증한 그림은 아닙니다. 실제 Fluent 실행은 별도 Windows 서버에서 수행합니다.",
+      "노드의 SRC에서 관련 경로와 커밋 근거를 확인할 수 있습니다. SSH 원격 저장소이므로 소스 링크는 local-only입니다."
+    ]},
+    {"dot": "emerald", "title": "실행 설정 · configs/", "items": [
+      "configs/batch_config.py: 격자·운전조건 행렬, 공통 설정, 기존 결과 건너뛰기와 재시도 정책.",
+      "configs/run_config.py: 워커 기본값·입력 검증. PYFLUENT_RUN_OVERRIDES로 케이스별 값을 적용합니다.",
+      "configs/post_config.py와 configs/batch_post_config.py: 보고서와 배치 추출 설정. 집계 CSV 생성은 WRITE_AGGREGATE_OUTPUTS=True일 때만 수행합니다."
+    ]},
+    {"dot": "emerald", "title": "① 배치 실행 · scripts/", "items": [
+      "scripts/batch_meshing.py와 scripts/batch_solver_sweep.py가 독립적인 실행 진입점입니다. 설정을 읽어 케이스를 선택하고 Python subprocess로 워커를 시작합니다.",
+      "PYFLUENT_RUN_OVERRIDES를 자식 프로세스에 전달합니다. dry-run·기존 산출물 검사·일시적 세션 실패 재시도가 실행 여부를 결정합니다.",
+      "scripts/batch_solver_rerun.py는 기존 실행을 선택해 다시 해석하는 별도 진입점입니다. 이 개요의 번호는 대표 캠페인 흐름을 나타냅니다."
+    ]},
+    {"dot": "emerald", "title": "② 격자 생성 · scripts/meshing_code_260616.py", "items": [
+      "PyFluent의 3D meshing 세션에서 Watertight Geometry 워크플로를 실행합니다. CAD 입력은 RO_DATA_ROOT/geometries/{family}/{geo_id}/에 있습니다.",
+      "Import Geometry → 표면·체적 격자 → transcript 품질 검사. orthogonal quality, aspect ratio, skewness, skewed-face fraction 기준을 확인합니다.",
+      "품질 검사를 통과한 뒤 최종 격자와 manifest를 저장합니다. src/ro/mesh_common.py, mesh_manifest_payload.py, local_sizing.py, domain_layout.py를 사용합니다."
+    ]},
+    {"dot": "violet", "title": "격자 저장소 · 외부 데이터", "items": [
+      "경로: RO_DATA_ROOT/meshes/{family}/{geo_id}/{mesh_id}/",
+      "산출물: {geo_id}_{mesh_id}.msh.h5, manifest.json, 격자 로그·실행 기록.",
+      "격자 writer는 meshing 워커입니다. solver는 mesh_initialization 모드에서 이 격자를 읽습니다. restart_continuation은 기존 case/data를 읽는 별도 분기입니다."
+    ]},
+    {"dot": "emerald", "title": "③ 해석 · scripts/solver_code_260616.py", "items": [
+      "mesh_initialization: templates/의 case를 읽고 격자를 교체한 뒤 경계조건·물리·보고서를 설정합니다. restart_continuation: staged restart case/data를 읽습니다.",
+      "udfs/의 원본을 실행 폴더로 복사·패치하고 Fluent에서 compile/load한 뒤 hook을 설정하고 iterate합니다.",
+      "종료 사유를 manifest에 기록하고 최종 case/data를 저장합니다. 종료 사유 판정 실패는 정상 최종 결과 발행을 막습니다."
+    ]},
+    {"dot": "amber", "title": "막 물리 · udfs/와 templates/", "items": [
+      "configs/run_config.py가 선택하는 파일은 udfs/260822_RO_UDF.c와 templates/template_RO_setup.cas.h5입니다.",
+      "C UDF는 막 투과에 따른 질량·염·운동량 source, 막 농도·flux 진단, 입구 속도 profile을 구현합니다.",
+      "templates/는 Fluent case와 후처리 CFF 템플릿을 보관합니다. 이 노드는 해석 워커의 입력 자원이며 독립 서비스가 아닙니다."
+    ]},
+    {"dot": "violet", "title": "해석 결과 · 외부 실행 폴더", "items": [
+      "경로: RO_DATA_ROOT/runs/{family}/{geo_id}/{mesh_id}/{run_id}/",
+      "solver가 {geo_id}_{run_id}_final.cas.h5 및 .dat.h5, manifest.json, UDF 사본과 로그를 기록합니다.",
+      "후처리는 실행 폴더의 post/reports/에 CSV·JSON, post/figures/에 컨투어·전단 그림을 기록합니다."
+    ]},
+    {"dot": "emerald", "title": "④ 인벤토리·후처리 · scripts/", "items": [
+      "scripts/case_inventory.py: run manifest와 로그를 읽어 상태를 분류하고 RO_DATA_ROOT/inventory/case_inventory_compact.csv 등을 생성합니다.",
+      "scripts/batch_postprocess_all_cases.py: 인벤토리에서 케이스를 선택하고 옵션에 따라 pyfluent_report_extract.py, pyensight_contour_export.py, pyfluent_shear_contour_export.py를 subprocess로 실행합니다.",
+      "scripts/pyfluent_report_extract.py: 최종 case/data를 읽고 CP, LMH, 압력강하, 질량수지, 전단 지표를 post/reports/summary_metrics_wide.csv 등으로 기록합니다.",
+      "scripts/batch_report_extract.py: 별도 추출·집계 진입점입니다. WRITE_AGGREGATE_OUTPUTS=True이고 읽을 summary CSV가 있으면 inventory/all_cases_post_summary.csv 및 all_cases_post_status.csv를 만듭니다."
+    ]},
+    {"dot": "emerald", "title": "⑤ 비교표·그림 · scripts/make_summary_figures.py", "items": [
+      "입력: RO_DATA_ROOT/inventory/all_cases_post_summary.csv와 선택적 all_cases_post_status.csv. 이 단계는 별도 CLI로 실행합니다.",
+      "use_for_final_comparison과 상태로 비교 대상을 걸러 대표조건 표, 지표 범위, 순위 heatmap과 비교 그림을 생성합니다.",
+      "기본 출력: RO_DATA_ROOT/inventory/post_summary_figures/. 정리 CSV, PNG·PDF, analysis_summary.txt를 저장합니다."
+    ]},
+    {"dot": "emerald", "title": "공유 모듈 · src/ro/", "items": [
+      "paths.py: 프로젝트·외부 데이터 경로와 식별자 검증. RO_DATA_ROOT는 절대경로가 필수입니다.",
+      "manifest.py와 manifest_validation.py: manifest 읽기·검증·원자적 쓰기. domain_layout.py와 geometry_registry.py: 도메인 배치·형상 식별.",
+      "solver_common.py, session_retry.py, mesh_common.py: 공통 해석·세션·격자 로직. cp_metrics.py, lmh_metrics.py, convergence_quality.py 등은 후처리 수치를 지원합니다.",
+      "공통 모듈은 여러 CLI가 import하는 Python 라이브러리입니다. 화살표는 대표 의존성만 표시하고 나머지 import는 이 카드에 묶었습니다."
+    ]},
+    {"dot": "amber", "title": "3D 최적화 · scripts/mfbo/와 src/ro/mfbo_*.py", "items": [
+      "진입점: scripts/mfbo/run_3d_mfbo.py. src/ro/mfbo_3d.py가 HF BO·MFBO를 실행하고 mfbo_adapter.py가 설계 평가를 연결합니다.",
+      "live 모드에서 mfbo_drivers.py → mesh_mfbo_case.py / solve_mfbo_case.py → 기존 batch 실행 helper → 격자·해석 워커를 재사용합니다. offline_replay에서는 이 워커들을 실행하지 않습니다.",
+      "필요시 Pillar CAD를 생성하고 추출 결과를 재사용합니다. 별도로 지정한 data root의 studies/optimization/3d/{method}/{experiment_id}/에 이력·요약을, runs/에 CFD 결과를 저장합니다. 경로 정의: src/ro/mfbo_3d.py:774–775.",
+      "src/ro/mfbo_3d.py:81–94는 src/ro_2d_pilot/optimization/의 acquisition·GP·모드 상수를 import합니다. GP 재사용 화살표는 2D CFD 실행을 뜻하지 않습니다."
+    ]},
+    {"dot": "amber", "title": "2D 실험 · src/ro_2d_pilot/", "items": [
+      "진입점: scripts/run_ro_2d_case.py, run_ro_2d_hf_bo.py, run_ro_2d_mfbo.py. geometry·mesh_build·fluent_session·execute 모듈로 별도 2D CFD를 수행합니다.",
+      "optimization/은 GP, acquisition, 비용·예산, HF BO·MFBO를 제공합니다. live는 2D run_case를 호출하고 offline_replay는 기록을 사용합니다.",
+      "출력은 RO_2D_DATA_ROOT 아래 geometry/mesh 사양과 runs/.../result.json 등입니다. paths.py는 저장소 내부 및 3D 캠페인 경로에 쓰는 것을 거부합니다."
+    ]},
+    {"dot": "slate", "title": "지원 폴더 · 코드와 데이터 경계", "items": [
+      "tests/: 경로·manifest·수치·CLI 연결·재시도 등을 검증하는 pytest 코드. .github/workflows/pytest.yml: push와 pull_request에서 전체 pytest 실행.",
+      "docs/: 운영·격자·후처리·수치 정의 문서와 이 구조도. docs/archive/는 이전 코드 보관이며 대표 실행 흐름에서 제외했습니다.",
+      "pyproject.toml: src/ 아래 ro 패키지와 ro_2d_pilot 패키지를 설치합니다. requirements.txt는 실제 Ansys 런타임 의존성을 포함합니다.",
+      "Git 저장소는 코드·설정·UDF·템플릿을 담고, CAD·격자·수치 결과는 외부 데이터 루트에 저장됩니다. 이 그림의 데이터 노드는 실제 경로 규칙이며 SQL 데이터베이스가 아닙니다."
+    ]}
+  ]
+}
