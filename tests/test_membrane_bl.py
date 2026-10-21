@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from helpers import (
@@ -79,7 +81,7 @@ def _stack(y1_um, *, size_mm=0.085, bl_layers=4, growth_rate=1.2):
 
 
 def test_stack_keeps_total_thickness_near_the_smooth_transition_reference():
-    expected_layers = {3.0: 7, 2.0: 8, 1.4: 10, 1.0: 12}
+    expected_layers = {5.7: 4, 3.0: 7, 2.0: 8, 1.4: 10, 1.0: 12}
     assert membrane_bl_summary_lines(None) == []
     assert membrane_bl_suffix(None) == ""
     for y1_um, layers in expected_layers.items():
@@ -303,9 +305,10 @@ def test_raw_cell_concentration_sits_beside_reconstructed_cm():
     assert with_c1[1]["unit"] == "mol/m3"
 
 
-def test_d2450_queue_requests_four_first_heights():
+def test_d2450_queue_requests_the_control_and_four_first_heights():
     studies = QUEUE.y1_study_overrides()
     assert [name for name, _overrides in studies] == [
+        "y1h057",
         "y1h030",
         "y1h020",
         "y1h014",
@@ -313,31 +316,40 @@ def test_d2450_queue_requests_four_first_heights():
     ]
     mesh_ids = [overrides["mesh_id"] for _name, overrides in studies]
     assert mesh_ids == [
+        "max085_min006_cpg5_bl4_peel2_y1h057",
         "max085_min006_cpg5_bl4_peel2_y1h030",
         "max085_min006_cpg5_bl4_peel2_y1h020",
         "max085_min006_cpg5_bl4_peel2_y1h014",
         "max085_min006_cpg5_bl4_peel2_y1h010",
     ]
     assert [overrides["membrane_bl_y1"]["layers"] for _name, overrides in studies] == [
+        4,
         7,
         8,
         10,
         12,
     ]
     assert [overrides["membrane_bl_y1"]["y1_um"] for _name, overrides in studies] == [
+        5.7,
         3.0,
         2.0,
         1.4,
         1.0,
     ]
+    assert all(
+        overrides["membrane_bl_y1"]["offset_method"] == "last-ratio"
+        for _name, overrides in studies
+    )
+    assert studies[0][1]["membrane_bl_y1"]["first_height_mm"] == pytest.approx(0.0114)
     jobs = QUEUE.y1_jobs(mesh_only=True)
     assert [job["id"] for job in jobs] == [
+        "D2450_a45-y1h057-mesh",
         "D2450_a45-y1h030-mesh",
         "D2450_a45-y1h020-mesh",
         "D2450_a45-y1h014-mesh",
         "D2450_a45-y1h010-mesh",
     ]
-    for job, y1_um in zip(jobs, (3.0, 2.0, 1.4, 1.0)):
+    for job, y1_um in zip(jobs, (5.7, 3.0, 2.0, 1.4, 1.0)):
         argv = job["argv"]
         assert argv[1] == "scripts/mfbo/mesh_study_case.py"
         assert argv[argv.index("--data-root") + 1] == "C:/ro_data_mfbo/meshstudy"
@@ -353,5 +365,104 @@ def test_d2450_queue_requests_four_first_heights():
         assert "--mesh-only" in argv
         assert "--reuse-mesh" not in argv
     full = QUEUE.y1_jobs(mesh_only=False)
-    assert "--reuse-mesh" in full[0]["argv"]
-    assert "--mesh-only" not in full[0]["argv"]
+    assert [job["id"] for job in full] == [
+        "D2450_a45-y1h057",
+        "D2450_a45-y1h030",
+        "D2450_a45-y1h020",
+        "D2450_a45-y1h014",
+        "D2450_a45-y1h010",
+    ]
+    assert all(job["argv"][-1] == "--reuse-mesh" for job in full)
+    assert all("--mesh-only" not in job["argv"] for job in full)
+
+
+def _plant_mesh_manifest(root, family, mesh_id, cell_count):
+    leaf = root / "meshes" / family / "D2450_a45" / mesh_id
+    leaf.mkdir(parents=True)
+    (leaf / "manifest.json").write_text(
+        json.dumps({"cell_count": cell_count}),
+        encoding="utf-8",
+    )
+    return leaf
+
+
+def test_full_emitter_reuses_mesh_only_leaves(tmp_path, capsys):
+    destination = tmp_path / "full.json"
+    code = QUEUE.main(["--emit-queue", str(destination)])
+    assert code == 0
+    jobs = json.loads(destination.read_text(encoding="utf-8"))
+    assert [job["id"] for job in jobs] == [
+        "D2450_a45-y1h057",
+        "D2450_a45-y1h030",
+        "D2450_a45-y1h020",
+        "D2450_a45-y1h014",
+        "D2450_a45-y1h010",
+    ]
+    assert all(job["argv"][-1] == "--reuse-mesh" for job in jobs)
+    assert all("--mesh-only" not in job["argv"] for job in jobs)
+    printed = capsys.readouterr().out
+    assert "y1h057: max085_min006_cpg5_bl4_peel2_y1h057" in printed
+    assert "Wrote 5 jobs" in printed
+
+
+def test_max_cells_drops_variants_over_the_mesh_only_count(tmp_path, capsys, monkeypatch):
+    studies = QUEUE.y1_study_overrides()
+    counts = {
+        "y1h057": 800_000,
+        "y1h030": 1_200_000,
+        "y1h020": 2_000_000,
+        "y1h014": 900_000,
+        "y1h010": 5_000_000,
+    }
+    for name, overrides in studies:
+        _plant_mesh_manifest(
+            tmp_path,
+            overrides["family"],
+            overrides["mesh_id"],
+            counts[name],
+        )
+    kept, dropped = QUEUE.variants_under_cell_cap(studies, 1_000_000, tmp_path)
+    assert [name for name, _overrides in kept] == ["y1h057", "y1h014"]
+    assert [item[0] for item in dropped] == ["y1h030", "y1h020", "y1h010"]
+    jobs = QUEUE.y1_jobs(studies=kept, data_root=tmp_path)
+    assert [job["id"] for job in jobs] == [
+        "D2450_a45-y1h057",
+        "D2450_a45-y1h014",
+    ]
+    assert all(job["argv"][-1] == "--reuse-mesh" for job in jobs)
+    with pytest.raises(FileNotFoundError, match="mesh-only manifest is missing"):
+        QUEUE.variants_under_cell_cap(studies, 1_000_000, tmp_path / "empty")
+
+    monkeypatch.setattr(QUEUE, "DATA_ROOT", str(tmp_path))
+    destination = tmp_path / "capped.json"
+    code = QUEUE.main(
+        ["--emit-queue", str(destination), "--max-cells", "1000000"]
+    )
+    assert code == 0
+    written = json.loads(destination.read_text(encoding="utf-8"))
+    assert [job["id"] for job in written] == [
+        "D2450_a45-y1h057",
+        "D2450_a45-y1h014",
+    ]
+    printed = capsys.readouterr().out
+    assert "dropped y1h030" in printed
+    assert "cell_count 1200000 > 1000000" in printed
+    with pytest.raises(ValueError, match="every variant exceeds"):
+        QUEUE.main(
+            ["--emit-queue", str(tmp_path / "empty.json"), "--max-cells", "1"]
+        )
+    assert not (tmp_path / "empty.json").exists()
+
+
+def test_max_cells_does_not_apply_to_mesh_only(tmp_path):
+    with pytest.raises(ValueError, match="Omit --mesh-only"):
+        QUEUE.main(
+            [
+                "--emit-queue",
+                str(tmp_path / "queue.json"),
+                "--mesh-only",
+                "--max-cells",
+                "1000",
+            ]
+        )
+    assert not (tmp_path / "queue.json").exists()

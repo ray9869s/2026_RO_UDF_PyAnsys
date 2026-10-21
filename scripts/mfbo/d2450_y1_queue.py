@@ -1,14 +1,18 @@
 """D2450_a45 membrane first-height queue at m_max 0.085 mm and BL 4.
 
-Four leaves, u0p2_p6M, on ``C:/ro_data_mfbo/meshstudy`` with geometry from
+Five leaves, u0p2_p6M, on ``C:/ro_data_mfbo/meshstudy`` with geometry from
 ``C:/ro_data_mfbo/geometries_pmdb``. Each leaf requests a wall-to-centroid
-y1 of 3.0, 2.0, 1.4, or 1.0 um (``_y1h030``, ``_y1h020``, ``_y1h014``,
-``_y1h010``). The membrane boundary layer is last-ratio at that first
-height. The spacer boundary layer stays the production smooth-transition
-stack.
+y1. The control is 5.7 um (``_y1h057``), next to the realised smooth-transition
+mean of 5.74 um at this ``m_max``, so a later comparison isolates the
+last-ratio switch and its layer count. The other requests are 3.0, 2.0,
+1.4, and 1.0 um (``_y1h030``, ``_y1h020``, ``_y1h014``, ``_y1h010``).
+The membrane boundary layer is last-ratio at that first height. The spacer
+boundary layer stays the production smooth-transition stack.
 
 ``--mesh-only`` writes jobs that mesh and print the cell count. Without
-it, each job passes ``--reuse-mesh``.
+it, the queue is mesh, solve, and extract, and each job passes
+``--reuse-mesh`` so a completed mesh-only leaf is reused. ``--max-cells N``
+drops variants whose mesh-only manifest cell count is greater than N.
 
 Importing this module does not launch Fluent. ``--emit-queue`` writes a
 job-queue JSON file and does not mesh.
@@ -34,7 +38,8 @@ GEO_ID = "D2450_a45"
 CASE_ID = "u0p2_p6M"
 M_MAX = 0.085
 BL_LAYERS = 4
-Y1_UM = (3.0, 2.0, 1.4, 1.0)
+# 5.7 um is the control: today's area-weighted y1 at m_max 0.085 is 5.74 um.
+Y1_UM = (5.7, 3.0, 2.0, 1.4, 1.0)
 
 
 def y1_variants():
@@ -56,6 +61,48 @@ def y1_study_overrides():
         )
         built.append((name, overrides))
     return built
+
+
+def mesh_only_cell_count(data_root, family, mesh_id):
+    """Cell count on the mesh-only manifest for one variant."""
+    path = (
+        Path(data_root) / "meshes" / family / GEO_ID / mesh_id / "manifest.json"
+    )
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"mesh-only manifest is missing for {mesh_id}: {path}"
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    count = payload.get("cell_count") if isinstance(payload, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(
+            f"mesh-only cell_count for {mesh_id} is not a positive integer: "
+            f"{count!r}."
+        )
+    return count
+
+
+def variants_under_cell_cap(studies, max_cells, data_root):
+    """Split studies into those at or under ``max_cells`` and those over it.
+
+    ``dropped`` entries are ``(name, mesh_id, cell_count)``. A missing
+    manifest raises; it is not treated as under the cap.
+    """
+    if isinstance(max_cells, bool) or not isinstance(max_cells, int) or max_cells < 1:
+        raise ValueError(
+            f"--max-cells must be an integer >= 1, got {max_cells!r}."
+        )
+    kept = []
+    dropped = []
+    for name, overrides in studies:
+        count = mesh_only_cell_count(
+            data_root, overrides["family"], overrides["mesh_id"]
+        )
+        if count > max_cells:
+            dropped.append((name, overrides["mesh_id"], count))
+        else:
+            kept.append((name, overrides))
+    return kept, dropped
 
 
 def y1_jobs(mesh_only=False, *, studies=None, data_root=None):
@@ -137,13 +184,43 @@ def build_parser():
         action="store_true",
         help="Jobs mesh and print the cell count. They do not solve.",
     )
+    parser.add_argument(
+        "--max-cells",
+        type=int,
+        default=None,
+        help=(
+            "Full queue only. Drop variants whose mesh-only manifest "
+            "cell_count exceeds this. The manifests are under the "
+            "meshstudy data root. Kept jobs reuse those leaves."
+        ),
+    )
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    jobs = y1_jobs(mesh_only=args.mesh_only)
+    if args.mesh_only and args.max_cells is not None:
+        raise ValueError(
+            "--max-cells reads completed mesh-only manifests. Omit --mesh-only."
+        )
+    studies = y1_study_overrides()
+    if args.max_cells is not None:
+        studies, dropped = variants_under_cell_cap(
+            studies, args.max_cells, DATA_ROOT
+        )
+        for name, mesh_id, count in dropped:
+            print(
+                f"dropped {name} {mesh_id}: "
+                f"cell_count {count} > {args.max_cells}"
+            )
+        if not studies:
+            raise ValueError(
+                f"every variant exceeds --max-cells {args.max_cells}."
+            )
+    jobs = y1_jobs(mesh_only=args.mesh_only, studies=studies)
     path = write_queue(args.emit_queue, jobs)
+    for name, overrides in studies:
+        print(f"{name}: {overrides['mesh_id']}")
     print(f"Wrote {len(jobs)} jobs to {path}")
     return 0
 
