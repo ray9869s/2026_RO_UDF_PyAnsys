@@ -123,6 +123,14 @@ dP and LMH stay within about 1–5%. The series as a whole still moves
 CP excess with cell size. Decision **OPEN**: contact-geometry change,
 exclusion band, or report with uncertainty.
 
+**2026-10-22.** A last-ratio series at fixed `m_max` 0.085 holds the
+in-plane mesh and changes the membrane first height. CP excess moves
+0.0595 → 0.0671 from realised y1 5.10 µm to 1.32 µm. The
+smooth-transition `m_max` rows at a similar y1 are much higher, so most
+of that `m_max` dependence is in-plane surface and bulk resolution, not
+y1. The fixed-y1 `m_max` queue below is not run yet. Decision remains
+**OPEN**.
+
 ### `m_max` at `bl4`
 
 | geo_id | mesh_id | CP excess | note |
@@ -136,6 +144,67 @@ exclusion band, or report with uncertainty.
 | D2450_a45 | `max060_min006_cpg5_bl4_peel2` | 0.0705 | |
 | D2450_a45 | `max045_min006_cpg5_bl4_peel2` | 0.0827 | |
 | D2450_a45 | `max035_min006_cpg5_bl4_peel2` | 0.0907 | |
+
+### Last-ratio membrane y1 (`D2450_a45`, `m_max` 0.085)
+
+**From host report 2026-10-22.** `u0p2_p6M`. Last-ratio membrane BL,
+spacer still smooth-transition, `bl` 4. CP excess is
+`cpc_window_avg_flux − 1`. The step column is the change from the row
+above. The film column is the host-reported relative correction from
+the raw first-cell window mean `c1_area_mean_window` to the
+reconstructed `cm_area_mean_window`. dP (`pressure_drop_spacer_per_m`)
+and LMH (`lmh_window_module`) stay within 1% on this series. Requested
+y1 1.0 µm (`_y1h010`) is absent: that mesh failed the quality gate
+(max aspect ratio 178.6 > 150).
+
+| request [µm] | mesh_id | realised y1 [µm] | CP excess | step | c1 → cm |
+|---:|---|---:|---:|---:|---:|
+| 5.7 | `max085_min006_cpg5_bl4_peel2_y1h057` | 5.10 | 0.0595 | | 1.9% |
+| 3.0 | `max085_min006_cpg5_bl4_peel2_y1h030` | 2.71 | 0.0653 | +9.7% | 1.0% |
+| 2.0 | `max085_min006_cpg5_bl4_peel2_y1h020` | 1.84 | 0.0663 | +1.5% | 0.7% |
+| 1.4 | `max085_min006_cpg5_bl4_peel2_y1h014` | 1.32 | 0.0671 | +1.2% | 0.5% |
+
+The smooth-transition baseline at the same `m_max` is
+`max085_min006_cpg5_bl4_peel2`, realised y1 5.74 µm, CP excess 0.0583.
+The last-ratio control (realised 5.10 µm, CP excess 0.0595) is
+(0.0595 − 0.0583) / 0.0583 ≈ 2%. The switch of offset method, at
+matched y1, moves CP by about 2%. The later steps, 2.71 → 1.32 µm, are
++1.5% and +1.2%, inside the 5–7% bar. The 5.10 → 2.71 µm step is
++9.7%.
+
+At a similar realised y1 the smooth-transition `m_max` series is higher.
+`m_max` 0.035 (`max035_min006_cpg5_bl4_peel2`, y1 2.60 µm) is 0.0907,
+against 0.0653 here at y1 2.71 µm. `m_max` 0.028
+(`max028_min006_cpg5_bl4_peel2`, y1 2.11 µm) is 0.0784; that row was
+not in the 2026-10-19 table above. Both sit well above the last-ratio
+values at `m_max` 0.085 and a similar y1. The `m_max` trend is in-plane
+surface and bulk resolution.
+
+### Fixed y1 2.0 µm, `m_max` sweep (queued)
+
+Same last-ratio path, request `_y1h020`, `u0p2_p6M`. The 0.085 leaf is
+the 2.0 µm row above (realised 1.84 µm, CP excess 0.0663) and is not
+requeued. `scripts/mfbo/d2450_mmax_y1_queue.py` emits the other three.
+Layer count is the last-ratio stack at that `m_max`. No QoI yet.
+
+| m_max [mm] | mesh_id | layers | status |
+|---:|---|---:|---|
+| 0.085 | `max085_min006_cpg5_bl4_peel2_y1h020` | 8 | exists |
+| 0.060 | `max060_min006_cpg5_bl4_peel2_y1h020` | 7 | queued |
+| 0.045 | `max045_min006_cpg5_bl4_peel2_y1h020` | 6 | queued |
+| 0.035 | `max035_min006_cpg5_bl4_peel2_y1h020` | 5 | queued |
+
+### Contact proximity (`D0817_a30`, `m_max` 0.045)
+
+**From host report 2026-10-22.** Base is the `m_max` 0.045 row above.
+Local proximity is spacer against both membrane walls
+(`scripts/mfbo/d0817_contact_queue.py`).
+
+| variant | mesh_id | CP excess | note |
+|---|---|---:|---|
+| base | `max045_min006_cpg5_bl4_peel2` | 0.1197 | |
+| `lpx9m003` | `max045_min006_cpg5_bl4_peel2_lpx9m003` | 0.1181 | cpg 9, min 0.003 mm |
+| `lpx13m002` | `max045_min006_cpg5_bl4_peel2_lpx13m002` | 0.1279 | cpg 13, min 0.002 mm; realised y1 2.21 µm |
 
 ### Other knobs (`D0817_a30`)
 
