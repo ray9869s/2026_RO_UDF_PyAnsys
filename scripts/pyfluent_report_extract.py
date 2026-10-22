@@ -64,6 +64,7 @@ from ro.evaluation_window_table import (  # noqa: E402
     window_lmh,
 )
 from ro.extract_skip import write_extract_source_record  # noqa: E402
+from ro.session_retry import print_fluent_launch_identity  # noqa: E402
 from ro.solver_common import (  # noqa: E402
     FINAL_CASE_SHA256_FIELD,
     FINAL_DATA_SHA256_FIELD,
@@ -420,6 +421,28 @@ def require_explicit_evaluation_window(cfg):
         ) from exc
 
 
+def mesh_id_for_extract(run_manifest, case_path):
+    """mesh_id for the y1 check. post_config does not carry one.
+
+    The run manifest is the source when it names a mesh_id. Otherwise the
+    parent of the run leaf (``.../<mesh_id>/<run_id>``) supplies it.
+    """
+    manifest_id = None
+    if isinstance(run_manifest, dict):
+        value = run_manifest.get("mesh_id")
+        if isinstance(value, str) and value.strip():
+            manifest_id = value.strip()
+    if manifest_id:
+        return manifest_id
+    leaf_id = Path(case_path).parent.name.strip()
+    if leaf_id and leaf_id not in {".", ".."}:
+        return leaf_id
+    raise ValueError(
+        "mesh_id is not on the run manifest and the leaf path has no mesh id "
+        f"(case_path={case_path!r})."
+    )
+
+
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
@@ -542,6 +565,21 @@ if __name__ == "__main__":
         f"{_evaluation_window_selection.window_table_mesh_id}",
         f"run_mesh_id={_evaluation_window_selection.run_mesh_id}",
     )
+    extract_mesh_id = mesh_id_for_extract(_run_manifest_for_window, case_path)
+    y1_diagnostic = y1_diagnostic_fields(
+        extract_mesh_id,
+        first_y1_transcript_text(case_path),
+    )
+    print(f"extract mesh_id: {extract_mesh_id}")
+    y1_flag_line = format_y1_request_flag(y1_diagnostic)
+    if y1_flag_line:
+        print(y1_flag_line)
+    elif "y1_udf_area_mean_um" in y1_diagnostic:
+        print(
+            "UDF y1 area-weighted mean: "
+            f"{y1_diagnostic['y1_udf_area_mean_um']} um"
+        )
+
 
 def as_fluent_path(path):
     """Convert a path to a Fluent-friendly absolute path."""
@@ -1117,6 +1155,7 @@ if __name__ == "__main__":
             start_timeout=fluent_start_timeout,
             cwd=as_fluent_path(case_path),
         )
+        print_fluent_launch_identity(meshing)
 
         print("Meshing session launched successfully.")
         print("Switching to solver...")
@@ -2160,18 +2199,6 @@ if __name__ == "__main__":
                 f"c1_area_mean_mol_m3={c1_area_mean_window}, "
                 "cm_area_mean_mol_m3="
                 f"{concentration_cp_metrics['window']['cm_area_mean']}"
-            )
-        y1_diagnostic = y1_diagnostic_fields(
-            cfg.mesh_id,
-            first_y1_transcript_text(case_path),
-        )
-        y1_flag_line = format_y1_request_flag(y1_diagnostic)
-        if y1_flag_line:
-            print(y1_flag_line)
-        elif "y1_udf_area_mean_um" in y1_diagnostic:
-            print(
-                "UDF y1 area-weighted mean: "
-                f"{y1_diagnostic['y1_udf_area_mean_um']} um"
             )
         if report_profile == PROFILE_MFBO:
             membrane_y1_metrics = None

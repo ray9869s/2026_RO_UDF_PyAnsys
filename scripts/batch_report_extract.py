@@ -27,6 +27,7 @@ from ro.paths import data_root, project_root, run_dir, runs_root
 from ro.session_retry import (
     classify_retryable_session_crash,
     describe_attempt_orphans,
+    terminate_recorded_fluent_pids,
 )
 
 
@@ -536,12 +537,14 @@ def run_extract_attempts(
     runner=None,
     sleeper=None,
     process_lister=None,
+    killer=None,
 ):
     """Run the extract worker, retrying Fluent session deaths.
 
     max_retries is retries after the first attempt (default 2 → 3 total).
-    Each attempt is a new subprocess and a new Fluent session. Skip is not
-    re-evaluated here.
+    Each attempt is a new subprocess and a new Fluent session. A failed
+    attempt terminates only the Fluent PID that attempt printed as
+    ``FLUENT_LAUNCH pid=<pid>``. Skip is not re-evaluated here.
 
     Returns (result, attempts, retry_kinds, attempt_logs).
     """
@@ -573,6 +576,8 @@ def run_extract_attempts(
         for line in describe_attempt_orphans(
             evidence, process_lister=process_lister
         ):
+            print(f"  {line}")
+        for line in terminate_recorded_fluent_pids(evidence, killer=killer):
             print(f"  {line}")
         retry_kind = classify_retryable_session_crash(evidence)
         can_retry = attempt < max_attempts and retry_kind is not None

@@ -1,13 +1,16 @@
 """D2450_a45 membrane first-height queue at m_max 0.085 mm and BL 4.
 
-Five leaves, u0p2_p6M, on ``C:/ro_data_mfbo/meshstudy`` with geometry from
+Four leaves, u0p2_p6M, on ``C:/ro_data_mfbo/meshstudy`` with geometry from
 ``C:/ro_data_mfbo/geometries_pmdb``. Each leaf requests a wall-to-centroid
 y1. The control is 5.7 um (``_y1h057``), next to the realised smooth-transition
 mean of 5.74 um at this ``m_max``, so a later comparison isolates the
 last-ratio switch and its layer count. The other requests are 3.0, 2.0,
-1.4, and 1.0 um (``_y1h030``, ``_y1h020``, ``_y1h014``, ``_y1h010``).
+and 1.4 um (``_y1h030``, ``_y1h020``, ``_y1h014``).
 The membrane boundary layer is last-ratio at that first height. The spacer
 boundary layer stays the production smooth-transition stack.
+
+1.0 um (``_y1h010``) is not queued. That mesh failed the quality gate:
+max aspect ratio 178.6 > 150 at FirstHeight 0.002 mm.
 
 ``--mesh-only`` writes jobs that mesh and print the cell count. Without
 it, the queue is mesh, solve, and extract, and each job passes
@@ -39,7 +42,8 @@ CASE_ID = "u0p2_p6M"
 M_MAX = 0.085
 BL_LAYERS = 4
 # 5.7 um is the control: today's area-weighted y1 at m_max 0.085 is 5.74 um.
-Y1_UM = (5.7, 3.0, 2.0, 1.4, 1.0)
+# 1.0 um is omitted: aspect ratio 178.6 > 150 at FirstHeight 0.002 mm.
+Y1_UM = (5.7, 3.0, 2.0, 1.4)
 
 
 def y1_variants():

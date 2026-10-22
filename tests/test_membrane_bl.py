@@ -305,14 +305,13 @@ def test_raw_cell_concentration_sits_beside_reconstructed_cm():
     assert with_c1[1]["unit"] == "mol/m3"
 
 
-def test_d2450_queue_requests_the_control_and_four_first_heights():
+def test_d2450_queue_requests_the_control_and_three_first_heights():
     studies = QUEUE.y1_study_overrides()
     assert [name for name, _overrides in studies] == [
         "y1h057",
         "y1h030",
         "y1h020",
         "y1h014",
-        "y1h010",
     ]
     mesh_ids = [overrides["mesh_id"] for _name, overrides in studies]
     assert mesh_ids == [
@@ -320,21 +319,21 @@ def test_d2450_queue_requests_the_control_and_four_first_heights():
         "max085_min006_cpg5_bl4_peel2_y1h030",
         "max085_min006_cpg5_bl4_peel2_y1h020",
         "max085_min006_cpg5_bl4_peel2_y1h014",
-        "max085_min006_cpg5_bl4_peel2_y1h010",
     ]
+    assert "y1h010" not in [name for name, _overrides in studies]
+    assert "178.6" in QUEUE.__doc__
+    assert "FirstHeight 0.002 mm" in QUEUE.__doc__
     assert [overrides["membrane_bl_y1"]["layers"] for _name, overrides in studies] == [
         4,
         7,
         8,
         10,
-        12,
     ]
     assert [overrides["membrane_bl_y1"]["y1_um"] for _name, overrides in studies] == [
         5.7,
         3.0,
         2.0,
         1.4,
-        1.0,
     ]
     assert all(
         overrides["membrane_bl_y1"]["offset_method"] == "last-ratio"
@@ -347,9 +346,8 @@ def test_d2450_queue_requests_the_control_and_four_first_heights():
         "D2450_a45-y1h030-mesh",
         "D2450_a45-y1h020-mesh",
         "D2450_a45-y1h014-mesh",
-        "D2450_a45-y1h010-mesh",
     ]
-    for job, y1_um in zip(jobs, (5.7, 3.0, 2.0, 1.4, 1.0)):
+    for job, y1_um in zip(jobs, (5.7, 3.0, 2.0, 1.4)):
         argv = job["argv"]
         assert argv[1] == "scripts/mfbo/mesh_study_case.py"
         assert argv[argv.index("--data-root") + 1] == "C:/ro_data_mfbo/meshstudy"
@@ -370,7 +368,6 @@ def test_d2450_queue_requests_the_control_and_four_first_heights():
         "D2450_a45-y1h030",
         "D2450_a45-y1h020",
         "D2450_a45-y1h014",
-        "D2450_a45-y1h010",
     ]
     assert all(job["argv"][-1] == "--reuse-mesh" for job in full)
     assert all("--mesh-only" not in job["argv"] for job in full)
@@ -396,13 +393,13 @@ def test_full_emitter_reuses_mesh_only_leaves(tmp_path, capsys):
         "D2450_a45-y1h030",
         "D2450_a45-y1h020",
         "D2450_a45-y1h014",
-        "D2450_a45-y1h010",
     ]
     assert all(job["argv"][-1] == "--reuse-mesh" for job in jobs)
     assert all("--mesh-only" not in job["argv"] for job in jobs)
     printed = capsys.readouterr().out
     assert "y1h057: max085_min006_cpg5_bl4_peel2_y1h057" in printed
-    assert "Wrote 5 jobs" in printed
+    assert "Wrote 4 jobs" in printed
+    assert "y1h010" not in printed
 
 
 def test_max_cells_drops_variants_over_the_mesh_only_count(tmp_path, capsys, monkeypatch):
@@ -412,7 +409,6 @@ def test_max_cells_drops_variants_over_the_mesh_only_count(tmp_path, capsys, mon
         "y1h030": 1_200_000,
         "y1h020": 2_000_000,
         "y1h014": 900_000,
-        "y1h010": 5_000_000,
     }
     for name, overrides in studies:
         _plant_mesh_manifest(
@@ -423,7 +419,7 @@ def test_max_cells_drops_variants_over_the_mesh_only_count(tmp_path, capsys, mon
         )
     kept, dropped = QUEUE.variants_under_cell_cap(studies, 1_000_000, tmp_path)
     assert [name for name, _overrides in kept] == ["y1h057", "y1h014"]
-    assert [item[0] for item in dropped] == ["y1h030", "y1h020", "y1h010"]
+    assert [item[0] for item in dropped] == ["y1h030", "y1h020"]
     jobs = QUEUE.y1_jobs(studies=kept, data_root=tmp_path)
     assert [job["id"] for job in jobs] == [
         "D2450_a45-y1h057",

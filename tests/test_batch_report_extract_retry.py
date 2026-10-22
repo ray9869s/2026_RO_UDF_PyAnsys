@@ -106,6 +106,78 @@ def test_retries_socket_reset(batch_extract, tmp_path: Path):
     assert calls == [1, 1, 1]
 
 
+def test_failed_attempt_terminates_only_the_recorded_fluent_pid(
+    batch_extract, tmp_path: Path, capsys
+):
+    killed = []
+
+    def runner(cmd, env, log_path):
+        Path(log_path).write_text(
+            "FLUENT_LAUNCH pid=4242\n"
+            "fluent-20261019-114250-19328.trn\n"
+            "ORPHAN noise pid=99999\n"
+            + SCHEME_HEAP_ERROR,
+            encoding="utf-8",
+        )
+        return type("R", (), {"returncode": 1})()
+
+    def killer(pid):
+        killed.append(pid)
+        return f"ORPHAN: terminated Fluent pid {pid}."
+
+    result, attempts, kinds, _logs = batch_extract.run_extract_attempts(
+        cmd=["python", "scripts/pyfluent_report_extract.py"],
+        env={},
+        run_directory=tmp_path,
+        geo_id="D2450_a45",
+        mesh_id="max085_min006_cpg5_bl4_peel2_y1h020",
+        run_id="u0p2_p6M",
+        max_retries=0,
+        settle_s=0.0,
+        sleeper=lambda _s: None,
+        runner=runner,
+        process_lister=lambda _name: ([], None),
+        killer=killer,
+    )
+    assert result.returncode == 1
+    assert attempts == 1
+    assert kinds == []
+    assert killed == [4242]
+    output = capsys.readouterr().out
+    assert "terminated Fluent pid 4242" in output
+    assert "no -sifile token" in output
+    assert "99999" not in output
+    assert "19328" not in output.split("terminated")[-1]
+
+
+def test_successful_extract_does_not_terminate_the_recorded_pid(
+    batch_extract, tmp_path: Path
+):
+    killed = []
+
+    def runner(cmd, env, log_path):
+        Path(log_path).write_text("FLUENT_LAUNCH pid=4242\nok\n", encoding="utf-8")
+        return type("R", (), {"returncode": 0})()
+
+    result, attempts, kinds, _logs = batch_extract.run_extract_attempts(
+        cmd=["python", "scripts/pyfluent_report_extract.py"],
+        env={},
+        run_directory=tmp_path,
+        geo_id="D2450_a45",
+        mesh_id="max085_min006_cpg5_bl4_peel2_y1h020",
+        run_id="u0p2_p6M",
+        max_retries=2,
+        settle_s=0.0,
+        sleeper=lambda _s: None,
+        runner=runner,
+        killer=lambda pid: killed.append(pid),
+    )
+    assert result.returncode == 0
+    assert attempts == 1
+    assert kinds == []
+    assert killed == []
+
+
 def test_does_not_retry_load_bearing(batch_extract, tmp_path: Path):
     calls = []
 
