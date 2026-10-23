@@ -833,6 +833,7 @@ def read_membrane_clip_faces(
     x_max_m,
     clip_name,
     extra_fields=(),
+    include_centroids=False,
 ):
     """Per-face cm, Jw, and area on one x-range clip of the membrane walls.
 
@@ -840,6 +841,9 @@ def read_membrane_clip_faces(
     not written in production (``RO_UDM_FACE_DIAGNOSTICS`` is off); surface
     reports of udm-6 and udm-7 use the cell values. ``extra_fields`` (udm-12
     on the evaluation window) uses the same cell-value read and is not caught.
+    ``include_centroids=True`` adds ``x``, ``y``, and ``z`` from
+    ``FacesCentroid`` on that same surface read. The default face dict is
+    unchanged.
     """
     from ansys.fluent.core.field_data_interfaces import SurfaceDataType
 
@@ -855,21 +859,33 @@ def read_membrane_clip_faces(
         x_max_m,
     )
     try:
+        data_types = [
+            SurfaceDataType.Vertices,
+            SurfaceDataType.FacesConnectivity,
+        ]
+        if include_centroids:
+            data_types.append(SurfaceDataType.FacesCentroid)
         surface_data = solver.fields.field_data.get_surface_data(
-            data_types=[
-                SurfaceDataType.Vertices,
-                SurfaceDataType.FacesConnectivity,
-            ],
+            data_types=data_types,
             surfaces=[clip_name],
         )
         vertices = _as_vectors(_surface_block(surface_data, SurfaceDataType.Vertices))
         connectivity = _surface_block(
             surface_data, SurfaceDataType.FacesConnectivity
         )
+        centroids = None
+        if include_centroids:
+            centroids = _as_vectors(
+                _surface_block(surface_data, SurfaceDataType.FacesCentroid)
+            )
         areas = []
         for face in connectivity:
             points = [vertices[int(node)] for node in face]
             areas.append(polygon_area(points))
+        if centroids is not None and len(centroids) != len(areas):
+            raise RuntimeError(
+                f"{clip_name}: {len(areas)} faces and {len(centroids)} centroids."
+            )
         columns = {}
         for field_name in field_names:
             scalar = solver.fields.field_data.get_scalar_field_data(
@@ -888,6 +904,10 @@ def read_membrane_clip_faces(
         faces = []
         for index in range(len(areas)):
             face = {"area": areas[index]}
+            if centroids is not None:
+                face["x"] = centroids[index][0]
+                face["y"] = centroids[index][1]
+                face["z"] = centroids[index][2]
             for field_name in field_names:
                 face[_MEMBRANE_FACE_FIELD_KEYS[field_name]] = columns[field_name][index]
             faces.append(face)
