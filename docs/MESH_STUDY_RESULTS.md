@@ -128,8 +128,10 @@ in-plane mesh and changes the membrane first height. CP excess moves
 0.0595 → 0.0671 from realised y1 5.10 µm to 1.32 µm. The
 smooth-transition `m_max` rows at a similar y1 are much higher, so most
 of that `m_max` dependence is in-plane surface and bulk resolution, not
-y1. The fixed-y1 `m_max` queue below is not run yet. Decision remains
-**OPEN**.
+y1. **2026-10-23.** The fixed-y1 series at request 2.0 µm (realised
+1.84–1.89 µm) still climbs 0.0663 → 0.0940; the last step is +2.0%.
+The smooth-transition `m_max` 0.028 leaf remains 17% below that
+plateau. Decision remains **OPEN**.
 
 ### `m_max` at `bl4`
 
@@ -180,19 +182,36 @@ not in the 2026-10-19 table above. Both sit well above the last-ratio
 values at `m_max` 0.085 and a similar y1. The `m_max` trend is in-plane
 surface and bulk resolution.
 
-### Fixed y1 2.0 µm, `m_max` sweep (queued)
+### Fixed y1 2.0 µm, `m_max` sweep
 
-Same last-ratio path, request `_y1h020`, `u0p2_p6M`. The 0.085 leaf is
-the 2.0 µm row above (realised 1.84 µm, CP excess 0.0663) and is not
-requeued. `scripts/mfbo/d2450_mmax_y1_queue.py` emits the other three.
-Layer count is the last-ratio stack at that `m_max`. No QoI yet.
+**From host report 2026-10-23.** `u0p2_p6M`. Same last-ratio path as the
+y1 series, request `_y1h020`, spacer still smooth-transition, `bl` 4.
+Realised y1 is 1.84–1.89 µm. CP excess is `cpc_window_avg_flux − 1`.
+The step column is the change from the row above. On the last step
+(`m_max` 0.045 → 0.035), `cp_q999_window_flux − 1` is +1.2%,
+`lmh_window_module` is −0.2%, and `pressure_drop_spacer_per_m` is +0.3%.
+Layer count is the last-ratio stack at that `m_max`. The 0.085 leaf is
+the 2.0 µm row above and is not requeued.
 
-| m_max [mm] | mesh_id | layers | status |
-|---:|---|---:|---|
-| 0.085 | `max085_min006_cpg5_bl4_peel2_y1h020` | 8 | exists |
-| 0.060 | `max060_min006_cpg5_bl4_peel2_y1h020` | 7 | queued |
-| 0.045 | `max045_min006_cpg5_bl4_peel2_y1h020` | 6 | queued |
-| 0.035 | `max035_min006_cpg5_bl4_peel2_y1h020` | 5 | queued |
+| m_max [mm] | mesh_id | layers | cells | CP excess | step |
+|---:|---|---:|---:|---:|---:|
+| 0.085 | `max085_min006_cpg5_bl4_peel2_y1h020` | 8 | 0.87 M | 0.0663 | |
+| 0.060 | `max060_min006_cpg5_bl4_peel2_y1h020` | 7 | 4.30 M | 0.0749 | +13% |
+| 0.045 | `max045_min006_cpg5_bl4_peel2_y1h020` | 6 | 5.29 M | 0.0922 | +23% |
+| 0.035 | `max035_min006_cpg5_bl4_peel2_y1h020` | 5 | 6.29 M | 0.0940 | +2.0% |
+
+The last step is inside the 5–7% bar. The series as a whole still moves,
+0.0663 → 0.0940.
+
+**Open check.** The smooth-transition `m_max` 0.028 leaf
+(`max028_min006_cpg5_bl4_peel2`, 41.25 M cells, realised y1 2.11 µm)
+is 0.0784, 17% below 0.0940. 41.25 M is 6.7× the smooth-transition
+`m_max` 0.035 count (6,154,123, `docs/MESH_LANDSCAPE.md`). That jump is
+bulk refinement. The same `m_max` at request y1 2.0 µm is not run.
+`scripts/mfbo/d2450_mmax_y1_queue.py --m-max 0.028` emits
+`max028_min006_cpg5_bl4_peel2_y1h020` (4 membrane layers). The default
+list stays 0.060, 0.045, and 0.035. Mesh with `--mesh-only`, then run
+the full queue so each job passes `--reuse-mesh`.
 
 ### Contact proximity (`D0817_a30`, `m_max` 0.045)
 
