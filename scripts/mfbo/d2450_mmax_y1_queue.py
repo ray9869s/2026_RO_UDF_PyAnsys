@@ -1,13 +1,15 @@
 """D2450_a45 m_max queue at fixed membrane y1 2.0 um.
 
 Three leaves, u0p2_p6M, on ``C:/ro_data_mfbo/meshstudy`` with geometry from
-``C:/ro_data_mfbo/geometries_pmdb``. ``m_max`` is 0.060, 0.045, and 0.035 mm.
-Each leaf requests wall-to-centroid y1 of 2.0 um (``_y1h020``) on the
-last-ratio membrane boundary layer. The spacer boundary layer stays the
-production smooth-transition stack.
+``C:/ro_data_mfbo/geometries_pmdb``. The default ``m_max`` list is 0.060,
+0.045, and 0.035 mm. ``--m-max`` replaces that list; omitting it leaves
+the default. Each leaf requests wall-to-centroid y1 of 2.0 um
+(``_y1h020``) on the last-ratio membrane boundary layer. The spacer
+boundary layer stays the production smooth-transition stack.
 
 ``m_max`` 0.085 already exists as
-``max085_min006_cpg5_bl4_peel2_y1h020`` and is not queued.
+``max085_min006_cpg5_bl4_peel2_y1h020`` and is not in the default list.
+The open bulk-resolution check is ``--m-max 0.028``.
 
 ``--mesh-only`` writes jobs that mesh and print the cell count. Without
 it, the queue is mesh, solve, and extract, and each job passes
@@ -43,22 +45,35 @@ EXISTING_M_MAX_MM = 0.085
 EXISTING_MESH_ID = "max085_min006_cpg5_bl4_peel2_y1h020"
 
 
-def mmax_variants():
+def selected_m_max_mm(m_max_mm):
+    """``None`` keeps ``M_MAX_MM``. A sequence replaces that list."""
+    if m_max_mm is None:
+        return M_MAX_MM
+    selected = tuple(float(value) for value in m_max_mm)
+    if not selected or any(value <= 0 for value in selected):
+        raise ValueError(
+            "--m-max needs one or more positive values in mm, "
+            f"got {m_max_mm!r}."
+        )
+    return selected
+
+
+def mmax_variants(m_max_mm=None):
     """Name and override dict for each m_max. Names are job-id fragments."""
     return tuple(
         (
             f"max{int(round(m_max * 1000)):03d}",
             {"m_max": m_max, "membrane_bl_y1_um": Y1_UM},
         )
-        for m_max in M_MAX_MM
+        for m_max in selected_m_max_mm(m_max_mm)
     )
 
 
-def mmax_study_overrides():
+def mmax_study_overrides(m_max_mm=None):
     """Production template plus BL 4, y1 2.0 um, and one m_max."""
     _case, template, _retries = mesh_study.load_mesh_template(GEO_ID)
     built = []
-    for name, changes in mmax_variants():
+    for name, changes in mmax_variants(m_max_mm):
         overrides = mesh_study.apply_study_overrides(
             template,
             {"bl_layers": BL_LAYERS, **changes},
@@ -192,6 +207,17 @@ def build_parser():
         help="Jobs mesh and print the cell count. They do not solve.",
     )
     parser.add_argument(
+        "--m-max",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="MM",
+        help=(
+            "m_max values in mm, replacing 0.060 0.045 0.035. "
+            "Omit to keep that list. Example: --m-max 0.028."
+        ),
+    )
+    parser.add_argument(
         "--max-cells",
         type=int,
         default=None,
@@ -210,7 +236,7 @@ def main(argv=None):
         raise ValueError(
             "--max-cells reads completed mesh-only manifests. Omit --mesh-only."
         )
-    studies = mmax_study_overrides()
+    studies = mmax_study_overrides(args.m_max)
     if args.max_cells is not None:
         studies, dropped = variants_under_cell_cap(
             studies, args.max_cells, DATA_ROOT
