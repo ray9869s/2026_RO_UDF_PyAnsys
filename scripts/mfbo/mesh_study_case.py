@@ -28,6 +28,12 @@ and does not solve.
 ``--reuse-mesh`` skips meshing when that mesh leaf already exists, its
 ``mesh_run_record.json`` status is ``SUCCESS``, and the manifest settings
 match the request. The run leaf is still refused when it exists.
+
+``--checkpoint-every N`` writes case and data every N iterations during
+the solve and keeps the latest two pairs. It is off when omitted.
+``--resume`` reuses the mesh, requires a checkpoint pair in the run leaf,
+and continues that data file's iteration counter with the same solver
+settings. The setup case is not a checkpoint.
 """
 
 from __future__ import annotations
@@ -60,6 +66,11 @@ from ro.membrane_bl import membrane_bl_suffix, resolve_membrane_bl, specs_match
 from ro.convergence_quality import continuity_final_from_case_dir
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
+from ro.solve_checkpoint import (
+    latest_checkpoint,
+    refuse_finished_checkpoint,
+    require_checkpoint_every,
+)
 from ro.solver_common import sha256_file
 
 _FLOAT_REL_TOL = 1.0e-9
@@ -992,6 +1003,25 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=None,
+        help=(
+            "Write case and data every N iterations and keep the latest "
+            "two pairs. Default off. 200 is the interval for a long "
+            "mesh-study solve."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Continue the existing run from its latest checkpoint with "
+            "the same settings. The iteration counter is the one in the "
+            "data file. Refuses a run that has no checkpoint pair."
+        ),
+    )
+    parser.add_argument(
         "--geometry-suffix",
         default=".dsco",
         help="CAD suffix copied into the study tree. Default .dsco.",
@@ -1019,6 +1049,8 @@ def _json_object(flag, text):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.resume and args.mesh_only:
+        raise ValueError("--resume does not combine with --mesh-only.")
     data_root = resolve_data_root(args.data_root)
     case_id = require_base_case(args.case)
     changes = collect_overrides(
@@ -1048,7 +1080,12 @@ def main(argv=None):
         "geometry_root": None if geometry_root is None else geometry_root.as_posix(),
         "require_parity": suffix == ".pmdb",
     }
-    if args.reuse_mesh and leaf.exists():
+    if args.resume and not leaf.is_dir():
+        raise FileNotFoundError(
+            f"Checkpoint resume requires the mesh leaf: {leaf}."
+        )
+    reuse_mesh = args.reuse_mesh or args.resume
+    if reuse_mesh and leaf.exists():
         geometry = ensure_study_geometry(
             data_root,
             family,
@@ -1084,6 +1121,7 @@ def main(argv=None):
     if args.mesh_only:
         return 0
 
+    checkpoint_every = require_checkpoint_every(args.checkpoint_every)
     _entry, solver_template, solver_retries, settle_s = campaign.load_template(
         args.geo_id,
         production_mesh_id,
@@ -1091,7 +1129,37 @@ def main(argv=None):
     )
     solver_overrides = solver_overrides_for_study(solver_template, study_id)
     run_directory = run_leaf(data_root, family, args.geo_id, study_id, case_id)
-    refuse_existing_directory(run_directory, "run leaf")
+    if args.resume:
+        if not run_directory.is_dir():
+            raise FileNotFoundError(
+                "Checkpoint resume requires the run leaf: "
+                f"{run_directory}."
+            )
+        found = latest_checkpoint(run_directory, args.geo_id, case_id)
+        if found is None:
+            raise FileNotFoundError(
+                f"No checkpoint case+data pair in {run_directory}. "
+                "The setup case is not a solution checkpoint, so the "
+                "iteration counter cannot be continued."
+            )
+        manifest_path = run_directory / "manifest.json"
+        manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
+        settings = manifest.get("solver_settings")
+        if isinstance(settings, dict):
+            refuse_finished_checkpoint(found.iteration, settings.get("max_iterations"))
+        if checkpoint_every is None:
+            checkpoint_every = require_checkpoint_every(
+                manifest.get("checkpoint_every")
+            )
+        solver_overrides["checkpoint_resume"] = True
+        print(
+            f"Resuming {run_directory} from checkpoint iteration "
+            f"{found.iteration}."
+        )
+    else:
+        refuse_existing_directory(run_directory, "run leaf")
+    if checkpoint_every is not None:
+        solver_overrides["checkpoint_every"] = checkpoint_every
     solver_result = campaign.launch_solver(
         solver_overrides,
         data_root,

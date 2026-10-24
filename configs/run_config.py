@@ -360,6 +360,13 @@ hf_monitor_stop = None
 # None on the first solve. A failed production gate after the HF monitor
 # stop sets {iterations_already_run, max_iterations_total} for the resume.
 hf_production_resume = None
+# None writes no intermediate case+data. A positive int writes case and
+# data every N iterations and keeps the latest two pairs. 200 is the
+# interval for a long mesh-study solve.
+checkpoint_every = None
+# False starts from the mesh. True reads the latest checkpoint in the
+# run directory and continues that data file's iteration counter.
+checkpoint_resume = False
 # Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"
@@ -1027,3 +1034,27 @@ def validate_for_solver():
                 f"domain_length_m={domain_length_m!r}, "
                 f"buffer_length_m={buffer_length_m!r}"
             )
+    from ro.solve_checkpoint import (
+        require_checkpoint_every,
+        require_checkpoint_resume,
+    )
+
+    require_checkpoint_every(globals().get("checkpoint_every"))
+    resume_flag = globals().get("checkpoint_resume", False)
+    require_checkpoint_resume(resume_flag)
+    if resume_flag and (
+        globals().get("restart_from_case_file")
+        or globals().get("restart_from_data_file")
+    ):
+        raise ValueError(
+            "checkpoint_resume does not combine with restart_from_case_file."
+        )
+    if resume_flag and (
+        lf_monitor_stop is not None
+        or hf_monitor_stop is not None
+        or hf_production_resume is not None
+    ):
+        raise ValueError(
+            "checkpoint_resume does not combine with a monitor stop or "
+            "hf_production_resume."
+        )

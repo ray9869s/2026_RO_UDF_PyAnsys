@@ -21,6 +21,16 @@ from ro.membrane_bl import (
     y1_diagnostic_fields,
 )
 from ro.session_retry import print_fluent_launch_identity
+from ro.solve_checkpoint import (
+    checkpoint_case_path,
+    checkpoint_data_path,
+    prune_checkpoints,
+    require_checkpoint_every,
+    require_checkpoint_resume,
+    require_latest_checkpoint,
+    resume_iteration_plan,
+    run_checkpointed_iterations,
+)
 from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
     read_mesh_manifest,
@@ -340,6 +350,9 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
     blending = getattr(cfg, "first_to_second_order_blending", "preserve")
     if not (isinstance(blending, str) and blending.strip().lower() == "preserve"):
         base["solver_settings"]["first_to_second_order_blending"] = float(blending)
+    every = require_checkpoint_every(getattr(cfg, "checkpoint_every", None))
+    if every is not None:
+        base["checkpoint_every"] = every
     return merge_geometry_into_run_manifest(
         base,
         cfg.geo_id,
@@ -388,6 +401,8 @@ def write_worker_run_manifest(
         ):
             if kept in existing:
                 payload[kept] = existing[kept]
+        if "checkpoint_iteration" in existing:
+            payload["checkpoint_iteration"] = existing["checkpoint_iteration"]
     cell_count = mesh_manifest.get("cell_count")
     if cell_count is not None:
         if isinstance(cell_count, bool) or not isinstance(cell_count, int) or cell_count < 1:
@@ -691,7 +706,24 @@ if __name__ == "__main__":
             "restart_from_case_file and restart_from_data_file must be provided together."
         )
 
-    input_mode = "restart_continuation" if has_restart_case_file else "mesh_initialization"
+    checkpoint_every = require_checkpoint_every(
+        getattr(cfg, "checkpoint_every", None)
+    )
+    checkpoint_resume = require_checkpoint_resume(
+        getattr(cfg, "checkpoint_resume", False)
+    )
+    if checkpoint_resume and has_restart_case_file:
+        raise ValueError(
+            "checkpoint_resume does not combine with restart_from_case_file."
+        )
+    checkpoint_iteration = None
+    input_mode = (
+        "checkpoint_resume"
+        if checkpoint_resume
+        else "restart_continuation"
+        if has_restart_case_file
+        else "mesh_initialization"
+    )
 
     # Inlet velocity setting
     inlet_velocity_value = cfg.inlet_velocity_value
@@ -842,6 +874,15 @@ if __name__ == "__main__":
     ):
         raise ValueError(
             "hf_production_resume does not combine with a monitor stop."
+        )
+    if checkpoint_resume and (
+        lf_monitor_stop is not None
+        or hf_monitor_stop is not None
+        or hf_production_resume is not None
+    ):
+        raise ValueError(
+            "checkpoint_resume does not combine with a monitor stop or "
+            "hf_production_resume."
         )
     enable_lmh_udm_avg_report_file = cfg.enable_lmh_udm_avg_report_file
     lmh_udm_avg_report_file_name = cfg.lmh_udm_avg_report_file_name
@@ -4282,6 +4323,7 @@ if __name__ == "__main__":
     print("Solver input summary")
     print("=" * 72)
     print(f"Input mode: {input_mode}")
+    print(f"Checkpoint every: {checkpoint_every if checkpoint_every is not None else '(off)'}")
     print("Launch path: meshing_to_solver")
     print(f"Restart case file path: {restart_from_case_file if restart_from_case_file is not None else '(n/a)'}")
     print(f"Restart data file path: {restart_from_data_file if restart_from_data_file is not None else '(n/a)'}")
@@ -4337,6 +4379,21 @@ if __name__ == "__main__":
         )
         staged_restart_data_file = restart_staged_data_path(
             case_path, geo_name, case_name
+        )
+    elif input_mode == "checkpoint_resume":
+        if not os.path.isdir(case_path):
+            raise FileNotFoundError(
+                f"Checkpoint resume requires the run directory: {case_path}"
+            )
+        found_checkpoint = require_latest_checkpoint(
+            case_path, geo_name, case_name
+        )
+        checkpoint_iteration = found_checkpoint.iteration
+        staged_restart_case_file = str(found_checkpoint.case_path)
+        staged_restart_data_file = str(found_checkpoint.data_path)
+        print(
+            "Checkpoint resume will read iteration "
+            f"{checkpoint_iteration} in place: {staged_restart_case_file}"
         )
     else:
         if not os.path.exists(case_path):
@@ -4402,6 +4459,16 @@ if __name__ == "__main__":
             restart_source_dir,
             source_case_file=restart_from_case_file,
             source_data_file=restart_from_data_file,
+        )
+    elif input_mode == "checkpoint_resume":
+        print(f"Checkpoint case: {staged_restart_case_file}")
+        print(f"Checkpoint data: {staged_restart_data_file}")
+        print(f"Checkpoint iteration: {checkpoint_iteration}")
+        print("Mesh file: (not replaced for checkpoint_resume)")
+        print("Template case: (not read for checkpoint_resume)")
+        print(
+            "The checkpoint is read in place so the iteration counter "
+            "continues and the UDF ramp is not restarted."
         )
     else:
         print(f"Mesh file: {mesh_file_path}")
@@ -4520,7 +4587,14 @@ if __name__ == "__main__":
             # "Failed to construct hwtree for collect command. 0x8000ffff".
             # Reuse the stable meshing-mode launch + switch_to_solver() path
             # from the mesh workflow instead.
-            print("Launching Fluent in meshing mode for restart continuation...", flush=True)
+            continuation_label = (
+                "checkpoint" if input_mode == "checkpoint_resume" else "restart"
+            )
+            print(
+                "Launching Fluent in meshing mode for "
+                f"{continuation_label} continuation...",
+                flush=True,
+            )
 
             fluent_launched_at = time.monotonic()
             meshing = pyfluent.launch_fluent(
@@ -4558,11 +4632,11 @@ if __name__ == "__main__":
             setup = solver.settings.setup
             solution = solver.settings.solution
 
-            print("Reading restart case...", flush=True)
+            print(f"Reading {continuation_label} case...", flush=True)
             solver.settings.file.read_case(
                 file_name=as_fluent_path(staged_restart_case_file)
             )
-            print("Restart case loaded successfully.", flush=True)
+            print(f"{continuation_label.capitalize()} case loaded successfully.", flush=True)
 
             viscous_state, discretization_schemes = apply_viscous_setup(
                 setup,
@@ -4576,11 +4650,11 @@ if __name__ == "__main__":
                 discretization_schemes,
             )
 
-            print("Reading restart data...", flush=True)
+            print(f"Reading {continuation_label} data...", flush=True)
             solver.settings.file.read_data(
                 file_name=as_fluent_path(staged_restart_data_file)
             )
-            print("Restart data loaded successfully.", flush=True)
+            print(f"{continuation_label.capitalize()} data loaded successfully.", flush=True)
 
         # Update solver-side thread names so the name-based UDF can use THREAD_NAME(t).
         update_solver_thread_names(solver)
@@ -5192,10 +5266,11 @@ if __name__ == "__main__":
         # ##### [14] Initialization and Species Patch #####
         # ======================================================
 
-        if input_mode == "restart_continuation":
+        if input_mode in ("restart_continuation", "checkpoint_resume"):
             print(
-                "Restart continuation mode: skipping hybrid initialization and species patch "
-                "so the loaded restart data remains the initial solution."
+                f"{input_mode}: skipping hybrid initialization and species patch "
+                "so the loaded data remains the initial solution and the "
+                "iteration counter continues."
             )
             print("Initialization state from restart data:")
             print(solution.initialization.get_state())
@@ -5423,6 +5498,67 @@ if __name__ == "__main__":
                         f"minimum_full_source_iterations={minimum_full_source_iterations}"
                     )
 
+            def _session_iteration():
+                bounds = iteration_bounds_from_case(case_path)
+                if bounds is None:
+                    return None
+                return int(bounds[1])
+
+            def _on_checkpoint(iteration):
+                case_file = str(
+                    checkpoint_case_path(
+                        case_path, geo_name, case_name, iteration
+                    )
+                )
+                print(
+                    f"Writing checkpoint at iteration {iteration}: {case_file}",
+                    flush=True,
+                )
+                solver.settings.file.write_case_data(
+                    file_name=as_fluent_path(case_file)
+                )
+                data_file = str(checkpoint_data_path(case_file))
+                verify_file_exists(case_file, "checkpoint case file")
+                verify_file_exists(data_file, "checkpoint data file")
+                removed = prune_checkpoints(case_path, geo_name, case_name)
+                for removed_path in removed:
+                    print(f"Removed old checkpoint: {removed_path}")
+                update_run_manifest_fields(
+                    case_path,
+                    {
+                        "checkpoint_iteration": iteration,
+                        "checkpoint_every": checkpoint_every,
+                    },
+                )
+                print(f"Recorded checkpoint_iteration={iteration}")
+
+            def _run_iterations(count, *, start_iteration):
+                return run_checkpointed_iterations(
+                    lambda step: solution.run_calculation.iterate(
+                        iter_count=step
+                    ),
+                    count=count,
+                    every=checkpoint_every,
+                    start_iteration=start_iteration,
+                    read_iteration=(
+                        _session_iteration
+                        if checkpoint_every is not None
+                        else None
+                    ),
+                    on_checkpoint=(
+                        _on_checkpoint if checkpoint_every is not None else None
+                    ),
+                )
+
+            monitor_cursor = {"n": 0}
+
+            def _monitor_iterate(count):
+                outcome = _run_iterations(
+                    count,
+                    start_iteration=monitor_cursor["n"],
+                )
+                monitor_cursor["n"] = outcome["end_iteration"]
+
             lf_stop_decision = None
             hf_stop_decision = None
             try:
@@ -5451,7 +5587,12 @@ if __name__ == "__main__":
                             object_name,
                             True,
                         )
-                    solution.run_calculation.iterate(iter_count=remaining)
+                    _run_iterations(
+                        remaining,
+                        start_iteration=hf_production_resume[
+                            "iterations_already_run"
+                        ],
+                    )
                 elif lf_monitor_stop is not None:
                     ramp_end = ramp_end_from_case(case_path)
                     print(
@@ -5488,9 +5629,7 @@ if __name__ == "__main__":
                         )
 
                     lf_stop_decision = run_lf_monitor_iterations(
-                        iterate=lambda count: solution.run_calculation.iterate(
-                            iter_count=count
-                        ),
+                        iterate=_monitor_iterate,
                         read_decision=_read_lf_decision,
                         ramp_end=ramp_end,
                         n=lf_monitor_stop["n"],
@@ -5534,9 +5673,7 @@ if __name__ == "__main__":
                         )
 
                     hf_stop_decision = run_hf_monitor_iterations(
-                        iterate=lambda count: solution.run_calculation.iterate(
-                            iter_count=count
-                        ),
+                        iterate=_monitor_iterate,
                         read_decision=_read_hf_decision,
                         read_continuity=lambda: continuity_final_from_case_dir(
                             case_path
@@ -5548,34 +5685,67 @@ if __name__ == "__main__":
                     )
                     print(f"HF monitor decision: {hf_stop_decision}")
                 elif use_ramp_convergence_safety:
-                    print(
-                        "\nRunning ramp-up phase without residual/QoI convergence stopping.\n"
-                        f"Ramp full iteration: {ramp_full_iteration}\n"
-                        f"Post-ramp buffer iterations: {post_ramp_buffer_iterations}\n"
-                        f"Ramp-up phase iterations: {pre_convergence_iterations}"
-                    )
+                    if checkpoint_resume:
+                        plan = resume_iteration_plan(
+                            checkpoint_iteration=checkpoint_iteration,
+                            max_iterations=max_iterations,
+                            pre_convergence_iterations=pre_convergence_iterations,
+                            use_ramp=True,
+                        )
+                        phase1_count = plan["phase1_remaining"]
+                        phase2_count = plan["phase2_remaining"]
+                        phase1_start = checkpoint_iteration
+                        phase2_start = plan["phase2_start"]
+                        print(
+                            "\nCheckpoint resume keeps the data-file iteration "
+                            f"counter at {checkpoint_iteration}.\n"
+                            f"Ramp-up iterations still to run: {phase1_count}\n"
+                            "Convergence-phase iterations still to run: "
+                            f"{phase2_count}"
+                        )
+                    else:
+                        phase1_count = pre_convergence_iterations
+                        phase2_count = remaining_iterations
+                        phase1_start = 0
+                        phase2_start = pre_convergence_iterations
 
-                    set_residual_convergence_check(
-                        solution=solution,
-                        species_name=species_name,
-                        enable=False,
-                        turbulence_equations=turbulence_equations,
-                    )
-                    for object_name in qoi_convergence_object_names:
-                        set_qoi_convergence_condition_active(
-                            solution,
-                            object_name,
-                            False,
+                    if phase1_count:
+                        print(
+                            "\nRunning ramp-up phase without residual/QoI convergence stopping.\n"
+                            f"Ramp full iteration: {ramp_full_iteration}\n"
+                            f"Post-ramp buffer iterations: {post_ramp_buffer_iterations}\n"
+                            f"Ramp-up phase iterations: {phase1_count}"
                         )
 
-                    solution.run_calculation.iterate(
-                        iter_count=pre_convergence_iterations
-                    )
+                        set_residual_convergence_check(
+                            solution=solution,
+                            species_name=species_name,
+                            enable=False,
+                            turbulence_equations=turbulence_equations,
+                        )
+                        for object_name in qoi_convergence_object_names:
+                            set_qoi_convergence_condition_active(
+                                solution,
+                                object_name,
+                                False,
+                            )
 
-                    print(
-                        "\nRamp-up phase completed. "
-                        "The membrane source ramp should now be fully applied."
-                    )
+                        _run_iterations(
+                            phase1_count,
+                            start_iteration=phase1_start,
+                        )
+
+                        print(
+                            "\nRamp-up phase completed. "
+                            "The membrane source ramp should now be fully applied."
+                        )
+                    else:
+                        print(
+                            "\nRamp-up phase already complete at iteration "
+                            f"{checkpoint_iteration}. The UDF source ramp stays "
+                            "at full strength because the iteration counter "
+                            "was not reset."
+                        )
 
                     print(
                         "\nEnabling convergence-phase stopping: "
@@ -5596,12 +5766,15 @@ if __name__ == "__main__":
                             True,
                         )
 
-                    print(
-                        f"\nRunning convergence phase. "
-                        f"Maximum additional iterations: {remaining_iterations}"
-                    )
-
-                    solution.run_calculation.iterate(iter_count=remaining_iterations)
+                    if phase2_count:
+                        print(
+                            f"\nRunning convergence phase. "
+                            f"Maximum additional iterations: {phase2_count}"
+                        )
+                        _run_iterations(
+                            phase2_count,
+                            start_iteration=phase2_start,
+                        )
 
                 else:
                     print("\nRamp convergence safety is disabled.")
@@ -5617,7 +5790,25 @@ if __name__ == "__main__":
                             object_name,
                             True,
                         )
-                    solution.run_calculation.iterate(iter_count=max_iterations)
+                    if checkpoint_resume:
+                        plan = resume_iteration_plan(
+                            checkpoint_iteration=checkpoint_iteration,
+                            max_iterations=max_iterations,
+                            pre_convergence_iterations=minimum_full_source_iterations,
+                            use_ramp=False,
+                        )
+                        print(
+                            "\nCheckpoint resume keeps the data-file iteration "
+                            f"counter at {checkpoint_iteration}.\n"
+                            "Iterations still to run: "
+                            f"{plan['phase2_remaining']}"
+                        )
+                        _run_iterations(
+                            plan["phase2_remaining"],
+                            start_iteration=plan["phase2_start"],
+                        )
+                    else:
+                        _run_iterations(max_iterations, start_iteration=0)
             except Exception as calc_exc:
                 calculation_diverged = True
                 print(f"Solver calculation raised: {type(calc_exc).__name__}: {calc_exc}")

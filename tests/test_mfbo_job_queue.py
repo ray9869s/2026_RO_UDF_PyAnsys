@@ -432,6 +432,75 @@ def test_interrupted_running_is_failed_until_retry(tmp_path, monkeypatch, capsys
     assert _read_state(queue.resolve())["jobs"][0]["status"] == "succeeded"
 
 
+def test_resume_retries_a_failed_solve_and_leaves_pending_argv(tmp_path, monkeypatch):
+    _pin_head(monkeypatch)
+    queue = (tmp_path / "jobs.json").resolve()
+    solve_argv = tmp_path / "solve_argv.txt"
+    mesh_argv = tmp_path / "mesh_argv.txt"
+    pending_argv = tmp_path / "pending_argv.txt"
+
+    def _dump(path: Path) -> str:
+        return (
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"Path({str(path)!r}).write_text('\\n'.join(sys.argv), encoding='utf-8')\n"
+        )
+
+    _write(
+        queue,
+        [
+            {
+                "id": "solve",
+                "argv": [
+                    *_py(_dump(solve_argv)),
+                    "scripts/mfbo/mesh_study_case.py",
+                    "--checkpoint-every",
+                    "200",
+                    "--reuse-mesh",
+                ],
+            },
+            {
+                "id": "mesh_only",
+                "argv": [
+                    *_py(_dump(mesh_argv)),
+                    "scripts/mfbo/mesh_study_case.py",
+                    "--mesh-only",
+                ],
+            },
+            {
+                "id": "later",
+                "argv": [*_py(_dump(pending_argv)), "scripts/mfbo/mesh_study_case.py"],
+            },
+        ],
+    )
+    state_path = Path(str(queue) + ".state.json")
+    _write(
+        state_path,
+        {
+            "queue_head": _HEAD,
+            "jobs": [
+                _record("solve", status="failed", return_code=1, ended_at=_STAMP),
+                _record("mesh_only", status="failed", return_code=1, ended_at=_STAMP),
+                _record("later"),
+            ],
+        },
+    )
+
+    assert job_queue.main(["run", str(queue), "--resume"]) == job_queue.EXIT_OK
+    solve_text = solve_argv.read_text(encoding="utf-8")
+    assert "--resume" in solve_text.splitlines()
+    assert "--checkpoint-every" in solve_text
+    mesh_text = mesh_argv.read_text(encoding="utf-8")
+    assert "--mesh-only" in mesh_text.splitlines()
+    assert "--resume" not in mesh_text.splitlines()
+    assert "--resume" not in pending_argv.read_text(encoding="utf-8").splitlines()
+    assert [job["status"] for job in _read_state(queue)["jobs"]] == [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+
+
 def test_cwd_and_env_are_passed_to_the_command(tmp_path, monkeypatch):
     _pin_head(monkeypatch)
     work = tmp_path / "work"

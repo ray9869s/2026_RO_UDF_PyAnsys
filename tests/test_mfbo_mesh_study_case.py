@@ -447,7 +447,8 @@ def _patch_study_main(monkeypatch, tmp_path, seen):
         seen["solved"] = True
         seen["solver_case_name"] = overrides["case_name"]
         seen["run_id"] = kwargs["run_id"]
-        run_directory.mkdir(parents=True)
+        seen["solver_overrides"] = dict(overrides)
+        run_directory.mkdir(parents=True, exist_ok=True)
         (run_directory / "manifest.json").write_text(
             json.dumps({"stop_reason": "residual_converged", "continuity_final": 1.0e-8}),
             encoding="utf-8",
@@ -711,3 +712,122 @@ def test_pmdb_main_passes_the_geometry_override_to_meshing(monkeypatch, tmp_path
     assert seen["overrides"]["geometry_suffix"] == ".pmdb"
     assert seen["overrides"]["geometry_root"] == pmdb_root.resolve().as_posix()
     assert not (tmp_path / "empty-prod").exists()
+
+
+def _plant_checkpoint(run, iteration, *, every=None, max_iterations=None):
+    from ro.solve_checkpoint import checkpoint_case_path, checkpoint_data_path
+
+    run.mkdir(parents=True, exist_ok=True)
+    case_path = checkpoint_case_path(run, "D2450_a45", "u0p2_p6M", iteration)
+    case_path.write_bytes(b"cas")
+    checkpoint_data_path(case_path).write_bytes(b"dat")
+    payload = {}
+    if every is not None:
+        payload["checkpoint_every"] = every
+        payload["checkpoint_iteration"] = iteration
+    if max_iterations is not None:
+        payload["solver_settings"] = {"max_iterations": max_iterations}
+    if payload:
+        (run / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    return case_path
+
+
+def test_checkpoint_every_is_passed_to_the_solver(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--m-min",
+            "0.003",
+            "--checkpoint-every",
+            "200",
+        ]
+    )
+    assert code == 0
+    assert seen["solver_overrides"]["checkpoint_every"] == 200
+    assert "checkpoint_resume" not in seen["solver_overrides"]
+
+
+def test_resume_continues_the_latest_checkpoint_and_skips_meshing(
+    monkeypatch, tmp_path
+):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    _plant_checkpoint(run, 400)
+    _plant_checkpoint(run, 600, every=200, max_iterations=2000)
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--case",
+            "u0p2_p6M",
+            "--m-min",
+            "0.003",
+            "--resume",
+        ]
+    )
+    assert code == 0
+    assert "meshed" not in seen
+    assert seen["solved"] is True
+    assert seen["solver_overrides"]["checkpoint_resume"] is True
+    assert seen["solver_overrides"]["checkpoint_every"] == 200
+    assert seen["solver_overrides"]["mesh_id"] == mesh_id
+
+
+def test_resume_refuses_a_run_with_only_the_setup_case(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    run.mkdir(parents=True)
+    (run / "D2450_a45_u0p2_p6M_setup.cas.h5").write_bytes(b"setup")
+    with pytest.raises(FileNotFoundError, match="setup case is not a solution checkpoint"):
+        driver.main(
+            [
+                "--data-root",
+                str(tmp_path),
+                "--geo-id",
+                "D2450_a45",
+                "--case",
+                "u0p2_p6M",
+                "--m-min",
+                "0.003",
+                "--resume",
+            ]
+        )
+    assert "solved" not in seen
+
+
+def test_resume_does_not_combine_with_mesh_only(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    with pytest.raises(ValueError, match="does not combine with --mesh-only"):
+        driver.main(
+            [
+                "--data-root",
+                str(tmp_path),
+                "--geo-id",
+                "D2450_a45",
+                "--m-min",
+                "0.003",
+                "--mesh-only",
+                "--resume",
+            ]
+        )
+    assert "meshed" not in seen

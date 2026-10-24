@@ -594,6 +594,8 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
         "cost_proxy",
         "hf_phase2_first_iteration",
         "hf_phase2_last_iteration",
+        "checkpoint_iteration",
+        "checkpoint_every",
     ):
         _optional_positive_int(payload, field, "Run")
     _optional_processor_count(payload)

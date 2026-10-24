@@ -22,9 +22,13 @@ Sidecars use the queue path ``<queue>`` as a prefix:
 ``run`` records the repo HEAD when the state file is created. A later job
 whose HEAD differs prints a warning and still runs. A job left ``running``
 (interrupted runner) is marked failed on the next start and is not executed
-again unless ``--retry-failed`` is set. Succeeded jobs are skipped. The
-process exits 0 when no job is failed, 2 when any job is failed, and 1 for
-a preflight refusal (bad queue, lock held by a live runner, git failure).
+again unless ``--retry-failed`` or ``--resume`` is set. ``--resume`` retries
+failed jobs and appends ``--resume`` to a ``mesh_study_case`` solve so it
+continues from its latest checkpoint. Mesh-only jobs are retried without
+that flag. Succeeded jobs are skipped. Pending jobs keep their original
+argv. The process exits 0 when no job is failed, 2 when any job is failed,
+and 1 for a preflight refusal (bad queue, lock held by a live runner, git
+failure).
 
 Importing this module does not launch Fluent.
 """
@@ -222,18 +226,34 @@ def load_queue(queue_path: Path) -> list[dict]:
     return jobs
 
 
-def run_queue(queue, *, retry_failed: bool = False) -> int:
+def argv_with_checkpoint_resume(argv: list[str]) -> list[str]:
+    """Append ``--resume`` to a mesh-study solve. Leave other jobs unchanged."""
+    if not any("mesh_study_case" in part for part in argv):
+        return list(argv)
+    if "--resume" in argv or "--mesh-only" in argv:
+        return list(argv)
+    return [*argv, "--resume"]
+
+
+def run_queue(queue, *, retry_failed: bool = False, resume: bool = False) -> int:
     """Run the queue. Returns 0 or 2. Raises QueueError on preflight refusal."""
     if not isinstance(retry_failed, bool):
         raise QueueError(
             f"retry_failed must be a bool, got {retry_failed!r}."
         )
+    if not isinstance(resume, bool):
+        raise QueueError(f"resume must be a bool, got {resume!r}.")
     queue_path = resolve_queue_path(queue)
     jobs = load_queue(queue_path)
     files = queue_files(queue_path)
     _acquire_lock(files.lock)
     try:
-        return _run_locked(jobs, files, retry_failed=retry_failed)
+        return _run_locked(
+            jobs,
+            files,
+            retry_failed=retry_failed,
+            resume=resume,
+        )
     finally:
         _release_lock(files.lock)
 
@@ -279,7 +299,11 @@ def main(argv=None) -> int:
         if args.command == "status":
             report = status_report(args.queue)
         elif args.command == "run":
-            return run_queue(args.queue, retry_failed=args.retry_failed)
+            return run_queue(
+                args.queue,
+                retry_failed=args.retry_failed,
+                resume=args.resume,
+            )
         else:
             raise QueueError(f"unknown command {args.command!r}.")
         print(report, flush=True)
@@ -301,12 +325,27 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-run jobs whose status is failed.",
     )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Re-run failed jobs. A mesh_study_case solve also gets "
+            "--resume so it continues from its latest checkpoint. "
+            "Mesh-only jobs are retried without that flag."
+        ),
+    )
     status_parser = sub.add_parser("status", help="Print the job table.")
     status_parser.add_argument("queue", help="Queue JSON file.")
     return parser
 
 
-def _run_locked(jobs: list[dict], files: QueueFiles, *, retry_failed: bool) -> int:
+def _run_locked(
+    jobs: list[dict],
+    files: QueueFiles,
+    *,
+    retry_failed: bool,
+    resume: bool = False,
+) -> int:
     state = _load_or_create_state(files.state, jobs)
     _ensure_ids_match(state, jobs)
     for record in state["jobs"]:
@@ -332,13 +371,19 @@ def _run_locked(jobs: list[dict], files: QueueFiles, *, retry_failed: bool) -> i
         status = record["status"]
         if status == "succeeded":
             continue
-        if status == "failed" and not retry_failed:
+        if status == "failed" and not (retry_failed or resume):
             continue
         if status not in ("pending", "failed"):
             raise QueueError(
                 f"job {record['id']} has status {status!r}."
             )
-        _execute_job(job, record, state, files)
+        _execute_job(
+            job,
+            record,
+            state,
+            files,
+            append_resume=resume and status == "failed",
+        )
     if any(record["status"] == "failed" for record in state["jobs"]):
         return EXIT_JOB_FAILED
     return EXIT_OK
@@ -365,7 +410,14 @@ def _ensure_ids_match(state: dict, jobs: list[dict]) -> None:
         )
 
 
-def _execute_job(job: dict, record: dict, state: dict, files: QueueFiles) -> None:
+def _execute_job(
+    job: dict,
+    record: dict,
+    state: dict,
+    files: QueueFiles,
+    *,
+    append_resume: bool = False,
+) -> None:
     head = read_git_head()
     if head != state["queue_head"]:
         print(
@@ -385,6 +437,8 @@ def _execute_job(job: dict, record: dict, state: dict, files: QueueFiles) -> Non
     _write_json_atomic(files.state, state)
 
     argv = [part.replace("{python}", sys.executable) for part in job["argv"]]
+    if append_resume:
+        argv = argv_with_checkpoint_resume(argv)
     env = os.environ.copy()
     if "env" in job:
         env.update(job["env"])

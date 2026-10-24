@@ -241,6 +241,22 @@ def test_ref_empty_mesh_manifest_rejects_positive_filament(monkeypatch, tmp_path
         write_mesh_manifest(directory, payload)
 
 
+def test_checkpoint_fields_are_optional_positive_integers(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = write_test_run(
+        checkpoint_iteration=600,
+        checkpoint_every=200,
+    )
+    payload = read_run_manifest(directory)
+    assert payload["checkpoint_iteration"] == 600
+    assert payload["checkpoint_every"] == 200
+
+    rejected = dict(payload)
+    rejected["checkpoint_iteration"] = 0
+    with pytest.raises(ManifestError, match="checkpoint_iteration"):
+        write_run_manifest(directory, rejected)
+
+
 def test_run_manifest_round_trip(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
