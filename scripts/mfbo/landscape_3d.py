@@ -5,10 +5,13 @@ autoregressive model the 3D loop uses to each level's valid points.
 Prints the feasible fraction, the constrained optimum, and the
 probability of feasibility on the screen points, then the same report
 for a small threshold sweep. Writes one PNG with LF and HF side by side.
+``--legend`` names the constraint curves and markers. ``--overlay`` adds
+white diamonds. Neither is on unless asked, so the default PNG is unchanged.
 """
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -57,6 +60,18 @@ def build_parser():
         default=None,
         help="Square search grid for the feasible count and optimum. Contours stay fine.",
     )
+    parser.add_argument(
+        "--legend",
+        action="store_true",
+        help="Name the constraint curves, the predicted optimum, the failed-gate mark, and any --overlay labels.",
+    )
+    parser.add_argument(
+        "--overlay",
+        action="append",
+        default=None,
+        metavar="D_P,D_H,LABEL",
+        help="Extra point on both panels, drawn as a white diamond. Repeatable.",
+    )
     return parser
 
 
@@ -75,12 +90,32 @@ def main(argv=None) -> int:
         text = format_report(report)
         print(text, end="", flush=True)
         destination = args.out_dir / "landscape_3d_lmh.png"
-        write_contours(report, destination)
+        write_contours(
+            report,
+            destination,
+            legend=args.legend,
+            overlays=[_overlay(item) for item in (args.overlay or ())],
+        )
         print(f"wrote {destination}", flush=True)
     except (OSError, TypeError, ValueError, KeyError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def _overlay(text: str) -> tuple[float, float, str]:
+    parts = text.split(",", 2)
+    if len(parts) != 3:
+        raise ValueError(f"Overlay must be D_p,d_h,label, got {text!r}.")
+    try:
+        d_p = float(parts[0])
+        d_h = float(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"Overlay coordinates must be numbers, got {text!r}.") from exc
+    label = parts[2].strip()
+    if not label or not math.isfinite(d_p) or not math.isfinite(d_h):
+        raise ValueError(f"Overlay must be D_p,d_h,label with a finite point and a label, got {text!r}.")
+    return d_p, d_h, label
 
 
 def _designs(args):

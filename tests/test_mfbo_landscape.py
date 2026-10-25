@@ -135,6 +135,92 @@ def test_report_sweeps_nine_thresholds_and_writes_a_png(tmp_path: Path):
     assert destination.stat().st_size > 1000
 
 
+def test_default_contour_has_no_legend_and_legend_names_the_marks(tmp_path: Path, monkeypatch):
+    designs = _corners()
+    designs.append(
+        _design(0.8, 0.15, lmh=16.0, dp=80000.0, cp=1.08, wall_hf=900.0, status_hf="gate_fail")
+    )
+    report = analyze(designs, BOX, cp_excess_max=0.04, dp_max_pa_per_m=72000.0, search_grid=17)
+    assert report["primary"]["optimum"] is not None
+    plain = _capture_figure(monkeypatch, report, tmp_path / "plain.png")
+    assert plain["texts"] == []
+    assert plain["diamonds"] == []
+    marked = _capture_figure(
+        monkeypatch,
+        report,
+        tmp_path / "marked.png",
+        legend=True,
+        overlays=[(0.75, 0.05625, "BO optimum")],
+    )
+    assert marked["texts"] == [
+        "CP excess = 0.040",
+        "dP/L = 72000 Pa/m",
+        "predicted optimum (screen GP)",
+        "failed gate",
+        "BO optimum",
+    ]
+    assert marked["diamonds"] == [[0.75, 0.05625], [0.75, 0.05625]]
+    assert marked["path"].stat().st_size > 1000
+
+
+def test_landscape_cli_legend_overlay_and_a_bad_overlay(tmp_path: Path, monkeypatch, capsys):
+    csv_path = tmp_path / "screen.csv"
+    csv_path.write_text(
+        "row_type,d_p_mm,d_h_mm,d_f_mm,status_lf,status_hf,"
+        "lmh_lf,lmh_hf,pressure_drop_per_length_pa_per_m_lf,pressure_drop_per_length_pa_per_m_hf,"
+        "cp_average_lf,cp_average_hf,wall_s_lf,wall_s_hf\n"
+        "design,0.6,0.0,0.4,valid,valid,10,11,1000,40000,1.02,1.02,100,200\n"
+        "design,0.6,0.3,0.4,valid,valid,12,13,1000,42000,1.03,1.03,100,200\n"
+        "design,1.0,0.0,0.4,valid,gate_fail,20,,1000,,1.06,,100,9000\n"
+        "design,1.0,0.3,0.4,valid,valid,22,22,1000,50000,1.05,1.05,100,200\n",
+        encoding="utf-8",
+    )
+    script = load_module("landscape_3d_legend", SCRIPTS_DIR / "mfbo" / "landscape_3d.py")
+    import matplotlib.figure
+
+    captured: dict[str, list[str]] = {}
+    original = matplotlib.figure.Figure.savefig
+
+    def grab(self, *args, **kwargs):
+        captured["texts"] = [text.get_text() for legend in self.legends for text in legend.get_texts()]
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", grab)
+    out_dir = tmp_path / "out"
+    code = script.main(
+        [
+            "--csv",
+            str(csv_path),
+            "--out-dir",
+            str(out_dir),
+            "--dp-max",
+            "72000",
+            "--grid",
+            "17",
+            "--legend",
+            "--overlay",
+            "0.75,0.05625,BO optimum",
+        ]
+    )
+    assert code == 0
+    assert captured["texts"][-1] == "BO optimum"
+    assert "CP excess = 0.040" in captured["texts"]
+    assert "dP/L = 72000 Pa/m" in captured["texts"]
+    assert (out_dir / "landscape_3d_lmh.png").is_file()
+    bad = script.main(
+        [
+            "--csv",
+            str(csv_path),
+            "--out-dir",
+            str(out_dir),
+            "--overlay",
+            "0.75,0.05",
+        ]
+    )
+    assert bad == 1
+    assert "Overlay" in capsys.readouterr().err
+
+
 def test_v1_config_shares_seed_initials_and_resolves_an_11_hour_budget(tmp_path: Path):
     payload = json.loads(V1.read_text(encoding="utf-8"))
     assert payload["seed"] == 0
@@ -311,6 +397,39 @@ def test_live_evaluator_looks_up_the_suffixed_hf_leaf(tmp_path: Path, monkeypatc
     )
     assert outcome.reused_existing is False
     assert outcome.measured_wall_s() == pytest.approx(6.0)
+
+
+def _capture_figure(monkeypatch, report, path: Path, **kwargs) -> dict:
+    import matplotlib.figure
+    import matplotlib.pyplot as plt
+
+    captured: dict = {"texts": [], "diamonds": [], "path": path}
+    probe, probe_axis = plt.subplots()
+    diamond = probe_axis.scatter([0.0], [0.0], marker="D").get_paths()[0].vertices.copy()
+    plt.close(probe)
+    original = matplotlib.figure.Figure.savefig
+
+    def grab(self, *args, **save_kwargs):
+        captured["texts"] = [text.get_text() for legend in self.legends for text in legend.get_texts()]
+        points = []
+        for axis in self.axes:
+            for collection in axis.collections:
+                paths = collection.get_paths()
+                if not paths or paths[0].vertices.shape != diamond.shape:
+                    continue
+                if not np.allclose(paths[0].vertices, diamond):
+                    continue
+                face = collection.get_facecolor()
+                if len(face) == 0 or not np.allclose(face[0, :3], (1.0, 1.0, 1.0)):
+                    continue
+                for offset in np.atleast_2d(collection.get_offsets()):
+                    points.append([float(offset[0]), float(offset[1])])
+        captured["diamonds"] = points
+        return original(self, *args, **save_kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", grab)
+    write_contours(report, path, **kwargs)
+    return captured
 
 
 def _corners() -> list[ScreenDesign]:

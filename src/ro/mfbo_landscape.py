@@ -220,8 +220,20 @@ def format_report(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_contours(report: Mapping[str, Any], path: Path) -> Path:
-    """LF and HF predicted LMH, with both constraint lines, side by side."""
+def write_contours(
+    report: Mapping[str, Any],
+    path: Path,
+    *,
+    legend: bool = False,
+    overlays: Sequence[tuple[float, float, str]] | None = None,
+) -> Path:
+    """LF and HF predicted LMH, with both constraint lines, side by side.
+
+    ``legend`` names the two constraint curves, the predicted optimum, and
+    any failed-gate mark. ``overlays`` are extra ``(D_p, d_h, label)`` points
+    drawn as white diamonds on both panels. Both default off, so an ordinary
+    call writes the same figure as before.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -254,6 +266,7 @@ def write_contours(report: Mapping[str, Any], path: Path) -> Path:
             axis.set_xlim(box.d_p_min, box.d_p_max)
             axis.set_ylim(box.d_h_min, box.d_h_max)
             axis.text(0.5, 0.5, "no valid points", ha="center", va="center", transform=axis.transAxes)
+            _mark_overlays(axis, overlays)
             continue
         lmh, dp, cp = panel
         image = axis.contourf(d_p, d_h, lmh, levels=12, vmin=vmin, vmax=vmax, cmap="viridis")
@@ -291,9 +304,19 @@ def write_contours(report: Mapping[str, Any], path: Path) -> Path:
                 linewidths=0.4,
                 zorder=4,
             )
+        _mark_overlays(axis, overlays)
     axes[0].set_ylabel("d_h (mm)")
     if image is not None:
         figure.colorbar(image, ax=axes, label="predicted LMH", shrink=0.9)
+    if legend:
+        _add_legend(
+            figure,
+            primary=primary,
+            curves=image is not None,
+            optimum=primary["optimum"] if "HF" in fitted else None,
+            invalid=_has_invalid_mark(report_designs(report), fitted),
+            overlays=overlays,
+        )
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(destination, dpi=150)
@@ -558,6 +581,119 @@ def _costs_line(costs: Mapping[str, Any]) -> str:
         f"cost_proxy_ratio_median={costs['cost_proxy_ratio_median']} "
         f"n_hf_wall={costs['n_hf_wall']}"
     )
+
+
+def _mark_overlays(axis, overlays: Sequence[tuple[float, float, str]] | None) -> None:
+    if not overlays:
+        return
+    axis.scatter(
+        [item[0] for item in overlays],
+        [item[1] for item in overlays],
+        s=42,
+        marker="D",
+        c="white",
+        edgecolors="black",
+        linewidths=0.6,
+        zorder=5,
+    )
+
+
+def _has_invalid_mark(designs: Sequence[ScreenDesign], fitted: Mapping[str, Any]) -> bool:
+    for level in _LEVELS:
+        if level not in fitted:
+            continue
+        for design in designs:
+            side = design.high if level == "HF" else design.low
+            if side.status != "valid":
+                return True
+    return False
+
+
+def _add_legend(
+    figure,
+    *,
+    primary: Mapping[str, Any],
+    curves: bool,
+    optimum: Mapping[str, Any] | None,
+    invalid: bool,
+    overlays: Sequence[tuple[float, float, str]] | None,
+) -> None:
+    import matplotlib.patheffects as path_effects
+    from matplotlib.lines import Line2D
+
+    handles = []
+    if curves:
+        cp_limit = float(primary["cp_excess_max"])
+        dp_limit = float(primary["dp_max_pa_per_m"])
+        handles.append(Line2D([0], [0], color="black", lw=1.2, label=f"CP excess = {cp_limit:.3f}"))
+        pressure = Line2D(
+            [0],
+            [0],
+            color="white",
+            lw=1.2,
+            ls="--",
+            label=f"dP/L = {_plain_limit(dp_limit)} Pa/m",
+        )
+        pressure.set_path_effects(
+            [path_effects.Stroke(linewidth=2.4, foreground="black"), path_effects.Normal()]
+        )
+        handles.append(pressure)
+    if optimum is not None:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="none",
+                markerfacecolor="red",
+                markeredgecolor="black",
+                markeredgewidth=0.4,
+                markersize=11,
+                lw=0,
+                label="predicted optimum (screen GP)",
+            )
+        )
+    if invalid:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="x",
+                color="red",
+                markersize=7,
+                markeredgewidth=1.1,
+                lw=0,
+                label="failed gate",
+            )
+        )
+    seen: set[str] = set()
+    for _d_p, _d_h, label in overlays or ():
+        if label in seen:
+            continue
+        seen.add(label)
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="D",
+                color="none",
+                markerfacecolor="white",
+                markeredgecolor="black",
+                markeredgewidth=0.6,
+                markersize=6,
+                lw=0,
+                label=label,
+            )
+        )
+    if not handles:
+        return
+    figure.legend(handles=handles, loc="outside lower center", ncol=2, frameon=True)
+
+
+def _plain_limit(value: float) -> str:
+    if abs(value - round(value)) < 1.0e-6:
+        return f"{value:.0f}"
+    return f"{value:.6g}"
 
 
 def _mark_invalid(axis, designs: Sequence[ScreenDesign], level: str) -> None:
