@@ -53,11 +53,17 @@ Optional local sizing, omitted when unset. The ``mesh_id`` suffix after
 Optional membrane first-height stack, omitted when unset. The ``mesh_id``
 suffix ``_y1hNNN`` (``round(y1_um * 10)``) follows the local-sizing tokens.
 ``bl`` stays the smooth-transition layer count. ``layers`` is the
-last-ratio count on the membrane labels only:
+last-ratio count on the membrane labels only. A count that differs from
+the one ``max_size_mm`` would choose adds ``_mblN`` after ``_y1h``:
   membrane_bl_y1:             {y1_um, first_height_mm, offset_method,
                                layers, growth_rate,
                                reference_total_thickness_mm,
                                total_thickness_mm, labels}
+
+Optional polyhedra bulk size in millimetres, omitted when the volume
+fill is poly-hexcore. The mesh id ends with ``_bmsNNN``
+(``round(mm * 1000)``), after ``_y1h`` and ``_mbl``:
+  bulk_max_size_mm:           float > 0
 
 Optional, parsed from the solver transcript. Absent when the UDF line
 was not in the transcript (and, for the request fields, when the mesh
@@ -82,11 +88,14 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+from ro.bulk_size import bulk_max_size_suffix
 from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
 from ro.local_sizing import local_sizing_suffix
 from ro.membrane_bl import (
     Y1_REQUEST_REL_TOLERANCE,
+    derived_membrane_layer_count,
     membrane_bl_suffix,
+    membrane_layer_override_suffix,
     resolve_membrane_bl,
     specs_match,
     y1_request_mismatch,
@@ -394,13 +403,20 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
         )
     local_suffix = _mesh_local_sizing_suffix(payload)
     y1_suffix = _mesh_membrane_bl_suffix(payload)
-    peel_token = f"_peel{payload['peel']}{local_suffix}{y1_suffix}"
+    layer_suffix = _mesh_membrane_layer_suffix(payload)
+    bulk_suffix = _mesh_bulk_suffix(payload)
+    peel_token = (
+        f"_peel{payload['peel']}{local_suffix}{y1_suffix}"
+        f"{layer_suffix}{bulk_suffix}"
+    )
     if not mesh_id.endswith(peel_token):
         raise ManifestError(
             "Mesh manifest mesh_id peel token must match field 'peel'. "
             f"mesh_id={mesh_id!r}, peel={payload['peel']!r}, "
             f"local sizing suffix={local_suffix!r}, "
-            f"membrane y1 suffix={y1_suffix!r}."
+            f"membrane y1 suffix={y1_suffix!r}, "
+            f"membrane layer suffix={layer_suffix!r}, "
+            f"bulk suffix={bulk_suffix!r}."
         )
     if "spacer_bl" in payload:
         _require_integer(payload, "spacer_bl", "Mesh", minimum=1)
@@ -948,6 +964,7 @@ _OPTIONAL_MESH_PARAMETER_FIELDS = (
     "local_proximity",
     "local_face_size",
     "membrane_bl_y1",
+    "bulk_max_size_mm",
 )
 
 
@@ -998,6 +1015,43 @@ def _mesh_membrane_bl_suffix(payload: Mapping[str, Any]) -> str:
             f"from max_size_mm, bl, and membrane_wall_base_names: {spec!r}."
         )
     return membrane_bl_suffix(expected["y1_um"])
+
+
+def _mesh_membrane_layer_suffix(payload: Mapping[str, Any]) -> str:
+    """``_mblN`` when the recorded stack is not the count ``max_size_mm`` chooses."""
+    if "membrane_bl_y1" not in payload:
+        return ""
+    spec = payload["membrane_bl_y1"]
+    derived = derived_membrane_layer_count(
+        spec["y1_um"],
+        size_mm=payload["max_size_mm"],
+        bl_layers=payload["bl"],
+        growth_rate=spec["growth_rate"],
+    )
+    return membrane_layer_override_suffix(spec["layers"], derived)
+
+
+def _mesh_bulk_suffix(payload: Mapping[str, Any]) -> str:
+    """``_bmsNNN`` required by ``bulk_max_size_mm``. Empty when the field is omitted."""
+    if "bulk_max_size_mm" not in payload:
+        return ""
+    value = payload["bulk_max_size_mm"]
+    if value is None:
+        raise ManifestError(
+            "Mesh manifest bulk_max_size_mm must be omitted when unset, not null."
+        )
+    _require_number(payload, "bulk_max_size_mm", "Mesh")
+    if float(value) <= 0.0:
+        raise ManifestError(
+            "Mesh manifest bulk_max_size_mm must be positive, "
+            f"got {value!r}."
+        )
+    try:
+        return bulk_max_size_suffix(value)
+    except ValueError as exc:
+        raise ManifestError(
+            f"Mesh manifest bulk_max_size_mm is invalid: {exc}"
+        ) from exc
 
 
 def _optional_y1_diagnostic(payload: Mapping[str, Any]) -> None:

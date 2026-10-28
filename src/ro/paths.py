@@ -17,7 +17,8 @@ GEO_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$")
 # Optional tokens after peel: _lpx{cpg}m{min}, _fs{size}[g{rate}], _y1h{um*10}.
 MESH_ID_RE = re.compile(
     r"^max\d{3}_min\d{3}_cpg\d+_bl(\d+)(?:s(\d+))?(?:_f\d{3})?_peel\d+"
-    r"(?:_lpx\d+m\d{3})?(?:_fs\d{3}(?:g\d{3})?)?(?:_y1h\d{3})?$"
+    r"(?:_lpx\d+m\d{3})?(?:_fs\d{3}(?:g\d{3})?)?(?:_y1h\d{3})?"
+    r"(?:_mbl\d+)?(?:_bms\d{3})?$"
 )
 # Optional _label suffix (letter-led). Bare u0p2_p6M remains the campaign form.
 # A digits-only suffix is rejected so u0p2_p6M_20 cannot look like a new u or p.

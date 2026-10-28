@@ -124,6 +124,9 @@ def _level(mesh_id, cell_count, lmh):
         "pressure_drop_spacer_per_m": 1000.0 + lmh,
         "cpc_window_avg_flux": 1.2 + lmh / 1000.0,
         "cp_q999_window_flux": 1.4 + lmh / 1000.0,
+        "c1_area_mean_window": 100.0,
+        "cm_area_mean_window": 100.7,
+        "c_b_window_mol_m3": 598.7,
     }
 
 
@@ -163,6 +166,9 @@ def _write_level(root, mesh_id, cell_count, lmh):
                 "pressure_drop_spacer_per_m",
                 "cpc_window_avg_flux",
                 "cp_q999_window_flux",
+                "c1_area_mean_window",
+                "cm_area_mean_window",
+                "c_b_window_mol_m3",
             ],
         )
         writer.writeheader()
@@ -173,6 +179,9 @@ def _write_level(root, mesh_id, cell_count, lmh):
                 "pressure_drop_spacer_per_m": level["pressure_drop_spacer_per_m"],
                 "cpc_window_avg_flux": level["cpc_window_avg_flux"],
                 "cp_q999_window_flux": level["cp_q999_window_flux"],
+                "c1_area_mean_window": level["c1_area_mean_window"],
+                "cm_area_mean_window": level["cm_area_mean_window"],
+                "c_b_window_mol_m3": level["c_b_window_mol_m3"],
             }
         )
 
@@ -224,6 +233,38 @@ def test_report_reads_leaves_and_writes_csv_and_markdown(tmp_path):
     assert flagged["analyses"]["lmh_mass_balance"]["gci_fine"] == pytest.approx(
         1.25 / 11.0
     )
+
+
+def test_bulk_edges_set_the_refinement_ratio(tmp_path):
+    meshes = (
+        ("max035_min006_cpg5_bl4_peel2_y1h020_bms034", 1000, 26.0),
+        ("max035_min006_cpg5_bl4_peel2_y1h020_bms026", 2000, 14.0),
+        ("max035_min006_cpg5_bl4_peel2_y1h020_bms020", 3000, 11.0),
+    )
+    for mesh_id, count, lmh in meshes:
+        _write_level(tmp_path, mesh_id, count, lmh)
+    result = convergence.converge(
+        tmp_path,
+        "P_p80_h15",
+        "u0p2_p6M",
+        [item[0] for item in meshes],
+        tmp_path / "bulk-out",
+        mode="bulk",
+        bulk_edges=[0.034, 0.026, 0.020],
+    )
+    ratios = result["analyses"]["c1_area_mean_window"]["refinement_ratios"]
+    assert ratios == pytest.approx([0.034 / 0.026, 0.026 / 0.020])
+    film = result["analyses"]["film_correction_cm_minus_c1_over_c1"]
+    assert film["values"] == pytest.approx([0.007, 0.007, 0.007])
+    assert "bulk edge" in result["markdown"]
+    with pytest.raises(ValueError, match="strictly decrease"):
+        convergence.bulk_edge_ratios([0.020, 0.026, 0.034])
+    with pytest.raises(ValueError, match="one bulk edge per mesh"):
+        convergence.refinement_ratios_for(
+            [{"cell_count": 1}, {"cell_count": 2}, {"cell_count": 3}],
+            mode="bulk",
+            bulk_edges=[0.034, 0.026],
+        )
 
 
 def test_cli_requires_exactly_one_refinement_option():

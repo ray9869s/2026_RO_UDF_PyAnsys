@@ -9,7 +9,9 @@ boundary layer stays the production smooth-transition stack.
 
 ``m_max`` 0.085 already exists as
 ``max085_min006_cpg5_bl4_peel2_y1h020`` and is not in the default list.
-The open bulk-resolution check is ``--m-max 0.028``.
+``--m-max 0.028`` still emits that fixed-y1 leaf. It is not a bulk-only
+mesh: surface ``m_max`` and the membrane layer count both move. The
+bulk-only queue is ``d2450_bulk_queue.py``.
 
 ``--mesh-only`` writes jobs that mesh and print the cell count. Without
 it, the queue is mesh, solve, and extract, and each job passes

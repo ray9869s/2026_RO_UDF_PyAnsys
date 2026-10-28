@@ -16,8 +16,10 @@ from ro.cp_concentration_stats import concentration_cp_summary_rows
 from ro.fluent_report_helpers import mass_fraction_to_molar_concentration
 from ro.manifest import ManifestError, read_mesh_manifest, read_run_manifest, write_mesh_manifest, write_run_manifest
 from ro.membrane_bl import (
+    derived_membrane_layer_count,
     geometric_total_thickness_mm,
     membrane_bl_stack,
+    membrane_layer_override_suffix,
     membrane_bl_suffix,
     membrane_bl_summary_lines,
     parse_y1_area_weighted_mean_um,
@@ -132,6 +134,30 @@ def test_resolve_rejects_a_stack_that_does_not_match_the_request():
         growth_rate=1.2,
         labels=LABELS,
     ) is None
+    derived = derived_membrane_layer_count(
+        2.0, size_mm=0.035, bl_layers=4, growth_rate=1.2
+    )
+    assert derived == 5
+    pinned = membrane_bl_stack(
+        2.0,
+        size_mm=0.035,
+        bl_layers=4,
+        growth_rate=1.2,
+        labels=LABELS,
+        layers=8,
+    )
+    assert pinned["layers"] == 8
+    assert pinned["first_height_mm"] == pytest.approx(0.004)
+    assert resolve_membrane_bl(
+        pinned,
+        size_mm=0.035,
+        bl_layers=4,
+        growth_rate=1.2,
+        labels=LABELS,
+    )["total_thickness_mm"] == pytest.approx(pinned["total_thickness_mm"])
+    assert membrane_layer_override_suffix(8, derived) == "_mbl8"
+    assert membrane_layer_override_suffix(5, derived) == ""
+    assert membrane_layer_override_suffix(None, derived) == ""
 
 
 def test_manifest_records_the_stack_and_requires_the_mesh_id_token(
@@ -179,6 +205,19 @@ def test_manifest_records_the_stack_and_requires_the_mesh_id_token(
     with pytest.raises(ManifestError, match="peel token"):
         write_mesh_manifest(directory, missing_token)
 
+    bulk_id = "max085_min006_cpg5_bl4_peel2_y1h020_bms034"
+    bulk_payload = dict(payload)
+    bulk_payload["mesh_id"] = bulk_id
+    bulk_payload["bulk_max_size_mm"] = 0.034
+    bulk_dir = mesh_dir(FAMILY, GEO_ID, bulk_id)
+    bulk_dir.mkdir(parents=True)
+    write_mesh_manifest(bulk_dir, bulk_payload)
+    assert read_mesh_manifest(bulk_dir)["bulk_max_size_mm"] == pytest.approx(0.034)
+    null_bulk = dict(bulk_payload)
+    null_bulk["bulk_max_size_mm"] = None
+    with pytest.raises(ManifestError, match="bulk_max_size_mm"):
+        write_mesh_manifest(bulk_dir, null_bulk)
+
     copied = REBUILD._manifest_layout_overrides(payload)
     assert copied["membrane_bl_y1"]["layers"] == 8
 
@@ -192,6 +231,26 @@ def test_meshing_validation_requires_the_y1_token():
         cfg.validate_for_meshing()
     cfg.mesh_id = "max085_min005_cpg5_bl4_peel2_y1h020"
     cfg.validate_for_meshing()
+    cfg.bulk_max_size_mm = 0.034
+    with pytest.raises(ValueError, match="bulk suffix"):
+        cfg.validate_for_meshing()
+    cfg.mesh_id = "max085_min005_cpg5_bl4_peel2_y1h020_bms034"
+    cfg.validate_for_meshing()
+    cfg.membrane_bl_y1 = membrane_bl_stack(
+        2.0,
+        size_mm=cfg.m_max,
+        bl_layers=cfg.bl_layers,
+        growth_rate=cfg.bl_growth_rate,
+        labels=list(cfg.active_membrane_wall_labels),
+        layers=4,
+    )
+    with pytest.raises(ValueError, match="membrane layer suffix"):
+        cfg.validate_for_meshing()
+    cfg.mesh_id = "max085_min005_cpg5_bl4_peel2_y1h020_mbl4_bms034"
+    cfg.validate_for_meshing()
+    cfg.bulk_max_size_mm = None
+    cfg.membrane_bl_y1 = None
+    cfg.mesh_id = "max085_min005_cpg5_bl4_peel2"
 
 
 def test_transcript_y1_flags_a_miss_larger_than_twenty_percent(tmp_path):

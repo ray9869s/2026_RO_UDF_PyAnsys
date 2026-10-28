@@ -539,7 +539,8 @@ def test_mesh_only_prints_the_cell_count_and_does_not_solve(
     printed = capsys.readouterr().out
     assert (
         "Mesh cell count before solve: "
-        "max045_min006_cpg5_bl4_peel2_lpx9m003 43210"
+        "max045_min006_cpg5_bl4_peel2_lpx9m003 43210 "
+        "membrane_bl_layers=unset"
     ) in printed
     assert not (
         tmp_path / "study" / "runs" / "diamond" / "D2450_a45"

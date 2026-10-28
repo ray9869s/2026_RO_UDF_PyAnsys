@@ -2,11 +2,14 @@
 
 The refinement ratio is never inferred from the mesh-id names. Pass
 ``--cell-count`` to use ``r = (N_fine / N_coarse) ** (1/3)`` on each
-successive pair, or ``--ratio`` for one constant ratio (2.0 when y1
-halves). Apparent order, the Richardson value, and the fine-grid GCI
-use the three finest levels and Celik et al. (2008) with safety factor
-1.25. An oscillatory, non-contracting, or non-converged order is
-flagged and those three quantities are left blank.
+successive pair, ``--ratio`` for one constant ratio (2.0 when y1
+halves), or ``--ratio-from-bulk`` with the bulk edge of each level,
+coarse to fine (``r = h_coarse / h_fine``). Use the bulk edge when the
+shell is fixed, so total cell count would dilute the ratio. Apparent
+order, the Richardson value, and the fine-grid GCI use the three finest
+levels and Celik et al. (2008) with safety factor 1.25. An oscillatory,
+non-contracting, or non-converged order is flagged and those three
+quantities are left blank.
 
 Importing this module does not launch Fluent.
 """
@@ -41,6 +44,10 @@ METRICS = (
     "pressure_drop_spacer_per_m",
     "cpc_window_avg_flux_minus_1",
     "cp_q999_window_flux_minus_1",
+    "c1_area_mean_window",
+    "cm_area_mean_window",
+    "c_b_window_mol_m3",
+    "film_correction_cm_minus_c1_over_c1",
 )
 
 CSV_COLUMNS = (
@@ -65,6 +72,9 @@ _SUMMARY_FIELDS = (
     "pressure_drop_spacer_per_m",
     "cpc_window_avg_flux",
     "cp_q999_window_flux",
+    "c1_area_mean_window",
+    "cm_area_mean_window",
+    "c_b_window_mol_m3",
 )
 _LAYOUT_FIELDS = (
     "n_active_cells",
@@ -277,6 +287,37 @@ def cell_count_ratios(cell_counts):
     return ratios
 
 
+def bulk_edge_ratios(edges):
+    """r = h_coarse / h_fine for bulk edges ordered coarse to fine.
+
+    Edges must strictly decrease. The shell is not part of this ratio.
+    """
+    if not isinstance(edges, (list, tuple)) or len(edges) < 2:
+        raise ValueError(
+            "Pass one bulk edge per mesh level, coarse to fine, "
+            f"got {edges!r}."
+        )
+    numbers = [_finite(edge, "bulk edge") for edge in edges]
+    if any(edge <= 0.0 for edge in numbers):
+        raise ValueError(f"Bulk edges must be positive, got {edges!r}.")
+    if any(coarse <= fine for coarse, fine in zip(numbers, numbers[1:])):
+        raise ValueError(
+            "Bulk edges must strictly decrease from coarse to fine, "
+            f"got {edges!r}."
+        )
+    return [coarse / fine for coarse, fine in zip(numbers, numbers[1:])]
+
+
+def parse_bulk_edges(text):
+    """Parse ``0.034,0.026,0.020`` into bulk edges, coarse to fine."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(
+            "--ratio-from-bulk needs comma-separated bulk edges, "
+            "coarse to fine."
+        )
+    return [part.strip() for part in text.split(",")]
+
+
 def constant_ratios(count, ratio):
     number = _finite(ratio, "refinement ratio")
     if number <= 1.0:
@@ -318,6 +359,17 @@ def metric_values(levels):
         series["pressure_drop_spacer_per_m"].append(level["pressure_drop_spacer_per_m"])
         series["cpc_window_avg_flux_minus_1"].append(level["cpc_window_avg_flux"] - 1.0)
         series["cp_q999_window_flux_minus_1"].append(level["cp_q999_window_flux"] - 1.0)
+        c1 = level["c1_area_mean_window"]
+        cm = level["cm_area_mean_window"]
+        if c1 == 0.0:
+            raise ValueError(
+                "film correction (cm - c1) / c1 is undefined because "
+                f"c1_area_mean_window is 0 on {level['mesh_id']}."
+            )
+        series["c1_area_mean_window"].append(c1)
+        series["cm_area_mean_window"].append(cm)
+        series["c_b_window_mol_m3"].append(level["c_b_window_mol_m3"])
+        series["film_correction_cm_minus_c1_over_c1"].append((cm - c1) / c1)
     return series
 
 
@@ -390,12 +442,20 @@ def load_levels(data_root, geo_id, run_id, mesh_ids):
     return levels
 
 
-def refinement_ratios_for(levels, *, mode, ratio=None):
+def refinement_ratios_for(levels, *, mode, ratio=None, bulk_edges=None):
     counts = [level["cell_count"] for level in levels]
     if mode == "cell_count":
         return cell_count_ratios(counts)
     if mode == "ratio":
         return constant_ratios(len(levels) - 1, ratio)
+    if mode == "bulk":
+        edges = list(bulk_edges or [])
+        if len(edges) != len(levels):
+            raise ValueError(
+                "Pass one bulk edge per mesh level, coarse to fine. "
+                f"Got {len(edges)} edges for {len(levels)} levels."
+            )
+        return bulk_edge_ratios(edges)
     raise ValueError(f"Unknown refinement mode {mode!r}.")
 
 
@@ -473,6 +533,12 @@ def to_markdown(geo_id, run_id, mode, ratio, levels, analyses):
     if mode == "cell_count":
         refinement = (
             "cell count, r = (N_fine / N_coarse)^(1/3) on each successive pair"
+        )
+    elif mode == "bulk":
+        edges = ", ".join(format(float(edge), ".6g") for edge in ratio)
+        refinement = (
+            "bulk edge, r = h_coarse / h_fine "
+            f"(edges coarse to fine: {edges})"
         )
     else:
         refinement = f"supplied constant ratio {format(float(ratio), '.6g')}"
@@ -555,12 +621,25 @@ def write_report(out_dir, rows, markdown):
     return csv_path, md_path
 
 
-def converge(data_root, geo_id, run_id, mesh_ids, out_dir, *, mode, ratio=None):
+def converge(
+    data_root,
+    geo_id,
+    run_id,
+    mesh_ids,
+    out_dir,
+    *,
+    mode,
+    ratio=None,
+    bulk_edges=None,
+):
     levels = load_levels(data_root, geo_id, run_id, mesh_ids)
-    refinements = refinement_ratios_for(levels, mode=mode, ratio=ratio)
+    refinements = refinement_ratios_for(
+        levels, mode=mode, ratio=ratio, bulk_edges=bulk_edges
+    )
     analyses = analyze_levels(levels, refinements)
     rows = convergence_rows(levels, analyses)
-    markdown = to_markdown(geo_id, run_id, mode, ratio, levels, analyses)
+    shown_ratio = bulk_edges if mode == "bulk" else ratio
+    markdown = to_markdown(geo_id, run_id, mode, shown_ratio, levels, analyses)
     csv_path, md_path = write_report(out_dir, rows, markdown)
     return {
         "csv": csv_path,
@@ -575,7 +654,8 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Mesh-independence table for mesh ids ordered coarse to fine. "
-            "Pass --cell-count or --ratio. The script does not choose one."
+            "Pass --cell-count, --ratio, or --ratio-from-bulk. "
+            "The script does not choose one."
         )
     )
     parser.add_argument("--data-root", required=True)
@@ -599,12 +679,26 @@ def build_parser():
         type=float,
         help="Constant refinement ratio between successive levels, for example 2.",
     )
+    group.add_argument(
+        "--ratio-from-bulk",
+        help=(
+            "Comma-separated bulk edges in mm, coarse to fine, one per "
+            "mesh id. r = h_coarse / h_fine. Example: 0.034,0.026,0.020."
+        ),
+    )
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    mode = "cell_count" if args.cell_count else "ratio"
+    bulk_edges = None
+    if args.cell_count:
+        mode = "cell_count"
+    elif args.ratio_from_bulk is not None:
+        mode = "bulk"
+        bulk_edges = parse_bulk_edges(args.ratio_from_bulk)
+    else:
+        mode = "ratio"
     result = converge(
         args.data_root,
         args.geo_id,
@@ -613,6 +707,7 @@ def main(argv=None) -> int:
         args.out_dir,
         mode=mode,
         ratio=args.ratio,
+        bulk_edges=bulk_edges,
     )
     print(result["markdown"], end="")
     print(result["csv"])

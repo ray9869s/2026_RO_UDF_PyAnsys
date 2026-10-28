@@ -82,6 +82,40 @@ def test_mesh_id_uses_formatter_and_factor_token():
     assert both["mesh_id"] == "max085_min006_cpg5_bl8s4_f020_peel2"
     with pytest.raises(ValueError, match="production mesh_id"):
         driver.apply_study_overrides(template, {"spacer_bl_layers": 4})
+    bulk = driver.apply_study_overrides(
+        template,
+        {
+            "m_max": 0.035,
+            "membrane_bl_y1_um": 2.0,
+            "bulk_max_size_mm": 0.034,
+        },
+    )
+    assert bulk["mesh_id"] == "max035_min006_cpg5_bl4_peel2_y1h020_bms034"
+    assert bulk["bulk_max_size_mm"] == pytest.approx(0.034)
+    assert bulk["membrane_bl_y1"]["layers"] == 5
+    assert "membrane_bl_layers" not in bulk
+    pinned = driver.apply_study_overrides(
+        template,
+        {
+            "m_max": 0.035,
+            "membrane_bl_y1_um": 2.0,
+            "membrane_bl_layers": 8,
+            "bulk_max_size_mm": 0.034,
+        },
+    )
+    assert pinned["mesh_id"] == "max035_min006_cpg5_bl4_peel2_y1h020_mbl8_bms034"
+    assert pinned["membrane_bl_y1"]["layers"] == 8
+    same_count = driver.apply_study_overrides(
+        template,
+        {
+            "m_max": 0.035,
+            "membrane_bl_y1_um": 2.0,
+            "membrane_bl_layers": 5,
+        },
+    )
+    assert same_count["mesh_id"] == "max035_min006_cpg5_bl4_peel2_y1h020"
+    with pytest.raises(ValueError, match="requires membrane_bl_y1_um"):
+        driver.collect_overrides(membrane_bl_layers=8)
 
 
 def test_override_table_marks_only_the_changed_knobs():
@@ -366,6 +400,15 @@ def test_reusable_mesh_rejects_a_setting_mismatch_and_a_failed_record(tmp_path):
         "peel_layers": 2,
     }
     driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+    bulk_request = {**overrides, "bulk_max_size_mm": 0.034}
+    with pytest.raises(ValueError, match="bulk_max_size_mm"):
+        driver.require_reusable_mesh(leaf, bulk_request, geometry, digest)
+    recorded_bulk = dict(manifest)
+    recorded_bulk["bulk_max_size_mm"] = 0.034
+    (leaf / "manifest.json").write_text(json.dumps(recorded_bulk), encoding="utf-8")
+    driver.require_reusable_mesh(leaf, bulk_request, geometry, digest)
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     mismatched = dict(manifest)
     mismatched["max_size_mm"] = 0.060

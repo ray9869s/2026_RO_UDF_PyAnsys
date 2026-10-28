@@ -127,6 +127,47 @@ def choose_layer_count(first_height_mm, reference_total_mm, growth_rate):
     return best_layers
 
 
+def derived_membrane_layer_count(y1_um, *, size_mm, bl_layers, growth_rate):
+    """Layer count closest to the smooth-transition stack at ``size_mm``.
+
+    This is the count ``membrane_bl_stack`` uses when ``layers`` is omitted.
+    """
+    requested = _y1_um("membrane_bl_y1", y1_um)
+    layers_today = _positive_int("bl_layers", bl_layers)
+    growth = _positive_float("growth_rate", growth_rate)
+    first_today = smooth_transition_first_height_mm(
+        size_mm, layers_today, growth
+    )
+    reference_total = geometric_total_thickness_mm(
+        first_today, layers_today, growth
+    )
+    return choose_layer_count(requested * 2.0e-3, reference_total, growth)
+
+
+def membrane_layer_override_suffix(layers, derived_layers):
+    """``_mblN`` when ``layers`` differs from the derived count.
+
+    ``None`` and a count equal to the derived count add no token. The
+    default stack therefore keeps today's mesh id.
+    """
+    if layers is None:
+        return ""
+    count = _layer_override(layers)
+    derived = _positive_int("derived layers", derived_layers)
+    if count == derived:
+        return ""
+    return f"_mbl{count}"
+
+
+def _layer_override(layers):
+    count = _positive_int("membrane_bl_layers", layers)
+    if count > _MAX_LAYERS:
+        raise ValueError(
+            f"membrane_bl_layers {count} exceeds the cap {_MAX_LAYERS}."
+        )
+    return count
+
+
 def membrane_bl_stack(
     y1_um,
     *,
@@ -134,8 +175,13 @@ def membrane_bl_stack(
     bl_layers,
     growth_rate,
     labels,
+    layers=None,
 ):
-    """Canonical last-ratio stack for one requested y1."""
+    """Canonical last-ratio stack for one requested y1.
+
+    ``layers`` replaces the count chosen from ``size_mm``. First height,
+    growth rate, and the smooth-transition reference thickness stay.
+    """
     requested = _y1_um("membrane_bl_y1", y1_um)
     membrane_labels = _label_list("membrane labels", labels)
     layers_today = _positive_int("bl_layers", bl_layers)
@@ -147,16 +193,17 @@ def membrane_bl_stack(
         first_today, layers_today, growth
     )
     first_height_mm = requested * 2.0e-3
-    layers = choose_layer_count(first_height_mm, reference_total, growth)
+    derived = choose_layer_count(first_height_mm, reference_total, growth)
+    count = derived if layers is None else _layer_override(layers)
     return {
         "y1_um": requested,
         "first_height_mm": first_height_mm,
         "offset_method": OFFSET_METHOD_LAST_RATIO,
-        "layers": layers,
+        "layers": count,
         "growth_rate": growth,
         "reference_total_thickness_mm": reference_total,
         "total_thickness_mm": geometric_total_thickness_mm(
-            first_height_mm, layers, growth
+            first_height_mm, count, growth
         ),
         "labels": membrane_labels,
     }
@@ -169,13 +216,18 @@ def resolve_membrane_bl(
     bl_layers,
     growth_rate,
     labels,
+    layers=None,
 ):
     """Return ``None``, or the stack for a number or a stack object.
 
-    An object must match the stack derived from its ``y1_um`` and the
-    supplied size, baseline layer count, growth rate, and labels.
+    An object must match the stack for its ``y1_um``, size, baseline layer
+    count, growth rate, and labels. Its ``layers`` value is kept, including
+    a pin that differs from the count ``size_mm`` would choose. A number
+    uses ``layers`` when that argument is set, and the derived count otherwise.
     """
     if value is None:
+        if layers is not None:
+            raise ValueError("membrane_bl_layers requires membrane_bl_y1.")
         return None
     if isinstance(value, bool):
         raise ValueError(
@@ -188,6 +240,7 @@ def resolve_membrane_bl(
             bl_layers=bl_layers,
             growth_rate=growth_rate,
             labels=labels,
+            layers=layers,
         )
     if not isinstance(value, dict):
         raise ValueError(
@@ -195,12 +248,20 @@ def resolve_membrane_bl(
             f"got {type(value).__name__}."
         )
     _require_spec_keys(value)
+    if layers is not None and _layer_override(layers) != _positive_int(
+        "membrane_bl_y1.layers", value["layers"]
+    ):
+        raise ValueError(
+            "membrane_bl_layers does not match membrane_bl_y1.layers: "
+            f"{layers!r} and {value['layers']!r}."
+        )
     expected = membrane_bl_stack(
         value["y1_um"],
         size_mm=size_mm,
         bl_layers=bl_layers,
         growth_rate=growth_rate,
         labels=labels,
+        layers=value["layers"],
     )
     if not specs_match(value, expected):
         raise ValueError(

@@ -212,19 +212,42 @@ the 2.0 µm row above and is not requeued.
 | 0.060 | `max060_min006_cpg5_bl4_peel2_y1h020` | 7 | 4.30 M | 0.0749 | +13% |
 | 0.045 | `max045_min006_cpg5_bl4_peel2_y1h020` | 6 | 5.29 M | 0.0922 | +23% |
 | 0.035 | `max035_min006_cpg5_bl4_peel2_y1h020` | 5 | 6.29 M | 0.0940 | +2.0% |
+| 0.028 | `max028_min006_cpg5_bl4_peel2_y1h020` | 4 | 41.3 M | 0.0790 | −16% |
 
-The last step is inside the 5–7% bar. The series as a whole still moves,
-0.0663 → 0.0940.
+The 0.035 step is inside the 5–7% bar. The series then falls,
+0.0940 → 0.0790, about −16%, at 41.3 M cells.
 
-**Open check.** The smooth-transition `m_max` 0.028 leaf
-(`max028_min006_cpg5_bl4_peel2`, 41.25 M cells, realised y1 2.11 µm)
-is 0.0784, 17% below 0.0940. 41.25 M is 6.7× the smooth-transition
-`m_max` 0.035 count (6,154,123, `docs/MESH_LANDSCAPE.md`). That jump is
-bulk refinement. The same `m_max` at request y1 2.0 µm is not run.
-`scripts/mfbo/d2450_mmax_y1_queue.py --m-max 0.028` emits
-`max028_min006_cpg5_bl4_peel2_y1h020` (4 membrane layers). The default
-list stays 0.060, 0.045, and 0.035. Mesh with `--mesh-only`, then run
-the full queue so each job passes `--reuse-mesh`.
+This fixed-y1 `m_max` series is confounded, so that drop cannot be
+attributed to bulk refinement. Poly-hexcore hex edges on this domain
+snap to 34.65 / 2^n mm. Two of those steps sit in the table: 0.085 →
+0.060 crosses 0.0677 mm (512), and 0.035 → 0.028 crosses 0.0338 mm
+(1024). The rows at 0.060, 0.045, and 0.035 share the 0.0338 mm edge,
+so their cell counts move only with the shell. The membrane stack also
+changes with `m_max`: 8, 7, 6, 5, then 4 layers at 0.028. The mesh id
+stays `bl4` because that token is the smooth-transition baseline. The
+0.028 drop mixes the second octree step, the surface `m_max` change,
+and a 4-layer stack against the 5-layer stack at 0.035.
+
+The bulk-only series holds surface `m_max` at 0.035 and y1 at 2.0 µm
+(5 membrane layers on every leaf) and changes only the polyhedra max
+cell length. `scripts/mfbo/d2450_bulk_queue.py` emits `bms034`,
+`bms026`, and `bms020`
+(`max035_min006_cpg5_bl4_peel2_y1h020_bms034` and the same stem with
+`_bms026` and `_bms020`). Mesh with `--mesh-only` first. Each log prints
+the cell count and `membrane_bl_layers`, which must be 5 on all three.
+The emitter prints expected cell counts 6,300,000, 12,000,000, and
+25,000,000. Then run the full queue. Each job passes `--reuse-mesh`
+and `--checkpoint-every 200`.
+
+The smooth-transition `m_max` 0.028 leaf
+(`max028_min006_cpg5_bl4_peel2`, 41.25 M cells, realised y1 2.11 µm,
+CP excess 0.0784) is a different mesh. 41.25 M is 6.7× the
+smooth-transition `m_max` 0.035 count (6,154,123,
+`docs/MESH_LANDSCAPE.md`). That jump is the same 0.0338 mm octree step,
+with surface `m_max` changing as well.
+`scripts/mfbo/d2450_mmax_y1_queue.py --m-max 0.028` still emits the
+fixed-y1 0.028 leaf above. It is the confounded point, not the bulk
+series. The default m_max list stays 0.060, 0.045, and 0.035.
 
 ### Contact proximity (`D0817_a30`, `m_max` 0.045)
 

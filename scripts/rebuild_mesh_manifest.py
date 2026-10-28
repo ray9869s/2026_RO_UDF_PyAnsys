@@ -94,6 +94,7 @@ MESH_LOG_CFG_OVERRIDE_KEYS: frozenset[str] = frozenset({
     "spacer_bl_layers",
     "bl_growth_rate",
     "vol_hex_max_factor",
+    "bulk_max_size_mm",
     "peel_layers",
     "min_orthogonal_quality_threshold",
     "max_aspect_ratio_threshold",

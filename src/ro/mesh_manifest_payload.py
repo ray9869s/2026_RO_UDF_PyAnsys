@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.bulk_size import bulk_max_size_suffix
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
 from ro.local_sizing import parse_local_face_size, parse_local_proximity
 from ro.membrane_bl import resolve_membrane_bl
@@ -78,6 +79,10 @@ def build_mesh_manifest_payload(
         base["local_proximity"] = proximity
     if face_size is not None:
         base["local_face_size"] = face_size
+    raw_bulk = getattr(cfg, "bulk_max_size_mm", None)
+    if raw_bulk is not None:
+        base["bulk_max_size_mm"] = float(raw_bulk)
+        bulk_max_size_suffix(base["bulk_max_size_mm"])
     raw_membrane_bl = getattr(cfg, "membrane_bl_y1", None)
     if raw_membrane_bl is not None:
         base["membrane_bl_y1"] = resolve_membrane_bl(

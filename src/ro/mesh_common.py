@@ -632,6 +632,7 @@ def parse_meshing_input_summary(text):
         "Boundary layer growth rate [-]": ("bl_growth_rate", float),
         "Volume hex max factor [-]": ("vol_hex_max_factor", float),
         "Volume hex max cell length [mm]": ("vol_hex_max", float),
+        "Bulk max size [mm]": ("bulk_max_size_mm", float),
         "Peel layers [-]": ("peel_layers", int),
         "Minimum orthogonal quality threshold [-]": (
             "min_orthogonal_quality_threshold",

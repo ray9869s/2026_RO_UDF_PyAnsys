@@ -18,9 +18,17 @@ import re
 import types
 from pathlib import Path
 
+from ro.bulk_size import bulk_max_size_suffix as _bulk_max_size_suffix
 from ro.local_sizing import local_sizing_suffix as _local_sizing_suffix
+from ro.membrane_bl import (
+    derived_membrane_layer_count as _derived_membrane_layer_count,
+)
 from ro.membrane_bl import membrane_bl_request_um as _membrane_bl_request_um
 from ro.membrane_bl import membrane_bl_suffix as _membrane_bl_suffix
+from ro.membrane_bl import (
+    membrane_layer_override_suffix as _membrane_layer_override_suffix,
+)
+from ro.membrane_bl import resolve_membrane_bl as _resolve_membrane_bl
 from ro.mesh_common import (
     boundary_layers_are_split as _boundary_layers_are_split,
     make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
@@ -165,6 +173,12 @@ bl_growth_rate = 1.2
 # or the derived stack object puts a last-ratio control on the active
 # membrane labels only. Buffer and spacer stay on smooth-transition.
 membrane_bl_y1 = None
+
+# None keeps poly-hexcore (HexMaxCellLength = m_max * vol_hex_max_factor).
+# A length in mm fills the volume with polyhedra at that max cell length
+# and growth rate 1.2. Surface sizing and the membrane stack stay.
+# Mesh id suffix _bmsNNN (round(mm * 1000)), after _y1h.
+bulk_max_size_mm = None
 
 # Volume mesh controls
 vol_hex_max_factor = 0.7
@@ -767,21 +781,51 @@ def validate_for_meshing():
         raise ValueError(
             f"run_config.py local sizing is invalid: {exc}"
         ) from exc
+    raw_membrane_bl = globals().get("membrane_bl_y1", None)
     try:
         y1_suffix = _membrane_bl_suffix(
-            _membrane_bl_request_um(globals().get("membrane_bl_y1", None))
+            _membrane_bl_request_um(raw_membrane_bl)
         )
+        layer_suffix = ""
+        if raw_membrane_bl is not None:
+            resolved_membrane_bl = _resolve_membrane_bl(
+                raw_membrane_bl,
+                size_mm=m_max,
+                bl_layers=bl_layers,
+                growth_rate=bl_growth_rate,
+                labels=list(active_membrane_wall_labels),
+            )
+            derived_layers = _derived_membrane_layer_count(
+                resolved_membrane_bl["y1_um"],
+                size_mm=m_max,
+                bl_layers=bl_layers,
+                growth_rate=bl_growth_rate,
+            )
+            layer_suffix = _membrane_layer_override_suffix(
+                resolved_membrane_bl["layers"], derived_layers
+            )
     except ValueError as exc:
         raise ValueError(
             f"run_config.py membrane_bl_y1 is invalid: {exc}"
         ) from exc
-    peel_token = f"_peel{int(peel_layers)}{local_suffix}{y1_suffix}"
+    try:
+        bulk_suffix = _bulk_max_size_suffix(globals().get("bulk_max_size_mm", None))
+    except ValueError as exc:
+        raise ValueError(
+            f"run_config.py bulk_max_size_mm is invalid: {exc}"
+        ) from exc
+    peel_token = (
+        f"_peel{int(peel_layers)}{local_suffix}{y1_suffix}"
+        f"{layer_suffix}{bulk_suffix}"
+    )
     if not mesh_id.endswith(peel_token):
         raise ValueError(
             "run_config.py mesh_id peel token must match peel_layers. "
             f"mesh_id={mesh_id!r}, peel_layers={peel_layers!r}, "
             f"local sizing suffix={local_suffix!r}, "
-            f"membrane y1 suffix={y1_suffix!r}."
+            f"membrane y1 suffix={y1_suffix!r}, "
+            f"membrane layer suffix={layer_suffix!r}, "
+            f"bulk suffix={bulk_suffix!r}."
         )
 
     if m_min > m_max:
@@ -802,7 +846,7 @@ def validate_for_meshing():
         spacer_bl_layers,
     ).removeprefix("mesh_")
     # Optional _fNNN (bl_height_factor token) between bl and peel.
-    # Local-sizing tokens, then _y1hNNN, are the suffix after _peel.
+    # After _peel: local sizing, _y1hNNN, optional _mblN, optional _bmsNNN.
     expected_mesh_id = re.compile(
         rf"^{re.escape(mesh_stem)}(?:_f\d{{3}})?{re.escape(peel_token)}$"
     )

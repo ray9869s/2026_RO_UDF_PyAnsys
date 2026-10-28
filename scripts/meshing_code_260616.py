@@ -11,6 +11,11 @@ import importlib.util
 import time
 from pathlib import Path
 
+from ro.bulk_size import (
+    POLYHEDRA_GROWTH_RATE,
+    volume_fill_arguments,
+    volume_fill_summary_lines,
+)
 from ro.domain_layout import DomainLayout, require_layout_matches_measured_x_extent
 from ro.local_sizing import (
     extra_local_sizing_arguments,
@@ -784,6 +789,8 @@ if __name__ == "__main__":
     vol_hex_max_factor = cfg.vol_hex_max_factor
     vol_hex_max = m_max * vol_hex_max_factor
     peel_layers = cfg.peel_layers
+    # None keeps the poly-hexcore call. A length switches to polyhedra.
+    bulk_max_size_mm = getattr(cfg, "bulk_max_size_mm", None)
 
     # [Mesh quality gate]
     min_orthogonal_quality_threshold = cfg.min_orthogonal_quality_threshold
@@ -1005,10 +1012,13 @@ def print_meshing_input_summary():
         f"Boundary layer first height [mm]: {bl_height}",
         *boundary_layer_count_summary_lines(bl_layers, spacer_bl_layers),
         f"Boundary layer growth rate [-]: {bl_growth_rate}",
-        f"Volume mesh fill type: poly-hexcore",
-        f"Volume hex max factor [-]: {vol_hex_max_factor}",
-        f"Volume hex max cell length [mm]: {vol_hex_max}",
-        f"Peel layers [-]: {peel_layers}",
+        *volume_fill_summary_lines(
+            bulk_max_size_mm=bulk_max_size_mm,
+            vol_hex_max_factor=vol_hex_max_factor,
+            vol_hex_max=vol_hex_max,
+            peel_layers=peel_layers,
+            growth_rate=POLYHEDRA_GROWTH_RATE,
+        ),
         f"Minimum orthogonal quality threshold [-]: {min_orthogonal_quality_threshold}",
         f"Maximum aspect ratio threshold [-]: {max_aspect_ratio_threshold}",
         f"Maximum skewness threshold [-]: {max_skewness_threshold}",
@@ -1603,13 +1613,14 @@ if __name__ == "__main__":
                 buffer_wall_labels=buffer_wall_labels,
             )
 
-            workflow.TaskObject["Generate the Volume Mesh"].Arguments.set_state({
-                r"VolumeFill": r"poly-hexcore",
-                r"VolumeFillControls": {
-                    r"HexMaxCellLength": vol_hex_max,
-                    r"PeelLayers": peel_layers,
-                },
-            })
+            workflow.TaskObject["Generate the Volume Mesh"].Arguments.set_state(
+                volume_fill_arguments(
+                    bulk_max_size_mm,
+                    vol_hex_max=vol_hex_max,
+                    peel_layers=peel_layers,
+                    growth_rate=POLYHEDRA_GROWTH_RATE,
+                )
+            )
 
             workflow.TaskObject["Generate the Volume Mesh"].Execute()
 
