@@ -111,8 +111,21 @@ Family directory `ml`. Proposed: BL 10
 Cell size is inside the 5–7% bar. Membrane BL 4 → 10 is 0.0583 → 0.0647
 (about +11%). The 2026-10-08 paste had BL 8 as +9.4% versus `bl4` and
 `m_max` 0.060 as −0.7%; those relatives match 0.0638 / 0.0583 and
-0.0579 / 0.0583. An ML BL-10 campaign has not been run
-(`docs/PIPELINE_MAP.md`, Status 2026-10-19).
+0.0579 / 0.0583.
+
+### BL 10 campaign
+
+**From host report 2026-10-28.** Nine runs: three geos (`M_c160`,
+`M_c267`, `M_c400`) × three p6M speeds at
+`max085_min006_cpg5_bl10_peel2`. All PASS. The `bl4` study jobs were
+refused by design (`scripts/mfbo/mesh_study_case.py` will not queue a
+study `mesh_id` equal to production). BL 4 numbers are
+`campaign_reextract_v2`.
+
+CP excess versus production BL 4 is +6–11% except `M_c160`: +20% at
+`u0p2` and +61% at `u0p3`. dP (`pressure_drop_spacer_per_m`) and LMH
+(`lmh_window_module`) stay within 2.4%. The BL-10 proposal above is
+unchanged and is still not a campaign-matrix change.
 
 ---
 
@@ -238,7 +251,62 @@ Local proximity is spacer against both membrane walls
 move is resolution of the filament–membrane contact wedge. Split BL 8s4
 at 0.0638 sits below the `bl4` value 0.0797; the 2026-10-04 screening
 already called split BL unsafe for contact geometries
-(`docs/MESH_LANDSCAPE.md`). A sinusoidal mesh study has not been run.
+(`docs/MESH_LANDSCAPE.md`). The sinusoidal test below is
+`S_a144_l3465`, not a family-wide series.
+
+---
+
+## Empty (`REF_empty`)
+
+**From host report 2026-10-28.** `u0p2_p6M`. Production baseline is
+`campaign_reextract_v2` at `max085_min006_cpg5_bl4_peel2` (`m_max`
+0.085). Study leaves are under `C:/ro_data_mfbo/meshstudy`. The `bl4`
+study jobs were refused by design (study `mesh_id` = production id).
+CP excess is `cpc_window_avg_flux − 1`. dP is
+`pressure_drop_spacer_per_m`. LMH is `lmh_window_module`. The step
+column is versus that BL 4 baseline.
+
+Baseline: CP excess 0.1551, `cp_q999_window_flux` 1.1683, dP 3707,
+LMH 23.324.
+
+| knob | mesh_id | cells | y1 [µm] | CP excess | step | dP [Pa/m] | LMH |
+|---|---|---:|---:|---:|---:|---:|---:|
+| BL 8 | `max085_min006_cpg5_bl8_peel2` | 0.76 M | 3.25 | 0.1569 | +1.2% | 3684 | 23.275 |
+| BL 12 | `max085_min006_cpg5_bl12_peel2` | 0.84 M | 1.57 | 0.1568 | +1.1% | 3704 | 23.278 |
+| `m_max` 0.060, BL 4 | `max060_min006_cpg5_bl4_peel2` | 4.83 M | 4.71 | 0.1564 | +0.8% | 3628 | 23.290 |
+
+No contact. BL 4 is already inside the 5–7% bar on CP, dP, and LMH.
+Spacer-family CP sensitivity is a contact / in-plane effect, not
+membrane-BL count or \(c_m\) reconstruction.
+
+---
+
+## Sinusoidal (`S_a144_l3465`)
+
+**From host report 2026-10-28.** `u0p2_p6M`. Family directory `sin`.
+Production baseline is `campaign_reextract_v2` at
+`max085_min006_cpg5_bl4_peel2`. Study leaves are under
+`C:/ro_data_mfbo/meshstudy`. The `bl4` study jobs were refused by
+design. CP excess is `cpc_window_avg_flux − 1`. The step column is
+versus the row above for the BL and `m_max` ladders separately (BL 8
+versus baseline; BL 10 versus BL 8; `m_max` 0.060 versus baseline;
+`m_max` 0.045 versus 0.060).
+
+Baseline: CP excess 0.0972, `cp_q999_window_flux` 1.8225, dP 37869,
+LMH 23.256.
+
+| knob | mesh_id | cells | CP excess | step |
+|---|---|---:|---:|---:|
+| BL 8 | `max085_min006_cpg5_bl8_peel2` | 3.80 M | 0.0990 | +1.9% |
+| BL 10 | `max085_min006_cpg5_bl10_peel2` | 4.23 M | 0.1009 | +1.9% |
+| `m_max` 0.060, BL 4 | `max060_min006_cpg5_bl4_peel2` | 6.20 M | 0.1080 | +11.1% |
+| `m_max` 0.045, BL 4 | `max045_min006_cpg5_bl4_peel2` | 7.80 M | 0.1103 | +2.1% |
+
+dP within 0.4%, LMH within 1.3% on this series. Membrane BL is inside
+the 5–7% bar. The `m_max` move is in-plane type and is inside the bar
+on the last step (0.060 → 0.045). Bulk-level refinement (the Diamond
+`m_max` 0.028 drop on `D2450_a45`) is not tested. Other sinusoidal
+geos are not in this series.
 
 ---
 

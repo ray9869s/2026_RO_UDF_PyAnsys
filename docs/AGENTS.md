@@ -78,7 +78,10 @@ mesh as too coarse and asks for `m_max` refinement and family-wise
 tests, not BL count alone.
 **2026-10-19.** Pillar proposed `max085_min006_cpg5_bl12s4_peel2`; ML
 proposed BL 10; Diamond is not converged. `P_p100_h00` still FAIL at
-5.3 M cells. See `docs/MESH_STUDY_RESULTS.md`.
+5.3 M cells. **2026-10-28.** Empty production BL 4 is already
+converged. `S_a144_l3465` is in-plane type, last `m_max` step inside
+the bar. ML BL 10 campaign: 9 runs, all PASS. See
+`docs/MESH_STUDY_RESULTS.md`.
 
 **Mesh / geometry session notes:** `docs/MESH_LANDSCAPE.md` (parameter
 landscape, 31-mesh inventory, convergence gate, meshing determinism,
@@ -86,7 +89,7 @@ landscape, 31-mesh inventory, convergence gate, meshing determinism,
 and follow-up, and the 2026-10-08 meeting decisions on mesh refinement
 and the \(u = 0.3\) re-test),
 `docs/MESH_STUDY_RESULTS.md` (2026-10-19 family-wise tests and
-proposals),
+proposals; 2026-10-28 empty, sinusoidal, and ML BL-10 campaign),
 `docs/GEOMETRY_DESIGN.md` (joint-sphere rule, Pillar bore, Pillar CAD
 generator parity, sinusoidal CAD and curvature gate, REF_empty,
 import-zone counts),

@@ -479,8 +479,10 @@ were generated on the host and are not in this checkout.
 - Diamond paper mesh (contact-geometry change / exclusion band / report
   with uncertainty).
 - Paper mesh for ML and Pillar: proposed, not adopted in the campaign
-  matrix.
-- Sinusoidal mesh study: not run.
+  matrix. Empty production BL 4 is already converged. Sinusoidal
+  `S_a144_l3465` is in-plane type, last `m_max` step inside the bar;
+  bulk-level refinement not tested (`docs/MESH_STUDY_RESULTS.md`,
+  2026-10-28).
 - Mass-imbalance localization: script exists
   (`scripts/mfbo/locate_mass_imbalance.py`), not completed.
 - `mfbo` v2 in progress
@@ -495,8 +497,6 @@ were generated on the host and are not in this checkout.
 ### Pending on the host
 
 - Meshstudy re-extract: 6 pending + 1 failed.
-- ML BL-10 campaign.
-- Sinusoidal mesh study.
 - Diamond mesh decision.
 - Mass-imbalance localization.
 - Commit of `configs/evaluation_window_table.json` and
