@@ -650,7 +650,10 @@ the three finest levels and Celik et al., *Journal of Fluids Engineering*
 
 A series is not extrapolated when any step is exactly zero, changes sign
 (oscillatory), grows in magnitude (divergent), or keeps the same magnitude
-(order 0). Differences and ratios are still written. The cell-count ratio
+(order 0). Differences and ratios are still written. An oscillatory
+series also reports `U = 0.5 × (max − min)` on the three finest levels,
+the mean of those three, and `U/mean` in percent (Celik et al. 2008 /
+Stern et al. 2001). The monotone GCI path is unchanged. The cell-count ratio
 is a single representative spacing `h ∝ N^(−1/3)`. It is not a substitute
 for a `y1` ratio. The constant-ratio option assumes that same `r` between
 every successive pair. A reported order is the observed order of that

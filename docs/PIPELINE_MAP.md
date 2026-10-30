@@ -477,7 +477,9 @@ were generated on the host and are not in this checkout.
 ### Open
 
 - Diamond paper mesh (contact-geometry change / exclusion band / report
-  with uncertainty).
+  with uncertainty). Bulk-only polyhedra fill on D2450_a45 has no
+  systematic CP trend (0.086 ± 0.004); the 0.028 hex-core drop is not
+  bulk-only (`docs/MESH_STUDY_RESULTS.md`, 2026-10-30).
 - Paper mesh for ML and Pillar: proposed, not adopted in the campaign
   matrix. Empty production BL 4 is already converged. Sinusoidal
   `S_a144_l3465` is in-plane type, last `m_max` step inside the bar;

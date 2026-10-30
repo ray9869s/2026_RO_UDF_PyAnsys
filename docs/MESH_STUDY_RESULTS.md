@@ -131,10 +131,8 @@ unchanged and is still not a campaign-matrix change.
 
 ## Diamond
 
-Not converged. The last `m_max` step changes CP itself by less than 1%;
-dP and LMH stay within about 1–5%. The series as a whole still moves
-CP excess with cell size. Decision **OPEN**: contact-geometry change,
-exclusion band, or report with uncertainty.
+Not converged on the production `m_max` ladder. Decision **OPEN**:
+contact-geometry change, exclusion band, or report with uncertainty.
 
 **2026-10-22.** A last-ratio series at fixed `m_max` 0.085 holds the
 in-plane mesh and changes the membrane first height. CP excess moves
@@ -143,8 +141,12 @@ smooth-transition `m_max` rows at a similar y1 are much higher, so most
 of that `m_max` dependence is in-plane surface and bulk resolution, not
 y1. **2026-10-23.** The fixed-y1 series at request 2.0 µm (realised
 1.84–1.89 µm) still climbs 0.0663 → 0.0940; the last step is +2.0%.
-The smooth-transition `m_max` 0.028 leaf remains 17% below that
-plateau. Decision remains **OPEN**.
+The 0.028 hex-core leaf then drops −16%; that point is confounded
+(stack 5→4 and the octree edge). **2026-10-30.** Bulk-only polyhedra
+refinement at fixed `m_max` 0.035 and y1 2.0 µm (5 layers) has no
+systematic trend: CP excess 0.086 ± 0.004 (±4.6%). All D2450 results
+so far lie in 0.079–0.094. Production (0.058) is about one third below
+that band. Decision remains **OPEN**.
 
 ### `m_max` at `bl4`
 
@@ -228,16 +230,43 @@ stays `bl4` because that token is the smooth-transition baseline. The
 0.028 drop mixes the second octree step, the surface `m_max` change,
 and a 4-layer stack against the 5-layer stack at 0.035.
 
-The bulk-only series holds surface `m_max` at 0.035 and y1 at 2.0 µm
-(5 membrane layers on every leaf) and changes only the polyhedra max
-cell length. `scripts/mfbo/d2450_bulk_queue.py` emits `bms034`,
-`bms026`, and `bms020`
-(`max035_min006_cpg5_bl4_peel2_y1h020_bms034` and the same stem with
-`_bms026` and `_bms020`). Mesh with `--mesh-only` first. Each log prints
-the cell count and `membrane_bl_layers`, which must be 5 on all three.
-The emitter prints expected cell counts 6,300,000, 12,000,000, and
-25,000,000. Then run the full queue. Each job passes `--reuse-mesh`
-and `--checkpoint-every 200`.
+### Bulk-only polyhedra fill (`D2450_a45`, `m_max` 0.035, y1 2.0 µm)
+
+**From host report 2026-10-30.** `u0p2_p6M`. Surface `m_max` 0.035,
+request y1 2.0 µm, membrane stack 5 layers on every leaf. Fill is
+polyhedra. Only the polyhedra max cell length changes (`_bms034`,
+`_bms026`, `_bms020`). Mesh ids
+`max035_min006_cpg5_bl4_peel2_y1h020_bms034` and the same stem with
+`_bms026` and `_bms020` (`scripts/mfbo/d2450_bulk_queue.py`). CP excess
+is `cpc_window_avg_flux − 1`. Film correction is the relative
+`c1_area_mean_window` → `cm_area_mean_window` correction. Expected
+emitter counts were 6.3 M, 12 M, and 25 M; realised counts are below.
+
+| bulk edge [mm] | mesh_id suffix | cells | CP excess | q999−1 | dP [Pa/m] | LMH |
+|---:|---|---:|---:|---:|---:|---:|
+| 0.034 | `_bms034` | 4.34 M | 0.0854 | 0.848 | 35423 | 23.831 |
+| 0.026 | `_bms026` | 7.71 M | 0.0904 | 0.573 | 35119 | 23.778 |
+| 0.020 | `_bms020` | 14.69 M | 0.0825 | 0.880 | 35446 | 23.872 |
+
+Film correction 0.61–0.68%. Mixing-cup `c_b_window_mol_m3` 598.6–598.7.
+No systematic trend with bulk size. Oscillatory uncertainty
+`U = 0.5 × (max − min)` on the three levels (`scripts/mfbo/mesh_convergence.py`,
+Celik et al. 2008 / Stern et al. 2001): CP excess 0.086 ± 0.004
+(±4.6%); dP ±0.5%; LMH ±0.2%. `cp_q999_window_flux − 1` oscillates
+0.57–0.88 and stays a secondary metric. The script flags every metric
+on this series as oscillatory; GCI is omitted by design.
+
+Same bulk edge 0.034 mm: last-ratio poly-hexcore
+`max035_min006_cpg5_bl4_peel2_y1h020` is 0.0940 (6.29 M, 5 layers);
+polyhedra `_bms034` is 0.0854 (−9%). The fill scheme itself moves CP
+excess by about 9%. All D2450 CP excess values recorded so far lie in
+0.079–0.094. The production mesh (`max085_min006_cpg5_bl4_peel2`,
+0.0583) is about one third below that band.
+
+The earlier −16% drop at hex-core `m_max` 0.028
+(`max028_min006_cpg5_bl4_peel2_y1h020`, 0.0940 → 0.0790) is therefore
+not a bulk-only effect. The membrane stack went 5→4 layers and the
+hex-core octree edge changed at the same time.
 
 The smooth-transition `m_max` 0.028 leaf
 (`max028_min006_cpg5_bl4_peel2`, 41.25 M cells, realised y1 2.11 µm,

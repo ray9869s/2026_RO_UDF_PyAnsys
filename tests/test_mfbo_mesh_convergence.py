@@ -69,6 +69,33 @@ def test_oscillatory_series_is_not_extrapolated():
     assert report["apparent_order"] is None
     assert report["richardson_extrapolated"] is None
     assert report["gci_fine"] is None
+    assert report["oscillatory_mean"] == pytest.approx(3.25 / 3.0)
+    assert report["oscillatory_uncertainty"] == pytest.approx(0.1)
+    assert report["oscillatory_uncertainty_percent"] == pytest.approx(
+        100.0 * 0.1 / (3.25 / 3.0)
+    )
+    assert "oscillatory U" in report["note"]
+    four = convergence.analyze_series((1.0, 1.5, 1.2, 1.35), [2.0, 2.0, 2.0])
+    assert four["status"] == "oscillatory"
+    assert four["oscillatory_mean"] == pytest.approx(1.35)
+    assert four["oscillatory_uncertainty"] == pytest.approx(0.15)
+    assert four["oscillatory_uncertainty_percent"] == pytest.approx(
+        100.0 * 0.15 / 1.35
+    )
+    zero_mean = convergence.analyze_series((-1.0, 2.0, -1.0), [2.0, 2.0])
+    assert zero_mean["status"] == "oscillatory"
+    assert zero_mean["oscillatory_mean"] == pytest.approx(0.0)
+    assert zero_mean["oscillatory_uncertainty"] == pytest.approx(1.5)
+    assert zero_mean["oscillatory_uncertainty_percent"] is None
+    assert "mean is 0" in zero_mean["note"]
+
+
+def test_monotone_series_omits_oscillatory_uncertainty():
+    report = convergence.analyze_series(_MONOTONE, [2.0, 2.0])
+    assert report["status"] == "monotone"
+    assert report["oscillatory_mean"] is None
+    assert report["oscillatory_uncertainty"] is None
+    assert report["oscillatory_uncertainty_percent"] is None
 
 
 def test_divergent_series_is_not_extrapolated():
@@ -219,6 +246,15 @@ def test_report_reads_leaves_and_writes_csv_and_markdown(tmp_path):
     markdown = (out / "mesh_convergence.md").read_text(encoding="utf-8")
     assert "Apparent order" in markdown
     assert "cell count" in markdown
+    assert "oscillatory_uncertainty" in text
+    lmh_row = [
+        row
+        for row in csv.DictReader(
+            (out / "mesh_convergence.csv").open(encoding="utf-8")
+        )
+        if row["metric"] == "lmh_mass_balance" and row["mesh_id"] == meshes[-1][0]
+    ][0]
+    assert lmh_row["oscillatory_uncertainty"] == ""
 
     flagged = convergence.converge(
         tmp_path,
@@ -265,6 +301,39 @@ def test_bulk_edges_set_the_refinement_ratio(tmp_path):
             mode="bulk",
             bulk_edges=[0.034, 0.026],
         )
+
+
+def test_oscillatory_report_writes_uncertainty(tmp_path):
+    meshes = (
+        ("max085_min006_cpg5_bl4_peel2", 1000, 1.0),
+        ("max060_min006_cpg5_bl4_peel2", 8000, 1.2),
+        ("max045_min006_cpg5_bl4_peel2", 64000, 1.05),
+    )
+    for mesh_id, count, lmh in meshes:
+        _write_level(tmp_path, mesh_id, count, lmh)
+    result = convergence.converge(
+        tmp_path,
+        "P_p80_h15",
+        "u0p2_p6M",
+        [item[0] for item in meshes],
+        tmp_path / "osc-out",
+        mode="cell_count",
+    )
+    lmh = result["analyses"]["lmh_mass_balance"]
+    assert lmh["status"] == "oscillatory"
+    assert lmh["gci_fine"] is None
+    assert lmh["oscillatory_uncertainty"] == pytest.approx(0.1)
+    markdown = result["markdown"]
+    assert "Oscillatory uncertainty" in markdown
+    assert "Apparent order" not in markdown
+    finest = [
+        row
+        for row in result["rows"]
+        if row["metric"] == "lmh_mass_balance"
+        and row["mesh_id"] == meshes[-1][0]
+    ][0]
+    assert finest["gci_fine"] == ""
+    assert float(finest["oscillatory_uncertainty"]) == pytest.approx(0.1)
 
 
 def test_cli_requires_exactly_one_refinement_option():

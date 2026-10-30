@@ -9,7 +9,10 @@ shell is fixed, so total cell count would dilute the ratio. Apparent
 order, the Richardson value, and the fine-grid GCI use the three finest
 levels and Celik et al. (2008) with safety factor 1.25. An oscillatory,
 non-contracting, or non-converged order is flagged and those three
-quantities are left blank.
+quantities are left blank. An oscillatory series still reports
+``U = 0.5 * (max - min)`` on the three finest levels, the mean of
+those three, and ``U/mean`` in percent (Celik et al. 2008 / Stern et
+al. 2001).
 
 Importing this module does not launch Fluent.
 """
@@ -62,6 +65,9 @@ CSV_COLUMNS = (
     "apparent_order",
     "richardson_extrapolated",
     "gci_fine",
+    "oscillatory_mean",
+    "oscillatory_uncertainty",
+    "oscillatory_uncertainty_percent",
     "safety_factor",
     "note",
 )
@@ -200,6 +206,28 @@ def richardson_extrapolated(value_fine, value_medium, refinement_ratio, order):
     return (factor * value_fine - value_medium) / denominator
 
 
+def oscillatory_uncertainty(values):
+    """``U = 0.5 * (max - min)`` on the three finest levels.
+
+    Returns mean, U, and 100 * U / |mean|. Percent is None when the
+    mean is 0. Celik et al. (2008) / Stern et al. (2001) when the
+    three-grid series is oscillatory.
+    """
+    if len(values) < 3:
+        raise ValueError(
+            f"Oscillatory uncertainty needs at least 3 levels, got {len(values)}."
+        )
+    triplet = [float(value) for value in values[-3:]]
+    mean = sum(triplet) / 3.0
+    span = 0.5 * (max(triplet) - min(triplet))
+    percent = None if mean == 0.0 else 100.0 * span / abs(mean)
+    return {
+        "oscillatory_mean": mean,
+        "oscillatory_uncertainty": span,
+        "oscillatory_uncertainty_percent": percent,
+    }
+
+
 def gci_fine(value_fine, value_medium, refinement_ratio, order, safety_factor=SAFETY_FACTOR):
     """Relative fine-grid GCI, Celik et al. (2008), Fs = 1.25."""
     if value_fine == 0.0:
@@ -235,12 +263,29 @@ def analyze_series(values, refinement_ratios):
         "apparent_order": None,
         "richardson_extrapolated": None,
         "gci_fine": None,
+        "oscillatory_mean": None,
+        "oscillatory_uncertainty": None,
+        "oscillatory_uncertainty_percent": None,
         "note": "",
     }
     if status != "monotone":
         result["note"] = (
             f"{status}: order, Richardson value, and GCI are not reported"
         )
+        if status == "oscillatory":
+            result.update(oscillatory_uncertainty(values))
+            percent = result["oscillatory_uncertainty_percent"]
+            percent_text = (
+                "undefined (mean is 0)"
+                if percent is None
+                else f"{percent:.12g}%"
+            )
+            result["note"] += (
+                "; oscillatory U = 0.5*(max-min) on the three finest "
+                f"levels is {result['oscillatory_uncertainty']:.12g} "
+                f"(mean {result['oscillatory_mean']:.12g}, "
+                f"U/mean {percent_text})"
+            )
         return result
     order = apparent_order(
         differences[-2],
@@ -503,6 +548,17 @@ def convergence_rows(levels, analyses):
                         _blank(analysis["richardson_extrapolated"]) if finest else ""
                     ),
                     "gci_fine": _blank(analysis["gci_fine"]) if finest else "",
+                    "oscillatory_mean": (
+                        _blank(analysis["oscillatory_mean"]) if finest else ""
+                    ),
+                    "oscillatory_uncertainty": (
+                        _blank(analysis["oscillatory_uncertainty"]) if finest else ""
+                    ),
+                    "oscillatory_uncertainty_percent": (
+                        _blank(analysis["oscillatory_uncertainty_percent"])
+                        if finest
+                        else ""
+                    ),
                     "safety_factor": format(SAFETY_FACTOR, ".12g") if finest else "",
                     "note": analysis["note"] if finest else "",
                 }
@@ -555,7 +611,10 @@ def to_markdown(geo_id, run_id, mode, ratio, levels, analyses):
         "value. The difference ratio divides that step by the previous one.",
         "An oscillatory, divergent, zero-difference, non-contracting,",
         "or order-not-converged series is flagged and those three",
-        "quantities are omitted.",
+        "quantities are omitted. An oscillatory series reports",
+        "U = 0.5 × (max − min) on the three finest levels, the mean",
+        "of those three, and U/mean in percent (Celik et al. 2008 /",
+        "Stern et al. 2001).",
         "",
     ]
     for metric in METRICS:
@@ -604,6 +663,24 @@ def to_markdown(geo_id, run_id, mode, ratio, levels, analyses):
                 f"{_markdown_number(analysis['gci_fine'])} "
                 f"(safety factor {SAFETY_FACTOR})."
             )
+            lines.append("")
+        elif analysis["status"] == "oscillatory":
+            percent = analysis["oscillatory_uncertainty_percent"]
+            percent_line = (
+                "U/mean: undefined because the mean of the three finest "
+                "levels is 0."
+                if percent is None
+                else f"U/mean: {_markdown_number(percent)}%."
+            )
+            lines.append(
+                "Mean of the three finest levels: "
+                f"{_markdown_number(analysis['oscillatory_mean'])}."
+            )
+            lines.append(
+                "Oscillatory uncertainty U = 0.5 × (max − min): "
+                f"{_markdown_number(analysis['oscillatory_uncertainty'])}."
+            )
+            lines.append(percent_line)
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
