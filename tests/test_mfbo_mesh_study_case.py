@@ -827,6 +827,8 @@ def test_resume_continues_the_latest_checkpoint_and_skips_meshing(
     assert seen["solver_overrides"]["checkpoint_resume"] is True
     assert seen["solver_overrides"]["checkpoint_every"] == 200
     assert seen["solver_overrides"]["mesh_id"] == mesh_id
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_000400.cas.h5").is_file()
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_000600.cas.h5").is_file()
 
 
 def test_resume_refuses_a_run_with_only_the_setup_case(monkeypatch, tmp_path):
@@ -874,3 +876,155 @@ def test_resume_does_not_combine_with_mesh_only(monkeypatch, tmp_path):
             ]
         )
     assert "meshed" not in seen
+
+
+def _plant_run_files(run):
+    from ro.solve_checkpoint import checkpoint_case_path, checkpoint_data_path
+
+    run.mkdir(parents=True, exist_ok=True)
+    for iteration in (200, 400):
+        case = checkpoint_case_path(run, "D2450_a45", "u0p2_p6M", iteration)
+        case.write_bytes(b"cas")
+        checkpoint_data_path(case).write_bytes(b"dat")
+    (run / "D2450_a45_u0p2_p6M_checkpoint_000100.dat.h5").write_bytes(b"orphan")
+    (run / "D2450_a45_u0p2_p6M_setup.cas.h5").write_bytes(b"setup")
+    (run / "D2450_a45_u0p2_p6M_final.cas.h5").write_bytes(b"fcas")
+    (run / "D2450_a45_u0p2_p6M_final.dat.h5").write_bytes(b"fdat")
+    (run / "solve.log").write_bytes(b"log")
+
+
+def _plant_post_files(run):
+    reports = run / "post" / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    (reports / "keep.txt").write_bytes(b"post")
+    (reports / "D2450_a45_u0p2_p6M_checkpoint_000200.cas.h5").write_bytes(b"nested")
+
+
+def _set_gate(run, gate):
+    path = run / "manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["convergence_quality"] = gate
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _checkpointed_run(
+    monkeypatch,
+    tmp_path,
+    *,
+    gate,
+    checkpoint=True,
+    keep=False,
+    solver_code=0,
+    extract_code=0,
+    valid=True,
+):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    original_solver = driver.campaign.launch_solver
+    original_extract = driver.mfbo_common.launch_extract
+
+    def fake_solver(overrides, data_root, run_directory, **kwargs):
+        result = original_solver(overrides, data_root, run_directory, **kwargs)
+        _plant_run_files(run_directory)
+        seen["run"] = run_directory
+        if solver_code != 0:
+            return SimpleNamespace(returncode=solver_code)
+        return result
+
+    def fake_extract(data_root, run_directory, case, *, geo_id, mesh_id, run_id):
+        result = original_extract(
+            data_root,
+            run_directory,
+            case,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            run_id=run_id,
+        )
+        _plant_post_files(run_directory)
+        if gate is not None:
+            _set_gate(run_directory, gate)
+        if extract_code != 0:
+            return SimpleNamespace(returncode=extract_code)
+        return result
+
+    monkeypatch.setattr(driver.campaign, "launch_solver", fake_solver)
+    monkeypatch.setattr(driver.mfbo_common, "launch_extract", fake_extract)
+    if not valid:
+        monkeypatch.setattr(
+            driver.batch_report_extract,
+            "validate_summary_wide_csv",
+            lambda path: (False, "missing column"),
+        )
+    argv = [
+        "--data-root",
+        str(tmp_path),
+        "--geo-id",
+        "D2450_a45",
+        "--m-min",
+        "0.003",
+    ]
+    if checkpoint:
+        argv.extend(["--checkpoint-every", "200"])
+    if keep:
+        argv.append("--keep-checkpoints")
+    code = driver.main(argv)
+    return code, seen["run"]
+
+
+def _assert_kept_solution(run):
+    assert (run / "D2450_a45_u0p2_p6M_final.cas.h5").read_bytes() == b"fcas"
+    assert (run / "D2450_a45_u0p2_p6M_final.dat.h5").read_bytes() == b"fdat"
+    assert (run / "solve.log").read_bytes() == b"log"
+    assert (run / "manifest.json").is_file()
+    assert (run / "post" / "reports" / "keep.txt").read_bytes() == b"post"
+    assert (run / "post" / "reports" / "summary_metrics_wide.csv").is_file()
+    nested = run / "post" / "reports" / "D2450_a45_u0p2_p6M_checkpoint_000200.cas.h5"
+    assert nested.read_bytes() == b"nested"
+
+
+def test_pass_extract_deletes_checkpoints_and_setup(monkeypatch, tmp_path, capsys):
+    code, run = _checkpointed_run(monkeypatch, tmp_path, gate="PASS")
+    assert code == 0
+    assert not list(run.glob("*checkpoint*"))
+    assert not (run / "D2450_a45_u0p2_p6M_setup.cas.h5").exists()
+    _assert_kept_solution(run)
+    out = capsys.readouterr().out
+    assert "Leaf size after cleanup:" in out
+    assert "Removed 6 checkpoint and setup files." in out
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"gate": "FAIL"}, "gate FAIL"),
+        ({"gate": None}, "gate missing"),
+        ({"gate": "PASS", "keep": True}, "--keep-checkpoints"),
+        ({"gate": "PASS", "checkpoint": False}, None),
+        ({"gate": "PASS", "solver_code": 1}, None),
+        ({"gate": "PASS", "extract_code": 1}, None),
+        ({"gate": "PASS", "valid": False}, None),
+    ],
+)
+def test_checkpoints_stay_unless_the_extract_passed(
+    monkeypatch, tmp_path, capsys, kwargs, reason
+):
+    code, run = _checkpointed_run(monkeypatch, tmp_path, **kwargs)
+    if kwargs.get("solver_code") or kwargs.get("extract_code") or kwargs.get("valid") is False:
+        assert code != 0
+    else:
+        assert code == 0
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_000200.cas.h5").is_file()
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_000200.dat.h5").is_file()
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_000100.dat.h5").is_file()
+    assert (run / "D2450_a45_u0p2_p6M_setup.cas.h5").is_file()
+    if kwargs.get("solver_code"):
+        assert (run / "D2450_a45_u0p2_p6M_final.cas.h5").read_bytes() == b"fcas"
+        assert (run / "solve.log").read_bytes() == b"log"
+        assert not (run / "post" / "reports" / "summary_metrics_wide.csv").exists()
+    else:
+        _assert_kept_solution(run)
+    out = capsys.readouterr().out
+    if reason is None:
+        assert "Leaf size after cleanup:" not in out
+    else:
+        assert f"Kept checkpoints and setup case ({reason})." in out

@@ -190,6 +190,7 @@ def test_solve_queue_is_u0p2_first_and_reuses_the_mesh():
         argv = job["argv"]
         assert "--reuse-mesh" in argv
         assert _flag(argv, "--checkpoint-every") == "200"
+        assert "--keep-checkpoints" not in argv
         assert "--mesh-only" not in argv
         assert "--resume" not in argv
         assert "scripts/mfbo/mesh_study_case.py" in argv
@@ -453,3 +454,25 @@ def test_provenance_is_stamped_and_must_match():
     )
     assert base["mesh_spec_sha256"] == _SPEC_HASH
     assert base["git_head"] == _HEAD
+
+
+def test_keep_checkpoints_is_only_on_solve_jobs(tmp_path):
+    spec = _spec()
+    jobs = CAMPAIGN.solve_jobs(
+        spec, default_spec_path(), keep_checkpoints=True
+    )
+    assert jobs
+    for job in jobs:
+        argv = job["argv"]
+        assert argv[-1] == "--keep-checkpoints"
+        assert _flag(argv, "--checkpoint-every") == "200"
+        assert "--mesh-only" not in argv
+    with pytest.raises(ValueError, match="keep-checkpoints"):
+        CAMPAIGN.main(
+            [
+                "--mesh-only",
+                "--keep-checkpoints",
+                "--emit-queue",
+                str(tmp_path / "queue.json"),
+            ]
+        )

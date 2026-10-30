@@ -39,6 +39,13 @@ match the request. The run leaf is still refused when it exists.
 
 ``--checkpoint-every N`` writes case and data every N iterations during
 the solve and keeps the latest two pairs. It is off when omitted.
+After the extract succeeds and the run manifest gate is PASS, those
+pairs and the setup case are deleted. The final case, final data,
+``post/``, logs, and the manifest stay. A failed solve, a failed
+extract, a failed metric check, or a gate that is not PASS keeps the
+files so ``--resume`` can continue. ``--keep-checkpoints`` skips the
+deletion. The leaf size is printed after that decision. ``job_queue``
+runs this script, so a checkpointed queue job uses the same rule.
 ``--resume`` reuses the mesh, requires a checkpoint pair in the run leaf,
 and continues that data file's iteration counter with the same solver
 settings. The setup case is not a checkpoint.
@@ -79,6 +86,7 @@ from ro.membrane_bl import (
     specs_match,
 )
 from ro.convergence_quality import continuity_final_from_case_dir
+from ro.leaf_disk import cleanup_line, release_after_pass
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
 from ro.solve_checkpoint import (
@@ -1146,6 +1154,14 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--keep-checkpoints",
+        action="store_true",
+        help=(
+            "Keep checkpoint pairs and the setup case after a PASS "
+            "extract. Default deletes them once the extract succeeds."
+        ),
+    )
+    parser.add_argument(
         "--geometry-suffix",
         default=".dsco",
         help="CAD suffix copied into the study tree. Default .dsco.",
@@ -1338,6 +1354,16 @@ def main(argv=None):
     if not valid:
         print(f"FAILED_METRIC_VALIDATION: {message}")
         return 1
+    if checkpoint_every is not None:
+        outcome = release_after_pass(
+            run_directory,
+            args.geo_id,
+            case_id,
+            keep=args.keep_checkpoints,
+        )
+        for error in outcome["errors"]:
+            print(f"CHECKPOINT_CLEANUP_FAILED: {error}")
+        print(cleanup_line(outcome))
     print_study_report(study_report(leaf, study_id, run_directory))
     return 0
 

@@ -22,9 +22,11 @@ FAIL. The estimate is linear in cell count from D2450_a45 at 4.34 M
 cells and 6.5 h.
 
 The solve queue is u0p2, then u0p1, then u0p3. Every solve passes
-``--reuse-mesh`` and ``--checkpoint-every 200``. ``job_queue run`` is
-one Fluent at a time. ``job_queue run --resume`` appends ``--resume``
-to a failed solve because the argv is ``mesh_study_case``.
+``--reuse-mesh`` and ``--checkpoint-every 200``. After a PASS extract,
+that run drops its checkpoint pairs and setup case. ``--keep-checkpoints``
+leaves them in place. ``job_queue run`` is one Fluent at a time.
+``job_queue run --resume`` appends ``--resume`` to a failed solve
+because the argv is ``mesh_study_case``.
 
 Importing this module does not launch Fluent. ``--emit-queue`` only
 writes JSON.
@@ -181,7 +183,16 @@ def spec_argv_token(spec_path):
         return path.as_posix()
 
 
-def _study_argv(geo_id, settings, run_id, *, mesh_only, reuse_mesh, spec_token):
+def _study_argv(
+    geo_id,
+    settings,
+    run_id,
+    *,
+    mesh_only,
+    reuse_mesh,
+    spec_token,
+    keep_checkpoints=False,
+):
     argv = [
         "{python}",
         "scripts/mfbo/mesh_study_case.py",
@@ -218,6 +229,8 @@ def _study_argv(geo_id, settings, run_id, *, mesh_only, reuse_mesh, spec_token):
         if reuse_mesh:
             argv.append("--reuse-mesh")
         argv.extend(["--checkpoint-every", "200"])
+        if keep_checkpoints:
+            argv.append("--keep-checkpoints")
     return argv
 
 
@@ -243,7 +256,7 @@ def mesh_jobs(spec, spec_path):
     return jobs
 
 
-def solve_jobs(spec, spec_path, *, run_id_filter=None):
+def solve_jobs(spec, spec_path, *, run_id_filter=None, keep_checkpoints=False):
     """Solves ordered u0p2, u0p1, u0p3. Each reuses the mesh when it exists."""
     token = spec_argv_token(spec_path)
     selected = run_ids() if not run_id_filter else tuple(run_id_filter)
@@ -267,6 +280,7 @@ def solve_jobs(spec, spec_path, *, run_id_filter=None):
                         mesh_only=False,
                         reuse_mesh=True,
                         spec_token=token,
+                        keep_checkpoints=keep_checkpoints,
                     ),
                 )
             )
@@ -687,6 +701,14 @@ def build_parser():
         default=None,
         help="Mesh spec JSON. Default configs/mesh_spec_v3.json.",
     )
+    parser.add_argument(
+        "--keep-checkpoints",
+        action="store_true",
+        help=(
+            "Pass --keep-checkpoints on solve jobs so a PASS extract "
+            "keeps checkpoint pairs and the setup case."
+        ),
+    )
     return parser
 
 
@@ -694,6 +716,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.mesh_only and args.run_id:
         raise ValueError("--mesh-only does not take --run-id.")
+    if args.mesh_only and args.keep_checkpoints:
+        raise ValueError("--mesh-only does not take --keep-checkpoints.")
     if not any((args.emit_queue, args.mesh_table, args.compare, args.seminar_csv)):
         raise ValueError(
             "Choose --emit-queue, --mesh-table, --compare, or --seminar-csv."
@@ -710,7 +734,12 @@ def main(argv=None):
         jobs = (
             mesh_jobs(spec, spec_path)
             if args.mesh_only
-            else solve_jobs(spec, spec_path, run_id_filter=args.run_id)
+            else solve_jobs(
+                spec,
+                spec_path,
+                run_id_filter=args.run_id,
+                keep_checkpoints=args.keep_checkpoints,
+            )
         )
         path = write_queue(args.emit_queue, jobs)
         families_seen = []
