@@ -246,10 +246,38 @@ def test_mesh_table_lists_failures_and_estimates_time(tmp_path):
     assert CAMPAIGN.estimate_solve_hours(8_680_000) == pytest.approx(13.0)
 
 
+def test_mesh_table_lists_a_gate_failure_that_has_no_manifest(tmp_path):
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+    log = CAMPAIGN.mesh_log_path(tmp_path, "P_p100_h00", MESH_ID)
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "\n".join(
+            [
+                "Minimum Orthogonal Quality = 0.04",
+                "Maximum Aspect Ratio = 178.6",
+                "Number of Cells = 5300000",
+                "Membrane BL number of layers [-]: 5",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rows = CAMPAIGN.mesh_table_rows(tmp_path, mesh_ids)
+    failed = next(row for row in rows if row["geo_id"] == "P_p100_h00")
+    assert failed["gate"] == "FAIL"
+    assert failed["cell_count"] == 5_300_000
+    assert failed["membrane_layers"] == 5
+    assert failed["solve_h"] == pytest.approx(5_300_000 / 4_340_000 * 6.5)
+    text = CAMPAIGN.format_mesh_table(rows)
+    assert "quality gate FAIL (1): P_p100_h00" in text
+    assert sum(row["gate"] == "MISSING" for row in rows) == 30
+
+
 def test_gate_limits_match_run_config():
     cfg = load_run_config()
     assert CAMPAIGN.ORTHO_MIN_LIMIT == cfg.min_orthogonal_quality_threshold
     assert CAMPAIGN.AR_MAX_LIMIT == cfg.max_aspect_ratio_threshold
+    assert CAMPAIGN.SKEW_MAX_LIMIT == cfg.max_skewness_threshold
+    assert CAMPAIGN.SKEWED_FRACTION_LIMIT == cfg.skewed_face_fraction_threshold
 
 
 def test_comparison_step_uses_cp_itself(tmp_path):

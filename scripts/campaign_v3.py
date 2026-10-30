@@ -14,11 +14,12 @@ CP in the comparison and in ``seminar_cases.csv`` is
 ``cpc_window_avg_flux``. CP excess is that value minus 1, reported
 beside it. The mesh-to-mesh step ``cp_rel_change`` uses CP itself.
 
-``--mesh-only`` writes 31 meshing jobs. ``--mesh-table`` reads the mesh
-manifests and prints cell count, membrane layers, orthogonal quality,
-aspect ratio, the quality gate, and a solve-time estimate. A geometry
-that fails the gate stays in the table. The estimate is linear in cell
-count from D2450_a45 at 4.34 M cells and 6.5 h.
+``--mesh-only`` writes 31 meshing jobs. ``--mesh-table`` prints cell
+count, membrane layers, orthogonal quality, aspect ratio, the quality
+gate, and a solve-time estimate. A manifest is written only after the
+gate passes, so a refused mesh is read from its mesh log and listed as
+FAIL. The estimate is linear in cell count from D2450_a45 at 4.34 M
+cells and 6.5 h.
 
 The solve queue is u0p2, then u0p1, then u0p3. Every solve passes
 ``--reuse-mesh`` and ``--checkpoint-every 200``. ``job_queue run`` is
@@ -34,6 +35,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -47,6 +49,7 @@ from ro.campaign_matrix import (  # noqa: E402
     PRODUCTION_MESH_ID_D0817_A60,
     PRODUCTION_MESH_ID_DEFAULT,
 )
+from ro.mesh_common import parse_mesh_metrics_text  # noqa: E402
 from ro.mesh_spec import (  # noqa: E402
     changes_for_settings,
     default_spec_path,
@@ -67,6 +70,11 @@ VELOCITY_ORDER = (0.2, 0.1, 0.3)
 # run_config.py mesh quality gate.
 ORTHO_MIN_LIMIT = 0.05
 AR_MAX_LIMIT = 150.0
+SKEW_MAX_LIMIT = 0.85
+SKEWED_FRACTION_LIMIT = 3.0e-5
+_MEMBRANE_LAYERS_RE = re.compile(
+    r"Membrane BL number of layers \[-\]:\s*(\d+)"
+)
 # D2450_a45 polyhedra bulk 0.034 mm: 4.34 M cells, about 6.5 h.
 SOLVE_TIME_REFERENCE_CELLS = 4_340_000
 SOLVE_TIME_REFERENCE_HOURS = 6.5
@@ -278,11 +286,24 @@ def estimate_solve_hours(cell_count):
     )
 
 
-def quality_gate(ortho_min, ar_max):
-    """PASS, FAIL, or MISSING. Limits are the production mesh quality gate."""
+def quality_gate(ortho_min, ar_max, skewness_max=None, skewed_face_fraction=None):
+    """PASS, FAIL, or MISSING. Limits are the production mesh quality gate.
+
+    Orthogonal quality and aspect ratio are required. Skewness and the
+    skewed-face fraction fail the gate when they are present and over
+    the limit. A missing pair of orthogonal quality and aspect ratio is
+    MISSING, which the table still prints.
+    """
     if ortho_min is None or ar_max is None:
         return "MISSING"
     if float(ortho_min) < ORTHO_MIN_LIMIT or float(ar_max) > AR_MAX_LIMIT:
+        return "FAIL"
+    if skewness_max is not None and float(skewness_max) > SKEW_MAX_LIMIT:
+        return "FAIL"
+    if (
+        skewed_face_fraction is not None
+        and float(skewed_face_fraction) > SKEWED_FRACTION_LIMIT
+    ):
         return "FAIL"
     return "PASS"
 
@@ -324,35 +345,92 @@ def mesh_manifest_path(data_root, geo_id, mesh_id):
     )
 
 
+def mesh_log_path(data_root, geo_id, mesh_id):
+    """Transcript written before the quality gate can refuse the mesh."""
+    return mesh_manifest_path(data_root, geo_id, mesh_id).parent / (
+        f"mesh_log_{mesh_id}.txt"
+    )
+
+
+def _layers_from_log(text):
+    matches = list(_MEMBRANE_LAYERS_RE.finditer(text))
+    if not matches:
+        return None
+    return int(matches[-1].group(1))
+
+
+def _metrics_from_log(path):
+    """Quality numbers from a mesh that failed before the manifest write."""
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    parsed = parse_mesh_metrics_text(text)
+    cell_count = parsed.get("cell_count")
+    if isinstance(cell_count, bool) or not isinstance(cell_count, int):
+        cell_count = None
+    return {
+        "cell_count": cell_count,
+        "membrane_layers": _layers_from_log(text),
+        "ortho_min": _optional_float(parsed.get("min_orthogonal_quality")),
+        "AR_max": _optional_float(parsed.get("max_aspect_ratio")),
+        "skewness_max": _optional_float(parsed.get("max_skewness")),
+        "skewed_face_fraction": _optional_float(parsed.get("skewed_face_fraction")),
+    }
+
+
 def mesh_table_rows(data_root, mesh_ids):
-    """One row per campaign geometry. A missing manifest stays in the list."""
+    """One row per campaign geometry. A failed or missing mesh stays in the list.
+
+    The worker writes the manifest only after the quality gate passes.
+    A refused mesh is read from its mesh log so the gate result is FAIL
+    rather than absent.
+    """
     rows = []
     for geo_id in CAMPAIGN_GEO_ID_ORDER:
         family = family_for_geo_id(geo_id)
         mesh_id = mesh_ids[geo_id]
         path = mesh_manifest_path(data_root, geo_id, mesh_id)
-        manifest = _read_json(path) if path.is_file() else {}
-        layers = None
-        stack = manifest.get("membrane_bl_y1")
-        if isinstance(stack, dict):
-            layers = stack.get("layers")
-        cell_count = manifest.get("cell_count")
-        if isinstance(cell_count, bool) or not isinstance(cell_count, int):
-            cell_count = None
-        ortho = _optional_float(manifest.get("ortho_min"))
-        aspect = _optional_float(manifest.get("AR_max"))
-        present = path.is_file()
+        if path.is_file():
+            manifest = _read_json(path)
+            layers = None
+            stack = manifest.get("membrane_bl_y1")
+            if isinstance(stack, dict):
+                layers = stack.get("layers")
+            cell_count = manifest.get("cell_count")
+            if isinstance(cell_count, bool) or not isinstance(cell_count, int):
+                cell_count = None
+            ortho = _optional_float(manifest.get("ortho_min"))
+            aspect = _optional_float(manifest.get("AR_max"))
+            skewness = _optional_float(manifest.get("skewness_max"))
+            fraction = _optional_float(manifest.get("skewed_face_fraction"))
+            gate = quality_gate(ortho, aspect, skewness, fraction)
+        else:
+            logged = _metrics_from_log(mesh_log_path(data_root, geo_id, mesh_id))
+            if logged is None:
+                cell_count = layers = ortho = aspect = None
+                gate = "MISSING"
+            else:
+                cell_count = logged["cell_count"]
+                layers = logged["membrane_layers"]
+                ortho = logged["ortho_min"]
+                aspect = logged["AR_max"]
+                gate = quality_gate(
+                    ortho,
+                    aspect,
+                    logged["skewness_max"],
+                    logged["skewed_face_fraction"],
+                )
         rows.append(
             {
                 "geo_id": geo_id,
                 "family": family,
                 "mesh_id": mesh_id,
                 "cell_count": cell_count,
-                "membrane_layers": layers if present else None,
-                "ortho_min": ortho if present else None,
-                "AR_max": aspect if present else None,
-                "gate": quality_gate(ortho, aspect) if present else "MISSING",
-                "solve_h": estimate_solve_hours(cell_count) if present else None,
+                "membrane_layers": layers,
+                "ortho_min": ortho,
+                "AR_max": aspect,
+                "gate": gate,
+                "solve_h": estimate_solve_hours(cell_count),
             }
         )
     return rows
