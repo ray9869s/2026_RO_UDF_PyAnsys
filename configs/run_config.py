@@ -236,6 +236,12 @@ max_skewness_threshold = 0.85
 skewed_face_fraction_threshold = 3.0e-5
 fail_if_quality_not_parsed = False
 
+# Campaign v3 provenance. None on a production leaf. A campaign job sets
+# both through PYFLUENT_RUN_OVERRIDES. mesh_spec_sha256 is the SHA-256 of
+# the mesh spec file. git_head is the revision that launched this job.
+mesh_spec_sha256 = None
+git_head = None
+
 # When True: surface mesh first (no shadow-copy constraint), then
 # Set Up Periodic Boundaries with Automatic + both labels.
 # D0817_a45 surface max skewness was 0.956 with False (Manual-before-surface)
@@ -663,6 +669,28 @@ def _require_integer(name, value, *, minimum):
         )
 
 
+def _require_optional_sha256(name, value):
+    """None stays unset. A set value is a lowercase SHA-256 digest."""
+    if value is None:
+        return
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(
+            f"run_config.py {name} must be a lowercase SHA-256 hex digest "
+            f"or unset, got {value!r}."
+        )
+
+
+def _require_optional_git_head(name, value):
+    """None stays unset. A set value is a full lowercase git revision."""
+    if value is None:
+        return
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise ValueError(
+            f"run_config.py {name} must be a full git revision or unset, "
+            f"got {value!r}."
+        )
+
+
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
@@ -679,6 +707,8 @@ def validate_common():
     _require_set("geo_name", geo_name)
     _require_set("case_name", case_name)
     _require_positive_number("processor_count", processor_count)
+    _require_optional_sha256("mesh_spec_sha256", mesh_spec_sha256)
+    _require_optional_git_head("git_head", git_head)
 
 
 def _require_geometry_root(value):

@@ -300,6 +300,30 @@ def stamp_viscous_setup_on_run_manifest(
     return write_run_manifest(run_directory, payload)
 
 
+def _stamp_campaign_provenance(base, cfg, mesh_manifest):
+    """Copy the campaign spec hash and the launching git HEAD when set.
+
+    The spec hash on the mesh manifest wins. A run that names a different
+    hash is refused. Git HEAD is the solve, not the mesh.
+    """
+    recorded = None
+    if isinstance(mesh_manifest, dict):
+        recorded = mesh_manifest.get("mesh_spec_sha256")
+    requested = getattr(cfg, "mesh_spec_sha256", None)
+    if requested is not None and requested != "":
+        if recorded not in (None, "") and recorded != requested:
+            raise ValueError(
+                "mesh_spec_sha256 does not match the mesh manifest: "
+                f"mesh={recorded}, run={requested}."
+            )
+    spec_hash = recorded or requested
+    if spec_hash:
+        base["mesh_spec_sha256"] = spec_hash
+    git_head = getattr(cfg, "git_head", None)
+    if isinstance(git_head, str) and git_head:
+        base["git_head"] = git_head
+
+
 def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_attempt_id=None):
     inlet_bc_type = (
         "parabolic" if bool(cfg.use_inlet_velocity_profile) else "plug"
@@ -353,6 +377,7 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
     every = require_checkpoint_every(getattr(cfg, "checkpoint_every", None))
     if every is not None:
         base["checkpoint_every"] = every
+    _stamp_campaign_provenance(base, cfg, mesh_manifest)
     return merge_geometry_into_run_manifest(
         base,
         cfg.geo_id,

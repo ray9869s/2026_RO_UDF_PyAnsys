@@ -1,0 +1,18 @@
+{
+  "defaults": {
+    "m_max": 0.035,
+    "m_min": 0.006,
+    "cpg": 5,
+    "membrane_bl_y1_um": 2.0,
+    "membrane_bl_offset_method": "last-ratio",
+    "bulk_max_size_mm": 0.034,
+    "peel": 2
+  },
+  "families": {
+    "diamond": {},
+    "empty": {},
+    "ml": {},
+    "pillar": {},
+    "sin": {}
+  }
+}

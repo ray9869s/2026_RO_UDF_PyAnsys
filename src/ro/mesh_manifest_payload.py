@@ -83,6 +83,12 @@ def build_mesh_manifest_payload(
     if raw_bulk is not None:
         base["bulk_max_size_mm"] = float(raw_bulk)
         bulk_max_size_suffix(base["bulk_max_size_mm"])
+    spec_hash = getattr(cfg, "mesh_spec_sha256", None)
+    if isinstance(spec_hash, str) and spec_hash:
+        base["mesh_spec_sha256"] = spec_hash
+    git_head = getattr(cfg, "git_head", None)
+    if isinstance(git_head, str) and git_head:
+        base["git_head"] = git_head
     raw_membrane_bl = getattr(cfg, "membrane_bl_y1", None)
     if raw_membrane_bl is not None:
         base["membrane_bl_y1"] = resolve_membrane_bl(

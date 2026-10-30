@@ -29,6 +29,9 @@ after those (``round(mm * 1000)``, so 0.034 mm is ``_bms034``) and fills
 the volume with polyhedra at that max cell length. Omitted, the volume
 fill stays poly-hexcore. ``--mesh-only`` prints the mesh cell count and
 the recorded membrane layer count, and does not solve.
+``--mesh-spec`` checks the knobs against that family's entry and stamps
+the file's SHA-256 and the git HEAD on the mesh and run manifests.
+``--peel-layers`` overrides the template peel count.
 
 ``--reuse-mesh`` skips meshing when that mesh leaf already exists, its
 ``mesh_run_record.json`` status is ``SUCCESS``, and the manifest settings
@@ -82,6 +85,13 @@ from ro.solve_checkpoint import (
     latest_checkpoint,
     refuse_finished_checkpoint,
     require_checkpoint_every,
+)
+from ro.mesh_spec import (
+    family_settings,
+    load_mesh_spec,
+    provenance_fields,
+    require_changes_match,
+    resolve_spec_path,
 )
 from ro.solver_common import sha256_file
 
@@ -148,6 +158,7 @@ def collect_overrides(
     membrane_bl_y1_um=None,
     membrane_bl_layers=None,
     bulk_max_size_mm=None,
+    peel_layers=None,
 ):
     """Return the mesh knobs the caller set. At least one is required."""
     changes = {}
@@ -187,6 +198,9 @@ def collect_overrides(
         _require_positive("bulk_max_size_mm", bulk_max_size_mm)
         changes["bulk_max_size_mm"] = float(bulk_max_size_mm)
         bulk_max_size_suffix(changes["bulk_max_size_mm"])
+    if peel_layers is not None:
+        _require_nonnegative_int("peel_layers", peel_layers)
+        changes["peel_layers"] = int(peel_layers)
     if not changes:
         raise ValueError(
             "At least one mesh override is required "
@@ -194,7 +208,7 @@ def collect_overrides(
             "--bl-first-height-factor, --spacer-bl-layers, "
             "--local-proximity, --local-face-size, "
             "--membrane-bl-y1-um, --membrane-bl-layers, "
-            "--bulk-max-size). "
+            "--bulk-max-size, --peel-layers). "
             "The production baseline is "
             "reextract_runs.py --copy-from-production."
         )
@@ -211,6 +225,11 @@ def _require_positive(name, value):
 def _require_positive_int(name, value):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+
+
+def _require_nonnegative_int(name, value):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be an integer >= 0, got {value!r}.")
 
 
 def default_bl_growth_rate():
@@ -838,6 +857,15 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
             f"{_setting_text(recorded_bulk)}, "
             f"requested {_setting_text(requested_bulk)}"
         )
+    if "mesh_spec_sha256" in overrides:
+        recorded_spec = manifest.get("mesh_spec_sha256")
+        requested_spec = overrides["mesh_spec_sha256"]
+        if recorded_spec != requested_spec:
+            mismatches.append(
+                "mesh_spec_sha256: recorded "
+                f"{_setting_text(recorded_spec)}, "
+                f"requested {_setting_text(requested_spec)}"
+            )
     if mismatches:
         raise ValueError(
             f"Refusing to reuse mesh leaf {directory}: " + "; ".join(mismatches) + "."
@@ -1123,6 +1151,20 @@ def build_parser():
         help="CAD suffix copied into the study tree. Default .dsco.",
     )
     parser.add_argument(
+        "--peel-layers",
+        type=int,
+        default=None,
+        help="Peel layer count. Omitted, the production template value is kept.",
+    )
+    parser.add_argument(
+        "--mesh-spec",
+        default=None,
+        help=(
+            "Campaign mesh spec JSON. The knobs must match this geometry's "
+            "family. The file SHA-256 and git HEAD are written on the manifests."
+        ),
+    )
+    parser.add_argument(
         "--geometry-root",
         default=None,
         help=(
@@ -1161,15 +1203,23 @@ def main(argv=None):
         membrane_bl_y1_um=args.membrane_bl_y1_um,
         membrane_bl_layers=args.membrane_bl_layers,
         bulk_max_size_mm=args.bulk_max_size,
+        peel_layers=args.peel_layers,
     )
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]
+    provenance = {}
+    if args.mesh_spec:
+        spec_path = resolve_spec_path(args.mesh_spec)
+        spec = load_mesh_spec(spec_path)
+        require_changes_match(changes, family_settings(spec, family))
+        provenance = provenance_fields(spec_path)
     production_mesh_id = case["mesh_id"]
     suffix, geometry_root = resolve_geometry_request(
         args.geometry_suffix, args.geometry_root
     )
     overrides = apply_study_overrides(template, changes)
     overrides.update(geometry_meshing_overrides(suffix, geometry_root))
+    overrides.update(provenance)
     print_override_table(override_rows(template, overrides))
     study_id = overrides["mesh_id"]
     leaf = mesh_leaf(data_root, family, args.geo_id, study_id)
@@ -1226,6 +1276,7 @@ def main(argv=None):
         case_id,
     )
     solver_overrides = solver_overrides_for_study(solver_template, study_id)
+    solver_overrides.update(provenance)
     run_directory = run_leaf(data_root, family, args.geo_id, study_id, case_id)
     if args.resume:
         if not run_directory.is_dir():
