@@ -11,8 +11,11 @@ A family object overrides those fields. The smooth-transition ``bl``
 token stays 4.
 
 CP in the comparison and in ``seminar_cases.csv`` is
-``cpc_window_avg_flux``. CP excess is that value minus 1, reported
-beside it. The mesh-to-mesh step ``cp_rel_change`` uses CP itself.
+``cp_canon_live_window_avg`` (local ``c_p`` per face, dead zone
+excluded). CP excess is that value minus 1. ``cp_rel_change`` uses
+that CP. ``cpc_window_avg_flux`` and ``dead_zone_area_fraction_window``
+are written beside it. A leaf that has not been re-extracted leaves
+the live column blank.
 
 ``--mesh-only`` writes 31 meshing jobs. ``--mesh-table`` prints cell
 count, membrane layers, orthogonal quality, aspect ratio, the quality
@@ -86,8 +89,10 @@ SEMINAR_CASES_COLUMNS = (
     "geo_id",
     "mesh_id",
     "run_id",
-    "cpc_window_avg_flux",
+    "cp_canon_live_window_avg",
     "cp_excess",
+    "cpc_window_avg_flux",
+    "dead_zone_area_fraction_window",
     "cp_q999_window_flux",
     "pressure_drop_spacer_per_m",
     "lmh_window_exposed",
@@ -107,6 +112,10 @@ COMPARE_COLUMNS = (
     "cp_rel_change",
     "v2_cp_excess",
     "v3_cp_excess",
+    "v2_cpc",
+    "v3_cpc",
+    "v2_dead_zone_area_fraction",
+    "v3_dead_zone_area_fraction",
     "v2_q999",
     "v3_q999",
     "v2_dp_per_m",
@@ -523,18 +532,22 @@ def _run_manifest(run_directory):
 def leaf_metrics(run_directory):
     """CP, excess, q999, dP/L, LMH, and the convergence gate for one leaf.
 
-    CP is ``cpc_window_avg_flux``. Excess is CP minus 1. q999 is
-    ``cp_q999_window_flux``, not that value minus 1. Installed LMH is
-    ``lmh_window_module``.
+    CP is ``cp_canon_live_window_avg``. Excess is that value minus 1.
+    ``cpc`` is ``cpc_window_avg_flux``. q999 is ``cp_q999_window_flux``,
+    not that value minus 1. Installed LMH is ``lmh_window_module``.
     """
     wide = _wide_row(run_directory)
     manifest = _run_manifest(run_directory)
-    cp = _optional_float(wide.get("cpc_window_avg_flux"))
+    cp = _optional_float(wide.get("cp_canon_live_window_avg"))
     gate = manifest.get("convergence_quality")
     if not isinstance(gate, str) or not gate.strip():
         gate = "MISSING"
     return {
         "cp": cp,
+        "cpc": _optional_float(wide.get("cpc_window_avg_flux")),
+        "dead_zone_area_fraction": _optional_float(
+            wide.get("dead_zone_area_fraction_window")
+        ),
         "cp_excess": None if cp is None else cp - 1.0,
         "q999": _optional_float(wide.get("cp_q999_window_flux")),
         "dp_per_m": _optional_float(wide.get("pressure_drop_spacer_per_m")),
@@ -579,6 +592,10 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                     "cp_rel_change": step,
                     "v2_cp_excess": v2["cp_excess"],
                     "v3_cp_excess": v3["cp_excess"],
+                    "v2_cpc": v2["cpc"],
+                    "v3_cpc": v3["cpc"],
+                    "v2_dead_zone_area_fraction": v2["dead_zone_area_fraction"],
+                    "v3_dead_zone_area_fraction": v3["dead_zone_area_fraction"],
                     "v2_q999": v2["q999"],
                     "v3_q999": v3["q999"],
                     "v2_dp_per_m": v2["dp_per_m"],
@@ -595,7 +612,7 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
 
 
 def seminar_rows(data_root, mesh_ids):
-    """Benchmark figure table. CP is ``cpc_window_avg_flux``."""
+    """Benchmark figure table. CP is ``cp_canon_live_window_avg``."""
     rows = []
     for run_id in run_ids():
         for geo_id in CAMPAIGN_GEO_ID_ORDER:
@@ -613,8 +630,12 @@ def seminar_rows(data_root, mesh_ids):
                     "geo_id": geo_id,
                     "mesh_id": mesh_id,
                     "run_id": run_id,
-                    "cpc_window_avg_flux": metrics["cp"],
+                    "cp_canon_live_window_avg": metrics["cp"],
                     "cp_excess": metrics["cp_excess"],
+                    "cpc_window_avg_flux": metrics["cpc"],
+                    "dead_zone_area_fraction_window": metrics[
+                        "dead_zone_area_fraction"
+                    ],
                     "cp_q999_window_flux": metrics["q999"],
                     "pressure_drop_spacer_per_m": metrics["dp_per_m"],
                     "lmh_window_exposed": metrics["lmh_exposed"],

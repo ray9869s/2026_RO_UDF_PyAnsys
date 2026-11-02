@@ -454,6 +454,9 @@ were generated on the host and are not in this checkout.
   (`src/ro/extract_profile.py:74–75`). `CP_q999` replaces the facet max
   and is auxiliary / mesh-sensitive. Area versus flux was **OPEN** after
   2026-10-08; flux is the 2026-10-19 choice.
+  **Superseded for the benchmark (2026-11-02).** `campaign_v3` ranks on
+  `cp_canon_live_window_avg`. `cpc_window_avg_flux` remains a secondary
+  column. The flux choice above is the historical column.
 - Paper / MFBO LMH: `lmh_window_module` primary, `lmh_window_exposed`
   alongside (`src/ro/evaluation_window_table.py:429–461`;
   `src/ro/mfbo_adapter.py:1157`).

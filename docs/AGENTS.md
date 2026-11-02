@@ -51,6 +51,11 @@ modulus above remains the definition of `cp_canon_window_avg`. The
 meeting did not choose the area versus flux reference.
 **2026-10-19.** Comparison uses `cpc_window_avg_flux` and
 `cp_q999_window_flux`. `CP_q999` is auxiliary and mesh-sensitive.
+**2026-11-02.** Benchmark CP is `cp_canon_live_window_avg`: local
+\(c_p\) per face, area-weighted, with faces where \(c_p \ge c_0\) left
+out of the average. `cpc_window_avg_flux` stays a secondary column.
+`cp_canon_window_avg` still counts those faces as 0. See
+`docs/metrics_conventions.md`.
 
 **CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
 \(c_m\) and \(c_p\) when the denominator is face-dependent.

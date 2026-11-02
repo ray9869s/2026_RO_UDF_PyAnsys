@@ -358,6 +358,59 @@ definitions below are unchanged. `cp_canon_window_avg` is still written.
 (`src/ro/mfbo_adapter.py:1181–1182`). Area columns remain in the extract.
 `CP_q99` is still not adopted. `CP_q999` is auxiliary and mesh-sensitive.
 
+**Live canon (2026-11-02).** Benchmark comparison uses
+`cp_canon_live_window_avg`. On the evaluation-window membrane clip,
+each face keeps its own \(c_p = B c_m / (J_w + B)\) and the window
+mixing-cup \(c_b\):
+
+\[
+M = (c_m - c_p) / (c_b - c_p)
+\]
+
+Faces with \(c_p \ge c_0\) (\(c_0 =\) `C_INLET_REF`, 597.8268309 mol/m³)
+are the dead zone. The UDF stores udm-9 as 0 on those faces
+(`udfs/260822_RO_UDF.c:390–393`) because the inlet denominator is not
+positive. `cp_canon_window_avg` still area-weights that 0.
+`cp_canon_live_window_avg` leaves those faces out of the average.
+`dead_zone_area_fraction_window` is their area over the window membrane
+area. Both columns are written by the same face read as
+`cpc_window_avg_flux` (`src/ro/cp_concentration_stats.py`,
+`live_canon_window`). `cpc_window_avg_flux` stays in the extract and in
+the campaign figure CSV as a secondary column. The MFBO adapter still
+reads `cpc_window_avg_flux`.
+
+The quadratic water flux does not reach 0 while \(\Delta P > 0\)
+(`udfs/260822_RO_UDF.c:650–659`). At large \(c_m\),
+
+\[
+J_w \approx B\,\Delta P / (\kappa c_m), \qquad c_m - c_p \to \Delta P / \kappa.
+\]
+
+With \(A = 2.50\times 10^{-12}\), \(B = 2.50\times 10^{-8}\),
+\(\kappa = 4958\), and \(\Delta P = 6\,\mathrm{MPa}\), \(c_m - c_p\)
+saturates near \(1210\,\mathrm{mol\,m^{-3}}\) (modulus about 2 against
+\(c_0\)). \(c_m\) itself is not capped. In a stagnant contact wedge the
+sink still raises the cell salt fraction, because the permeate fraction
+is below the cell fraction, until the UDF read clamps \(Y_i\) at 1
+(`udfs/260822_RO_UDF.c:620–621`). That clamp is
+\(\rho / M = 998.20 / 0.05844 = 17080.8\,\mathrm{mol\,m^{-3}}\).
+`cpc` and `cp_q999` divide by one window \(c_p\) of a few mol/m³, so
+they track \(c_m / c_b\) and report about 28 on that ceiling.
+Production `S_a144_l3465` already has the pocket (`cm_max` 3114, about
+5.2 on \(c_m/c_b\)) on well under 0.1% of the window, so `cpc` and
+`q999` do not move. The y1 = 2 µm bulk leaf grew that area past 1%
+(`cp_q99_window_flux` 6.67) and into the area mean (`cpc` 1.259 against
+`cp_canon_window_avg` 1.108).
+
+`lmh_relative_difference` on that leaf is \(8.84\times 10^{-5}\). An
+earlier report truncated the exponent. The gap
+`lmh_difference_mass_balance_minus_udm` is 0.0023 LMH. The production
+gate is \(|\mathrm{lmh\_relative\_difference}| < 10^{-3}\)
+(`src/ro/convergence_quality.py:30`).
+
+Existing leaves can be re-extracted without a new solve. The live
+columns read `udm-6` and `udm-7` already stored on `final.dat.h5`.
+
 On the evaluation-window x-clip of both membranes together, each face
 contributes cell-stored `udm-7` (\(c_m\)), `udm-6` (\(J_w\)), and its
 area. Face UDM is off in production, so `boundary_value=False` returns

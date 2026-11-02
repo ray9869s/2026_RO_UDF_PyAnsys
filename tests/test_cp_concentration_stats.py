@@ -5,13 +5,16 @@ import pytest
 from helpers import REPO_ROOT
 from ro.cp_concentration_stats import (
     B_PERM_M_PER_S,
+    C_INLET_REF_MOL_PER_M3,
     QUANTILE_DEFINITION,
     area_weighted_quantile,
     concentration_cp_report,
     concentration_cp_summary_rows,
     cp_face_mol_per_m3,
     distribution_cp_metrics,
+    live_canon_window,
     production_b_perm_m_per_s,
+    production_c_inlet_ref_mol_per_m3,
     reference_permeate,
 )
 from ro.fluent_report_helpers import summary_rows_to_wide_record
@@ -40,6 +43,10 @@ def test_b_perm_matches_production_udf():
     assert parsed == pytest.approx(2.50e-8)
     assert production_b_perm_m_per_s() == pytest.approx(parsed)
     assert B_PERM_M_PER_S == pytest.approx(parsed)
+    c0 = parse_udf_membrane_constants(source)["c_inlet_ref"]
+    assert c0 == pytest.approx(597.8268309)
+    assert production_c_inlet_ref_mol_per_m3() == pytest.approx(c0)
+    assert C_INLET_REF_MOL_PER_M3 == pytest.approx(c0)
 
 
 def test_area_weighted_quantile_ties_single_face_and_edges():
@@ -124,3 +131,33 @@ def test_existing_summary_columns_unchanged():
     assert "cp_canon_window_avg" not in {
         row["metric"] for row in concentration_cp_summary_rows(report)
     }
+    assert after["cp_canon_live_window_avg"] == pytest.approx(
+        report["cp_canon_live_window_avg"]
+    )
+    assert after["dead_zone_area_fraction_window"] == pytest.approx(0.0)
+
+
+def test_live_canon_drops_dead_zone_faces_instead_of_averaging_zero():
+    # c_p = B*cm/(Jw+B). B=1, c_0=10, c_b=12.
+    # Live face: cm=4, Jw=1 → c_p=2, M=(4-2)/(12-2)=0.2, area 3.
+    # Dead face: cm=40, Jw=1 → c_p=20 >= 10, area 1. Stored udm-9 would be 0.
+    faces = [_face(4.0, 1.0, 3.0), _face(40.0, 1.0, 1.0)]
+    live = live_canon_window(faces, c_b=12.0, b_perm=1.0, c_inlet_ref=10.0)
+    assert live["cp_canon_live_avg"] == pytest.approx(0.2)
+    assert live["dead_zone_area_fraction"] == pytest.approx(0.25)
+    including_zero = (0.2 * 3.0 + 0.0 * 1.0) / 4.0
+    assert live["cp_canon_live_avg"] != pytest.approx(including_zero)
+    with pytest.raises(ValueError, match="c_b - c_p"):
+        live_canon_window(
+            [_face(8.0, 1.0, 1.0)],
+            c_b=3.0,
+            b_perm=1.0,
+            c_inlet_ref=10.0,
+        )
+    with pytest.raises(ValueError, match="no face with c_p < c_0"):
+        live_canon_window(
+            [_face(40.0, 1.0, 1.0)],
+            c_b=12.0,
+            b_perm=1.0,
+            c_inlet_ref=10.0,
+        )

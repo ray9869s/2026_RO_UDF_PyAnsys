@@ -331,7 +331,9 @@ reduction이 예외를 내면 `resolve_channel_midplane_z_m`은 올리지 않고
 
 | 열 | 단위 | 범위 | 캠페인 결론 | 비고 |
 |---|---|---|---|---|
-| **`cp_canon_window_avg`** | — | window | **yes** | 캠페인 비교 정의. 2026-10-08 회의 이후 비교 정의는 농도통계. 이 열의 정의는 유지. |
+| **`cp_canon_live_window_avg`** | — | window | **yes** | 2026-11-02 벤치마크 CP. face별 \((c_m-c_p)/(c_b-c_p)\). \(c_p \ge c_0\) face는 평균에서 제외. |
+| `dead_zone_area_fraction_window` | — | window | diagnostic | \(c_p \ge c_0\) 면적 / window 막 면적. udm-9가 0으로 저장된 dead zone. |
+| `cp_canon_window_avg` | — | window | reference | dead zone을 0으로 포함한 기존 canon. 정의는 유지. 벤치마크 1차 열은 live. |
 | `cp_canon_window_max` | — | window | **no** | metrics: 단일 저-Jw face. iteration에 민감. |
 | `cp_L1_window_avg` / `_max` | — | window | no | Gu 2017. 정의 민감도 표만. |
 | `cp_L2_window_avg` / `_max` | — | window | no | UDM-9 그대로 (inlet `c_0`). |

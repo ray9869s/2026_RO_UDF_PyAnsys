@@ -47,6 +47,8 @@ METRICS = (
     "pressure_drop_spacer_per_m",
     "cpc_window_avg_flux_minus_1",
     "cp_q999_window_flux_minus_1",
+    "cp_canon_window_avg",
+    "cp_canon_live_window_avg",
     "c1_area_mean_window",
     "cm_area_mean_window",
     "c_b_window_mol_m3",
@@ -78,10 +80,13 @@ _SUMMARY_FIELDS = (
     "pressure_drop_spacer_per_m",
     "cpc_window_avg_flux",
     "cp_q999_window_flux",
+    "cp_canon_window_avg",
     "c1_area_mean_window",
     "cm_area_mean_window",
     "c_b_window_mol_m3",
 )
+# Present only after a re-extract that writes the dead-zone exclusion.
+_OPTIONAL_SUMMARY_FIELDS = ("cp_canon_live_window_avg",)
 _LAYOUT_FIELDS = (
     "n_active_cells",
     "cell_length_x_m",
@@ -395,6 +400,13 @@ def _require_summary_number(row, column, path):
     return _finite(row[column], f"{path} column {column}")
 
 
+def _optional_summary_number(row, column, path):
+    """None when the column is absent or blank. A present value must be finite."""
+    if column not in row or row[column] is None or str(row[column]).strip() == "":
+        return None
+    return _finite(row[column], f"{path} column {column}")
+
+
 def metric_values(levels):
     """Map each reported metric to its coarse-to-fine values."""
     series = {name: [] for name in METRICS}
@@ -404,6 +416,7 @@ def metric_values(levels):
         series["pressure_drop_spacer_per_m"].append(level["pressure_drop_spacer_per_m"])
         series["cpc_window_avg_flux_minus_1"].append(level["cpc_window_avg_flux"] - 1.0)
         series["cp_q999_window_flux_minus_1"].append(level["cp_q999_window_flux"] - 1.0)
+        series["cp_canon_window_avg"].append(level["cp_canon_window_avg"])
         c1 = level["c1_area_mean_window"]
         cm = level["cm_area_mean_window"]
         if c1 == 0.0:
@@ -415,6 +428,11 @@ def metric_values(levels):
         series["cm_area_mean_window"].append(cm)
         series["c_b_window_mol_m3"].append(level["c_b_window_mol_m3"])
         series["film_correction_cm_minus_c1_over_c1"].append((cm - c1) / c1)
+    live = [level.get("cp_canon_live_window_avg") for level in levels]
+    if all(value is not None for value in live):
+        series["cp_canon_live_window_avg"] = live
+    else:
+        series.pop("cp_canon_live_window_avg", None)
     return series
 
 
@@ -464,6 +482,10 @@ def load_levels(data_root, geo_id, run_id, mesh_ids):
             column: _require_summary_number(summary, column, summary_path)
             for column in _SUMMARY_FIELDS
         }
+        for column in _OPTIONAL_SUMMARY_FIELDS:
+            summary_numbers[column] = _optional_summary_number(
+                summary, column, summary_path
+            )
         try:
             module_area = summarize_results.lmh_per_module_area(
                 summary_numbers["lmh_mass_balance"],
@@ -512,10 +534,15 @@ def _blank(value):
     return str(value)
 
 
+def _reported_metrics(analyses):
+    """METRICS order, omitting a live-canon series the leaves do not have yet."""
+    return tuple(name for name in METRICS if name in analyses)
+
+
 def convergence_rows(levels, analyses):
     """One CSV row per metric and mesh level. Estimates sit on the finest row."""
     rows = []
-    for metric in METRICS:
+    for metric in _reported_metrics(analyses):
         analysis = analyses[metric]
         values = analysis["values"]
         differences = analysis["differences"]
@@ -617,7 +644,7 @@ def to_markdown(geo_id, run_id, mode, ratio, levels, analyses):
         "Stern et al. 2001).",
         "",
     ]
-    for metric in METRICS:
+    for metric in _reported_metrics(analyses):
         analysis = analyses[metric]
         lines.append(f"## {metric}")
         lines.append("")

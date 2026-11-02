@@ -349,9 +349,15 @@ def test_raw_cell_concentration_sits_beside_reconstructed_cm():
     assert mean == pytest.approx(
         mass_fraction_to_molar_concentration(0.0525, 998.2, 0.05844)
     )
-    bare = concentration_cp_summary_rows({"window": WINDOW, "cells": {}})
+    bare_report = {
+        "window": WINDOW,
+        "cells": {},
+        "cp_canon_live_window_avg": 1.01,
+        "dead_zone_area_fraction_window": 0.0,
+    }
+    bare = concentration_cp_summary_rows(bare_report)
     with_c1 = concentration_cp_summary_rows(
-        {"window": WINDOW, "cells": {}},
+        bare_report,
         c1_area_mean_window=mean,
     )
     bare_names = [row["metric"] for row in bare]

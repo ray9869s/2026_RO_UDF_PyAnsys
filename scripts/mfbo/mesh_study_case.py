@@ -116,7 +116,10 @@ MESH_PRINT_FIELDS = (
 SUMMARY_PRINT_FIELDS = (
     "lmh_mass_balance",
     "pressure_drop_spacer_per_m",
+    "cp_canon_live_window_avg",
+    "dead_zone_area_fraction_window",
     "cpc_window_avg_flux",
+    "cp_canon_window_avg",
     "cp_q99_window_flux",
     "cp_q999_window_flux",
 )

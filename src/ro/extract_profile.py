@@ -74,6 +74,8 @@ MFBO_REQUIRED_SUMMARY_COLUMNS = (
     "cpc_window_avg_flux",
     "cp_q999_window_flux",
     "cp_canon_window_avg",
+    "cp_canon_live_window_avg",
+    "dead_zone_area_fraction_window",
     "active_window_fluid_volume_m3",
     "active_window_membrane_area_m2",
     "active_window_spacer_area_m2",
@@ -93,7 +95,8 @@ MFBO_REQUIRED_SUMMARY_COLUMNS = (
 # ``mfbo`` is MFBO_REQUIRED_SUMMARY_COLUMNS above: score columns
 # (lmh_window_module, lmh_mass_balance, lmh_window_exposed,
 # pressure_drop_spacer_per_m, cpc_window_avg_flux, cp_q999_window_flux,
-# cp_canon_window_avg), window and geometry columns, and the convergence-gate
+# cp_canon_window_avg, cp_canon_live_window_avg,
+# dead_zone_area_fraction_window), window and geometry columns, and the convergence-gate
 # inputs that live on the wide summary (lmh_udm_avg, lmh_relative_difference,
 # m_in, m_out, mass_balance_relative_error). continuity_final is read from
 # the residual transcript, not from this CSV.
@@ -166,6 +169,8 @@ _MFBO_SUMMARY_METRICS = frozenset(
         "c_b_window_salt_field",
         "c_b_window_is_mass_fraction_field",
         "cp_canon_window_avg",
+        "cp_canon_live_window_avg",
+        "dead_zone_area_fraction_window",
         "cp_canon_window_max",
         "cp_L1_window_avg",
         "cp_L1_window_max",

@@ -66,7 +66,7 @@ def _spec():
     return load_mesh_spec(default_spec_path())
 
 
-def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, installed, gate, spec_hash="", git_head=""):
+def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, installed, gate, cpc=None, dead=0.0, spec_hash="", git_head=""):
     family = family_for_geo_id(geo_id)
     leaf = root / "runs" / family / geo_id / mesh_id / run_id
     reports = leaf / "post" / "reports"
@@ -75,7 +75,9 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
         writer = csv.DictWriter(
             handle,
             fieldnames=[
+                "cp_canon_live_window_avg",
                 "cpc_window_avg_flux",
+                "dead_zone_area_fraction_window",
                 "cp_q999_window_flux",
                 "pressure_drop_spacer_per_m",
                 "lmh_window_exposed",
@@ -85,7 +87,9 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
         writer.writeheader()
         writer.writerow(
             {
-                "cpc_window_avg_flux": cp,
+                "cp_canon_live_window_avg": cp,
+                "cpc_window_avg_flux": cp if cpc is None else cpc,
+                "dead_zone_area_fraction_window": dead,
                 "cp_q999_window_flux": q999,
                 "pressure_drop_spacer_per_m": dp,
                 "lmh_window_exposed": exposed,
@@ -322,6 +326,10 @@ def test_comparison_step_uses_cp_itself(tmp_path):
     assert row["v2_cp_excess"] == pytest.approx(0.10)
     assert row["v3_cp_excess"] == pytest.approx(0.21)
     assert row["cp_rel_change"] == pytest.approx(0.1)
+    assert row["v2_cpc"] == pytest.approx(1.10)
+    assert row["v3_cpc"] == pytest.approx(1.21)
+    assert row["v2_dead_zone_area_fraction"] == pytest.approx(0.0)
+    assert row["v3_dead_zone_area_fraction"] == pytest.approx(0.0)
     assert row["v2_q999"] == pytest.approx(1.20)
     assert row["v3_q999"] == pytest.approx(1.40)
     assert row["v2_gate"] == "PASS"
@@ -341,6 +349,8 @@ def test_seminar_csv_schema(tmp_path):
         MESH_ID,
         "u0p2_p6M",
         cp=1.0854,
+        cpc=1.2587,
+        dead=0.012,
         q999=1.848,
         dp=35423,
         exposed=24.10,
@@ -367,8 +377,10 @@ def test_seminar_csv_schema(tmp_path):
         rows = list(reader)
     assert len(rows) == 93
     filled = next(row for row in rows if row["geo_id"] == "D2450_a45" and row["run_id"] == "u0p2_p6M")
-    assert float(filled["cpc_window_avg_flux"]) == pytest.approx(1.0854)
+    assert float(filled["cp_canon_live_window_avg"]) == pytest.approx(1.0854)
     assert float(filled["cp_excess"]) == pytest.approx(0.0854)
+    assert float(filled["cpc_window_avg_flux"]) == pytest.approx(1.2587)
+    assert float(filled["dead_zone_area_fraction_window"]) == pytest.approx(0.012)
     assert "cpc_window_avg_flux_minus_1" not in reader.fieldnames
     assert filled["mesh_spec_sha256"] == _SPEC_HASH
     assert filled["git_head"] == _HEAD

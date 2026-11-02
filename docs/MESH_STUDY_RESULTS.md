@@ -360,6 +360,43 @@ on the last step (0.060 → 0.045). Bulk-level refinement (the Diamond
 `m_max` 0.028 drop on `D2450_a45`) is not tested. Other sinusoidal
 geos are not in this series.
 
+### Dead-zone \(c_m\) (2026-11-02)
+
+**From host report 2026-11-02, corrected.** The y1 = 2 µm polyhedra
+bulk leaf (`m_max` 0.035, bulk edge 0.034 mm, 5 layers, `u0p2_p6M`)
+reports `cpc_window_avg_flux` 1.2587, `cp_q99_window_flux` 6.67,
+`cp_q999_window_flux` 28.66, and `cm_max` 17081.
+`cp_canon_window_avg` and `cp_L2_window_avg` stay at 1.108. Film
+correction is about 0.1% (`c1_area_mean_window` 751.3,
+`cm_area_mean_window` 752.2). The mesh gate passes (max AR 119.6, max
+skew 0.53) and `convergence_quality` is PASS.
+
+17081 mol/m³ is the \(Y_i = 1\) clamp,
+\(\rho/M = 998.20/0.05844\). The quadratic \(J_w\) does not shut off
+at that concentration: `lmh_udm_min` 0.0069 LMH is the \(1/c_m\) branch,
+and `area_jw_nonpositive` is 0. \(c_m - c_p\) still saturates near
+\(\Delta P/\kappa \approx 1210\,\mathrm{mol\,m^{-3}}\). `cpc` and the
+quantiles subtract one window \(c_p\), so they follow \(c_m/c_b\).
+udm-9 on those faces is stored as 0 because \(c_p \ge c_0\), which is
+why canon and L2 stay near 1.11. The mechanism is in
+`docs/metrics_conventions.md`.
+
+Production BL 4 on this geometry has the same pocket at a smaller
+area: `cm_max` 3114 (about 5.2 as \(c_m/c_b\)), `cp_q999_window_flux`
+1.8225, `cpc_window_avg_flux` 1.0972. That area is under 0.1% of the
+window. The y1 = 2 µm leaf puts more than 1% of the window past
+\(c_m \sim 4000\,\mathrm{mol\,m^{-3}}\).
+
+`lmh_relative_difference` on the bulk leaf is \(8.84\times 10^{-5}\)
+(production \(1.3\times 10^{-4}\)). The absolute LMH gap is 0.0023 LMH.
+A first reading dropped the exponent. The gate threshold is \(10^{-3}\),
+so PASS is the value the gate read.
+
+Benchmark CP for this series is `cp_canon_live_window_avg` after
+re-extract, with `cp_canon_window_avg` kept beside it. Judge the bulk
+series in `scripts/mfbo/mesh_convergence.py` on those columns. Do not
+lock the sinusoidal spec to this leaf's `cpc`.
+
 ---
 
 ## Non-convergence (`P_p100_h00`)

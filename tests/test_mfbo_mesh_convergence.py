@@ -151,14 +151,17 @@ def _level(mesh_id, cell_count, lmh):
         "pressure_drop_spacer_per_m": 1000.0 + lmh,
         "cpc_window_avg_flux": 1.2 + lmh / 1000.0,
         "cp_q999_window_flux": 1.4 + lmh / 1000.0,
+        "cp_canon_window_avg": 1.05 + lmh / 10000.0,
         "c1_area_mean_window": 100.0,
         "cm_area_mean_window": 100.7,
         "c_b_window_mol_m3": 598.7,
     }
 
 
-def _write_level(root, mesh_id, cell_count, lmh):
+def _write_level(root, mesh_id, cell_count, lmh, *, live=None):
     level = _level(mesh_id, cell_count, lmh)
+    if live is not None:
+        level["cp_canon_live_window_avg"] = live
     manifest = root / "meshes" / "pillar" / "P_p80_h15" / mesh_id / "manifest.json"
     summary = (
         root
@@ -193,6 +196,8 @@ def _write_level(root, mesh_id, cell_count, lmh):
                 "pressure_drop_spacer_per_m",
                 "cpc_window_avg_flux",
                 "cp_q999_window_flux",
+                "cp_canon_window_avg",
+                "cp_canon_live_window_avg",
                 "c1_area_mean_window",
                 "cm_area_mean_window",
                 "c_b_window_mol_m3",
@@ -206,6 +211,8 @@ def _write_level(root, mesh_id, cell_count, lmh):
                 "pressure_drop_spacer_per_m": level["pressure_drop_spacer_per_m"],
                 "cpc_window_avg_flux": level["cpc_window_avg_flux"],
                 "cp_q999_window_flux": level["cp_q999_window_flux"],
+                "cp_canon_window_avg": level["cp_canon_window_avg"],
+                "cp_canon_live_window_avg": level.get("cp_canon_live_window_avg", ""),
                 "c1_area_mean_window": level["c1_area_mean_window"],
                 "cm_area_mean_window": level["cm_area_mean_window"],
                 "c_b_window_mol_m3": level["c_b_window_mol_m3"],
@@ -237,6 +244,8 @@ def test_report_reads_leaves_and_writes_csv_and_markdown(tmp_path):
     area = 2.0 * 7 * 0.01 * 0.01
     scaled = [value * 0.001 / area for value in _MONOTONE]
     assert module["values"] == pytest.approx(scaled)
+    assert "cp_canon_window_avg" in result["analyses"]
+    assert "cp_canon_live_window_avg" not in result["analyses"]
     cp = result["analyses"]["cpc_window_avg_flux_minus_1"]
     assert cp["values"] == pytest.approx(
         [1.2 + value / 1000.0 - 1.0 for value in _MONOTONE]
@@ -268,6 +277,27 @@ def test_report_reads_leaves_and_writes_csv_and_markdown(tmp_path):
     assert "supplied constant ratio" in flagged["markdown"]
     assert flagged["analyses"]["lmh_mass_balance"]["gci_fine"] == pytest.approx(
         1.25 / 11.0
+    )
+
+
+def test_live_canon_enters_the_series_when_every_leaf_has_it(tmp_path):
+    meshes = (
+        ("max085_min006_cpg5_bl4_peel2", 1000, 26.0),
+        ("max060_min006_cpg5_bl4_peel2", 8000, 14.0),
+        ("max045_min006_cpg5_bl4_peel2", 64000, 11.0),
+    )
+    for mesh_id, count, lmh in meshes:
+        _write_level(tmp_path, mesh_id, count, lmh, live=1.1 + lmh / 1000.0)
+    result = convergence.converge(
+        tmp_path,
+        "P_p80_h15",
+        "u0p2_p6M",
+        [item[0] for item in meshes],
+        tmp_path / "live-out",
+        mode="cell_count",
+    )
+    assert result["analyses"]["cp_canon_live_window_avg"]["values"] == pytest.approx(
+        [1.1 + value / 1000.0 for value in _MONOTONE]
     )
 
 

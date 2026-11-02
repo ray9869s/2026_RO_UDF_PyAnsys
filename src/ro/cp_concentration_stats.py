@@ -21,14 +21,25 @@ QUANTILE_DEFINITION = (
 )
 
 
-def production_b_perm_m_per_s() -> float:
-    """Salt permeability from the production UDF source, in m/s."""
+def _production_udf_constants() -> dict:
     path = project_root() / PRODUCTION_UDF_RELATIVE
     source = path.read_text(encoding="utf-8")
-    return float(parse_udf_membrane_constants(source)["b_perm"])
+    return parse_udf_membrane_constants(source)
 
 
-B_PERM_M_PER_S = production_b_perm_m_per_s()
+def production_b_perm_m_per_s() -> float:
+    """Salt permeability from the production UDF source, in m/s."""
+    return float(_production_udf_constants()["b_perm"])
+
+
+def production_c_inlet_ref_mol_per_m3() -> float:
+    """Inlet reference concentration from the production UDF, in mol/m3."""
+    return float(_production_udf_constants()["c_inlet_ref"])
+
+
+_PRODUCTION_UDF_CONSTANTS = _production_udf_constants()
+B_PERM_M_PER_S = float(_PRODUCTION_UDF_CONSTANTS["b_perm"])
+C_INLET_REF_MOL_PER_M3 = float(_PRODUCTION_UDF_CONSTANTS["c_inlet_ref"])
 
 
 def polygon_area(points):
@@ -235,6 +246,70 @@ def distribution_cp_metrics(faces, c_b, *, b_perm=B_PERM_M_PER_S):
     return metrics
 
 
+def live_canon_window(
+    faces,
+    c_b,
+    *,
+    b_perm=B_PERM_M_PER_S,
+    c_inlet_ref=C_INLET_REF_MOL_PER_M3,
+):
+    """Area-weighted local canon on faces with ``c_p < c_0``.
+
+    Each live face uses its own permeate concentration
+    ``c_p = B c_m / (J_w + B)`` and the window mixing-cup ``c_b``:
+
+        M = (c_m - c_p) / (c_b - c_p)
+
+    A face with ``c_p >= c_0`` is the dead zone. The UDF stores udm-9 as 0
+    there (``C_INLET_REF - c_p`` is not positive). Those faces stay in
+    ``dead_zone_area_fraction`` and are left out of the average, instead of
+    being entered as 0. ``c_b - c_p <= 0`` on a face that is still below
+    ``c_0`` raises: that modulus is undefined.
+    """
+    c_b = float(c_b)
+    c0 = float(c_inlet_ref)
+    if not math.isfinite(c_b) or not math.isfinite(c0) or c0 <= 0.0:
+        raise ValueError(
+            f"c_b and c_0 must be finite and c_0 positive, got c_b={c_b!r}, "
+            f"c_0={c0!r}."
+        )
+    total_area = 0.0
+    dead_area = 0.0
+    live_area = 0.0
+    weighted = 0.0
+    for face in _require_faces(faces):
+        area = float(face["area"])
+        if not math.isfinite(area):
+            raise ValueError(f"face area must be finite, got {area!r}.")
+        if area <= 0.0:
+            continue
+        cp = cp_face_mol_per_m3(face["cm"], face["jw"], b_perm)
+        total_area += area
+        if cp >= c0:
+            dead_area += area
+            continue
+        denominator = c_b - cp
+        if not math.isfinite(denominator) or denominator <= 0.0:
+            raise ValueError(
+                "live canon needs c_b - c_p > 0 on every face with "
+                f"c_p < c_0, got c_b={c_b!r}, c_p={cp!r}, cm={face['cm']!r}."
+            )
+        modulus = (float(face["cm"]) - cp) / denominator
+        weighted += modulus * area
+        live_area += area
+    if total_area <= 0.0:
+        raise ValueError("membrane window has no positive face area.")
+    if live_area <= 0.0:
+        raise ValueError(
+            "live canon has no face with c_p < c_0 "
+            f"(dead area {dead_area!r} of {total_area!r})."
+        )
+    return {
+        "cp_canon_live_avg": weighted / live_area,
+        "dead_zone_area_fraction": dead_area / total_area,
+    }
+
+
 def concentration_cp_report(
     window_faces,
     cell_faces,
@@ -242,6 +317,7 @@ def concentration_cp_report(
     c_b_by_cell,
     *,
     b_perm=B_PERM_M_PER_S,
+    c_inlet_ref=C_INLET_REF_MOL_PER_M3,
 ):
     """Window metrics plus per-cell diagnostics.
 
@@ -251,6 +327,12 @@ def concentration_cp_report(
     that cell's mid-plane ``c_b``.
     """
     window = distribution_cp_metrics(window_faces, c_b_window, b_perm=b_perm)
+    live = live_canon_window(
+        window_faces,
+        c_b_window,
+        b_perm=b_perm,
+        c_inlet_ref=c_inlet_ref,
+    )
     cells = {}
     for cell_number, faces in cell_faces.items():
         cell = int(cell_number)
@@ -262,6 +344,9 @@ def concentration_cp_report(
         "b_perm_m_per_s": float(b_perm),
         "quantile_definition": QUANTILE_DEFINITION,
         "c_b_window_mol_m3": float(c_b_window),
+        "c_inlet_ref_mol_m3": float(c_inlet_ref),
+        "cp_canon_live_window_avg": live["cp_canon_live_avg"],
+        "dead_zone_area_fraction_window": live["dead_zone_area_fraction"],
         "window": window,
         "cells": cells,
     }
@@ -299,6 +384,16 @@ def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
         _row("cp_q999_window_flux", window["cp_q999_flux"], "-"),
         _row("cp_q99_window_area", window["cp_q99_area"], "-"),
         _row("cp_q99_window_flux", window["cp_q99_flux"], "-"),
+        _row(
+            "cp_canon_live_window_avg",
+            report["cp_canon_live_window_avg"],
+            "-",
+        ),
+        _row(
+            "dead_zone_area_fraction_window",
+            report["dead_zone_area_fraction_window"],
+            "-",
+        ),
     ])
     for cell, metrics in sorted(report["cells"].items()):
         rows.extend(
