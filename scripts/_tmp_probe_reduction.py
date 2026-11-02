@@ -27,6 +27,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
 from ro.fluent_report_helpers import (  # noqa: E402
     create_x_normal_plane,
     list_named_object_names,
@@ -468,6 +469,7 @@ def main():
                 ui_mode="gui",
                 graphics_driver=GRAPHICS_DRIVER,
                 start_timeout=FLUENT_START_TIMEOUT,
+                additional_arguments=fluent_mpi_argument(),
                 cwd=as_fluent_path(case_path),
             )
             print("Meshing session launched successfully.")

@@ -33,6 +33,7 @@ from ro.cp_metrics import (
     window_area_weighted_average,
 )
 from ro.domain_layout import layout_from_run_directory
+from ro.fluent_launch import fluent_mpi_argument
 from ro.fluent_report_helpers import (
     resolve_channel_midplane_z_m,
     create_z_normal_plane,
@@ -711,6 +712,7 @@ def diagnose_run(
             processor_count=args.processor_count,
             ui_mode=args.ui_mode,
             graphics_driver=args.graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
             cwd=path_to_fluent_str(case_dir),
         )
         solver = meshing.switch_to_solver()

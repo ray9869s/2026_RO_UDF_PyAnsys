@@ -27,6 +27,7 @@ from ro.membrane_bl import (
     membrane_bl_summary_lines,
     resolve_membrane_bl,
 )
+from ro.fluent_launch import fluent_mpi_argument, resolve_fluent_mpi
 from ro.geometry_registry import require_mfp_geometry_sha256
 from ro.manifest import (
     MESH_PHASE_NAMES,
@@ -725,6 +726,7 @@ if __name__ == "__main__":
     product_version = cfg.product_version
     processor_count = cfg.processor_count
     graphics_driver = cfg.graphics_driver
+    fluent_mpi = resolve_fluent_mpi(getattr(cfg, "fluent_mpi", None))
 
     # [Mesh size]
     m_max = cfg.m_max
@@ -1363,6 +1365,7 @@ if __name__ == "__main__":
                 processor_count=processor_count,
                 ui_mode="gui",
                 graphics_driver=graphics_driver,
+                additional_arguments=fluent_mpi_argument(fluent_mpi),
             )
 
         workflow = meshing.workflow

@@ -66,6 +66,7 @@ import matplotlib.tri as mtri
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
+from ro.fluent_launch import fluent_mpi_argument
 from ro.paths import project_root, resolve_selected_run_directory
 from ro.shear_cff_mu_guard import emit_scm_mu_guard_message
 
@@ -3620,6 +3621,7 @@ def main() -> int:
             ui_mode="gui",
             graphics_driver=graphics_driver,
             start_timeout=start_timeout,
+            additional_arguments=fluent_mpi_argument(),
             cwd=as_fluent_path(case_path),
         )
         print("Switching to solver...")

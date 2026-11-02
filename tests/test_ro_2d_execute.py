@@ -503,7 +503,11 @@ class _Meshing:
         self.events.append("exit_meshing")
 
 
-def test_launch_kwargs_are_2d_meshing_with_gui(tmp_path: Path) -> None:
+def test_launch_kwargs_are_2d_meshing_with_gui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RO_FLUENT_MPI", raising=False)
     kwargs = meshing_launch_kwargs(cwd=tmp_path)
     assert kwargs["mode"] == "meshing"
     assert kwargs["dimension"] == 2
@@ -512,6 +516,7 @@ def test_launch_kwargs_are_2d_meshing_with_gui(tmp_path: Path) -> None:
     assert kwargs["ui_mode"] == "gui"
     assert kwargs["graphics_driver"] == "dx11"
     assert kwargs["start_timeout"] == 300
+    assert kwargs["additional_arguments"] == "-mpi=intel"
     assert kwargs["mode"] != "pure_meshing"
     assert kwargs["mode"] != "solver"
 

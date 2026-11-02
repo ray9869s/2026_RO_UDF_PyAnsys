@@ -94,7 +94,8 @@ def test_fluent_targets_must_be_copies(tmp_path):
         )
 
 
-def test_launch_kwargs_match_post_path_with_two_processors(tmp_path):
+def test_launch_kwargs_match_post_path_with_two_processors(tmp_path, monkeypatch):
+    monkeypatch.delenv("RO_FLUENT_MPI", raising=False)
     run_config = diagnose.load_run_config()
     kwargs = diagnose.production_post_launch_kwargs(tmp_path, run_config)
     assert kwargs["mode"] == "meshing"
@@ -104,6 +105,7 @@ def test_launch_kwargs_match_post_path_with_two_processors(tmp_path):
     assert kwargs["ui_mode"] == "gui"
     assert kwargs["product_version"] == run_config.product_version
     assert kwargs["graphics_driver"] == run_config.graphics_driver
+    assert kwargs["additional_arguments"] == "-mpi=intel"
     assert "C:/ro_data" not in kwargs["cwd"]
     with pytest.raises(ValueError, match="C:/ro_data"):
         diagnose.production_post_launch_kwargs(

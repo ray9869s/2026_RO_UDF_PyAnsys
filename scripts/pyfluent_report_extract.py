@@ -64,6 +64,7 @@ from ro.evaluation_window_table import (  # noqa: E402
     window_lmh,
 )
 from ro.extract_skip import write_extract_source_record  # noqa: E402
+from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
 from ro.session_retry import print_fluent_launch_identity  # noqa: E402
 from ro.solver_common import (  # noqa: E402
     FINAL_CASE_SHA256_FIELD,
@@ -1173,6 +1174,9 @@ if __name__ == "__main__":
             ui_mode="gui",
             graphics_driver=graphics_driver,
             start_timeout=fluent_start_timeout,
+            additional_arguments=fluent_mpi_argument(
+                getattr(cfg, "fluent_mpi", None)
+            ),
             cwd=as_fluent_path(case_path),
         )
         print_fluent_launch_identity(meshing)

@@ -40,6 +40,7 @@ from ro.solver_common import (
     parse_last_residual_iteration_from_transcript_text,
     path_to_fluent_str,
 )
+from ro.fluent_launch import fluent_mpi_argument
 from ro_2d_pilot.config import PilotConfig
 from ro_2d_pilot.membrane_diag import divergence_phase
 from ro_2d_pilot.source_schedule import (
@@ -229,6 +230,7 @@ def meshing_launch_kwargs(
             "dx11",
         ),
         "start_timeout": start_timeout,
+        "additional_arguments": fluent_mpi_argument(),
         "cwd": str(cwd),
     }
 

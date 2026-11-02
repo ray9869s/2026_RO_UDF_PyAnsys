@@ -31,6 +31,7 @@ import mfbo._common as mfbo_common
 import mfbo.run_parity_mesh as parity_mesh
 from ro.cp_concentration_stats import B_PERM_M_PER_S
 from ro.cp_metrics import CP_SPREAD_AREA_QUANTILE_HI
+from ro.fluent_launch import fluent_mpi_argument
 from ro.domain_layout import (
     CURRENT_EVALUATION_WINDOW,
     layout_from_run_directory,
@@ -361,6 +362,9 @@ def production_post_launch_kwargs(cwd, run_config):
         "ui_mode": "gui",
         "graphics_driver": run_config.graphics_driver,
         "start_timeout": run_config.fluent_start_timeout,
+        "additional_arguments": fluent_mpi_argument(
+            getattr(run_config, "fluent_mpi", None)
+        ),
         "cwd": os.path.abspath(cwd).replace("\\", "/"),
     }
 

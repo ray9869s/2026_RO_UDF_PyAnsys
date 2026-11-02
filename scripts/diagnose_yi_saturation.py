@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ro.domain_layout import layout_from_run_directory
+from ro.fluent_launch import fluent_mpi_argument
 from ro.fluent_report_helpers import (
     compute_surface_report_value,
     create_or_update_surface_field_report,
@@ -894,6 +895,7 @@ def diagnose_run(
             processor_count=args.processor_count,
             ui_mode=args.ui_mode,
             graphics_driver=args.graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
             cwd=path_to_fluent_str(case_dir),
         )
         solver = meshing.switch_to_solver()

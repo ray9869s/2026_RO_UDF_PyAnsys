@@ -22,6 +22,7 @@ from collections.abc import Mapping
 
 import ansys.fluent.core as pyfluent
 
+from ro.fluent_launch import fluent_mpi_argument
 from ro.paths import project_root
 
 PMDB_PATH = "C:/ro_data/geom_smoke/smoke_box_ns.pmdb"
@@ -365,6 +366,7 @@ def main():
             processor_count=processor_count,
             ui_mode="gui",
             graphics_driver=graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
         )
         workflow = meshing.workflow
 

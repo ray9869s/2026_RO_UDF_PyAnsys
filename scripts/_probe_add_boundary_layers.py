@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib.util
+from ro.fluent_launch import fluent_mpi_argument
 import json
 import os
 import sys
@@ -153,6 +154,7 @@ def main():
             processor_count=processor_count,
             ui_mode="gui",
             graphics_driver=graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
         )
         workflow = meshing.workflow
         workflow.InitializeWorkflow(WorkflowType=r"Watertight Geometry")

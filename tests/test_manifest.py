@@ -279,16 +279,30 @@ def test_run_timing_fields_are_optional_and_do_not_change_existing_keys(
     assert "solver_wall_time_s" not in original
     assert "extraction_wall_time_s" not in original
     assert "processor_count" not in original
+    assert "fluent_mpi" not in original
 
     timed = dict(original)
     timed["solver_wall_time_s"] = 12.5
     timed["extraction_wall_time_s"] = 3.25
     timed["processor_count"] = 50
+    timed["fluent_mpi"] = "intel"
     write_run_manifest(directory, timed)
     loaded = read_run_manifest(directory)
     assert loaded["solver_wall_time_s"] == pytest.approx(12.5)
     assert loaded["extraction_wall_time_s"] == pytest.approx(3.25)
     assert loaded["processor_count"] == 50
+    assert loaded["fluent_mpi"] == "intel"
+    blank = dict(loaded)
+    blank["fluent_mpi"] = ""
+    write_run_manifest(directory, blank)
+    assert read_run_manifest(directory)["fluent_mpi"] == ""
+    rejected = dict(blank)
+    rejected["fluent_mpi"] = None
+    with pytest.raises(ManifestError, match="fluent_mpi"):
+        write_run_manifest(directory, rejected)
+    rejected["fluent_mpi"] = "intel mpi"
+    with pytest.raises(ManifestError, match="fluent_mpi"):
+        write_run_manifest(directory, rejected)
     for key, value in original.items():
         assert loaded[key] == value
     mismatched = dict(loaded)

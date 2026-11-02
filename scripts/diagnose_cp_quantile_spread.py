@@ -31,6 +31,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
+from ro.fluent_launch import fluent_mpi_argument
 from ro.cp_metrics import (
     BISECT_AREA_FRAC_TOL,
     BISECT_INTERVAL_REL_TOL,
@@ -605,6 +606,7 @@ def diagnose_run_fluent(args, case_dir: Path, geo_id: str, run_id: str) -> dict[
             processor_count=args.processor_count,
             ui_mode=args.ui_mode,
             graphics_driver=args.graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
             cwd=path_to_fluent_str(case_dir),
         )
         solver = meshing.switch_to_solver()

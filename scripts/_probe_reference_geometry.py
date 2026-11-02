@@ -27,6 +27,7 @@ from pathlib import Path
 import ansys.fluent.core as pyfluent
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
+from ro.fluent_launch import fluent_mpi_argument
 from ro.discovery_session import attach_queued_discovery_log
 from ro.paths import geometry_dir, project_root
 
@@ -995,6 +996,7 @@ def meshing_launch_kwargs(
         "processor_count": processor_count,
         "ui_mode": "gui",
         "graphics_driver": graphics_driver,
+        "additional_arguments": fluent_mpi_argument(),
     }
     if start_timeout is not None:
         kwargs["start_timeout"] = int(start_timeout)
@@ -1186,6 +1188,7 @@ def _run_diamond_batch(args):
             processor_count=processor_count,
             ui_mode="gui",
             graphics_driver=graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
         )
         meshing.transcript.start(file_name=as_fluent_path(transcript_path))
         transcript_is_running = True
@@ -1316,6 +1319,7 @@ def main(argv=None):
             processor_count=processor_count,
             ui_mode="gui",
             graphics_driver=graphics_driver,
+            additional_arguments=fluent_mpi_argument(),
         )
         meshing.transcript.start(file_name=as_fluent_path(transcript_path))
         transcript_is_running = True

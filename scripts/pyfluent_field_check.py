@@ -52,6 +52,7 @@ import pandas as pd
 
 CONFIG_ENV_VAR = "PYFLUENT_POST_CONFIG"
 
+from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
 from ro.paths import project_root, resolve_selected_run_directory  # noqa: E402
 from ro.udm_layout import (  # noqa: E402
     expected_udm_fields_from_enum,
@@ -582,6 +583,9 @@ def build_fluent_launch_kwargs(cfg: Any) -> dict[str, Any]:
         "mode": mode,
         "ui_mode": ui_mode,
         "graphics_driver": graphics_driver,
+        "additional_arguments": fluent_mpi_argument(
+            cfg_get(cfg, "fluent_mpi", None)
+        ),
     }
 
     return launch_kwargs

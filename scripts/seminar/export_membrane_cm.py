@@ -37,6 +37,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from ro.domain_layout import DomainLayout  # noqa: E402
+from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
 from ro.fluent_report_helpers import (  # noqa: E402
     mass_fraction_to_molar_concentration,
 )
@@ -460,6 +461,7 @@ def export_leaf(leaf, work_root, fig_dir):
             processor_count=PROCESSOR_COUNT,
             ui_mode="no_gui",
             start_timeout=START_TIMEOUT_S,
+            additional_arguments=fluent_mpi_argument(),
             cwd=path_to_fluent_str(scratch),
         )
         from ro.session_retry import print_fluent_launch_identity

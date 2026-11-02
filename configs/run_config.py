@@ -34,6 +34,7 @@ from ro.mesh_common import (
     make_canonical_mesh_case_name as _make_canonical_mesh_case_name,
 )
 from ro import paths as ro_paths
+from ro.fluent_launch import resolve_fluent_mpi
 from ro.solver_common import require_run_id_matches_operating_point
 
 REQUIRED = "===== Edit here ====="
@@ -109,6 +110,11 @@ n_trail_excluded = REQUIRED
 product_version = "25.1.0"
 processor_count = 50
 graphics_driver = "dx11"
+# Passed as -mpi=<value> on every Fluent launch. "intel" avoids the
+# Microsoft MPI hwtree abort on Windows hosts with 64 or more logical
+# CPUs (Ansys KB2797241). RO_FLUENT_MPI overrides this, and an empty
+# override omits -mpi so Fluent keeps its own default.
+fluent_mpi = "intel"
 
 fluent_start_timeout = 300
 fluent_health_timeout = 300
@@ -707,6 +713,7 @@ def validate_common():
     _require_set("geo_name", geo_name)
     _require_set("case_name", case_name)
     _require_positive_number("processor_count", processor_count)
+    resolve_fluent_mpi(fluent_mpi)
     _require_optional_sha256("mesh_spec_sha256", mesh_spec_sha256)
     _require_optional_git_head("git_head", git_head)
 

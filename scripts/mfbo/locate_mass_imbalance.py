@@ -40,6 +40,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from ro.domain_layout import DEFAULT_EXTENT_REL_TOL, layout_from_mesh_manifest
+from ro.fluent_launch import fluent_mpi_argument
 from ro.paths import FAMILY_RE, GEO_ID_RE, MESH_ID_RE, RUN_ID_RE
 from ro.solver_common import sha256_file
 
@@ -781,6 +782,9 @@ def _launch_kwargs(cwd, run_config):
         "ui_mode": "gui",
         "graphics_driver": run_config.graphics_driver,
         "start_timeout": run_config.fluent_start_timeout,
+        "additional_arguments": fluent_mpi_argument(
+            getattr(run_config, "fluent_mpi", None)
+        ),
         "cwd": os.path.abspath(cwd).replace("\\", "/"),
     }
 

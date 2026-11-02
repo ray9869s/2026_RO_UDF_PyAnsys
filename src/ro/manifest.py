@@ -39,6 +39,9 @@ Optional, written by the worker after the fact. Absent on older leaves:
   extraction_wall_time_s:     seconds for report extraction
   processor_count:            int >= 1, the count passed to the solver launch
                               (run) or to the meshing launch (mesh)
+  fluent_mpi:                 str, the MPI name passed as -mpi= on the
+                              solver launch. Empty means Fluent's default.
+                              Absent on leaves launched before 2026-11-02.
 
 Optional mesh timing, absent on older mesh leaves. A phase that did not run
 is omitted; ``mesh_wall_time_s`` is the sum of the phases that are present:
@@ -95,6 +98,7 @@ from pathlib import Path
 from typing import Any
 
 from ro.bulk_size import bulk_max_size_suffix
+from ro.fluent_launch import fluent_mpi_token
 from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
 from ro.local_sizing import local_sizing_suffix
 from ro.membrane_bl import (
@@ -623,6 +627,7 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     ):
         _optional_positive_int(payload, field, "Run")
     _optional_processor_count(payload)
+    _optional_fluent_mpi(payload)
     _optional_solver_wall_time_attempts(payload)
     _optional_solver_settings_attempts(payload)
     _optional_hf_solve_phases(payload)
@@ -778,6 +783,25 @@ def _optional_processor_count(payload: Mapping[str, Any]) -> None:
     if "processor_count" not in payload or payload["processor_count"] is None:
         return
     _require_integer(payload, "processor_count", "Run", minimum=1)
+
+
+def _optional_fluent_mpi(payload: Mapping[str, Any]) -> None:
+    if "fluent_mpi" not in payload:
+        return
+    value = payload["fluent_mpi"]
+    if value is None:
+        raise ManifestError(
+            "Run manifest fluent_mpi must be omitted when unset, not null."
+        )
+    try:
+        token = fluent_mpi_token(value)
+    except ValueError as exc:
+        raise ManifestError(f"Run manifest {exc}") from exc
+    if token != value:
+        raise ManifestError(
+            "Run manifest fluent_mpi must be empty or a single token, "
+            f"got {value!r}."
+        )
 
 
 def _optional_solver_settings_attempts(payload: Mapping[str, Any]) -> None:

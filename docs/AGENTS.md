@@ -144,8 +144,13 @@ tests that pass on both from the start.
 
 - **Preserve external behavior.** Env-var interfaces (`PYFLUENT_RUN_OVERRIDES`,
   `PYFLUENT_RUN_CONFIG`, `PYFLUENT_POST_CONFIG`, `PYFLUENT_POST_OVERRIDES`,
-  `PYFLUENT_SKIP_VALIDATION`, `RO_DATA_ROOT`, `PYFLUENT_PROJECT_ROOT`) and
+  `PYFLUENT_SKIP_VALIDATION`, `RO_DATA_ROOT`, `PYFLUENT_PROJECT_ROOT`,
+  `RO_FLUENT_MPI`) and
   config key names stay unchanged unless explicitly approved.
+  `RO_FLUENT_MPI` overrides `configs/run_config.py` `fluent_mpi` (default
+  `intel`) and is passed as `-mpi=<value>` on every Fluent launch. Empty
+  omits the flag. The solver records the resolved name as `fluent_mpi`
+  on the run manifest.
 - **Do not silently rename or drop CSV/JSON columns.** Additive columns from
   the restructure (`family`, `geo_id`, `mesh_id`, `run_id`) are in place.
   Inventory still emits `geo_name` / `case_name` as aliases of `geo_id` /

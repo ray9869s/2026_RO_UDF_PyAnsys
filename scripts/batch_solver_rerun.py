@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ro.fluent_launch import fluent_mpi_argument
 from ro.manifest import ManifestError, read_run_manifest
 from ro.paths import (
     any_id_filter,
@@ -4964,6 +4965,7 @@ def make_launch_kwargs(
         "processor_count": processor_count,
         "ui_mode": args.ui_mode,
         "start_timeout": args.start_timeout,
+        "additional_arguments": fluent_mpi_argument(),
         "cwd": fluent_path(launch_working_dir),
     }
     if args.graphics_driver:

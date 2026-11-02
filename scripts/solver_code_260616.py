@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_run_manifest
+from ro.fluent_launch import fluent_mpi_argument, resolve_fluent_mpi
 from ro.membrane_bl import (
     first_y1_transcript_text,
     format_y1_request_flag,
@@ -355,6 +356,7 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
             ),
         },
         "stop_reason": "RUNNING",
+        "fluent_mpi": resolve_fluent_mpi(getattr(cfg, "fluent_mpi", None)),
         "created_utc": created_utc or _utc_now_string(),
         SOLVER_ATTEMPT_ID_FIELD: solver_attempt_id or str(uuid.uuid4()),
     }
@@ -762,6 +764,7 @@ if __name__ == "__main__":
     product_version = cfg.product_version
     processor_count = cfg.processor_count
     graphics_driver = cfg.graphics_driver
+    fluent_mpi = resolve_fluent_mpi(getattr(cfg, "fluent_mpi", None))
     fluent_start_timeout = cfg.fluent_start_timeout
     fluent_health_timeout = cfg.fluent_health_timeout
 
@@ -4540,6 +4543,7 @@ if __name__ == "__main__":
                 ui_mode="gui",
                 graphics_driver=graphics_driver,
                 start_timeout=fluent_start_timeout,
+                additional_arguments=fluent_mpi_argument(fluent_mpi),
                 cwd=as_fluent_path(case_path),
             )
             print_fluent_launch_identity(meshing)
@@ -4631,6 +4635,7 @@ if __name__ == "__main__":
                 ui_mode="gui",
                 graphics_driver=graphics_driver,
                 start_timeout=fluent_start_timeout,
+                additional_arguments=fluent_mpi_argument(fluent_mpi),
                 cwd=as_fluent_path(case_path),
             )
             print_fluent_launch_identity(meshing)

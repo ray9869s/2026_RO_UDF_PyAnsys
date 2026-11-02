@@ -13,6 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
+from ro.fluent_launch import fluent_mpi_argument
 from ro.paths import mesh_dir, templates_dir
 from ro.solver_common import path_to_fluent_str
 
@@ -411,6 +412,7 @@ def run_live_probe(args):
             ui_mode=args.ui_mode,
             graphics_driver=args.graphics_driver,
             start_timeout=args.start_timeout,
+            additional_arguments=fluent_mpi_argument(),
         )
         solver = meshing.switch_to_solver()
         meshing = None
