@@ -1028,3 +1028,17 @@ def test_checkpoints_stay_unless_the_extract_passed(
         assert "Leaf size after cleanup:" not in out
     else:
         assert f"Kept checkpoints and setup case ({reason})." in out
+
+
+def test_campaign_v3_profile_tightens_the_stop_and_keeps_the_cap():
+    overrides = driver.convergence_profile_overrides("campaign_v3")
+    assert overrides["qoi_stop_criterion"] == 1e-4
+    assert overrides["qoi_previous_values_to_consider"] == 100
+    assert overrides["qoi_stop_include_cp"] is True
+    assert overrides["qoi_window_after_ramp"] is True
+    assert overrides["qoi_initial_values_to_ignore"] >= 150
+    assert overrides["residual_target"] == 1e-7
+    assert overrides["max_iterations"] == 2000
+    assert driver.convergence_profile_overrides(None) == {}
+    with pytest.raises(ValueError, match="Unknown convergence profile"):
+        driver.convergence_profile_overrides("production")

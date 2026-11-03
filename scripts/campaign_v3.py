@@ -27,7 +27,13 @@ cells and 6.5 h.
 The solve queue is u0p2, then u0p1, then u0p3. Every solve passes
 ``--reuse-mesh`` and ``--checkpoint-every 200``. After a PASS extract,
 that run drops its checkpoint pairs and setup case. ``--keep-checkpoints``
-leaves them in place. ``job_queue run`` is one Fluent at a time.
+leaves them in place. Solve jobs pass ``--convergence-profile campaign_v3``: residuals stay
+1e-7, and LMH, spacer pressure drop, and the CP monitor must each
+change by less than 1e-4 over 100 iterations that start after the
+flux ramp. The iteration cap stays 2000. Other campaigns keep the
+production 1e-3 LMH and pressure-drop stop.
+
+``job_queue run`` is one Fluent at a time.
 ``job_queue run --resume`` appends ``--resume`` to a failed solve
 because the argv is ``mesh_study_case``.
 
@@ -238,6 +244,7 @@ def _study_argv(
         if reuse_mesh:
             argv.append("--reuse-mesh")
         argv.extend(["--checkpoint-every", "200"])
+        argv.extend(["--convergence-profile", "campaign_v3"])
         if keep_checkpoints:
             argv.append("--keep-checkpoints")
     return argv

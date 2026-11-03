@@ -94,7 +94,31 @@ from ro.manifest_validation import (
     require_mesh_run_blocked_frac_agree,
 )
 from ro.lmh_metrics import lmh_mass_balance_expression
-from ro.fluent_report_helpers import create_x_normal_plane
+from ro.fluent_report_helpers import (
+    create_channel_midplane_plane,
+    create_x_normal_plane,
+    create_x_range_iso_clip,
+    measure_membrane_wall_z_bounds_m,
+)
+from ro.cp_concentration_stats import window_x_bounds
+from ro.convergence_stop import (
+    convergence_stop_manifest_fields,
+    require_window_after_ramp,
+)
+from ro.monitor_change import (
+    CP_CB_REPORT,
+    CP_CM_REPORT,
+    CP_MEMBRANE_CLIP,
+    CP_MIDPLANE_CLIP,
+    CP_MONITOR_FULL_MEMBRANE,
+    CP_MONITOR_WINDOW,
+    REPORT_FILE_SIGNIFICANT_DIGITS,
+    cb_salt_field_candidates,
+    cp_monitor_definition,
+    cp_report_file_name,
+    last100_monitor_changes,
+    molecular_weight_kg_per_mol,
+)
 from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
 from ro.udm_layout import (
     parse_ro_analytic_cwall_from_case,
@@ -888,6 +912,21 @@ if __name__ == "__main__":
     qoi_stop_criterion = cfg.qoi_stop_criterion
     qoi_previous_values_to_consider = cfg.qoi_previous_values_to_consider
     qoi_initial_values_to_ignore = cfg.qoi_initial_values_to_ignore
+    qoi_stop_include_cp = bool(getattr(cfg, "qoi_stop_include_cp", False))
+    qoi_window_after_ramp = bool(getattr(cfg, "qoi_window_after_ramp", False))
+    enable_cp_monitor_report_file = bool(
+        getattr(cfg, "enable_cp_monitor_report_file", True)
+    )
+    require_window_after_ramp(
+        enabled=qoi_window_after_ramp,
+        include_cp=qoi_stop_include_cp,
+        initial_values_to_ignore=qoi_initial_values_to_ignore,
+        ramp_full_iteration=ramp_full_iteration,
+    )
+    if qoi_stop_include_cp and not enable_qoi_convergence_stop:
+        raise ValueError(
+            "qoi_stop_include_cp requires enable_qoi_convergence_stop=True"
+        )
     lf_monitor_stop = require_lf_monitor_stop(cfg.lf_monitor_stop) if cfg.lf_monitor_stop is not None else None
     hf_monitor_stop = require_hf_monitor_stop(cfg.hf_monitor_stop) if cfg.hf_monitor_stop is not None else None
     hf_production_resume = (
@@ -3228,12 +3267,49 @@ def _list_named_object_names_best_effort(named_object):
     return []
 
 
-def ensure_lmh_udm_avg_report_file(solution, report_name, file_name):
+def apply_report_file_significant_digits(report_file, solver=None):
+    """Request at least 8 significant digits on a monitor report file.
+
+    Transcript columns stay on Fluent's fixed print width. The report file
+    is the source of record for relative changes below about 4e-5.
+    """
+    digits = REPORT_FILE_SIGNIFICANT_DIGITS
+    for attr in ("significant_digits", "precision"):
+        try:
+            setattr(report_file, attr, digits)
+        except Exception:
+            pass
+    scheme = None
+    if solver is not None:
+        scheme = getattr(solver, "scheme_eval", None)
+        if scheme is None:
+            scheme_obj = getattr(solver, "scheme", None)
+            scheme = getattr(scheme_obj, "eval", None) if scheme_obj is not None else None
+    if scheme is not None:
+        try:
+            scheme(f"(rpsetvar 'report/significant-digits {int(digits)})")
+        except Exception as exc:
+            print(f"Could not set report significant digits via scheme: {exc}")
+    if not getattr(apply_report_file_significant_digits, "_noted", False):
+        print(
+            "Monitor report files are the source of record for LMH, "
+            "pressure drop, and CP. Requested significant digits: "
+            f"{digits}. Transcript columns use Fluent's fixed print width "
+            "(about 3 decimal places) and do not resolve relative changes "
+            "below about 4e-5."
+        )
+        apply_report_file_significant_digits._noted = True
+    return report_file
+
+
+def ensure_lmh_udm_avg_report_file(solution, report_name, file_name, solver=None):
     """Create/update a Fluent report file for one QoI report definition.
 
     Fluent 25.1 surface report definitions do not expose create_report_file;
     history is written through solution.monitor.report_files instead.
     The file is written relative to Fluent's working directory (the case dir).
+    ``significant_digits`` is requested at 12. The transcript print format
+    is not widened; the report file is the source of record.
     """
     report_files = solution.monitor.report_files
     object_name = f"{report_name}_rfile"
@@ -3250,6 +3326,7 @@ def ensure_lmh_udm_avg_report_file(solution, report_name, file_name):
 
     report_file.report_defs = [report_name]
     report_file.file_name = file_name
+    apply_report_file_significant_digits(report_file, solver=solver)
     try:
         report_file.frequency = 1
     except Exception:
@@ -3268,6 +3345,177 @@ def ensure_lmh_udm_avg_report_file(solution, report_name, file_name):
         pass
     print(f"Report file '{object_name}' -> {file_name} (report_defs={report_name})")
     return object_name
+
+
+def _silence_report_print(report_definition):
+    """Keep ingredient reports out of the transcript. The ratio is printed."""
+    try:
+        report_definition.print = False
+    except Exception:
+        pass
+    return report_definition
+
+
+def update_solve_time_cp_monitor(
+    solver,
+    solution,
+    layout_record,
+    domain_x_min_m,
+    membrane_wall_zones,
+    species_name,
+    density_kg_per_m3,
+    salt_molecular_weight_g_per_mol,
+    *,
+    z_min_m=None,
+    z_max_m=None,
+):
+    """Create the CP monitor: area-mean udm-7 / window c_b.
+
+    The numerator is both membrane walls clipped to the evaluation window.
+    If that iso-clip cannot be created, the numerator is the full active
+    membrane and the monitor is named ``cp_full_membrane``. The denominator
+    stays the window mid-plane mixing cup. Returns None when that bulk
+    report cannot be created.
+    """
+    if not membrane_wall_zones:
+        print("WARNING: CP monitor skipped; no membrane walls.")
+        return None
+    try:
+        cells = layout_record.evaluation_window.evaluation_cell_numbers(
+            layout_record.layout
+        )
+        boundaries = layout_record.layout.boundary_positions(float(domain_x_min_m))
+        x_min_m, x_max_m = window_x_bounds(boundaries, cells)
+    except Exception as exc:
+        print(
+            "WARNING: CP monitor skipped; evaluation-window x range "
+            f"is not available: {type(exc).__name__}: {exc}"
+        )
+        return None
+
+    if z_min_m is None or z_max_m is None:
+        try:
+            z_min_m, z_max_m = measure_membrane_wall_z_bounds_m(
+                solution,
+                membrane_wall_zones,
+            )
+        except Exception as exc:
+            print(
+                "WARNING: CP monitor skipped; membrane z bounds failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return None
+
+    try:
+        plane_name, _z_mid, _diag = create_channel_midplane_plane(
+            solver,
+            solution=solution,
+            membrane_wall_names=membrane_wall_zones,
+            z_min_m=z_min_m,
+            z_max_m=z_max_m,
+            surface_name="cp_monitor_midplane",
+        )
+        create_x_range_iso_clip(
+            solver,
+            CP_MIDPLANE_CLIP,
+            [plane_name],
+            x_min_m,
+            x_max_m,
+        )
+        surface_reports = solution.report_definitions.surface
+        cb_report = None
+        cb_error = None
+        for field_name in cb_salt_field_candidates(species_name):
+            try:
+                cb_report = create_or_update_surface_field_report(
+                    surface_report_definitions=surface_reports,
+                    report_name=CP_CB_REPORT,
+                    report_type="surface-massavg",
+                    field_name=field_name,
+                    surface_names=[CP_MIDPLANE_CLIP],
+                )
+                cb_error = None
+                break
+            except Exception as exc:
+                cb_error = exc
+                print(
+                    f"WARNING: CP bulk field {field_name!r} was not accepted: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        if cb_report is None:
+            raise RuntimeError(
+                f"window c_b report was not created: {cb_error}"
+            )
+        _silence_report_print(cb_report)
+    except Exception as exc:
+        print(
+            "WARNING: CP monitor skipped; window bulk concentration "
+            f"is not available: {type(exc).__name__}: {exc}"
+        )
+        return None
+
+    scope = "window"
+    report_name = CP_MONITOR_WINDOW
+    cm_surfaces = [CP_MEMBRANE_CLIP]
+    try:
+        create_x_range_iso_clip(
+            solver,
+            CP_MEMBRANE_CLIP,
+            list(membrane_wall_zones),
+            x_min_m,
+            x_max_m,
+        )
+    except Exception as exc:
+        scope = "full_membrane"
+        report_name = CP_MONITOR_FULL_MEMBRANE
+        cm_surfaces = list(membrane_wall_zones)
+        print(
+            "WARNING: window membrane clip is not available during the "
+            f"solve ({type(exc).__name__}: {exc}). "
+            f"CP monitor {report_name} uses the full active membrane area."
+        )
+
+    try:
+        cm_report = create_or_update_surface_field_report(
+            surface_report_definitions=solution.report_definitions.surface,
+            report_name=CP_CM_REPORT,
+            report_type="surface-areaavg",
+            field_name="udm-7",
+            surface_names=cm_surfaces,
+        )
+        _silence_report_print(cm_report)
+        definition = cp_monitor_definition(
+            CP_CM_REPORT,
+            CP_CB_REPORT,
+            density_kg_per_m3,
+            molecular_weight_kg_per_mol(salt_molecular_weight_g_per_mol),
+        )
+        ratio = create_or_update_single_valued_expression_report(
+            single_expression_report_definitions=(
+                solution.report_definitions.single_valued_expression
+            ),
+            report_name=report_name,
+            definition=definition,
+        )
+        configure_report_definition_for_transcript(ratio)
+    except Exception as exc:
+        print(
+            "WARNING: CP monitor expression was not created: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return None
+
+    print(
+        f"CP monitor {report_name} ({scope}): {definition} "
+        f"on {cm_surfaces}"
+    )
+    return {
+        "report_name": report_name,
+        "scope": scope,
+        "file_name": cp_report_file_name(report_name),
+        "definition": definition,
+        "cm_surfaces": list(cm_surfaces),
+    }
 
 
 QOI_CONVERGENCE_CONDITION = "all-conditions-are-met"
@@ -5337,6 +5585,7 @@ if __name__ == "__main__":
             print("\nInitialization state after hybrid initialization and patch:")
             print(solution.initialization.get_state())
 
+        cp_monitor = None
         if enable_solve_time_qoi_reports:
             retry_deferred_solve_time_qoi_report_definitions(
                 solution=solution,
@@ -5344,12 +5593,23 @@ if __name__ == "__main__":
                     deferred_solve_time_qoi_report_specs
                 ),
             )
-            qoi_layout = layout_from_mesh_manifest(mesh_case_path).layout
+            qoi_layout_record = layout_from_mesh_manifest(mesh_case_path)
+            qoi_layout = qoi_layout_record.layout
             update_solve_time_pressure_qoi_report_definitions(
                 solver=solver,
                 solution=solution,
                 layout=qoi_layout,
                 domain_x_min_m=domain_x_min_m,
+            )
+            cp_monitor = update_solve_time_cp_monitor(
+                solver=solver,
+                solution=solution,
+                layout_record=qoi_layout_record,
+                domain_x_min_m=domain_x_min_m,
+                membrane_wall_zones=membrane_wall_zone_names,
+                species_name=species_name,
+                density_kg_per_m3=mixture_density,
+                salt_molecular_weight_g_per_mol=salt_molecular_weight,
             )
 
 
@@ -5376,6 +5636,7 @@ if __name__ == "__main__":
                 solution=solution,
                 report_name=qoi_convergence_report_name,
                 file_name=lmh_udm_avg_report_file_name,
+                solver=solver,
             )
             qoi_stop_report_file_paths.append(lmh_report_file_path)
             print(f"QoI report file path (case dir): {lmh_report_file_path}")
@@ -5384,15 +5645,56 @@ if __name__ == "__main__":
                 solution=solution,
                 report_name=QOI_STOP_PRESSURE_REPORT_NAME,
                 file_name=pressure_drop_spacer_report_file_name,
+                solver=solver,
             )
             qoi_stop_report_file_paths.append(dp_report_file_path)
             print(f"QoI report file path (case dir): {dp_report_file_path}")
+        if (
+            enable_solve_time_qoi_reports
+            and enable_cp_monitor_report_file
+            and cp_monitor is not None
+        ):
+            cp_report_file_path = os.path.join(case_path, cp_monitor["file_name"])
+            ensure_lmh_udm_avg_report_file(
+                solution=solution,
+                report_name=cp_monitor["report_name"],
+                file_name=cp_monitor["file_name"],
+                solver=solver,
+            )
+            qoi_stop_report_file_paths.append(cp_report_file_path)
+            print(f"QoI report file path (case dir): {cp_report_file_path}")
+
+        qoi_stop_report_names = [
+            qoi_convergence_report_name,
+            QOI_STOP_PRESSURE_REPORT_NAME,
+        ]
+        if qoi_stop_include_cp:
+            if cp_monitor is None:
+                raise RuntimeError(
+                    "qoi_stop_include_cp requires the CP monitor "
+                    "(cp_window or cp_full_membrane)."
+                )
+            qoi_stop_report_names.append(cp_monitor["report_name"])
+        update_run_manifest_fields(
+            case_path,
+            convergence_stop_manifest_fields(
+                stop_criterion=qoi_stop_criterion,
+                previous_values=qoi_previous_values_to_consider,
+                initial_values_to_ignore=qoi_initial_values_to_ignore,
+                include_cp=qoi_stop_include_cp,
+                window_after_ramp=qoi_window_after_ramp,
+                ramp_full_iteration=ramp_full_iteration,
+                stop_reports=qoi_stop_report_names if enable_qoi_convergence_stop else [],
+                cp_monitor_name=(
+                    None if cp_monitor is None else cp_monitor["report_name"]
+                ),
+                cp_monitor_scope=(
+                    None if cp_monitor is None else cp_monitor["scope"]
+                ),
+            ),
+        )
 
         if enable_qoi_convergence_stop:
-            qoi_stop_report_names = [
-                qoi_convergence_report_name,
-                QOI_STOP_PRESSURE_REPORT_NAME,
-            ]
             print(
                 "QoI convergence stop: "
                 f"{QOI_CONVERGENCE_CONDITION} on {qoi_stop_report_names} "
@@ -5975,6 +6277,14 @@ if __name__ == "__main__":
                     f"{type(stop_exc).__name__}: {stop_exc}"
                 )
                 solver_stop_reason = None
+
+        try:
+            update_run_manifest_fields(case_path, last100_monitor_changes(case_path))
+        except Exception as exc:
+            print(
+                "WARNING: could not record monitor_change_last100 on the "
+                f"run manifest: {type(exc).__name__}: {exc}"
+            )
 
         publish_stop_reason_and_finals(
             solver,

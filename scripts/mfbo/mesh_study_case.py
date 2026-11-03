@@ -86,6 +86,10 @@ from ro.membrane_bl import (
     specs_match,
 )
 from ro.convergence_quality import continuity_final_from_case_dir
+from ro.convergence_stop import (
+    CAMPAIGN_V3_PROFILE,
+    campaign_v3_stop_overrides,
+)
 from ro.leaf_disk import cleanup_line, release_after_pass
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
@@ -913,6 +917,27 @@ def launch_meshing(overrides, data_root, mesh_directory, mesh_id, max_retries):
     return result
 
 
+def convergence_profile_overrides(profile):
+    """Empty for the production stop. ``campaign_v3`` tightens it."""
+    if profile is None:
+        return {}
+    if profile != CAMPAIGN_V3_PROFILE:
+        raise ValueError(
+            f"Unknown convergence profile {profile!r}. "
+            f"Expected {CAMPAIGN_V3_PROFILE!r}."
+        )
+    path = project_root() / "configs" / "run_config.py"
+    cfg = batch_meshing._load_module("mesh_study_run_config_stop", path)
+    return campaign_v3_stop_overrides(
+        stop_criterion=cfg.campaign_v3_qoi_stop_criterion,
+        window=cfg.campaign_v3_qoi_previous_values_to_consider,
+        initial_values_to_ignore=cfg.qoi_initial_values_to_ignore,
+        ramp_full_iteration=cfg.ramp_full_iteration,
+        residual_target=cfg.residual_target,
+        max_iterations=cfg.max_iterations,
+    )
+
+
 def solver_overrides_for_study(solver_overrides, study_mesh_id):
     """Replace only ``mesh_id`` on the production solver overrides."""
     updated = dict(solver_overrides)
@@ -1157,6 +1182,17 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--convergence-profile",
+        default=None,
+        choices=(CAMPAIGN_V3_PROFILE,),
+        help=(
+            "campaign_v3 tightens the QoI stop to 1e-4 on LMH, spacer "
+            "pressure drop, and CP, with the 100-iteration window starting "
+            "after the flux ramp. Omitted, the production 1e-3 LMH and "
+            "pressure-drop stop is unchanged."
+        ),
+    )
+    parser.add_argument(
         "--keep-checkpoints",
         action="store_true",
         help=(
@@ -1328,6 +1364,7 @@ def main(argv=None):
         refuse_existing_directory(run_directory, "run leaf")
     if checkpoint_every is not None:
         solver_overrides["checkpoint_every"] = checkpoint_every
+    solver_overrides.update(convergence_profile_overrides(args.convergence_profile))
     solver_result = campaign.launch_solver(
         solver_overrides,
         data_root,

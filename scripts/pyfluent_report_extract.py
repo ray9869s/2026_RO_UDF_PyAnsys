@@ -34,6 +34,7 @@ except Exception:
 from ro.paths import project_root  # noqa: E402
 from ro.campaign_geometry import CAMPAIGN_H_M  # noqa: E402
 from ro.lmh_metrics import MS_TO_LMH, lmh_mass_balance_expression
+from ro.monitor_change import last100_monitor_changes
 from ro.convergence_quality import (
     continuity_final_from_case_dir,
     evaluate_convergence_quality,
@@ -2987,6 +2988,11 @@ if __name__ == "__main__":
         )
         summary_wide_df = summary_wide_df[existing_front_columns + other_columns]
 
+        # Recorded only. Not part of the PASS/FAIL gate.
+        monitor_changes = last100_monitor_changes(case_path)
+        for column, value in monitor_changes.items():
+            summary_wide_df[column] = value
+
         wide_record = summary_wide_df.iloc[0].to_dict()
 
         summary_wide_df.to_csv(summary_wide_csv_path, index=False, encoding="utf-8-sig")
@@ -3135,6 +3141,7 @@ if __name__ == "__main__":
                     **_evaluation_window_selection.manifest_fields(),
                     **campaign_midplane_manifest_fields(_found_center_z),
                     **y1_diagnostic,
+                    **monitor_changes,
                 },
             )
             print(

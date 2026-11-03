@@ -197,6 +197,8 @@ def test_lmh_udm_avg_report_file_uses_monitor_report_files():
     assert report_file.report_defs == ["lmh_udm_avg"]
     assert report_file.file_name == "lmh_udm_avg.out"
     assert report_file.active is True
+    assert report_file.significant_digits == 12
+    assert report_file.precision == 12
 
 
 def test_pressure_drop_spacer_report_file_uses_monitor_report_files():
@@ -212,6 +214,7 @@ def test_pressure_drop_spacer_report_file_uses_monitor_report_files():
         file_name="pressure_drop_spacer.out",
     )
     assert object_name == "pressure_drop_spacer_rfile"
+    assert report_files["pressure_drop_spacer_rfile"].significant_digits == 12
     report_file = report_files["pressure_drop_spacer_rfile"]
     assert report_file.report_defs == ["pressure_drop_spacer"]
     assert report_file.file_name == "pressure_drop_spacer.out"
@@ -403,6 +406,8 @@ def test_solver_qoi_planes_come_from_mesh_manifest_layout():
 
 def test_solve_time_qoi_config_defaults_and_validation():
     cfg = load_run_config()
+    assert cfg.max_iterations == 2000
+    assert cfg.residual_target == 1e-7
     populate_valid_solver_config(cfg)
     assert cfg.enable_solve_time_qoi_reports is True
     assert cfg.lmh_signed_report_name == "lmh_signed"
@@ -411,8 +416,16 @@ def test_solve_time_qoi_config_defaults_and_validation():
     assert cfg.buffer_length_m == 0.003465
     assert cfg.enable_qoi_convergence_stop is True
     assert cfg.qoi_convergence_report_name == "lmh_udm_avg"
+    assert cfg.qoi_stop_criterion == 1e-3
+    assert cfg.qoi_previous_values_to_consider == 100
+    assert cfg.qoi_initial_values_to_ignore == 200
+    assert cfg.qoi_stop_include_cp is False
+    assert cfg.qoi_window_after_ramp is False
+    assert cfg.campaign_v3_qoi_stop_criterion == 1e-4
+    assert cfg.campaign_v3_qoi_previous_values_to_consider == 100
     assert cfg.enable_pressure_drop_spacer_report_file is True
     assert cfg.pressure_drop_spacer_report_file_name == "pressure_drop_spacer.out"
+    assert cfg.enable_cp_monitor_report_file is True
     cfg.validate_for_solver()
 
 
@@ -421,4 +434,157 @@ def test_solve_time_qoi_flag_must_be_bool():
     populate_valid_solver_config(cfg)
     cfg.enable_solve_time_qoi_reports = "yes"
     with pytest.raises(TypeError, match="must be bool"):
+        cfg.validate_for_solver()
+
+
+class _ClipRange:
+    def __init__(self):
+        self.minimum = None
+        self.maximum = None
+
+
+class _Clip(SettingsObject):
+    def __init__(self):
+        self.range = _ClipRange()
+
+
+class _ClipGroup(NamedGroup):
+    def __init__(self, fail_names=()):
+        super().__init__()
+        self.fail_names = set(fail_names)
+
+    def create(self, name):
+        if name in self.fail_names:
+            raise RuntimeError("iso-clip unavailable")
+        clip = _Clip()
+        self.objects[name] = clip
+        return clip
+
+
+def _cp_solver(fail_names=()):
+    solver, solution, iso_surfaces, surface_reports, expression_reports = (
+        make_solver_and_solution()
+    )
+    clips = _ClipGroup(fail_names=fail_names)
+    solver.settings.results.surfaces.iso_clip = clips
+    return solver, solution, iso_surfaces, surface_reports, expression_reports, clips
+
+
+def _layout_record():
+    from ro.domain_layout import EvaluationWindow, GeometryLayoutRecord
+
+    return GeometryLayoutRecord(
+        layout=CURRENT_LAYOUT,
+        membrane_wall_base_names=("wall_top_mem", "wall_bottom_mem"),
+        buffer_wall_base_names=("wall_top_buffer", "wall_bottom_buffer"),
+        evaluation_window=EvaluationWindow(3, 0),
+    )
+
+
+def _call_cp_monitor(solver_code, solver, solution):
+    return solver_code.update_solve_time_cp_monitor(
+        solver,
+        solution,
+        _layout_record(),
+        0.0,
+        ["wall_top_mem", "wall_bottom_mem"],
+        "nacl",
+        998.2,
+        58.44,
+        z_min_m=-5.0e-4,
+        z_max_m=5.0e-4,
+    )
+
+
+def test_cp_monitor_is_window_udm7_over_window_bulk():
+    solver_code = load_solver_code("solver_cp_window")
+    solver, solution, iso_surfaces, surface_reports, expression_reports, clips = (
+        _cp_solver()
+    )
+    result = _call_cp_monitor(solver_code, solver, solution)
+    assert result["report_name"] == "cp_window"
+    assert result["scope"] == "window"
+    assert result["file_name"] == "cp_window.out"
+    assert result["cm_surfaces"] == ["cp_monitor_membrane_window"]
+    assert result["definition"] == solver_code.cp_monitor_definition(
+        "cp_monitor_cm_avg",
+        "cp_monitor_cb_yi",
+        998.2,
+        58.44 / 1000.0,
+    )
+    assert "udm-7" not in result["definition"]
+    membrane = clips["cp_monitor_membrane_window"]
+    assert membrane.field == "x-coordinate"
+    assert membrane.surfaces == ["wall_top_mem", "wall_bottom_mem"]
+    assert membrane.range.minimum < membrane.range.maximum
+    assert iso_surfaces["cp_monitor_midplane"].field == "z-coordinate"
+    assert iso_surfaces["cp_monitor_midplane"].iso_values == pytest.approx([0.0])
+    cm = surface_reports["cp_monitor_cm_avg"]
+    cb = surface_reports["cp_monitor_cb_yi"]
+    assert cm.report_type == "surface-areaavg"
+    assert cm.field == "udm-7"
+    assert cm.surface_names == ["cp_monitor_membrane_window"]
+    assert cm.print is False
+    assert cb.report_type == "surface-massavg"
+    assert cb.field == "nacl"
+    assert cb.surface_names == ["cp_monitor_midplane_window"]
+    assert cb.print is False
+    ratio = expression_reports["cp_window"]
+    assert ratio.definition == result["definition"]
+    assert ratio.print is True
+
+
+def test_cp_monitor_falls_back_to_the_full_active_membrane():
+    solver_code = load_solver_code("solver_cp_full_membrane")
+    solver, solution, _iso, surface_reports, expression_reports, _clips = _cp_solver(
+        fail_names={"cp_monitor_membrane_window"}
+    )
+    result = _call_cp_monitor(solver_code, solver, solution)
+    assert result["report_name"] == "cp_full_membrane"
+    assert result["scope"] == "full_membrane"
+    assert result["file_name"] == "cp_full_membrane.out"
+    assert result["cm_surfaces"] == ["wall_top_mem", "wall_bottom_mem"]
+    assert surface_reports["cp_monitor_cm_avg"].field == "udm-7"
+    assert surface_reports["cp_monitor_cm_avg"].surface_names == [
+        "wall_top_mem",
+        "wall_bottom_mem",
+    ]
+    assert surface_reports["cp_monitor_cb_yi"].surface_names == [
+        "cp_monitor_midplane_window"
+    ]
+    assert "cp_full_membrane" in expression_reports.objects
+    assert "cp_window" not in expression_reports.objects
+
+
+def test_cp_monitor_is_skipped_when_window_bulk_cannot_be_created():
+    solver_code = load_solver_code("solver_cp_no_bulk")
+    solver, solution, _iso, surface_reports, expression_reports, _clips = _cp_solver()
+    surface_reports.fail_create = True
+    assert _call_cp_monitor(solver_code, solver, solution) is None
+    assert "cp_window" not in expression_reports.objects
+    assert "cp_full_membrane" not in expression_reports.objects
+
+
+def test_report_file_requests_scheme_significant_digits():
+    solver_code = load_solver_code("solver_cp_digits")
+    calls = []
+
+    class _Solver:
+        def scheme_eval(self, command):
+            calls.append(command)
+
+    report = SettingsObject()
+    solver_code.apply_report_file_significant_digits(report, solver=_Solver())
+    assert report.significant_digits >= 8
+    assert report.significant_digits == 12
+    assert calls == ["(rpsetvar 'report/significant-digits 12)"]
+
+
+def test_window_after_ramp_refuses_a_window_that_overlaps_the_ramp():
+    cfg = load_run_config()
+    populate_valid_solver_config(cfg)
+    cfg.qoi_stop_include_cp = True
+    cfg.qoi_window_after_ramp = True
+    cfg.qoi_initial_values_to_ignore = 100
+    with pytest.raises(ValueError, match="ramp"):
         cfg.validate_for_solver()

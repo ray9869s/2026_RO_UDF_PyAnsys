@@ -377,6 +377,14 @@ qoi_convergence_report_name = "lmh_udm_avg"
 qoi_stop_criterion = 1e-3
 qoi_previous_values_to_consider = 100
 qoi_initial_values_to_ignore = 200
+# Production stop is LMH and spacer dP only. campaign_v3 sets these True
+# and tightens qoi_stop_criterion via campaign_v3_stop_overrides.
+qoi_stop_include_cp = False
+qoi_window_after_ramp = False
+# campaign_v3 relative-change stop. The window is previous_values samples
+# and must start after ramp_full_iteration. max_iterations stays 2000.
+campaign_v3_qoi_stop_criterion = 1e-4
+campaign_v3_qoi_previous_values_to_consider = 100
 # None keeps the production residual/QoI stop. A fidelity-table LF level
 # sets {tol_lmh, tol_dp, n}. Production and HF do not set this.
 lf_monitor_stop = None
@@ -398,6 +406,9 @@ enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"
 enable_pressure_drop_spacer_report_file = True
 pressure_drop_spacer_report_file_name = "pressure_drop_spacer.out"
+# CP monitor file name follows the report that was created
+# (cp_window.out or cp_full_membrane.out).
+enable_cp_monitor_report_file = True
 
 # Report definitions
 update_rho_avg_report_definition = True
@@ -1086,6 +1097,29 @@ def validate_for_solver():
             "qoi_initial_values_to_ignore",
             qoi_initial_values_to_ignore,
         )
+    _require_bool("qoi_stop_include_cp", qoi_stop_include_cp)
+    _require_bool("qoi_window_after_ramp", qoi_window_after_ramp)
+    _require_bool("enable_cp_monitor_report_file", enable_cp_monitor_report_file)
+    if qoi_stop_include_cp and not enable_qoi_convergence_stop:
+        raise ValueError(
+            "qoi_stop_include_cp requires enable_qoi_convergence_stop=True"
+        )
+    from ro.convergence_stop import require_window_after_ramp
+
+    require_window_after_ramp(
+        enabled=bool(qoi_window_after_ramp),
+        include_cp=bool(qoi_stop_include_cp),
+        initial_values_to_ignore=qoi_initial_values_to_ignore,
+        ramp_full_iteration=ramp_full_iteration,
+    )
+    _require_positive_float(
+        "campaign_v3_qoi_stop_criterion",
+        campaign_v3_qoi_stop_criterion,
+    )
+    _require_positive_number(
+        "campaign_v3_qoi_previous_values_to_consider",
+        campaign_v3_qoi_previous_values_to_consider,
+    )
     _require_bool(
         "enable_lmh_udm_avg_report_file",
         enable_lmh_udm_avg_report_file,

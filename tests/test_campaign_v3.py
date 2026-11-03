@@ -172,6 +172,7 @@ def test_mesh_only_queue_lists_every_geometry():
         assert argv[-1] == "--mesh-only"
         assert "--reuse-mesh" not in argv
         assert "--checkpoint-every" not in argv
+        assert "--convergence-profile" not in argv
         assert "--resume" not in argv
         geo_id = _flag(argv, "--geo-id")
         require_changes_match(
@@ -194,6 +195,7 @@ def test_solve_queue_is_u0p2_first_and_reuses_the_mesh():
         argv = job["argv"]
         assert "--reuse-mesh" in argv
         assert _flag(argv, "--checkpoint-every") == "200"
+        assert _flag(argv, "--convergence-profile") == "campaign_v3"
         assert "--keep-checkpoints" not in argv
         assert "--mesh-only" not in argv
         assert "--resume" not in argv
@@ -478,6 +480,7 @@ def test_keep_checkpoints_is_only_on_solve_jobs(tmp_path):
         argv = job["argv"]
         assert argv[-1] == "--keep-checkpoints"
         assert _flag(argv, "--checkpoint-every") == "200"
+        assert _flag(argv, "--convergence-profile") == "campaign_v3"
         assert "--mesh-only" not in argv
     with pytest.raises(ValueError, match="keep-checkpoints"):
         CAMPAIGN.main(

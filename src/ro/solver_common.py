@@ -815,6 +815,25 @@ _ITERATION_PREFIX_RE = re.compile(r"^iteration\s+(\d+)\s*:", re.IGNORECASE)
 _BANG_ITERATION_RE = re.compile(r"!\s*(\d+)\s+")
 
 
+def fluent_report_relative_change(values: list[float]) -> float | None:
+    """UG 37.18 relative change of a monitor window, oldest→newest.
+
+    ``max_k |m(n) - m(n-k)| / |m(n)|`` for k = 1 .. Np. None when fewer
+    than two samples exist or the current value is zero. Absolute value
+    protects a sign flip.
+    """
+    if len(values) < 2:
+        return None
+    current = float(values[-1])
+    denom = abs(current)
+    if denom == 0.0 or not math.isfinite(denom):
+        return None
+    change = max(abs(current - float(value)) / denom for value in values[:-1])
+    if not math.isfinite(change):
+        return None
+    return change
+
+
 def fluent_report_relative_window_met(
     values: list[float],
     stop_criterion: float,
@@ -830,14 +849,10 @@ def fluent_report_relative_window_met(
     """
     if stop_criterion <= 0.0:
         raise ValueError(f"stop_criterion must be positive, got {stop_criterion!r}")
-    if len(values) < 2:
+    change = fluent_report_relative_change(values)
+    if change is None:
         return False
-    current = float(values[-1])
-    denom = abs(current)
-    if denom == 0.0:
-        return False
-    previous = values[:-1]
-    return max(abs(current - float(v)) / denom for v in previous) < float(stop_criterion)
+    return change < float(stop_criterion)
 
 
 def parse_fluent_report_file_series(text: str) -> list[tuple[int, float]]:

@@ -23,6 +23,7 @@ import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
 import mfbo.run_parity_mesh as parity_mesh
+from ro.convergence_stop import launch_limit_overrides
 from ro.convergence_quality import (
     continuity_final_from_case_dir,
     evaluate_convergence_quality,
@@ -467,6 +468,31 @@ def build_parser():
         default=None,
         help="Required when --viscous-model is not laminar.",
     )
+    parser.add_argument(
+        "--processor-count",
+        type=int,
+        default=None,
+        help="Override run_config processor_count. 1 is the CP-monitor smoke.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=(
+            "Override max_iterations. A smoke that only needs the CP "
+            "monitor printed uses 5 together with "
+            "--disable-ramp-convergence-safety."
+        ),
+    )
+    parser.add_argument(
+        "--disable-ramp-convergence-safety",
+        action="store_true",
+        help=(
+            "Allow a max_iterations below the 200-iteration ramp hold. "
+            "The UDF ramp itself is unchanged. The CP monitor is still "
+            "created and printed."
+        ),
+    )
     return parser
 
 
@@ -480,6 +506,13 @@ def main(argv=None):
         case_id,
     )
     family = entry["family"]
+    overrides.update(
+        launch_limit_overrides(
+            processor_count=args.processor_count,
+            max_iterations=args.max_iterations,
+            disable_ramp_convergence_safety=args.disable_ramp_convergence_safety,
+        )
+    )
     overrides, run_id = apply_viscous_overrides(
         overrides,
         case_id,
