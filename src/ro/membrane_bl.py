@@ -347,7 +347,8 @@ def membrane_bl_controls(
 
     Spacer labels keep ``spacer_bl_layers`` when that count differs from
     ``bl_layers``. Otherwise buffer and spacer share one smooth-transition
-    control at ``bl_layers``. ``bl_height``, ``bl_offset_method``, and
+    control at ``bl_layers``. An empty spacer list leaves that control on
+    the buffer labels only. ``bl_height``, ``bl_offset_method``, and
     ``bl_growth_rate`` on those controls are the values the single control
     uses today.
     """
@@ -360,11 +361,10 @@ def membrane_bl_controls(
             f"{OFFSET_METHOD_LAST_RATIO!r}, got {spec['offset_method']!r}."
         )
     buffer = _label_list("buffer_labels", buffer_labels)
+    # An empty label list is the empty channel: there is no spacer surface.
+    # Non-empty geometries already fail earlier when wall_spacer_labels is
+    # empty. Do not invent a spacer control for that channel.
     spacer = list(wall_spacer_labels) if include_spacer_in_boundary_layers else []
-    if include_spacer_in_boundary_layers and not spacer:
-        raise ValueError(
-            "include_spacer_in_boundary_layers requires wall_spacer_labels."
-        )
     membrane = {
         "AddChild": "yes",
         "BLControlName": "last_ratio_mem",
@@ -381,6 +381,8 @@ def membrane_bl_controls(
             "spacer_bl_layers differs from bl_layers, so "
             "include_spacer_in_boundary_layers must be True."
         )
+    if split and not spacer:
+        raise ValueError("Split boundary layers require wall_spacer_labels.")
     controls = [membrane]
     if split:
         controls.append(
@@ -405,13 +407,9 @@ def membrane_bl_controls(
         )
         return controls
     rest = list(buffer)
-    if include_spacer_in_boundary_layers:
+    if spacer:
         rest.extend(spacer)
-    name = (
-        "smooth_transition_rest"
-        if include_spacer_in_boundary_layers
-        else "smooth_transition_buffer"
-    )
+    name = "smooth_transition_rest" if spacer else "smooth_transition_buffer"
     controls.append(
         _smooth_control(
             name,

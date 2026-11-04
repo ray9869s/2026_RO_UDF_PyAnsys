@@ -1212,6 +1212,17 @@ def build_parser():
         help="Peel layer count. Omitted, the production template value is kept.",
     )
     parser.add_argument(
+        "--max-prism-aspect-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Prism-zone Fluent aspect-ratio ceiling. Omitted, the global "
+            "ceiling is the only aspect-ratio check. Bulk zones keep that "
+            "global ceiling. Recorded on the mesh manifest. Does not change "
+            "the mesh id."
+        ),
+    )
+    parser.add_argument(
         "--mesh-spec",
         default=None,
         help=(
@@ -1275,6 +1286,13 @@ def main(argv=None):
     overrides = apply_study_overrides(template, changes)
     overrides.update(geometry_meshing_overrides(suffix, geometry_root))
     overrides.update(provenance)
+    if args.max_prism_aspect_ratio is not None:
+        _require_positive(
+            "max_prism_aspect_ratio", args.max_prism_aspect_ratio
+        )
+        overrides["max_prism_aspect_ratio_threshold"] = float(
+            args.max_prism_aspect_ratio
+        )
     print_override_table(override_rows(template, overrides))
     study_id = overrides["mesh_id"]
     leaf = mesh_leaf(data_root, family, args.geo_id, study_id)

@@ -10,6 +10,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.prism_aspect import aspect_ratio_exceeds, split_is_usable
+
 
 MESH_PARAMETER_NAMES = (
     "product_version",
@@ -715,6 +717,8 @@ def evaluate_quality_gate(mesh_parameters, metrics):
     skewed_face_fraction = metrics.get("skewed_face_fraction")
     min_limit = mesh_parameters.get("min_orthogonal_quality_threshold")
     max_aspect_limit = mesh_parameters.get("max_aspect_ratio_threshold")
+    prism_aspect_limit = mesh_parameters.get("max_prism_aspect_ratio_threshold")
+    aspect_split = metrics.get("aspect_split")
     max_skewness_limit = mesh_parameters.get("max_skewness_threshold")
     skewed_face_fraction_limit = mesh_parameters.get(
         "skewed_face_fraction_threshold"
@@ -726,10 +730,18 @@ def evaluate_quality_gate(mesh_parameters, metrics):
     elif fail_if_not_parsed:
         return False
     if max_aspect_limit is not None:
-        if max_aspect is not None:
-            if max_aspect > max_aspect_limit:
-                return False
-        elif fail_if_not_parsed:
+        if aspect_ratio_exceeds(
+            max_aspect,
+            bulk_limit=max_aspect_limit,
+            prism_limit=prism_aspect_limit,
+            aspect_split=aspect_split,
+        ):
+            return False
+        if (
+            max_aspect is None
+            and not split_is_usable(prism_aspect_limit, aspect_split)
+            and fail_if_not_parsed
+        ):
             return False
     if max_skewness_limit is not None:
         if max_skewness is not None:

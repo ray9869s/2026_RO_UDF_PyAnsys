@@ -21,8 +21,11 @@ the live column blank.
 count, membrane layers, orthogonal quality, aspect ratio, the quality
 gate, and a solve-time estimate. A manifest is written only after the
 gate passes, so a refused mesh is read from its mesh log and listed as
-FAIL. The estimate is linear in cell count from D2450_a45 at 4.34 M
-cells and 6.5 h.
+FAIL. Jobs pass ``--max-prism-aspect-ratio 250``. That ceiling applies
+only when the mesher can separate prism cell zones from bulk polyhedra.
+A mixed zone keeps the global aspect-ratio ceiling of 150. Orthogonal
+quality stays the hard limit. The estimate is linear in cell count from
+D2450_a45 at 4.34 M cells and 6.5 h.
 
 The solve queue is u0p2, then u0p1, then u0p3. Every solve passes
 ``--reuse-mesh`` and ``--checkpoint-every 200``. After a PASS extract,
@@ -61,6 +64,10 @@ from ro.campaign_matrix import (  # noqa: E402
     PRODUCTION_MESH_ID_DEFAULT,
 )
 from ro.mesh_common import parse_mesh_metrics_text  # noqa: E402
+from ro.prism_aspect import (  # noqa: E402
+    aspect_ratio_failure_message,
+    parse_aspect_split_text,
+)
 from ro.mesh_spec import (  # noqa: E402
     changes_for_settings,
     default_spec_path,
@@ -81,6 +88,10 @@ VELOCITY_ORDER = (0.2, 0.1, 0.3)
 # run_config.py mesh quality gate.
 ORTHO_MIN_LIMIT = 0.05
 AR_MAX_LIMIT = 150.0
+# Prism cell zones only. Above the contact-wedge maxima 185, 201, 212, and
+# 228, and below the bl12 stack at 251.9. Bulk polyhedra stay on AR_MAX_LIMIT.
+# A mixed zone does not use this ceiling.
+PRISM_AR_MAX_LIMIT = 250.0
 SKEW_MAX_LIMIT = 0.85
 SKEWED_FRACTION_LIMIT = 3.0e-5
 _MEMBRANE_LAYERS_RE = re.compile(
@@ -231,6 +242,8 @@ def _study_argv(
         _fmt_mm(settings["bulk_max_size_mm"]),
         "--peel-layers",
         str(int(settings["peel"])),
+        "--max-prism-aspect-ratio",
+        f"{PRISM_AR_MAX_LIMIT:.0f}",
         "--geometry-suffix",
         ".pmdb",
         "--geometry-root",
@@ -316,17 +329,33 @@ def estimate_solve_hours(cell_count):
     )
 
 
-def quality_gate(ortho_min, ar_max, skewness_max=None, skewed_face_fraction=None):
+def quality_gate(
+    ortho_min,
+    ar_max,
+    skewness_max=None,
+    skewed_face_fraction=None,
+    *,
+    aspect_split=None,
+    prism_ar_limit=None,
+):
     """PASS, FAIL, or MISSING. Limits are the production mesh quality gate.
 
-    Orthogonal quality and aspect ratio are required. Skewness and the
-    skewed-face fraction fail the gate when they are present and over
-    the limit. A missing pair of orthogonal quality and aspect ratio is
-    MISSING, which the table still prints.
+    Orthogonal quality and aspect ratio are required. A usable prism/bulk
+    split checks those zones separately and does not fail on the global
+    aspect ratio. Skewness and the skewed-face fraction fail the gate when
+    they are present and over the limit. A missing pair of orthogonal
+    quality and aspect ratio is MISSING, which the table still prints.
     """
     if ortho_min is None or ar_max is None:
         return "MISSING"
-    if float(ortho_min) < ORTHO_MIN_LIMIT or float(ar_max) > AR_MAX_LIMIT:
+    if float(ortho_min) < ORTHO_MIN_LIMIT:
+        return "FAIL"
+    if aspect_ratio_failure_message(
+        ar_max,
+        bulk_limit=AR_MAX_LIMIT,
+        prism_limit=prism_ar_limit,
+        aspect_split=aspect_split,
+    ) is not None:
         return "FAIL"
     if skewness_max is not None and float(skewness_max) > SKEW_MAX_LIMIT:
         return "FAIL"
@@ -405,6 +434,7 @@ def _metrics_from_log(path):
         "AR_max": _optional_float(parsed.get("max_aspect_ratio")),
         "skewness_max": _optional_float(parsed.get("max_skewness")),
         "skewed_face_fraction": _optional_float(parsed.get("skewed_face_fraction")),
+        "aspect_split": parse_aspect_split_text(text),
     }
 
 
@@ -433,7 +463,18 @@ def mesh_table_rows(data_root, mesh_ids):
             aspect = _optional_float(manifest.get("AR_max"))
             skewness = _optional_float(manifest.get("skewness_max"))
             fraction = _optional_float(manifest.get("skewed_face_fraction"))
-            gate = quality_gate(ortho, aspect, skewness, fraction)
+            aspect_split = manifest.get("aspect_split")
+            prism_limit = _optional_float(
+                manifest.get("max_prism_aspect_ratio_threshold")
+            )
+            gate = quality_gate(
+                ortho,
+                aspect,
+                skewness,
+                fraction,
+                aspect_split=aspect_split,
+                prism_ar_limit=prism_limit,
+            )
         else:
             logged = _metrics_from_log(mesh_log_path(data_root, geo_id, mesh_id))
             if logged is None:
@@ -444,11 +485,15 @@ def mesh_table_rows(data_root, mesh_ids):
                 layers = logged["membrane_layers"]
                 ortho = logged["ortho_min"]
                 aspect = logged["AR_max"]
+                split = logged["aspect_split"]
+                prism_limit = None if split is None else split.get("prism_limit")
                 gate = quality_gate(
                     ortho,
                     aspect,
                     logged["skewness_max"],
                     logged["skewed_face_fraction"],
+                    aspect_split=split,
+                    prism_ar_limit=prism_limit,
                 )
         rows.append(
             {

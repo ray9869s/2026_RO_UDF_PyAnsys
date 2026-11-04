@@ -527,3 +527,40 @@ def test_max_cells_does_not_apply_to_mesh_only(tmp_path):
             ]
         )
     assert not (tmp_path / "queue.json").exists()
+
+
+def test_empty_channel_last_ratio_omits_the_spacer_control():
+    from ro.membrane_bl import membrane_bl_controls
+
+    spec = _stack(2.0, size_mm=0.035)
+    controls = membrane_bl_controls(
+        spec,
+        buffer_labels=["wall_top_buffer", "wall_bottom_buffer"],
+        wall_spacer_labels=[],
+        bl_height=0.0024,
+        bl_layers=4,
+        spacer_bl_layers=None,
+        bl_offset_method="smooth-transition",
+        bl_growth_rate=1.2,
+        include_spacer_in_boundary_layers=True,
+    )
+    assert [item["BLControlName"] for item in controls] == [
+        "last_ratio_mem",
+        "smooth_transition_buffer",
+    ]
+    assert controls[1]["BlLabelList"] == [
+        "wall_top_buffer",
+        "wall_bottom_buffer",
+    ]
+    with pytest.raises(ValueError, match="wall_spacer_labels"):
+        membrane_bl_controls(
+            spec,
+            buffer_labels=["wall_top_buffer", "wall_bottom_buffer"],
+            wall_spacer_labels=[],
+            bl_height=0.0024,
+            bl_layers=8,
+            spacer_bl_layers=4,
+            bl_offset_method="smooth-transition",
+            bl_growth_rate=1.2,
+            include_spacer_in_boundary_layers=True,
+        )

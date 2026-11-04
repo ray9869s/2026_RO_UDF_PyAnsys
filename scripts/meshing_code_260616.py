@@ -47,6 +47,12 @@ from ro.mesh_common import (
     parse_mesh_metrics_from_log,
     write_mesh_run_record,
 )
+from ro.prism_aspect import (
+    aspect_ratio_failure_message,
+    diagnose_aspect_split,
+    format_aspect_split,
+    split_is_usable,
+)
 from ro.paths import geometry_dir, mesh_dir, project_root
 
 
@@ -797,6 +803,9 @@ if __name__ == "__main__":
     # [Mesh quality gate]
     min_orthogonal_quality_threshold = cfg.min_orthogonal_quality_threshold
     max_aspect_ratio_threshold = cfg.max_aspect_ratio_threshold
+    max_prism_aspect_ratio_threshold = getattr(
+        cfg, "max_prism_aspect_ratio_threshold", None
+    )
     max_skewness_threshold = cfg.max_skewness_threshold
     skewed_face_fraction_threshold = cfg.skewed_face_fraction_threshold
     fail_if_quality_not_parsed = cfg.fail_if_quality_not_parsed
@@ -848,6 +857,14 @@ if __name__ == "__main__":
 
     if max_aspect_ratio_threshold is not None and max_aspect_ratio_threshold <= 0.0:
         raise ValueError("max_aspect_ratio_threshold must be positive or None.")
+
+    if (
+        max_prism_aspect_ratio_threshold is not None
+        and max_prism_aspect_ratio_threshold <= 0.0
+    ):
+        raise ValueError(
+            "max_prism_aspect_ratio_threshold must be positive or None."
+        )
 
     if max_skewness_threshold is not None and max_skewness_threshold <= 0.0:
         raise ValueError("max_skewness_threshold must be positive or None.")
@@ -1023,6 +1040,10 @@ def print_meshing_input_summary():
         ),
         f"Minimum orthogonal quality threshold [-]: {min_orthogonal_quality_threshold}",
         f"Maximum aspect ratio threshold [-]: {max_aspect_ratio_threshold}",
+        (
+            "Maximum prism aspect ratio threshold [-]: "
+            f"{max_prism_aspect_ratio_threshold}"
+        ),
         f"Maximum skewness threshold [-]: {max_skewness_threshold}",
         f"Skewed face fraction threshold [-]: {skewed_face_fraction_threshold}",
         "=" * 72,
@@ -1234,6 +1255,8 @@ def apply_mesh_quality_gate(
     max_skewness_limit,
     skewed_face_fraction_limit,
     fail_if_not_parsed,
+    prism_aspect_ratio_limit=None,
+    aspect_split=None,
 ):
     """Apply mesh quality pass/fail criteria using the Fluent transcript."""
     metrics = parse_mesh_metrics_from_log(log_path)
@@ -1276,7 +1299,18 @@ def apply_mesh_quality_gate(
             )
 
     if max_aspect_ratio_limit is not None:
-        if max_aspect_ratio is None:
+        failure = aspect_ratio_failure_message(
+            max_aspect_ratio,
+            bulk_limit=max_aspect_ratio_limit,
+            prism_limit=prism_aspect_ratio_limit,
+            aspect_split=aspect_split,
+        )
+        if failure is not None:
+            raise RuntimeError(failure)
+        if (
+            max_aspect_ratio is None
+            and not split_is_usable(prism_aspect_ratio_limit, aspect_split)
+        ):
             message = (
                 "Could not parse maximum aspect ratio from the transcript. "
                 "The aspect ratio gate could not be applied."
@@ -1286,13 +1320,6 @@ def apply_mesh_quality_gate(
                 raise RuntimeError(message)
 
             print(f"Warning: {message}")
-        else:
-            if max_aspect_ratio > max_aspect_ratio_limit:
-                raise RuntimeError(
-                    f"Mesh quality failed: maximum aspect ratio "
-                    f"{max_aspect_ratio} is above the threshold "
-                    f"{max_aspect_ratio_limit}."
-                )
 
     if max_skewness_limit is not None:
         if max_skewness is None:
@@ -1352,6 +1379,7 @@ if __name__ == "__main__":
     run_status = "FAILED"
     run_error = ""
     mesh_metrics = {name: None for name in MESH_METRIC_NAMES}
+    aspect_split = None
 
     try:
         os.chdir(case_path)
@@ -1653,12 +1681,32 @@ if __name__ == "__main__":
                 print(f"  {line}")
             print("=" * 72 + "\n")
 
+            if max_prism_aspect_ratio_threshold is not None:
+                try:
+                    aspect_split = diagnose_aspect_split(
+                        meshing,
+                        bulk_ar_limit=max_aspect_ratio_threshold,
+                        prism_ar_limit=max_prism_aspect_ratio_threshold,
+                    )
+                except Exception as exc:
+                    aspect_split = {
+                        "status": "unavailable",
+                        "prism_limit": float(max_prism_aspect_ratio_threshold),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                print(format_aspect_split(aspect_split))
+
             # Stop the transcript to flush mesh quality output before parsing the log file.
             meshing.transcript.stop()
             transcript_is_running = False
             if continuation_log_path is not None:
                 append_transcript_continuation(mesh_log_path, continuation_log_path)
                 continuation_log_path = None
+            if aspect_split is not None:
+                with open(mesh_log_path, "a", encoding="utf-8") as log_handle:
+                    log_handle.write("\n")
+                    log_handle.write(format_aspect_split(aspect_split))
+                    log_handle.write("\n")
 
             mesh_metrics = apply_mesh_quality_gate(
                 log_path=mesh_log_path,
@@ -1667,7 +1715,12 @@ if __name__ == "__main__":
                 max_skewness_limit=max_skewness_threshold,
                 skewed_face_fraction_limit=skewed_face_fraction_threshold,
                 fail_if_not_parsed=fail_if_quality_not_parsed,
+                prism_aspect_ratio_limit=max_prism_aspect_ratio_threshold,
+                aspect_split=aspect_split,
             )
+            if aspect_split is not None:
+                mesh_metrics = dict(mesh_metrics)
+                mesh_metrics["aspect_split"] = aspect_split
 
         print(
             f"Writing final mesh to: {mesh_file_path} "
@@ -1715,7 +1768,14 @@ if __name__ == "__main__":
         try:
             if not any(value is not None for value in mesh_metrics.values()):
                 mesh_metrics = parse_mesh_metrics_from_log(mesh_log_path)
+            if aspect_split is not None:
+                mesh_metrics = dict(mesh_metrics)
+                mesh_metrics["aspect_split"] = aspect_split
             mesh_parameters = mesh_parameters_from_mapping(globals())
+            if max_prism_aspect_ratio_threshold is not None:
+                mesh_parameters["max_prism_aspect_ratio_threshold"] = (
+                    max_prism_aspect_ratio_threshold
+                )
             record = build_mesh_ledger_record(
                 geo_name=cfg.geo_id,
                 mesh_case_name=cfg.mesh_id,

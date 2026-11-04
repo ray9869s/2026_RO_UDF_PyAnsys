@@ -83,6 +83,12 @@ def build_mesh_manifest_payload(
     if raw_bulk is not None:
         base["bulk_max_size_mm"] = float(raw_bulk)
         bulk_max_size_suffix(base["bulk_max_size_mm"])
+    prism_limit = getattr(cfg, "max_prism_aspect_ratio_threshold", None)
+    if prism_limit is not None:
+        base["max_prism_aspect_ratio_threshold"] = float(prism_limit)
+    aspect_split = mesh_metrics.get("aspect_split")
+    if prism_limit is not None and isinstance(aspect_split, dict):
+        base["aspect_split"] = aspect_split
     spec_hash = getattr(cfg, "mesh_spec_sha256", None)
     if isinstance(spec_hash, str) and spec_hash:
         base["mesh_spec_sha256"] = spec_hash

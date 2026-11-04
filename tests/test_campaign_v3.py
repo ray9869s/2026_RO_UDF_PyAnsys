@@ -27,6 +27,7 @@ from ro.mesh_spec import (
     require_changes_match,
     spec_file_sha256,
 )
+from ro.prism_aspect import format_aspect_split
 
 CAMPAIGN = load_module(
     "campaign_v3_under_test",
@@ -169,6 +170,7 @@ def test_mesh_only_queue_lists_every_geometry():
         assert _flag(argv, "--geometry-root") == "C:/ro_data_mfbo/geometries_pmdb"
         assert _flag(argv, "--geometry-suffix") == ".pmdb"
         assert _flag(argv, "--mesh-spec") == "configs/mesh_spec_v3.json"
+        assert _flag(argv, "--max-prism-aspect-ratio") == "250"
         assert argv[-1] == "--mesh-only"
         assert "--reuse-mesh" not in argv
         assert "--checkpoint-every" not in argv
@@ -279,10 +281,60 @@ def test_mesh_table_lists_a_gate_failure_that_has_no_manifest(tmp_path):
     assert sum(row["gate"] == "MISSING" for row in rows) == 30
 
 
+def test_prism_split_accepts_contact_wedge_aspect_ratio(tmp_path):
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+    log = CAMPAIGN.mesh_log_path(tmp_path, "D1225_a30", MESH_ID)
+    log.parent.mkdir(parents=True)
+    split = {
+        "status": "split",
+        "prism_limit": 250.0,
+        "prism_zone_count": 1200,
+        "prism_ar_max": 212.0,
+        "prism_ortho_min": 0.08,
+        "bulk_zone_count": 4000000,
+        "bulk_ar_max": 18.0,
+        "bulk_ortho_min": 0.2,
+        "cells_above_bulk_ar_limit": 40,
+    }
+    log.write_text(
+        "\n".join(
+            [
+                "Minimum Orthogonal Quality = 0.08",
+                "Maximum Aspect Ratio = 212",
+                "Number of Cells = 4001200",
+                format_aspect_split(split),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rows = CAMPAIGN.mesh_table_rows(tmp_path, mesh_ids)
+    row = next(item for item in rows if item["geo_id"] == "D1225_a30")
+    assert row["gate"] == "PASS"
+    assert row["AR_max"] == pytest.approx(212.0)
+
+    split["bulk_ar_max"] = 180.0
+    log.write_text(
+        "\n".join(
+            [
+                "Minimum Orthogonal Quality = 0.08",
+                "Maximum Aspect Ratio = 212",
+                "Number of Cells = 4001200",
+                format_aspect_split(split),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    failed = CAMPAIGN.mesh_table_rows(tmp_path, mesh_ids)
+    refused = next(item for item in failed if item["geo_id"] == "D1225_a30")
+    assert refused["gate"] == "FAIL"
+
+
 def test_gate_limits_match_run_config():
     cfg = load_run_config()
     assert CAMPAIGN.ORTHO_MIN_LIMIT == cfg.min_orthogonal_quality_threshold
     assert CAMPAIGN.AR_MAX_LIMIT == cfg.max_aspect_ratio_threshold
+    assert cfg.max_prism_aspect_ratio_threshold is None
+    assert CAMPAIGN.PRISM_AR_MAX_LIMIT == 250.0
     assert CAMPAIGN.SKEW_MAX_LIMIT == cfg.max_skewness_threshold
     assert CAMPAIGN.SKEWED_FRACTION_LIMIT == cfg.skewed_face_fraction_threshold
 

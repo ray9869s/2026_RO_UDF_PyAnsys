@@ -218,6 +218,13 @@ min_orthogonal_quality_threshold = 0.05
 # 83.3, 84.8. The a30 geometries have the widest periodic span and may
 # exceed 100. 150 is a campaign ceiling, not a quality target.
 max_aspect_ratio_threshold = 150.0
+# None keeps the single global ceiling above. A positive number is the
+# ceiling for prism cell zones only; bulk zones stay on
+# max_aspect_ratio_threshold. Orthogonal quality stays the hard limit.
+# The split is recorded on the mesh manifest. It does not change the mesh.
+# Campaign v3 sets 250: above the contact-wedge maxima 185–228, and below
+# the bl12 stack that reached 251.9. A mixed cell zone does not use it.
+max_prism_aspect_ratio_threshold = None
 # Surface max skewness. Ansys guidance is that a surface mesh with maximum
 # skewness below 0.7 tends to produce a good volume mesh. Our two points
 # are consistent with that:
@@ -874,6 +881,11 @@ def validate_for_meshing():
             f"membrane y1 suffix={y1_suffix!r}, "
             f"membrane layer suffix={layer_suffix!r}, "
             f"bulk suffix={bulk_suffix!r}."
+        )
+    prism_aspect_limit = globals().get("max_prism_aspect_ratio_threshold", None)
+    if prism_aspect_limit is not None:
+        _require_positive_number(
+            "max_prism_aspect_ratio_threshold", prism_aspect_limit
         )
 
     if m_min > m_max:

@@ -68,6 +68,12 @@ fill is poly-hexcore. The mesh id ends with ``_bmsNNN``
 (``round(mm * 1000)``), after ``_y1h`` and ``_mbl``:
   bulk_max_size_mm:           float > 0
 
+Optional prism aspect-ratio ceiling. Omitted when the global ceiling is
+the only aspect-ratio check. It does not change ``mesh_id``. A usable
+``aspect_split`` (status ``split``) is the measured prism and bulk maxima:
+  max_prism_aspect_ratio_threshold:  float > 0
+  aspect_split:           {status, prism_ar_max, bulk_ar_max, ...}
+
 Optional campaign provenance, omitted on leaves that were not launched
 with a mesh spec. Both are written on the mesh manifest and copied onto
 the run manifest (``git_head`` on the run is the solve's revision):
@@ -548,6 +554,7 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
     validate_mesh_geometry_fields(payload)
     _optional_mesh_wall_times(payload)
     _optional_provenance(payload, "Mesh")
+    _optional_prism_aspect(payload)
 
 
 def _validate_run_payload(payload: Mapping[str, Any]) -> None:
@@ -633,6 +640,70 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_hf_solve_phases(payload)
     _optional_y1_diagnostic(payload)
     _optional_provenance(payload, "Run")
+
+
+def _optional_prism_aspect(payload: Mapping[str, Any]) -> None:
+    """Prism ceiling and the measured zone split. Absent on older meshes."""
+    if "max_prism_aspect_ratio_threshold" in payload:
+        value = payload["max_prism_aspect_ratio_threshold"]
+        if value is None:
+            raise ManifestError(
+                "Mesh manifest max_prism_aspect_ratio_threshold must be "
+                "omitted when unset, not null."
+            )
+        _require_number(payload, "max_prism_aspect_ratio_threshold", "Mesh")
+        if float(value) <= 0.0:
+            raise ManifestError(
+                "Mesh manifest max_prism_aspect_ratio_threshold must be "
+                f"positive, got {value!r}."
+            )
+    if "aspect_split" not in payload:
+        return
+    split = payload["aspect_split"]
+    if not isinstance(split, Mapping) or isinstance(split, (str, bytes)):
+        raise ManifestError(
+            "Mesh manifest aspect_split must be an object, "
+            f"got {type(split).__name__}."
+        )
+    status = split.get("status")
+    if status not in (
+        "split",
+        "mixed",
+        "unknown-shape",
+        "no-prism",
+        "no-bulk",
+        "unparsed",
+        "unavailable",
+    ):
+        raise ManifestError(
+            "Mesh manifest aspect_split status is unknown, "
+            f"got {status!r}."
+        )
+    if status != "split":
+        return
+    for field in ("prism_ar_max", "bulk_ar_max", "prism_ortho_min", "bulk_ortho_min"):
+        number = split.get(field)
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ManifestError(
+                f"Mesh manifest aspect_split {field} must be a number, "
+                f"got {number!r}."
+            )
+        if not math.isfinite(float(number)):
+            raise ManifestError(
+                f"Mesh manifest aspect_split {field} must be finite, "
+                f"got {number!r}."
+            )
+    for field in ("prism_ortho_min", "bulk_ortho_min"):
+        number = float(split[field])
+        if not 0.0 <= number <= 1.0:
+            raise ManifestError(
+                f"Mesh manifest aspect_split {field} must be in [0, 1], "
+                f"got {split[field]!r}."
+            )
+    if float(split["prism_ar_max"]) <= 0.0 or float(split["bulk_ar_max"]) <= 0.0:
+        raise ManifestError(
+            "Mesh manifest aspect_split aspect ratios must be positive."
+        )
 
 
 def _optional_provenance(payload: Mapping[str, Any], kind: str) -> None:
@@ -1018,6 +1089,7 @@ _OPTIONAL_MESH_PARAMETER_FIELDS = (
     "bulk_max_size_mm",
     "mesh_spec_sha256",
     "git_head",
+    "max_prism_aspect_ratio_threshold",
 )
 
 
