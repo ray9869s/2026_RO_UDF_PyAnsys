@@ -13,7 +13,7 @@ from pathlib import Path
 from ro.bulk_size import bulk_max_size_suffix
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
 from ro.local_sizing import parse_local_face_size, parse_local_proximity
-from ro.membrane_bl import resolve_membrane_bl
+from ro.membrane_bl import SPACER_BOUNDARY_LAYERS_SKIPPED, resolve_membrane_bl
 from ro.manifest import MANIFEST_SCHEMA_VERSION
 from ro.mesh_common import boundary_layers_are_split
 
@@ -73,6 +73,15 @@ def build_mesh_manifest_payload(
     }
     if boundary_layers_are_split(cfg.bl_layers, cfg.spacer_bl_layers):
         base["spacer_bl"] = cfg.spacer_bl_layers
+    # Absent on every mesh that has spacer walls, including older leaves.
+    # An empty list is the empty channel: spacer boundary layers are skipped.
+    spacer_labels = getattr(cfg, "wall_spacer_labels", None)
+    if (
+        spacer_labels is not None
+        and isinstance(spacer_labels, (list, tuple))
+        and len(spacer_labels) == 0
+    ):
+        base["spacer_boundary_layers"] = SPACER_BOUNDARY_LAYERS_SKIPPED
     proximity = parse_local_proximity(getattr(cfg, "local_proximity", None))
     face_size = parse_local_face_size(getattr(cfg, "local_face_size", None))
     if proximity is not None:

@@ -281,6 +281,68 @@ def test_mesh_table_lists_a_gate_failure_that_has_no_manifest(tmp_path):
     assert sum(row["gate"] == "MISSING" for row in rows) == 30
 
 
+def test_mesh_table_reports_a_run_record_error(tmp_path):
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+    record = CAMPAIGN.mesh_run_record_path(tmp_path, "REF_empty", MESH_ID)
+    record.parent.mkdir(parents=True)
+    message = (
+        "ValueError: include_spacer_in_boundary_layers requires "
+        "wall_spacer_labels."
+    )
+    record.write_text(
+        json.dumps({"status": "FAILED", "error_summary": message}),
+        encoding="utf-8",
+    )
+    rows = CAMPAIGN.mesh_table_rows(tmp_path, mesh_ids)
+    failed = next(row for row in rows if row["geo_id"] == "REF_empty")
+    assert failed["gate"] == "FAIL"
+    assert failed["error"] == message
+    assert failed["cell_count"] is None
+    text = CAMPAIGN.format_mesh_table(rows)
+    assert f"  REF_empty: {message}" in text
+    assert "quality gate FAIL (0): -" in text
+    assert sum(row["gate"] == "MISSING" for row in rows) == 30
+
+
+def test_emit_queue_limits_geometries(tmp_path):
+    destination = tmp_path / "followup.json"
+    geos = [
+        "REF_empty",
+        "D1225_a30",
+        "S_a072_l1733",
+        "S_a144_l1733",
+        "S_a193_l1733",
+    ]
+    argv = ["--emit-queue", str(destination), "--mesh-only"]
+    for geo_id in geos:
+        argv.extend(["--geo-id", geo_id])
+    assert CAMPAIGN.main(argv) == 0
+    jobs = json.loads(destination.read_text(encoding="utf-8"))
+    expected = [
+        geo_id for geo_id in CAMPAIGN_GEO_ID_ORDER if geo_id in geos
+    ]
+    assert [job["id"] for job in jobs] == [f"mesh-{geo_id}" for geo_id in expected]
+    solve = tmp_path / "u0p2.json"
+    solve_argv = [
+        "--emit-queue",
+        str(solve),
+        "--run-id",
+        "u0p2_p6M",
+    ]
+    for geo_id in reversed(geos):
+        solve_argv.extend(["--geo-id", geo_id])
+    assert CAMPAIGN.main(solve_argv) == 0
+    solve_jobs = json.loads(solve.read_text(encoding="utf-8"))
+    assert [job["id"] for job in solve_jobs] == [
+        f"u0p2_p6M-{geo_id}" for geo_id in expected
+    ]
+    assert all("--reuse-mesh" in job["argv"] for job in solve_jobs)
+    with pytest.raises(ValueError, match="not in the campaign"):
+        CAMPAIGN.main(
+            ["--emit-queue", str(tmp_path / "bad.json"), "--geo-id", "nope"]
+        )
+
+
 def test_prism_split_accepts_contact_wedge_aspect_ratio(tmp_path):
     mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
     log = CAMPAIGN.mesh_log_path(tmp_path, "D1225_a30", MESH_ID)

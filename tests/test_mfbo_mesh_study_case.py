@@ -441,6 +441,39 @@ def test_reusable_mesh_rejects_a_setting_mismatch_and_a_failed_record(tmp_path):
         driver.require_reusable_mesh(leaf, overrides, geometry, digest)
 
 
+def test_empty_channel_reuse_requires_skipped_spacer_layers(tmp_path):
+    geometry = tmp_path / "REF_empty.pmdb"
+    geometry.write_bytes(b"empty-pmdb")
+    digest = driver.sha256_file(geometry)
+    leaf = tmp_path / "mesh"
+    leaf.mkdir()
+    manifest = _matching_manifest(digest, min_size_mm=0.006)
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (leaf / "mesh_run_record.json").write_text(
+        json.dumps({"status": "SUCCESS"}),
+        encoding="utf-8",
+    )
+    overrides = {
+        "m_max": 0.085,
+        "m_min": 0.006,
+        "m_cpg": 5,
+        "bl_layers": 4,
+        "peel_layers": 2,
+        "wall_spacer_labels": ["wall_spacer"],
+    }
+    driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+    empty = {**overrides, "wall_spacer_labels": []}
+    with pytest.raises(ValueError, match="spacer_boundary_layers"):
+        driver.require_reusable_mesh(leaf, empty, geometry, digest)
+    recorded = dict(manifest)
+    recorded["spacer_boundary_layers"] = "skipped"
+    (leaf / "manifest.json").write_text(json.dumps(recorded), encoding="utf-8")
+    driver.require_reusable_mesh(leaf, empty, geometry, digest)
+    with pytest.raises(ValueError, match="requested absent"):
+        driver.require_reusable_mesh(leaf, overrides, geometry, digest)
+
+
 def _patch_study_main(monkeypatch, tmp_path, seen):
     template = _template()
     monkeypatch.setattr(

@@ -35,7 +35,10 @@ the file's SHA-256 and the git HEAD on the mesh and run manifests.
 
 ``--reuse-mesh`` skips meshing when that mesh leaf already exists, its
 ``mesh_run_record.json`` status is ``SUCCESS``, and the manifest settings
-match the request. The run leaf is still refused when it exists.
+match the request. An empty ``wall_spacer_labels`` request also requires
+``spacer_boundary_layers`` ``skipped``. A request that has spacer walls
+requires that field to be absent. The run leaf is still refused when it
+exists.
 
 ``--checkpoint-every N`` writes case and data every N iterations during
 the solve and keeps the latest two pairs. It is off when omitted.
@@ -79,6 +82,7 @@ from ro.local_sizing import (
     parse_local_proximity,
 )
 from ro.membrane_bl import (
+    SPACER_BOUNDARY_LAYERS_SKIPPED,
     derived_membrane_layer_count,
     membrane_bl_suffix,
     membrane_layer_override_suffix,
@@ -783,7 +787,10 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
     Success is ``mesh_run_record.json`` status ``SUCCESS`` together with a
     manifest object. Compared settings are ``m_max``, ``m_min``, ``m_cpg``,
     ``bl_layers``, ``spacer_bl_layers``, ``peel_layers``, and the geometry
-    SHA-256. ``geometry_sha256`` is the hash this job requires. A manifest
+    SHA-256. An empty ``wall_spacer_labels`` list requires
+    ``spacer_boundary_layers`` ``skipped``. Spacer walls require that field
+    to be absent, which is how every existing spacer mesh is recorded.
+    ``geometry_sha256`` is the hash this job requires. A manifest
     field ``geometry_sha256`` is the recorded hash when present; otherwise
     the hash of ``geometry_file`` is the recorded hash.
     """
@@ -880,6 +887,21 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
                 "mesh_spec_sha256: recorded "
                 f"{_setting_text(recorded_spec)}, "
                 f"requested {_setting_text(requested_spec)}"
+            )
+    labels = overrides.get("wall_spacer_labels", _MISSING)
+    if isinstance(labels, (list, tuple)):
+        recorded_skip = manifest.get("spacer_boundary_layers", _MISSING)
+        if len(labels) == 0:
+            if recorded_skip != SPACER_BOUNDARY_LAYERS_SKIPPED:
+                mismatches.append(
+                    "spacer_boundary_layers: recorded "
+                    f"{_setting_text(recorded_skip)}, "
+                    f"requested {SPACER_BOUNDARY_LAYERS_SKIPPED!r}"
+                )
+        elif recorded_skip is not _MISSING:
+            mismatches.append(
+                "spacer_boundary_layers: recorded "
+                f"{_setting_text(recorded_skip)}, requested absent"
             )
     if mismatches:
         raise ValueError(

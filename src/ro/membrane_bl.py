@@ -331,6 +331,11 @@ def membrane_bl_summary_lines(spec):
     ]
 
 
+# Written on the mesh manifest when wall_spacer_labels is empty. The
+# membrane last-ratio stack is unchanged; there is no spacer surface to layer.
+SPACER_BOUNDARY_LAYERS_SKIPPED = "skipped"
+
+
 def membrane_bl_controls(
     spec,
     *,

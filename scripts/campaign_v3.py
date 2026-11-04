@@ -21,11 +21,14 @@ the live column blank.
 count, membrane layers, orthogonal quality, aspect ratio, the quality
 gate, and a solve-time estimate. A manifest is written only after the
 gate passes, so a refused mesh is read from its mesh log and listed as
-FAIL. Jobs pass ``--max-prism-aspect-ratio 250``. That ceiling applies
-only when the mesher can separate prism cell zones from bulk polyhedra.
-A mixed zone keeps the global aspect-ratio ceiling of 150. Orthogonal
-quality stays the hard limit. The estimate is linear in cell count from
-D2450_a45 at 4.34 M cells and 6.5 h.
+FAIL. A leaf with no quality numbers is FAIL when ``mesh_run_record.json``
+records the error, and MISSING when that file is absent too. Jobs pass
+``--max-prism-aspect-ratio 250``. That ceiling applies only when the
+mesher can separate prism cell zones from bulk polyhedra. A mixed zone
+keeps the global aspect-ratio ceiling of 150. Orthogonal quality stays
+the hard limit. The estimate is linear in cell count from D2450_a45 at
+4.34 M cells and 6.5 h. ``--geo-id`` limits an emitted queue. The default
+is every geometry.
 
 The solve queue is u0p2, then u0p1, then u0p3. Every solve passes
 ``--reuse-mesh`` and ``--checkpoint-every 200``. After a PASS extract,
@@ -63,7 +66,10 @@ from ro.campaign_matrix import (  # noqa: E402
     PRODUCTION_MESH_ID_D0817_A60,
     PRODUCTION_MESH_ID_DEFAULT,
 )
-from ro.mesh_common import parse_mesh_metrics_text  # noqa: E402
+from ro.mesh_common import (  # noqa: E402
+    load_mesh_run_record,
+    parse_mesh_metrics_text,
+)
 from ro.prism_aspect import (  # noqa: E402
     aspect_ratio_failure_message,
     parse_aspect_split_text,
@@ -263,11 +269,28 @@ def _study_argv(
     return argv
 
 
-def mesh_jobs(spec, spec_path):
+def selected_geo_ids(geo_ids):
+    """Campaign order. ``None`` or empty is every geometry.
+
+    Repeated ids are kept once. An id outside the campaign whitelist raises.
+    """
+    if not geo_ids:
+        return CAMPAIGN_GEO_ID_ORDER
+    unknown = [geo_id for geo_id in geo_ids if geo_id not in CAMPAIGN_GEO_ID_ORDER]
+    if unknown:
+        raise ValueError(
+            f"geo_id is not in the campaign: {unknown}. "
+            f"expected one of {list(CAMPAIGN_GEO_ID_ORDER)}."
+        )
+    chosen = set(geo_ids)
+    return tuple(geo_id for geo_id in CAMPAIGN_GEO_ID_ORDER if geo_id in chosen)
+
+
+def mesh_jobs(spec, spec_path, geo_ids=None):
     """One mesh job per geometry. No solve."""
     token = spec_argv_token(spec_path)
     jobs = []
-    for geo_id in CAMPAIGN_GEO_ID_ORDER:
+    for geo_id in selected_geo_ids(geo_ids):
         settings = family_settings(spec, family_for_geo_id(geo_id))
         jobs.append(
             _job(
@@ -285,7 +308,14 @@ def mesh_jobs(spec, spec_path):
     return jobs
 
 
-def solve_jobs(spec, spec_path, *, run_id_filter=None, keep_checkpoints=False):
+def solve_jobs(
+    spec,
+    spec_path,
+    *,
+    run_id_filter=None,
+    keep_checkpoints=False,
+    geo_ids=None,
+):
     """Solves ordered u0p2, u0p1, u0p3. Each reuses the mesh when it exists."""
     token = spec_argv_token(spec_path)
     selected = run_ids() if not run_id_filter else tuple(run_id_filter)
@@ -297,7 +327,7 @@ def solve_jobs(spec, spec_path, *, run_id_filter=None, keep_checkpoints=False):
         )
     jobs = []
     for run_id in selected:
-        for geo_id in CAMPAIGN_GEO_ID_ORDER:
+        for geo_id in selected_geo_ids(geo_ids):
             settings = family_settings(spec, family_for_geo_id(geo_id))
             jobs.append(
                 _job(
@@ -411,6 +441,27 @@ def mesh_log_path(data_root, geo_id, mesh_id):
     )
 
 
+def mesh_run_record_path(data_root, geo_id, mesh_id):
+    return mesh_manifest_path(data_root, geo_id, mesh_id).parent / (
+        "mesh_run_record.json"
+    )
+
+
+def _record_failure(record):
+    """Error text for a leaf that did not finish a mesh. None when absent."""
+    if not isinstance(record, dict):
+        return None
+    status = record.get("status")
+    if status == "SUCCESS":
+        return "mesh manifest is missing (mesh_run_record status='SUCCESS')."
+    summary = record.get("error_summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    if status:
+        return f"mesh_run_record status={status!r}."
+    return "mesh_run_record.json has no status."
+
+
 def _layers_from_log(text):
     matches = list(_MEMBRANE_LAYERS_RE.finditer(text))
     if not matches:
@@ -443,13 +494,16 @@ def mesh_table_rows(data_root, mesh_ids):
 
     The worker writes the manifest only after the quality gate passes.
     A refused mesh is read from its mesh log so the gate result is FAIL
-    rather than absent.
+    rather than absent. A leaf that failed before the volume-mesh quality
+    check is FAIL with the ``mesh_run_record.json`` error. Neither file
+    means the job has not started, which stays MISSING.
     """
     rows = []
     for geo_id in CAMPAIGN_GEO_ID_ORDER:
         family = family_for_geo_id(geo_id)
         mesh_id = mesh_ids[geo_id]
         path = mesh_manifest_path(data_root, geo_id, mesh_id)
+        error = None
         if path.is_file():
             manifest = _read_json(path)
             layers = None
@@ -477,9 +531,18 @@ def mesh_table_rows(data_root, mesh_ids):
             )
         else:
             logged = _metrics_from_log(mesh_log_path(data_root, geo_id, mesh_id))
+            failure = _record_failure(
+                load_mesh_run_record(
+                    mesh_run_record_path(data_root, geo_id, mesh_id)
+                )
+            )
             if logged is None:
                 cell_count = layers = ortho = aspect = None
-                gate = "MISSING"
+                if failure is None:
+                    gate = "MISSING"
+                else:
+                    gate = "FAIL"
+                    error = failure
             else:
                 cell_count = logged["cell_count"]
                 layers = logged["membrane_layers"]
@@ -495,6 +558,9 @@ def mesh_table_rows(data_root, mesh_ids):
                     aspect_split=split,
                     prism_ar_limit=prism_limit,
                 )
+                if gate == "MISSING" and failure is not None:
+                    gate = "FAIL"
+                    error = failure
         rows.append(
             {
                 "geo_id": geo_id,
@@ -505,6 +571,7 @@ def mesh_table_rows(data_root, mesh_ids):
                 "ortho_min": ortho,
                 "AR_max": aspect,
                 "gate": gate,
+                "error": error,
                 "solve_h": estimate_solve_hours(cell_count),
             }
         )
@@ -550,9 +617,17 @@ def format_mesh_table(rows):
 
     lines = [_format(list(headers)), _format(["-" * width for width in widths])]
     lines.extend(_format(cells) for cells in body)
-    failed = [row["geo_id"] for row in rows if row["gate"] == "FAIL"]
+    failed = [
+        row["geo_id"]
+        for row in rows
+        if row["gate"] == "FAIL" and not row.get("error")
+    ]
     listed = ", ".join(failed) if failed else "-"
     lines.append(f"quality gate FAIL ({len(failed)}): {listed}")
+    errors = [row for row in rows if row.get("error")]
+    lines.append(f"mesh error FAIL ({len(errors)}):")
+    for row in errors:
+        lines.append(f"  {row['geo_id']}: {row['error']}")
     return "\n".join(lines)
 
 
@@ -745,6 +820,15 @@ def build_parser():
         help="Limit the solve queue to this run id. Repeatable. u0p2_p6M is first.",
     )
     parser.add_argument(
+        "--geo-id",
+        action="append",
+        default=None,
+        help=(
+            "Limit --emit-queue to this campaign geometry. Repeatable. "
+            "The default is all 31."
+        ),
+    )
+    parser.add_argument(
         "--mesh-table",
         action="store_true",
         help="Print the mesh quality table from manifests under the data root.",
@@ -791,6 +875,8 @@ def main(argv=None):
         raise ValueError("--mesh-only does not take --run-id.")
     if args.mesh_only and args.keep_checkpoints:
         raise ValueError("--mesh-only does not take --keep-checkpoints.")
+    if args.geo_id and not args.emit_queue:
+        raise ValueError("--geo-id requires --emit-queue.")
     if not any((args.emit_queue, args.mesh_table, args.compare, args.seminar_csv)):
         raise ValueError(
             "Choose --emit-queue, --mesh-table, --compare, or --seminar-csv."
@@ -805,18 +891,19 @@ def main(argv=None):
         if mesh_ids is None:
             mesh_ids = mesh_ids_for_spec(spec)
         jobs = (
-            mesh_jobs(spec, spec_path)
+            mesh_jobs(spec, spec_path, geo_ids=args.geo_id)
             if args.mesh_only
             else solve_jobs(
                 spec,
                 spec_path,
                 run_id_filter=args.run_id,
                 keep_checkpoints=args.keep_checkpoints,
+                geo_ids=args.geo_id,
             )
         )
         path = write_queue(args.emit_queue, jobs)
         families_seen = []
-        for geo_id in CAMPAIGN_GEO_ID_ORDER:
+        for geo_id in selected_geo_ids(args.geo_id):
             family = family_for_geo_id(geo_id)
             if family in families_seen:
                 continue

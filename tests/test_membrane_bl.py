@@ -564,3 +564,36 @@ def test_empty_channel_last_ratio_omits_the_spacer_control():
             bl_growth_rate=1.2,
             include_spacer_in_boundary_layers=True,
         )
+
+
+def test_empty_channel_manifest_records_skipped_spacer_layers(
+    monkeypatch, tmp_path
+):
+    from ro.membrane_bl import SPACER_BOUNDARY_LAYERS_SKIPPED
+    from ro.mesh_manifest_payload import build_mesh_manifest_payload
+    from ro.paths import mesh_dir
+    from test_manifest import ref_empty_mesh_payload
+
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    cfg = load_run_config()
+    populate_valid_meshing_config(cfg)
+    present = build_mesh_manifest_payload(
+        cfg, _metrics(), "a" * 64, created_utc="2026-11-04T00:00:00Z"
+    )
+    assert "spacer_boundary_layers" not in present
+
+    cfg.wall_spacer_labels = []
+    skipped = build_mesh_manifest_payload(
+        cfg, _metrics(), "b" * 64, created_utc="2026-11-04T00:00:00Z"
+    )
+    assert skipped["spacer_boundary_layers"] == SPACER_BOUNDARY_LAYERS_SKIPPED
+
+    payload = ref_empty_mesh_payload()
+    payload["spacer_boundary_layers"] = SPACER_BOUNDARY_LAYERS_SKIPPED
+    directory = mesh_dir("empty", "REF_empty", payload["mesh_id"])
+    directory.mkdir(parents=True)
+    write_mesh_manifest(directory, payload)
+    rejected = dict(payload)
+    rejected["spacer_boundary_layers"] = None
+    with pytest.raises(ManifestError, match="spacer_boundary_layers"):
+        write_mesh_manifest(directory, rejected)

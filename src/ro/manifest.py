@@ -74,6 +74,11 @@ the only aspect-ratio check. It does not change ``mesh_id``. A usable
   max_prism_aspect_ratio_threshold:  float > 0
   aspect_split:           {status, prism_ar_max, bulk_ar_max, ...}
 
+Optional spacer-boundary-layer record. Omitted when the geometry has
+spacer walls. ``skipped`` means ``wall_spacer_labels`` was empty, so the
+membrane stack was built and no spacer control was added:
+  spacer_boundary_layers:     "skipped"
+
 Optional campaign provenance, omitted on leaves that were not launched
 with a mesh spec. Both are written on the mesh manifest and copied onto
 the run manifest (``git_head`` on the run is the solve's revision):
@@ -108,6 +113,7 @@ from ro.fluent_launch import fluent_mpi_token
 from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
 from ro.local_sizing import local_sizing_suffix
 from ro.membrane_bl import (
+    SPACER_BOUNDARY_LAYERS_SKIPPED,
     Y1_REQUEST_REL_TOLERANCE,
     derived_membrane_layer_count,
     membrane_bl_suffix,
@@ -555,6 +561,7 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
     _optional_mesh_wall_times(payload)
     _optional_provenance(payload, "Mesh")
     _optional_prism_aspect(payload)
+    _optional_spacer_boundary_layers(payload)
 
 
 def _validate_run_payload(payload: Mapping[str, Any]) -> None:
@@ -640,6 +647,19 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_hf_solve_phases(payload)
     _optional_y1_diagnostic(payload)
     _optional_provenance(payload, "Run")
+
+
+def _optional_spacer_boundary_layers(payload: Mapping[str, Any]) -> None:
+    """``skipped`` when the geometry has no spacer walls. Absent otherwise."""
+    if "spacer_boundary_layers" not in payload:
+        return
+    value = payload["spacer_boundary_layers"]
+    if value != SPACER_BOUNDARY_LAYERS_SKIPPED:
+        raise ManifestError(
+            "Mesh manifest spacer_boundary_layers must be "
+            f"{SPACER_BOUNDARY_LAYERS_SKIPPED!r} when there are no spacer "
+            f"walls, got {value!r}."
+        )
 
 
 def _optional_prism_aspect(payload: Mapping[str, Any]) -> None:
@@ -1090,6 +1110,7 @@ _OPTIONAL_MESH_PARAMETER_FIELDS = (
     "mesh_spec_sha256",
     "git_head",
     "max_prism_aspect_ratio_threshold",
+    "spacer_boundary_layers",
 )
 
 
