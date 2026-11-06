@@ -1186,6 +1186,7 @@ if __name__ == "__main__":
         print("Switching to solver...")
 
         solver = meshing.switch_to_solver()
+        print_fluent_launch_identity(solver)
         meshing = None
 
         setup = solver.settings.setup

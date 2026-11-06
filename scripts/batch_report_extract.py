@@ -3,7 +3,6 @@ import sys
 import json
 import argparse
 import importlib.util
-import subprocess
 import time
 from pathlib import Path
 
@@ -24,6 +23,11 @@ from ro.extract_skip import extract_skip_block_reason, inspect_extract_skip_leaf
 from ro.manifest import ManifestError, iter_run_manifests
 from ro.extract_profile import critical_summary_columns
 from ro.paths import data_root, project_root, run_dir, runs_root
+from ro.hang_watchdog import (
+    parse_hang_line,
+    record_hang,
+    tee_until_hang,
+)
 from ro.session_retry import (
     classify_retryable_session_crash,
     describe_attempt_orphans,
@@ -487,26 +491,20 @@ def extract_attempt_log_path(run_directory, geo_id, mesh_id, run_id, attempt):
 
 
 def run_extract_worker_tee(cmd, env, log_path):
-    """Run the extract worker, teeing stdout/stderr to an attempt-specific log."""
-    log_path = Path(log_path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            log_file.write(line)
-        returncode = proc.wait()
-    return subprocess.CompletedProcess(cmd, returncode)
+    """Run the extract worker, teeing stdout/stderr to an attempt-specific log.
+
+    No growth in that log or in ``post/`` for the run-config idle limit
+    kills this attempt's Fluent PIDs and the worker.
+    """
+    from ro.hang_watchdog import idle_seconds
+
+    return tee_until_hang(
+        cmd,
+        env=env,
+        log_path=log_path,
+        stage="extract",
+        idle_s=idle_seconds("extract"),
+    )
 
 
 def collect_extract_attempt_evidence(log_path):
@@ -539,12 +537,15 @@ def run_extract_attempts(
     process_lister=None,
     killer=None,
 ):
-    """Run the extract worker, retrying Fluent session deaths.
+    """Run the extract worker, retrying Fluent session deaths and one hang.
 
-    max_retries is retries after the first attempt (default 2 → 3 total).
-    Each attempt is a new subprocess and a new Fluent session. A failed
-    attempt terminates only the Fluent PID that attempt printed as
-    ``FLUENT_LAUNCH pid=<pid>``. Skip is not re-evaluated here.
+    max_retries is retries after the first attempt for a session crash
+    (default 2 → 3 total). A hang, no log or ``post/`` progress for the
+    idle limit, is retried once and then failed with failure_class hang.
+    That retry does not spend the session-crash budget. Each attempt is a
+    new subprocess and a new Fluent session. A failed attempt terminates
+    only the Fluent PID that attempt printed as ``FLUENT_LAUNCH pid=<pid>``.
+    Skip is not re-evaluated here.
 
     Returns (result, attempts, retry_kinds, attempt_logs).
     """
@@ -553,18 +554,21 @@ def run_extract_attempts(
     if sleeper is None:
         sleeper = time.sleep
     max_retries = max(0, int(max_retries))
-    max_attempts = max_retries + 1
     retry_kinds = []
     attempt_logs = []
     result = None
     run_directory = Path(run_directory)
-    for attempt in range(1, max_attempts + 1):
+    attempt = 0
+    hang_retries = 0
+    crash_retries = 0
+    while attempt < max_retries + 2:
+        attempt += 1
         log_path = extract_attempt_log_path(
             run_directory, geo_id, mesh_id, run_id, attempt
         )
         attempt_logs.append(log_path)
         print(
-            f"  extract attempt {attempt}/{max_attempts}: "
+            f"  extract attempt {attempt}: "
             f"{' '.join(str(part) for part in cmd)}"
         )
         print(f"  Attempt log: {log_path}")
@@ -573,6 +577,40 @@ def run_extract_attempts(
             return result, attempt, retry_kinds, attempt_logs
 
         evidence = collect_extract_attempt_evidence(log_path)
+        hang = parse_hang_line(evidence)
+        if hang is not None:
+            event = {
+                "stage": "extract",
+                "attempt": attempt,
+                "idle_s": hang["idle_s"],
+                "killed_pids": list(hang["killed_pids"]),
+            }
+            will_retry = hang_retries < 1
+            print(
+                "  extract hang: failure_class=hang "
+                f"attempt={attempt} idle_s={hang['idle_s']} "
+                f"killed_pids={hang['killed_pids']}",
+                flush=True,
+            )
+            print(f"  {record_hang(run_directory, event, failed=not will_retry)}", flush=True)
+            for line in terminate_recorded_fluent_pids(evidence, killer=killer):
+                print(f"  {line}", flush=True)
+            if will_retry:
+                hang_retries += 1
+                print(
+                    f"  extract: hang on attempt {attempt}; "
+                    f"retrying once after {float(settle_s):g}s.",
+                    flush=True,
+                )
+                if settle_s > 0.0:
+                    sleeper(float(settle_s))
+                continue
+            print(
+                f"  extract: hang on attempt {attempt}; not retrying.",
+                flush=True,
+            )
+            return result, attempt, retry_kinds, attempt_logs
+
         for line in describe_attempt_orphans(
             evidence, process_lister=process_lister
         ):
@@ -580,10 +618,10 @@ def run_extract_attempts(
         for line in terminate_recorded_fluent_pids(evidence, killer=killer):
             print(f"  {line}")
         retry_kind = classify_retryable_session_crash(evidence)
-        can_retry = attempt < max_attempts and retry_kind is not None
-        if can_retry:
+        if retry_kind is not None and crash_retries < max_retries:
+            crash_retries += 1
             retry_kinds.append(retry_kind)
-            remaining = max_attempts - attempt
+            remaining = max_retries - crash_retries + 1
             print(
                 f"  extract: transient {retry_kind} on attempt {attempt}; "
                 f"retrying after {float(settle_s):g}s ({remaining} retry left)."
@@ -591,13 +629,18 @@ def run_extract_attempts(
             if settle_s > 0.0:
                 sleeper(float(settle_s))
             continue
-        if attempt < max_attempts:
+        if retry_kind is not None and crash_retries >= max_retries:
+            print(
+                f"  extract: transient {retry_kind} on attempt {attempt}; "
+                "no retries left."
+            )
+        elif attempt < max_retries + 1:
             print(
                 f"  extract: non-retryable failure on attempt {attempt} "
                 f"(return code {result.returncode}); not retrying."
             )
         return result, attempt, retry_kinds, attempt_logs
-    return result, max_attempts, retry_kinds, attempt_logs
+    return result, attempt, retry_kinds, attempt_logs
 
 
 def aggregate_output_paths() -> tuple[Path, Path]:

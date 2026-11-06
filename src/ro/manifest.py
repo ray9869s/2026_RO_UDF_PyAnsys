@@ -79,6 +79,12 @@ spacer walls. ``skipped`` means ``wall_spacer_labels`` was empty, so the
 membrane stack was built and no spacer control was added:
   spacer_boundary_layers:     "skipped"
 
+Optional, written when a solve or extract stops making log, transcript,
+or ``post/`` progress. ``failure_class`` is ``hang`` only when that stage
+gave up. ``hang_events`` stays when an extract hang was retried:
+  failure_class:              "hang"
+  hang_events:                [{stage, attempt, idle_s, killed_pids}]
+
 Optional campaign provenance, omitted on leaves that were not launched
 with a mesh spec. Both are written on the mesh manifest and copied onto
 the run manifest (``git_head`` on the run is the solve's revision):
@@ -647,6 +653,7 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_hf_solve_phases(payload)
     _optional_y1_diagnostic(payload)
     _optional_provenance(payload, "Run")
+    _optional_hang(payload)
 
 
 def _optional_spacer_boundary_layers(payload: Mapping[str, Any]) -> None:
@@ -724,6 +731,62 @@ def _optional_prism_aspect(payload: Mapping[str, Any]) -> None:
         raise ManifestError(
             "Mesh manifest aspect_split aspect ratios must be positive."
         )
+
+
+def _optional_hang(payload: Mapping[str, Any]) -> None:
+    """Hang record. Absent when the stage kept making progress."""
+    if "failure_class" in payload:
+        value = payload["failure_class"]
+        if value != "hang":
+            raise ManifestError(
+                "Run manifest failure_class must be 'hang' when set, "
+                f"got {value!r}."
+            )
+    if "hang_events" not in payload:
+        return
+    events = payload["hang_events"]
+    if not isinstance(events, list):
+        raise ManifestError(
+            "Run manifest hang_events must be a list, "
+            f"got {type(events).__name__}."
+        )
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping) or isinstance(event, (str, bytes)):
+            raise ManifestError(
+                f"Run manifest hang_events[{index}] must be an object."
+            )
+        stage = event.get("stage")
+        if stage not in ("extract", "solve"):
+            raise ManifestError(
+                f"Run manifest hang_events[{index}].stage must be "
+                f"'extract' or 'solve', got {stage!r}."
+            )
+        idle = event.get("idle_s")
+        if isinstance(idle, bool) or not isinstance(idle, (int, float)):
+            raise ManifestError(
+                f"Run manifest hang_events[{index}].idle_s must be a "
+                f"number, got {idle!r}."
+            )
+        if not math.isfinite(float(idle)) or float(idle) <= 0.0:
+            raise ManifestError(
+                f"Run manifest hang_events[{index}].idle_s must be "
+                f"positive, got {idle!r}."
+            )
+        attempt = event.get("attempt")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise ManifestError(
+                f"Run manifest hang_events[{index}].attempt must be an "
+                f"integer >= 1, got {attempt!r}."
+            )
+        pids = event.get("killed_pids")
+        if not isinstance(pids, list) or any(
+            isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0
+            for pid in pids
+        ):
+            raise ManifestError(
+                f"Run manifest hang_events[{index}].killed_pids must be "
+                f"positive integers, got {pids!r}."
+            )
 
 
 def _optional_provenance(payload: Mapping[str, Any], kind: str) -> None:

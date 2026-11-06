@@ -4800,6 +4800,7 @@ if __name__ == "__main__":
             print("Switching from meshing mode to solver mode...", flush=True)
 
             solver = meshing.switch_to_solver()
+            print_fluent_launch_identity(solver)
 
             print("Switched to solver mode successfully.", flush=True)
 
@@ -4892,6 +4893,7 @@ if __name__ == "__main__":
             print("Switching from meshing mode to solver mode...", flush=True)
 
             solver = meshing.switch_to_solver()
+            print_fluent_launch_identity(solver)
 
             print("Switched to solver mode successfully.", flush=True)
 

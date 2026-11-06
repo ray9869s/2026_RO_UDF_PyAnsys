@@ -715,6 +715,14 @@ def _require_optional_git_head(name, value):
         )
 
 
+# Minutes with no growth in the attempt log, the Fluent transcript, or
+# post/ before this job's Fluent PIDs and its worker are killed.
+# Extract retries that hang once. Solve fails the stage and the queue
+# moves on. The final case and data are left in place.
+extract_hang_idle_minutes = 30.0
+solve_hang_idle_minutes = 60.0
+
+
 def validate_common():
     """Validate settings shared by meshing and solver scripts."""
     _require_set("project_root", project_root)
@@ -734,6 +742,12 @@ def validate_common():
     resolve_fluent_mpi(fluent_mpi)
     _require_optional_sha256("mesh_spec_sha256", mesh_spec_sha256)
     _require_optional_git_head("git_head", git_head)
+    _require_positive_number(
+        "extract_hang_idle_minutes", extract_hang_idle_minutes
+    )
+    _require_positive_number(
+        "solve_hang_idle_minutes", solve_hang_idle_minutes
+    )
 
 
 def _require_geometry_root(value):

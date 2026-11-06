@@ -9,7 +9,6 @@ import argparse
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +23,11 @@ from ro.campaign_matrix import (
 )
 from ro.manifest import ManifestError, read_run_manifest
 from ro.paths import mesh_dir, project_root, run_dir
+from ro.hang_watchdog import (
+    parse_hang_line,
+    record_hang,
+    tee_until_hang,
+)
 from ro.session_retry import (
     classify_retryable_session_crash,
     describe_attempt_orphans,
@@ -187,28 +191,23 @@ def write_solver_retry_record(
     return path
 
 
-def run_solver_worker_tee(cmd, env, cwd, log_path):
-    """Run the solver worker, teeing stdout/stderr to an attempt-specific log."""
-    log_path = Path(log_path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            log_file.write(line)
-        returncode = proc.wait()
-    return subprocess.CompletedProcess(cmd, returncode)
+def run_solver_worker_tee(cmd, env, cwd, log_path, progress_files=()):
+    """Run the solver worker, teeing stdout/stderr to an attempt-specific log.
+
+    No growth in that log, the Fluent transcripts, or ``post/`` for the
+    run-config idle limit kills this attempt's Fluent PIDs and the worker.
+    """
+    from ro.hang_watchdog import idle_seconds
+
+    return tee_until_hang(
+        cmd,
+        env=env,
+        cwd=cwd,
+        log_path=log_path,
+        stage="solve",
+        idle_s=idle_seconds("solve"),
+        extra_files=progress_files,
+    )
 
 
 def run_solver_attempts(
@@ -231,29 +230,35 @@ def run_solver_attempts(
     """Run the solver worker, retrying Fluent session deaths.
 
     max_retries is retries after the first attempt (default 2 → 3 total).
-    Each attempt is a new subprocess. Skip is not re-evaluated here: leftover
-    finals from a failed attempt are not skip-complete under R-02, and this
-    loop must not consult skip.
+    A hang is not retried: the stage fails with failure_class hang and the
+    queue moves on. Final case and data files are left in place. Skip is
+    not re-evaluated here.
 
     Returns (result, attempts, retry_kinds, attempt_logs).
     """
-    if runner is None:
-        runner = run_solver_worker_tee
     if sleeper is None:
         sleeper = time.sleep
     max_retries = max(0, int(max_retries))
-    max_attempts = max_retries + 1
     retry_kinds = []
     attempt_logs = []
     result = None
     run_directory = Path(run_directory)
-    for attempt in range(1, max_attempts + 1):
+    transcripts = solver_worker_log_paths(run_directory, case_name)
+    if runner is None:
+        def runner(cmd, env, cwd, log_path, progress_files=transcripts):
+            return run_solver_worker_tee(
+                cmd, env, cwd, log_path, progress_files=progress_files
+            )
+    attempt = 0
+    crash_retries = 0
+    while attempt < max_retries + 1:
+        attempt += 1
         log_path = solver_attempt_log_path(
             run_directory, geo_id, mesh_id, run_id, attempt
         )
         attempt_logs.append(log_path)
         print(
-            f"Solver worker attempt {attempt}/{max_attempts}: "
+            f"Solver worker attempt {attempt}/{max_retries + 1}: "
             f"{' '.join(cmd)}"
         )
         print(f"Attempt log: {log_path}")
@@ -263,8 +268,34 @@ def run_solver_attempts(
 
         evidence = collect_solver_attempt_evidence(
             log_path,
-            solver_worker_log_paths(run_directory, case_name),
+            transcripts,
         )
+        hang = parse_hang_line(evidence)
+        if hang is not None:
+            event = {
+                "stage": "solve",
+                "attempt": attempt,
+                "idle_s": hang["idle_s"],
+                "killed_pids": list(hang["killed_pids"]),
+            }
+            print(
+                "Solver hang: failure_class=hang "
+                f"attempt={attempt} idle_s={hang['idle_s']} "
+                f"killed_pids={hang['killed_pids']}",
+                flush=True,
+            )
+            print(
+                record_hang(run_directory, event, failed=True),
+                flush=True,
+            )
+            for line in terminate_recorded_fluent_pids(evidence, killer=killer):
+                print(line, flush=True)
+            print(
+                f"Solver: hang on attempt {attempt}; not retrying.",
+                flush=True,
+            )
+            return result, attempt, retry_kinds, attempt_logs
+
         for line in describe_attempt_orphans(
             evidence, process_lister=process_lister
         ):
@@ -274,10 +305,10 @@ def run_solver_attempts(
         preserve_solver_worker_logs(run_directory, case_name, attempt)
 
         retry_kind = classify_retryable_session_crash(evidence)
-        can_retry = attempt < max_attempts and retry_kind is not None
-        if can_retry:
+        if retry_kind is not None and crash_retries < max_retries:
+            crash_retries += 1
             retry_kinds.append(retry_kind)
-            remaining = max_attempts - attempt
+            remaining = max_retries - crash_retries + 1
             print(
                 f"Solver: transient {retry_kind} on attempt {attempt}; "
                 f"retrying after {float(settle_s):g}s ({remaining} retry left)."
@@ -285,13 +316,13 @@ def run_solver_attempts(
             if settle_s > 0.0:
                 sleeper(float(settle_s))
             continue
-        if attempt < max_attempts:
+        if retry_kind is None and attempt < max_retries + 1:
             print(
                 f"Solver: non-retryable failure on attempt {attempt} "
                 f"(return code {result.returncode}); not retrying."
             )
         return result, attempt, retry_kinds, attempt_logs
-    return result, max_attempts, retry_kinds, attempt_logs
+    return result, attempt, retry_kinds, attempt_logs
 
 
 def classify_solver_pre_execution(
