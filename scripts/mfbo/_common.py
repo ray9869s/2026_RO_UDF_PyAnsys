@@ -57,6 +57,7 @@ def launch_extract(
     run_id,
     profile=None,
     extra_argv=None,
+    report_dirname=None,
 ):
     """Run pyfluent_report_extract.py the way batch_report_extract.py does.
 
@@ -83,6 +84,8 @@ def launch_extract(
         return overrides
 
     overrides = call_with_data_root(data_root, _build)
+    if report_dirname:
+        overrides["report_dirname"] = report_dirname
     env = extract_child_env(data_root, overrides, base_config)
     cmd = report_extract_argv(sys.executable, worker, profile)
     if extra_argv:

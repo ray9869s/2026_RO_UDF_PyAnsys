@@ -654,6 +654,8 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_y1_diagnostic(payload)
     _optional_provenance(payload, "Run")
     _optional_hang(payload)
+    _optional_resume_fallback(payload)
+    _optional_continue_from_iteration(payload)
 
 
 def _optional_spacer_boundary_layers(payload: Mapping[str, Any]) -> None:
@@ -731,6 +733,58 @@ def _optional_prism_aspect(payload: Mapping[str, Any]) -> None:
         raise ManifestError(
             "Mesh manifest aspect_split aspect ratios must be positive."
         )
+
+
+def _optional_resume_fallback(payload: Mapping[str, Any]) -> None:
+    """``fresh`` when resume had no leaf or no checkpoint pair."""
+    if "resume_fallback" not in payload:
+        return
+    value = payload["resume_fallback"]
+    if value != "fresh":
+        raise ManifestError(
+            "Run manifest resume_fallback must be 'fresh' when set, "
+            f"got {value!r}."
+        )
+
+
+def _optional_continue_from_iteration(payload: Mapping[str, Any]) -> None:
+    """Iteration already in the final data when a continue chunk starts."""
+    if "continue_from_iteration" not in payload:
+        return
+    value = payload["continue_from_iteration"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ManifestError(
+            "Run manifest continue_from_iteration must be an integer >= 1, "
+            f"got {value!r}."
+        )
+
+
+def _continued_max_iterations(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> bool:
+    """True when the only solver_settings change is a higher iteration cap.
+
+    A continue chunk starts at ``continue_from_iteration`` and raises
+    ``max_iterations`` past the cap that finished the previous solve.
+    """
+    start = incoming.get("continue_from_iteration")
+    if isinstance(start, bool) or not isinstance(start, int) or start < 1:
+        return False
+    old = existing.get("solver_settings")
+    new = incoming.get("solver_settings")
+    if not isinstance(old, Mapping) or not isinstance(new, Mapping):
+        return False
+    old_max = old.get("max_iterations")
+    new_max = new.get("max_iterations")
+    if isinstance(old_max, bool) or isinstance(new_max, bool):
+        return False
+    if not isinstance(old_max, int) or not isinstance(new_max, int):
+        return False
+    if new_max <= old_max or new_max < start:
+        return False
+    old_id = dict(_solver_settings_identity(old))
+    new_id = dict(_solver_settings_identity(new))
+    old_id.pop("max_iterations", None)
+    new_id.pop("max_iterations", None)
+    return old_id == new_id
 
 
 def _optional_hang(payload: Mapping[str, Any]) -> None:
@@ -1588,7 +1642,7 @@ def write_run_manifest(
             if field == "solver_settings":
                 if _solver_settings_parameter_changed(
                     existing[field], payload[field]
-                ):
+                ) and not _continued_max_iterations(existing, payload):
                     changed_list.append(field)
             elif existing[field] != payload[field]:
                 changed_list.append(field)

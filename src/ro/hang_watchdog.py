@@ -19,6 +19,8 @@ import threading
 import time
 from pathlib import Path
 
+from ro.child_output import subprocess_text_kwargs
+
 from ro.session_retry import (
     _kill_recorded_fluent_pid,
     parse_fluent_launch_pids,
@@ -166,9 +168,7 @@ def tee_until_hang(
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        **subprocess_text_kwargs(),
     )
     assert proc.stdout is not None
     post_dir = log_path.parent / "post"

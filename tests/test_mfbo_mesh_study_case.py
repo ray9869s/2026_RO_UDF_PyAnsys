@@ -531,9 +531,12 @@ def _patch_study_main(monkeypatch, tmp_path, seen):
         )
         return SimpleNamespace(returncode=0)
 
-    def fake_extract(data_root, run_directory, case, *, geo_id, mesh_id, run_id):
+    def fake_extract(
+        data_root, run_directory, case, *, geo_id, mesh_id, run_id, report_dirname=None
+    ):
         seen["extracted"] = True
-        reports = run_directory / "post" / "reports"
+        seen.setdefault("report_dirnames", []).append(report_dirname)
+        reports = run_directory / "post" / (report_dirname or "reports")
         reports.mkdir(parents=True)
         (reports / "summary_metrics_wide.csv").write_text(
             "lmh_mass_balance,pressure_drop_spacer_per_m,"
@@ -864,7 +867,7 @@ def test_resume_continues_the_latest_checkpoint_and_skips_meshing(
     assert (run / "D2450_a45_u0p2_p6M_checkpoint_000600.cas.h5").is_file()
 
 
-def test_resume_refuses_a_run_with_only_the_setup_case(monkeypatch, tmp_path):
+def test_resume_without_a_checkpoint_pair_starts_fresh(monkeypatch, tmp_path):
     seen = {}
     _patch_study_main(monkeypatch, tmp_path, seen)
     mesh_id = "max085_min003_cpg5_bl4_peel2"
@@ -875,21 +878,137 @@ def test_resume_refuses_a_run_with_only_the_setup_case(monkeypatch, tmp_path):
     run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
     run.mkdir(parents=True)
     (run / "D2450_a45_u0p2_p6M_setup.cas.h5").write_bytes(b"setup")
-    with pytest.raises(FileNotFoundError, match="setup case is not a solution checkpoint"):
-        driver.main(
-            [
-                "--data-root",
-                str(tmp_path),
-                "--geo-id",
-                "D2450_a45",
-                "--case",
-                "u0p2_p6M",
-                "--m-min",
-                "0.003",
-                "--resume",
-            ]
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--case",
+            "u0p2_p6M",
+            "--m-min",
+            "0.003",
+            "--resume",
+        ]
+    )
+    assert code == 0
+    assert seen["solved"] is True
+    assert seen["solver_overrides"]["resume_fallback"] == "fresh"
+    assert "checkpoint_resume" not in seen["solver_overrides"]
+    assert not (run / "D2450_a45_u0p2_p6M_setup.cas.h5").exists()
+
+
+def test_resume_without_a_run_leaf_starts_fresh(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--case",
+            "u0p2_p6M",
+            "--m-min",
+            "0.003",
+            "--resume",
+        ]
+    )
+    assert code == 0
+    assert seen["solver_overrides"]["resume_fallback"] == "fresh"
+    assert "checkpoint_resume" not in seen["solver_overrides"]
+
+
+def test_continue_extracts_the_saved_final_and_each_interval(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    run.mkdir(parents=True)
+    (run / "D2450_a45_u0p2_p6M_final.cas.h5").write_bytes(b"cas")
+    (run / "D2450_a45_u0p2_p6M_final.dat.h5").write_bytes(b"dat")
+    reports = run / "post" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "keep.txt").write_bytes(b"previous")
+    (run / "manifest.json").write_text(
+        json.dumps({"iterations_run": 2000, "stop_reason": "max_iter_reached"}),
+        encoding="utf-8",
+    )
+
+    def fake_solver(overrides, data_root, run_directory, **kwargs):
+        seen.setdefault("chunks", []).append(
+            {
+                "max_iterations": overrides["max_iterations"],
+                "continue_from_iteration": overrides["continue_from_iteration"],
+                "checkpoint_resume": overrides["checkpoint_resume"],
+            }
         )
-    assert "solved" not in seen
+        iteration = overrides["max_iterations"]
+        (run_directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "iterations_run": iteration,
+                    "stop_reason": "max_iter_reached",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_directory / "D2450_a45_u0p2_p6M_final.cas.h5").write_bytes(b"cas2")
+        (run_directory / "D2450_a45_u0p2_p6M_final.dat.h5").write_bytes(b"dat2")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver.campaign, "launch_solver", fake_solver)
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--case",
+            "u0p2_p6M",
+            "--m-min",
+            "0.003",
+            "--reuse-mesh",
+            "--continue-iterations",
+            "1000",
+            "--continue-every",
+            "500",
+            "--convergence-profile",
+            "campaign_v3",
+        ]
+    )
+    assert code == 0
+    assert seen["chunks"] == [
+        {
+            "max_iterations": 2500,
+            "continue_from_iteration": 2000,
+            "checkpoint_resume": True,
+        },
+        {
+            "max_iterations": 3000,
+            "continue_from_iteration": 2500,
+            "checkpoint_resume": True,
+        },
+    ]
+    assert seen["report_dirnames"] == [
+        "reports_iter2000",
+        "reports_iter2500",
+        "reports_iter3000",
+    ]
+    assert (reports / "keep.txt").read_bytes() == b"previous"
+    assert (run / "D2450_a45_u0p2_p6M_iter_002000.cas.h5").is_file()
+    assert (run / "D2450_a45_u0p2_p6M_iter_003000.dat.h5").is_file()
+    assert seen["chunks"][0]["checkpoint_resume"] is True
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_002000.cas.h5").is_file()
 
 
 def test_resume_does_not_combine_with_mesh_only(monkeypatch, tmp_path):

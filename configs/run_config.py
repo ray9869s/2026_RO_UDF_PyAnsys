@@ -408,6 +408,12 @@ checkpoint_every = None
 # False starts from the mesh. True reads the latest checkpoint in the
 # run directory and continues that data file's iteration counter.
 checkpoint_resume = False
+# "fresh" when --resume found no run leaf or no checkpoint pair and the
+# solve started from the mesh. Absent on a checkpoint resume.
+resume_fallback = None
+# Iteration already stored in the final data for one --continue-iterations
+# chunk. Absent on a fresh solve and on a checkpoint resume.
+continue_from_iteration = None
 # Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"

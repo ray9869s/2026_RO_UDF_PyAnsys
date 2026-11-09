@@ -493,7 +493,86 @@ def concentration_fraction(cells, fraction):
     }
 
 
-def analyze_cells(cells, spans, *, top_n, tolerance_m):
+MEMBRANE_BAND_M = 5.0e-5
+
+
+def continuity_region(
+    unit_cell,
+    z_m,
+    *,
+    active_edge_labels,
+    z_min_m,
+    z_max_m,
+    membrane_band_m,
+    use_membrane_band,
+):
+    """Where one cell sits relative to buffers, the wall, and the contact.
+
+    Buffer spans stay ``buffer``. When the centroid sample spans more than
+    the membrane band, cells within that band of the min or max z are
+    ``near_membrane``. The first and last active spans are ``near_contact``.
+    Remaining active cells are ``channel``. ``outside`` is its own label.
+    """
+    label = str(unit_cell)
+    if label.startswith("buffer"):
+        return "buffer"
+    if label == "outside":
+        return "outside"
+    if use_membrane_band:
+        z = float(z_m)
+        if (z - float(z_min_m)) <= membrane_band_m or (
+            float(z_max_m) - z
+        ) <= membrane_band_m:
+            return "near_membrane"
+    if label in active_edge_labels:
+        return "near_contact"
+    return "channel"
+
+
+def histogram_by_region(cells, spans, *, membrane_band_m=MEMBRANE_BAND_M):
+    """Sum ``|imbalance|`` on buffer, near_membrane, near_contact, channel."""
+    if membrane_band_m < 0.0:
+        raise ValueError(
+            f"membrane band must be >= 0, got {membrane_band_m!r}."
+        )
+    active = [label for label, _x0, _x1 in spans if str(label).startswith("active")]
+    edges = set()
+    if active:
+        edges.add(active[0])
+        edges.add(active[-1])
+    z_values = [float(cell["z_m"]) for cell in cells]
+    z_min = min(z_values) if z_values else 0.0
+    z_max = max(z_values) if z_values else 0.0
+    use_band = (z_max - z_min) > membrane_band_m
+    order = ("buffer", "near_membrane", "near_contact", "channel", "outside")
+    bins = {
+        name: {
+            "region": name,
+            "cell_count": 0,
+            "sum_abs_imbalance": 0.0,
+            "max_abs_imbalance": 0.0,
+        }
+        for name in order
+    }
+    for cell in cells:
+        region = continuity_region(
+            cell["unit_cell"],
+            cell["z_m"],
+            active_edge_labels=edges,
+            z_min_m=z_min,
+            z_max_m=z_max,
+            membrane_band_m=membrane_band_m,
+            use_membrane_band=use_band,
+        )
+        slot = bins[region]
+        slot["cell_count"] += 1
+        slot["sum_abs_imbalance"] += cell["abs_imbalance"]
+        if cell["abs_imbalance"] > slot["max_abs_imbalance"]:
+            slot["max_abs_imbalance"] = cell["abs_imbalance"]
+    return [bins[name] for name in order if bins[name]["cell_count"]]
+
+
+def analyze_cells(cells, spans, *, top_n, tolerance_m, membrane_band_m=MEMBRANE_BAND_M):
     tagged = tag_unit_cells(cells, spans, tolerance_m)
     fractions = [
         concentration_fraction(tagged, fraction) for fraction in TOP_FRACTIONS
@@ -503,6 +582,9 @@ def analyze_cells(cells, spans, *, top_n, tolerance_m):
         "total_abs_imbalance": sum(cell["abs_imbalance"] for cell in tagged),
         "top": top_cells(tagged, top_n),
         "histogram": histogram_by_unit_cell(tagged, spans),
+        "regions": histogram_by_region(
+            tagged, spans, membrane_band_m=membrane_band_m
+        ),
         "fractions": fractions,
     }
 
@@ -556,8 +638,20 @@ def render_markdown(meta, analysis):
             "",
             f"Top {len(analysis['top'])} cells are in `top_cells.csv`.",
             "",
+            "Continuity regions (buffer spans, a band of the min/max z, "
+            "and the active spans that touch a buffer):",
+            "",
+            "| region | cells | sum |imbalance| | max |imbalance| |",
+            "| --- | --- | --- | --- |",
         ]
     )
+    for row in analysis.get("regions", []):
+        lines.append(
+            f"| {row['region']} | {row['cell_count']} | "
+            f"{_format(row['sum_abs_imbalance'])} | "
+            f"{_format(row['max_abs_imbalance'])} |"
+        )
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -610,6 +704,7 @@ def write_analysis(directory, meta, analysis):
         "total_abs_imbalance": analysis["total_abs_imbalance"],
         "fractions": analysis["fractions"],
         "histogram": analysis["histogram"],
+        "regions": analysis.get("regions", []),
     }
     summary_path.write_text(
         json.dumps(payload, indent=2) + "\n",

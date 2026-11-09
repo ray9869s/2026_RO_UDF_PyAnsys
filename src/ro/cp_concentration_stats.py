@@ -310,6 +310,71 @@ def live_canon_window(
     }
 
 
+def monitor_style_cm_means(
+    faces,
+    *,
+    b_perm=B_PERM_M_PER_S,
+    c_inlet_ref=C_INLET_REF_MOL_PER_M3,
+):
+    """Area-weighted udm-7 means with and without dead-zone faces.
+
+    The solve-time ``cp_window`` monitor is the all-faces mean divided by
+    the window bulk concentration. A face with ``c_p >= c_0`` is the dead
+    zone and is omitted from the live mean. ``cm_area_mean_window_live``
+    is None when every face is dead.
+    """
+    c0 = float(c_inlet_ref)
+    if not math.isfinite(c0) or c0 <= 0.0:
+        raise ValueError(f"c_0 must be finite and positive, got {c0!r}.")
+    total_area = 0.0
+    total_weighted = 0.0
+    live_area = 0.0
+    live_weighted = 0.0
+    dead_area = 0.0
+    for face in _require_faces(faces):
+        area = float(face["area"])
+        if not math.isfinite(area):
+            raise ValueError(f"face area must be finite, got {area!r}.")
+        if area <= 0.0:
+            continue
+        cm = float(face["cm"])
+        if not math.isfinite(cm):
+            raise ValueError(f"cm must be finite, got {cm!r}.")
+        total_area += area
+        total_weighted += cm * area
+        cp = cp_face_mol_per_m3(face["cm"], face["jw"], b_perm)
+        if cp >= c0:
+            dead_area += area
+            continue
+        live_area += area
+        live_weighted += cm * area
+    if total_area <= 0.0:
+        raise ValueError("membrane window has no positive face area.")
+    return {
+        "cm_area_mean_window": total_weighted / total_area,
+        "cm_area_mean_window_live": (
+            None if live_area <= 0.0 else live_weighted / live_area
+        ),
+        "dead_zone_area_fraction": dead_area / total_area,
+    }
+
+
+def monitor_style_cp(means, c_b):
+    """``cp_window``-style ratio: area-mean udm-7 / window ``c_b``.
+
+    This is not the live canon. ``c_b`` is one value for the window, so
+    the ratio of means equals the mean of ``cm / c_b``.
+    """
+    bulk = float(c_b)
+    if not math.isfinite(bulk) or bulk == 0.0:
+        raise ValueError(f"c_b must be finite and non-zero, got {c_b!r}.")
+    live = means["cm_area_mean_window_live"]
+    return {
+        "cp_monitor_style_window": float(means["cm_area_mean_window"]) / bulk,
+        "cp_monitor_style_live": None if live is None else float(live) / bulk,
+    }
+
+
 def concentration_cp_report(
     window_faces,
     cell_faces,
@@ -333,6 +398,11 @@ def concentration_cp_report(
         b_perm=b_perm,
         c_inlet_ref=c_inlet_ref,
     )
+    monitor_cm = monitor_style_cm_means(
+        window_faces,
+        b_perm=b_perm,
+        c_inlet_ref=c_inlet_ref,
+    )
     cells = {}
     for cell_number, faces in cell_faces.items():
         cell = int(cell_number)
@@ -347,6 +417,8 @@ def concentration_cp_report(
         "c_inlet_ref_mol_m3": float(c_inlet_ref),
         "cp_canon_live_window_avg": live["cp_canon_live_avg"],
         "dead_zone_area_fraction_window": live["dead_zone_area_fraction"],
+        "monitor_cm": monitor_cm,
+        "monitor_cp": monitor_style_cp(monitor_cm, c_b_window),
         "window": window,
         "cells": cells,
     }
@@ -395,6 +467,24 @@ def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
             "-",
         ),
     ])
+    if "monitor_cm" in report and "monitor_cp" in report:
+        rows.extend([
+            _row(
+                "cm_area_mean_window_live",
+                report["monitor_cm"]["cm_area_mean_window_live"],
+                "mol/m3",
+            ),
+            _row(
+                "cp_monitor_style_window",
+                report["monitor_cp"]["cp_monitor_style_window"],
+                "-",
+            ),
+            _row(
+                "cp_monitor_style_live",
+                report["monitor_cp"]["cp_monitor_style_live"],
+                "-",
+            ),
+        ])
     for cell, metrics in sorted(report["cells"].items()):
         rows.extend(
             [

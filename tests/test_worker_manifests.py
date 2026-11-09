@@ -167,6 +167,21 @@ def test_parabolic_run_manifest_leaves_mean_null():
     assert payload["u_mean_ms"] is None
 
 
+def test_resume_fallback_and_continue_iteration_are_stamped():
+    solver = load_solver_code()
+    cfg = load_run_config()
+    populate_valid_solver_config(cfg)
+    cfg.resume_fallback = "fresh"
+    cfg.continue_from_iteration = 2000
+    payload = solver.build_run_manifest_payload(
+        cfg,
+        {"mesh_sha256": "a" * 64},
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    assert payload["resume_fallback"] == "fresh"
+    assert payload["continue_from_iteration"] == 2000
+
+
 def test_mesh_manifest_fields_have_no_worker_defaults():
     meshing = load_meshing_code()
     cfg = load_run_config()

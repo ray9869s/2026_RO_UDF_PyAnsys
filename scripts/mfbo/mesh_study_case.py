@@ -49,9 +49,14 @@ extract, a failed metric check, or a gate that is not PASS keeps the
 files so ``--resume`` can continue. ``--keep-checkpoints`` skips the
 deletion. The leaf size is printed after that decision. ``job_queue``
 runs this script, so a checkpointed queue job uses the same rule.
-``--resume`` reuses the mesh, requires a checkpoint pair in the run leaf,
-and continues that data file's iteration counter with the same solver
-settings. The setup case is not a checkpoint.
+``--resume`` reuses the mesh and continues the latest checkpoint's
+iteration counter. A resume with no run leaf, or a run leaf with no
+checkpoint pair, starts a fresh solve and records ``resume_fallback``
+``fresh`` on the manifest. A finished final pair is not deleted.
+``--continue-iterations`` extends that final pair under the same stop
+rule, writing ``post/reports_iter<N>/`` and an ``_iter_<N>`` case/data
+pair every ``--continue-every`` iterations. ``post/reports`` is left
+in place. The setup case is not a checkpoint.
 """
 
 from __future__ import annotations
@@ -62,6 +67,7 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -94,10 +100,12 @@ from ro.convergence_stop import (
     CAMPAIGN_V3_PROFILE,
     campaign_v3_stop_overrides,
 )
-from ro.leaf_disk import cleanup_line, release_after_pass
+from ro.leaf_disk import cleanup_line, final_pair_ready, release_after_pass
 from ro.mesh_common import load_mesh_run_record, parse_meshing_input_summary
 from ro.paths import MESH_ID_RE, project_root
 from ro.solve_checkpoint import (
+    checkpoint_case_path,
+    checkpoint_data_path,
     latest_checkpoint,
     refuse_finished_checkpoint,
     require_checkpoint_every,
@@ -109,7 +117,7 @@ from ro.mesh_spec import (
     require_changes_match,
     resolve_spec_path,
 )
-from ro.solver_common import sha256_file
+from ro.solver_common import STOP_REASON_MAX_ITER_REACHED, sha256_file
 
 _FLOAT_REL_TOL = 1.0e-9
 _FLOAT_ABS_TOL = 1.0e-12
@@ -1200,7 +1208,32 @@ def build_parser():
         help=(
             "Continue the existing run from its latest checkpoint with "
             "the same settings. The iteration counter is the one in the "
-            "data file. Refuses a run that has no checkpoint pair."
+            "data file. No run leaf, or no checkpoint pair, starts a "
+            "fresh solve and records resume_fallback=fresh. A finished "
+            "final pair is not deleted."
+        ),
+    )
+    parser.add_argument(
+        "--continue-iterations",
+        nargs="?",
+        const=2000,
+        type=int,
+        default=None,
+        help=(
+            "Continue a finished leaf from its final case/data for up to "
+            "N more iterations (default 2000 when the flag is present). "
+            "The campaign stop rule still applies. Every --continue-every "
+            "iterations, save a case/data pair and extract into "
+            "post/reports_iter<N>/. post/reports is kept."
+        ),
+    )
+    parser.add_argument(
+        "--continue-every",
+        type=int,
+        default=500,
+        help=(
+            "Iteration interval for a continue snapshot and extract. "
+            "Default 500."
         ),
     )
     parser.add_argument(
@@ -1273,10 +1306,220 @@ def _json_object(flag, text):
     return value
 
 
+def report_dirname_for_iteration(iteration):
+    """Extract directory name ``reports_iter<N>`` under ``post/``."""
+    if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 1:
+        raise ValueError(
+            f"iteration must be an integer >= 1, got {iteration!r}."
+        )
+    return f"reports_iter{iteration}"
+
+
+def _positive_count(name, value):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    return value
+
+
+def _final_paths(run_directory, geo_id, case_id):
+    directory = Path(run_directory)
+    return (
+        directory / f"{geo_id}_{case_id}_final.cas.h5",
+        directory / f"{geo_id}_{case_id}_final.dat.h5",
+    )
+
+
+def _copy_case_data(source_case, source_data, dest_case):
+    """Copy a case/data pair. The data name matches the case stem."""
+    dest_case = Path(dest_case)
+    if not str(dest_case).endswith(".cas.h5"):
+        raise ValueError(f"destination case must end in .cas.h5, got {dest_case}.")
+    dest_data = checkpoint_data_path(dest_case)
+    shutil.copyfile(source_case, dest_case)
+    shutil.copyfile(source_data, dest_data)
+    return dest_case, dest_data
+
+
+def _iteration_from_manifest(run_directory):
+    path = Path(run_directory) / "manifest.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"Run manifest not found: {path}.")
+    payload = _read_json(path)
+    value = payload.get("iterations_run")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"continue requires iterations_run >= 1 in {path}, got {value!r}."
+        )
+    return value, payload.get("stop_reason")
+
+
+def _extract_dirname(
+    data_root,
+    run_directory,
+    entry,
+    *,
+    geo_id,
+    mesh_id,
+    run_id,
+    dirname,
+):
+    """Extract into ``post/<dirname>/`` and validate the wide summary."""
+    result = mfbo_common.launch_extract(
+        data_root,
+        run_directory,
+        entry,
+        geo_id=geo_id,
+        mesh_id=mesh_id,
+        run_id=run_id,
+        report_dirname=dirname,
+    )
+    if result.returncode != 0:
+        return _exit_code(result.returncode)
+    summary = Path(run_directory) / "post" / dirname / "summary_metrics_wide.csv"
+    valid, message = batch_report_extract.validate_summary_wide_csv(summary)
+    if not valid:
+        print(f"FAILED_METRIC_VALIDATION: {message}")
+        return 1
+    return 0
+
+
+def continue_finished_leaf(
+    *,
+    data_root,
+    run_directory,
+    entry,
+    solver_overrides,
+    geo_id,
+    mesh_id,
+    case_id,
+    max_retries,
+    settle_s,
+    additional,
+    every,
+    keep_checkpoints,
+):
+    """Extend a finished final pair and extract every ``every`` iterations.
+
+    The first extract is the saved final, written to
+    ``post/reports_iter<start>/``. ``post/reports`` is not renamed or deleted.
+    Each later chunk reads the final pair as a checkpoint, raises the
+    iteration cap by one interval, then saves ``*_iter_<N>`` and extracts.
+    """
+    additional = _positive_count("continue-iterations", additional)
+    every = _positive_count("continue-every", every)
+    if not final_pair_ready(run_directory, geo_id, case_id):
+        raise FileNotFoundError(
+            "Continue requires the final case+data pair in "
+            f"{run_directory}."
+        )
+    start, _ignored = _iteration_from_manifest(run_directory)
+    final_case, final_data = _final_paths(run_directory, geo_id, case_id)
+    snapshot = (
+        Path(run_directory) / f"{geo_id}_{case_id}_iter_{start:06d}.cas.h5"
+    )
+    _copy_case_data(final_case, final_data, snapshot)
+    print(f"Continue snapshot at iteration {start}: {snapshot}")
+    code = _extract_dirname(
+        data_root,
+        run_directory,
+        entry,
+        geo_id=geo_id,
+        mesh_id=mesh_id,
+        run_id=case_id,
+        dirname=report_dirname_for_iteration(start),
+    )
+    if code:
+        return code
+    current = start
+    while current - start < additional:
+        chunk = min(every, additional - (current - start))
+        target = current + chunk
+        checkpoint = checkpoint_case_path(
+            run_directory, geo_id, case_id, current
+        )
+        _copy_case_data(final_case, final_data, checkpoint)
+        chunk_overrides = dict(solver_overrides)
+        chunk_overrides["checkpoint_resume"] = True
+        chunk_overrides["max_iterations"] = target
+        chunk_overrides["continue_from_iteration"] = current
+        print(
+            f"Continue {run_directory} from iteration {current} "
+            f"toward {target}."
+        )
+        solver_result = campaign.launch_solver(
+            chunk_overrides,
+            data_root,
+            run_directory,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            run_id=case_id,
+            max_retries=max_retries,
+            settle_s=settle_s,
+        )
+        if not batch_solver_sweep.solver_worker_succeeded(solver_result.returncode):
+            return _exit_code(solver_result.returncode)
+        new_iteration, stop_reason = _iteration_from_manifest(run_directory)
+        if new_iteration <= current:
+            raise RuntimeError(
+                "Continue did not advance the iteration counter: "
+                f"{current} -> {new_iteration}."
+            )
+        final_case, final_data = _final_paths(run_directory, geo_id, case_id)
+        snapshot = (
+            Path(run_directory)
+            / f"{geo_id}_{case_id}_iter_{new_iteration:06d}.cas.h5"
+        )
+        _copy_case_data(final_case, final_data, snapshot)
+        print(f"Continue snapshot at iteration {new_iteration}: {snapshot}")
+        code = _extract_dirname(
+            data_root,
+            run_directory,
+            entry,
+            geo_id=geo_id,
+            mesh_id=mesh_id,
+            run_id=case_id,
+            dirname=report_dirname_for_iteration(new_iteration),
+        )
+        if code:
+            return code
+        outcome = release_after_pass(
+            run_directory,
+            geo_id,
+            case_id,
+            keep=keep_checkpoints,
+        )
+        for error in outcome["errors"]:
+            print(f"CHECKPOINT_CLEANUP_FAILED: {error}")
+        print(cleanup_line(outcome))
+        current = new_iteration
+        if stop_reason != STOP_REASON_MAX_ITER_REACHED:
+            print(
+                f"Continue stopped at iteration {current}: {stop_reason}. "
+                "post/reports kept."
+            )
+            return 0
+    print(
+        f"Continue finished at iteration {current} "
+        f"({current - start} iterations added). post/reports kept."
+    )
+    return 0
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.resume and args.mesh_only:
         raise ValueError("--resume does not combine with --mesh-only.")
+    if args.continue_iterations is not None and args.resume:
+        raise ValueError(
+            "--continue-iterations does not combine with --resume."
+        )
+    if args.continue_iterations is not None and args.mesh_only:
+        raise ValueError(
+            "--continue-iterations does not combine with --mesh-only."
+        )
+    if args.continue_iterations is not None:
+        _positive_count("continue-iterations", args.continue_iterations)
+        _positive_count("continue-every", args.continue_every)
     data_root = resolve_data_root(args.data_root)
     case_id = require_base_case(args.case)
     changes = collect_overrides(
@@ -1327,7 +1570,13 @@ def main(argv=None):
         raise FileNotFoundError(
             f"Checkpoint resume requires the mesh leaf: {leaf}."
         )
-    reuse_mesh = args.reuse_mesh or args.resume
+    if args.continue_iterations is not None and not leaf.is_dir():
+        raise FileNotFoundError(f"Continue requires the mesh leaf: {leaf}.")
+    reuse_mesh = (
+        args.reuse_mesh
+        or args.resume
+        or args.continue_iterations is not None
+    )
     if reuse_mesh and leaf.exists():
         geometry = ensure_study_geometry(
             data_root,
@@ -1373,38 +1622,68 @@ def main(argv=None):
     solver_overrides = solver_overrides_for_study(solver_template, study_id)
     solver_overrides.update(provenance)
     run_directory = run_leaf(data_root, family, args.geo_id, study_id, case_id)
-    if args.resume:
-        if not run_directory.is_dir():
-            raise FileNotFoundError(
-                "Checkpoint resume requires the run leaf: "
-                f"{run_directory}."
-            )
-        found = latest_checkpoint(run_directory, args.geo_id, case_id)
-        if found is None:
-            raise FileNotFoundError(
-                f"No checkpoint case+data pair in {run_directory}. "
-                "The setup case is not a solution checkpoint, so the "
-                "iteration counter cannot be continued."
-            )
-        manifest_path = run_directory / "manifest.json"
-        manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
-        settings = manifest.get("solver_settings")
-        if isinstance(settings, dict):
-            refuse_finished_checkpoint(found.iteration, settings.get("max_iterations"))
-        if checkpoint_every is None:
-            checkpoint_every = require_checkpoint_every(
-                manifest.get("checkpoint_every")
-            )
-        solver_overrides["checkpoint_resume"] = True
-        print(
-            f"Resuming {run_directory} from checkpoint iteration "
-            f"{found.iteration}."
-        )
-    else:
-        refuse_existing_directory(run_directory, "run leaf")
     if checkpoint_every is not None:
         solver_overrides["checkpoint_every"] = checkpoint_every
     solver_overrides.update(convergence_profile_overrides(args.convergence_profile))
+    if args.continue_iterations is not None:
+        return continue_finished_leaf(
+            data_root=data_root,
+            run_directory=run_directory,
+            entry=_entry,
+            solver_overrides=solver_overrides,
+            geo_id=args.geo_id,
+            mesh_id=study_id,
+            case_id=case_id,
+            max_retries=solver_retries,
+            settle_s=settle_s,
+            additional=args.continue_iterations,
+            every=args.continue_every,
+            keep_checkpoints=args.keep_checkpoints,
+        )
+    if args.resume:
+        found = (
+            latest_checkpoint(run_directory, args.geo_id, case_id)
+            if run_directory.is_dir()
+            else None
+        )
+        if found is None:
+            if run_directory.is_dir() and final_pair_ready(
+                run_directory, args.geo_id, case_id
+            ):
+                raise FileExistsError(
+                    "Resume has no checkpoint pair, and the final case+data "
+                    f"are already in {run_directory}. Refusing to delete "
+                    "them. Use --continue-iterations to extend this leaf."
+                )
+            if run_directory.is_dir():
+                print(
+                    "Resume fallback: removing incomplete run leaf "
+                    f"{run_directory}"
+                )
+                shutil.rmtree(run_directory)
+            solver_overrides["resume_fallback"] = "fresh"
+            print(f"resume_fallback: fresh ({run_directory})")
+        else:
+            manifest_path = run_directory / "manifest.json"
+            manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
+            settings = manifest.get("solver_settings")
+            if isinstance(settings, dict):
+                refuse_finished_checkpoint(
+                    found.iteration, settings.get("max_iterations")
+                )
+            if checkpoint_every is None:
+                checkpoint_every = require_checkpoint_every(
+                    manifest.get("checkpoint_every")
+                )
+                if checkpoint_every is not None:
+                    solver_overrides["checkpoint_every"] = checkpoint_every
+            solver_overrides["checkpoint_resume"] = True
+            print(
+                f"Resuming {run_directory} from checkpoint iteration "
+                f"{found.iteration}."
+            )
+    else:
+        refuse_existing_directory(run_directory, "run leaf")
     solver_result = campaign.launch_solver(
         solver_overrides,
         data_root,

@@ -257,6 +257,28 @@ def test_checkpoint_fields_are_optional_positive_integers(monkeypatch, tmp_path)
         write_run_manifest(directory, rejected)
 
 
+def test_continue_may_raise_only_max_iterations(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = write_test_run()
+    payload = read_run_manifest(directory)
+    raised = dict(payload)
+    raised["solver_settings"] = dict(payload["solver_settings"])
+    raised["solver_settings"]["max_iterations"] = 2500
+    with pytest.raises(ManifestError, match="changed parameters"):
+        write_run_manifest(directory, raised)
+    raised["continue_from_iteration"] = 2000
+    write_run_manifest(directory, raised)
+    stored = read_run_manifest(directory)
+    assert stored["continue_from_iteration"] == 2000
+    assert stored["solver_settings"]["max_iterations"] == 2500
+    stored["resume_fallback"] = "fresh"
+    write_run_manifest(directory, stored)
+    assert read_run_manifest(directory)["resume_fallback"] == "fresh"
+    stored["resume_fallback"] = "checkpoint"
+    with pytest.raises(ManifestError, match="resume_fallback"):
+        write_run_manifest(directory, stored)
+
+
 def test_run_manifest_round_trip(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)

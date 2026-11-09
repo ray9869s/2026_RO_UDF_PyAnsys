@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from ro.campaign_geo_ids import assert_selected_cases_are_not_legacy_ml
+from ro.child_output import subprocess_text_kwargs
 from ro.campaign_matrix import (
     CASE_SET_CHOICES,
     CASE_SET_EXPLORATORY,
@@ -608,8 +609,8 @@ def list_leftover_meshing_processes(*, runner=None):
             result = runner(
                 ["tasklist", "/FO", "CSV", "/NH"],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
             raw = result.stdout or ""
             for line in raw.splitlines():
@@ -619,8 +620,8 @@ def list_leftover_meshing_processes(*, runner=None):
             result = runner(
                 ["ps", "-eo", "pid=,comm=,args="],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
             raw = result.stdout or ""
             for line in raw.splitlines():

@@ -13,6 +13,8 @@ import os
 import signal
 import subprocess
 
+from ro.child_output import subprocess_text_kwargs
+
 _MARKERS = ("discovery", "spaceclaim")
 
 
@@ -60,15 +62,15 @@ def list_discovery_processes(runner=None) -> list[dict]:
             result = runner(
                 ["tasklist", "/FO", "CSV", "/NH"],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
             return processes_from_tasklist(result.stdout or "")
         result = runner(
             ["ps", "-eo", "pid=,args="],
             capture_output=True,
-            text=True,
             check=False,
+            **subprocess_text_kwargs(),
         )
         return processes_from_ps(result.stdout or "")
     except OSError as exc:
@@ -100,8 +102,8 @@ def pid_is_running(pid: int, runner=None) -> bool:
         result = runner(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
-            text=True,
             check=False,
+            **subprocess_text_kwargs(),
         )
         text = ((result.stdout or "") + (result.stderr or "")).replace("\x00", "")
         folded = text.casefold()
@@ -129,8 +131,8 @@ def terminate_pid(pid: int, runner=None, alive=None) -> None:
         completed = runner(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
-            text=True,
             check=False,
+            **subprocess_text_kwargs(),
         )
         output = _taskkill_text(completed)
         if completed.returncode == 0 or taskkill_already_gone(completed.returncode, output):

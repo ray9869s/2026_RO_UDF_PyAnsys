@@ -686,6 +686,9 @@ class _MeshPhase:
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
+    from ro.child_output import install_child_output_decoding
+
+    install_child_output_decoding()
     meshing_cli = parse_meshing_cli()
     SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
     _default_config = project_root() / "configs" / "run_config.py"

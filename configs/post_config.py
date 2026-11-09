@@ -11,6 +11,7 @@ POST_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
     "channel_height_m",
     "results_dir",
     "case_path",
+    "report_dirname",
 })
 
 

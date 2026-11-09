@@ -16,6 +16,8 @@ from ro.convergence_stop import (
 )
 from ro.monitor_change import (
     MONITOR_CHANGE_LAST100,
+    cp_live_monitor_definition,
+    cp_monitor_definition,
     last100_monitor_changes,
     relative_change_last_iterations,
 )
@@ -271,3 +273,17 @@ def test_audit_groups_report_files_and_scientific_transcript_fallback(tmp_path, 
     assert "stopped_early: 2" in captured
     assert "ran_to_cap: 1" in captured
     assert audit.main([str(tmp_path / "missing")]) == 2
+
+
+def test_live_cp_monitor_drops_faces_where_udm9_is_zero():
+    window = cp_monitor_definition("cp_monitor_cm_avg", "cp_monitor_cb_yi", 998.2, 0.05844)
+    live = cp_live_monitor_definition(
+        "cp_monitor_membrane_window",
+        "cp_monitor_cb_yi",
+        998.2,
+        0.05844,
+    )
+    assert "udm-9" not in window
+    assert "IF(udm-9>0, udm-7, 0)" in live
+    assert "cp_monitor_cb_yi" in live
+    assert "cp_monitor_membrane_window" in live

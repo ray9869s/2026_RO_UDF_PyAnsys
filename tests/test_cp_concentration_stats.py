@@ -13,6 +13,8 @@ from ro.cp_concentration_stats import (
     cp_face_mol_per_m3,
     distribution_cp_metrics,
     live_canon_window,
+    monitor_style_cm_means,
+    monitor_style_cp,
     production_b_perm_m_per_s,
     production_c_inlet_ref_mol_per_m3,
     reference_permeate,
@@ -161,3 +163,27 @@ def test_live_canon_drops_dead_zone_faces_instead_of_averaging_zero():
             b_perm=1.0,
             c_inlet_ref=10.0,
         )
+
+
+def test_monitor_style_mean_keeps_dead_zone_faces_the_live_mean_drops():
+    # Same faces as the live-canon test. All-faces mean is the cp_window
+    # numerator. The dead face (cm=40) pulls it above the live face (cm=4).
+    faces = [_face(4.0, 1.0, 3.0), _face(40.0, 1.0, 1.0)]
+    means = monitor_style_cm_means(faces, b_perm=1.0, c_inlet_ref=10.0)
+    assert means["cm_area_mean_window"] == pytest.approx(13.0)
+    assert means["cm_area_mean_window_live"] == pytest.approx(4.0)
+    assert means["dead_zone_area_fraction"] == pytest.approx(0.25)
+    ratios = monitor_style_cp(means, 12.0)
+    assert ratios["cp_monitor_style_window"] == pytest.approx(13.0 / 12.0)
+    assert ratios["cp_monitor_style_live"] == pytest.approx(4.0 / 12.0)
+    report = concentration_cp_report(
+        faces,
+        {1: faces},
+        c_b_window=12.0,
+        c_b_by_cell={1: 12.0},
+        b_perm=1.0,
+        c_inlet_ref=10.0,
+    )
+    wide = summary_rows_to_wide_record(concentration_cp_summary_rows(report))
+    assert wide["cp_monitor_style_window"] == pytest.approx(13.0 / 12.0)
+    assert wide["cp_monitor_style_live"] == pytest.approx(4.0 / 12.0)

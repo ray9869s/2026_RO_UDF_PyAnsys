@@ -26,6 +26,9 @@ REPORT_FILE_SIGNIFICANT_DIGITS = 12
 
 CP_MONITOR_WINDOW = "cp_window"
 CP_MONITOR_FULL_MEMBRANE = "cp_full_membrane"
+# Area-mean udm-7 on faces where udm-9 > 0, over the same window c_b.
+# udm-9 is 0 on the dead zone. cp_window averages every face on the clip.
+CP_MONITOR_LIVE = "cp_live"
 CP_CM_REPORT = "cp_monitor_cm_avg"
 CP_CB_REPORT = "cp_monitor_cb_yi"
 CP_MEMBRANE_CLIP = "cp_monitor_membrane_window"
@@ -76,6 +79,44 @@ def cp_monitor_definition(
         )
     return (
         f"{cm_report} / ({cb_report} * {density:.16g} / {molar_mass:.16g})"
+    )
+
+
+def cp_live_cm_definition(clip: str) -> str:
+    """Area-mean udm-7 where udm-9 is positive, on one surface clip.
+
+    The UDF stores udm-9 as 0 when ``c_p >= c_0``. Those dead-zone faces
+    stay in the ``cp_window`` area average and are left out of this one.
+    """
+    if not isinstance(clip, str) or not clip or any(
+        token in clip for token in ("'", '"', "[", "]", ",", " ")
+    ):
+        raise ValueError(f"clip name must be one token, got {clip!r}.")
+    return (
+        f"AreaInt(IF(udm-9>0, udm-7, 0), ['{clip}'])"
+        f" / AreaInt(IF(udm-9>0, 1, 0), ['{clip}'])"
+    )
+
+
+def cp_live_monitor_definition(
+    clip: str,
+    cb_report: str,
+    density_kg_per_m3: float,
+    molecular_weight_kg_per_mol: float,
+) -> str:
+    """Live-face udm-7 mean divided by the window bulk concentration."""
+    density = float(density_kg_per_m3)
+    molar_mass = float(molecular_weight_kg_per_mol)
+    if density <= 0.0 or molar_mass <= 0.0:
+        raise ValueError(
+            "density and molecular weight must be positive, "
+            f"got density={density!r}, molar_mass={molar_mass!r}."
+        )
+    if not isinstance(cb_report, str) or not cb_report:
+        raise ValueError(f"cb report name is required, got {cb_report!r}.")
+    cm = cp_live_cm_definition(clip)
+    return (
+        f"({cm}) / ({cb_report} * {density:.16g} / {molar_mass:.16g})"
     )
 
 
@@ -148,11 +189,18 @@ def monitor_changes(case_dir, n: int = 100) -> dict[str, float | None]:
     cp_path = cp_report_path(directory)
     cp_series = [] if cp_path is None else read_report_series(cp_path)
     prefix = "monitor_change_last100" if int(n) == 100 else f"monitor_change_last{int(n)}"
-    return {
+    changes = {
         f"{prefix}_lmh": _change_at(directory, LMH_REPORT_FILE, n),
         f"{prefix}_dp": _change_at(directory, DP_REPORT_FILE, n),
         f"{prefix}_cp": relative_change_last_iterations(cp_series, n),
     }
+    live_path = directory / cp_report_file_name(CP_MONITOR_LIVE)
+    if live_path.is_file():
+        changes[f"{prefix}_cp_live"] = relative_change_last_iterations(
+            read_report_series(live_path),
+            n,
+        )
+    return changes
 
 
 def last100_monitor_changes(case_dir) -> dict[str, float | None]:

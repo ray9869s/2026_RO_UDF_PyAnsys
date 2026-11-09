@@ -79,6 +79,38 @@ def test_top_cells_histogram_and_concentration():
     assert analysis["total_abs_imbalance"] == pytest.approx(18.0)
 
 
+def test_regions_separate_buffer_membrane_contact_and_channel():
+    spans = [
+        ("buffer_in_1", 0.0, 0.01),
+        ("active_1", 0.01, 0.02),
+        ("active_2", 0.02, 0.03),
+        ("active_3", 0.03, 0.04),
+        ("buffer_out_1", 0.04, 0.05),
+    ]
+    cells = [
+        _cell(1.0, 0.005),
+        _cell(2.0, 0.015),
+        _cell(4.0, 0.025),
+        _cell(0.0, 0.025),
+        _cell(8.0, 0.035),
+    ]
+    cells[0]["z_m"] = 0.001
+    cells[1]["z_m"] = 0.001
+    cells[2]["z_m"] = 0.0
+    cells[3]["z_m"] = 0.002
+    cells[4]["z_m"] = 0.001
+    # z spans 0 to 0.002. The 50 um band catches the wall cells. The
+    # mid-height edge spans are the contact, not the channel.
+    analysis = locate.analyze_cells(
+        cells, spans, top_n=1, tolerance_m=0.0, membrane_band_m=5.0e-5
+    )
+    by_region = {row["region"]: row for row in analysis["regions"]}
+    assert by_region["buffer"]["sum_abs_imbalance"] == pytest.approx(1.0)
+    assert by_region["near_membrane"]["sum_abs_imbalance"] == pytest.approx(4.0)
+    assert by_region["near_contact"]["sum_abs_imbalance"] == pytest.approx(10.0)
+    assert "channel" not in by_region
+
+
 def test_concentration_shares_match_a_hand_count():
     cells = [_cell(900.0, 0.01)]
     cells.extend(_cell(10.0, 0.01) for _ in range(9))

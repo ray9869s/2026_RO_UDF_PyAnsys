@@ -316,6 +316,19 @@ def load_python_config(config_path):
     return module
 
 
+def _report_dirname(value):
+    """``reports`` or ``reports_iter<N>``. Other names are refused."""
+    if value is None or value == "":
+        return "reports"
+    text = str(value)
+    if text == "reports" or re.fullmatch(r"reports_iter[1-9][0-9]*", text):
+        return text
+    raise ValueError(
+        "report_dirname must be 'reports' or 'reports_iter<N>', "
+        f"got {value!r}."
+    )
+
+
 def resolve_report_case_paths(cfg):
     """Locate the case directory without a 03_Results fallback.
 
@@ -383,7 +396,7 @@ def resolve_report_case_paths(cfg):
         "final_data_file",
     )
     post_path = case_path / "post"
-    report_path = post_path / "reports"
+    report_path = post_path / _report_dirname(getattr(cfg, "report_dirname", None))
     return {
         "geo_name": geo_name,
         "case_name": case_name,
@@ -448,6 +461,9 @@ def mesh_id_for_extract(run_manifest, case_path):
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
+    from ro.child_output import install_child_output_decoding
+
+    install_child_output_decoding()
     cfg = load_python_config(CONFIG_PATH)
 
     # Per-case overrides from the batch runner (JSON dict). Applied to the

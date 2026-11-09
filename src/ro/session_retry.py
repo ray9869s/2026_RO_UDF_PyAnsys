@@ -16,6 +16,8 @@ import signal
 import subprocess
 from typing import Optional
 
+from ro.child_output import subprocess_text_kwargs
+
 RETRY_KIND_SOCKET_RESET = "session_socket_reset"
 RETRY_KIND_SCHEME_HEAP = "scheme_heap_corruption"
 RETRY_KIND_LAUNCH_SPAWN = "fluent_launch_spawn"
@@ -134,8 +136,8 @@ def _kill_recorded_fluent_pid(pid: int, *, runner=None) -> str:
         result = runner(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
-            text=True,
             check=False,
+            **subprocess_text_kwargs(),
         )
         detail = ((result.stdout or "") + (result.stderr or "")).strip()
         suffix = f" {detail}" if detail else ""
@@ -176,15 +178,15 @@ def list_processes_matching_sifile(sifile_name: str, *, runner=None) -> tuple[li
             result = runner(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
         else:
             result = runner(
                 ["ps", "-eo", "pid=,args="],
                 capture_output=True,
-                text=True,
                 check=False,
+                **subprocess_text_kwargs(),
             )
     except OSError as exc:
         return [], f"{type(exc).__name__}: {exc}"

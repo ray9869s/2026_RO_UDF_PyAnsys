@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.campaign_geometry import merge_geometry_into_run_manifest
+from ro.child_output import install_child_output_decoding
 from ro.fluent_launch import fluent_mpi_argument, resolve_fluent_mpi
 from ro.membrane_bl import (
     first_y1_transcript_text,
@@ -111,9 +112,11 @@ from ro.monitor_change import (
     CP_MEMBRANE_CLIP,
     CP_MIDPLANE_CLIP,
     CP_MONITOR_FULL_MEMBRANE,
+    CP_MONITOR_LIVE,
     CP_MONITOR_WINDOW,
     REPORT_FILE_SIGNIFICANT_DIGITS,
     cb_salt_field_candidates,
+    cp_live_monitor_definition,
     cp_monitor_definition,
     cp_report_file_name,
     last100_monitor_changes,
@@ -403,6 +406,21 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
     every = require_checkpoint_every(getattr(cfg, "checkpoint_every", None))
     if every is not None:
         base["checkpoint_every"] = every
+    fallback = getattr(cfg, "resume_fallback", None)
+    if fallback is not None:
+        if fallback != "fresh":
+            raise ValueError(
+                f"resume_fallback must be 'fresh' or None, got {fallback!r}."
+            )
+        base["resume_fallback"] = "fresh"
+    continued = getattr(cfg, "continue_from_iteration", None)
+    if continued is not None:
+        if isinstance(continued, bool) or not isinstance(continued, int) or continued < 1:
+            raise ValueError(
+                "continue_from_iteration must be an integer >= 1, "
+                f"got {continued!r}."
+            )
+        base["continue_from_iteration"] = continued
     _stamp_campaign_provenance(base, cfg, mesh_manifest)
     return merge_geometry_into_run_manifest(
         base,
@@ -692,6 +710,7 @@ class PbnsBlendingError(RuntimeError):
 # The script body below runs only when this file is executed directly.
 # Importing this module must not launch Fluent or write any files.
 if __name__ == "__main__":
+    install_child_output_decoding()
     SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
     _default_config = project_root() / "configs" / "run_config.py"
     _env = os.environ.get("PYFLUENT_RUN_CONFIG")
@@ -3505,16 +3524,48 @@ def update_solve_time_cp_monitor(
         )
         return None
 
+    live_name = None
+    live_definition = None
+    if scope == "window":
+        try:
+            live_definition = cp_live_monitor_definition(
+                CP_MEMBRANE_CLIP,
+                CP_CB_REPORT,
+                density_kg_per_m3,
+                molecular_weight_kg_per_mol(salt_molecular_weight_g_per_mol),
+            )
+            live_ratio = create_or_update_single_valued_expression_report(
+                single_expression_report_definitions=(
+                    solution.report_definitions.single_valued_expression
+                ),
+                report_name=CP_MONITOR_LIVE,
+                definition=live_definition,
+            )
+            configure_report_definition_for_transcript(live_ratio)
+            live_name = CP_MONITOR_LIVE
+        except Exception as exc:
+            print(
+                "WARNING: live CP monitor was not created; the stop keeps "
+                f"{report_name}. {type(exc).__name__}: {exc}"
+            )
+
     print(
         f"CP monitor {report_name} ({scope}): {definition} "
         f"on {cm_surfaces}"
     )
+    if live_name is not None:
+        print(f"CP live monitor {live_name}: {live_definition}")
     return {
         "report_name": report_name,
         "scope": scope,
         "file_name": cp_report_file_name(report_name),
         "definition": definition,
         "cm_surfaces": list(cm_surfaces),
+        "live_report_name": live_name,
+        "live_file_name": (
+            None if live_name is None else cp_report_file_name(live_name)
+        ),
+        "live_definition": live_definition,
     }
 
 
@@ -5663,8 +5714,24 @@ if __name__ == "__main__":
                 file_name=cp_monitor["file_name"],
                 solver=solver,
             )
-            qoi_stop_report_file_paths.append(cp_report_file_path)
             print(f"QoI report file path (case dir): {cp_report_file_path}")
+            stop_cp_name = cp_monitor["report_name"]
+            stop_cp_file = cp_report_file_path
+            if cp_monitor.get("live_report_name") and cp_monitor.get("live_file_name"):
+                stop_cp_name = cp_monitor["live_report_name"]
+                stop_cp_file = os.path.join(case_path, cp_monitor["live_file_name"])
+                ensure_lmh_udm_avg_report_file(
+                    solution=solution,
+                    report_name=stop_cp_name,
+                    file_name=cp_monitor["live_file_name"],
+                    solver=solver,
+                )
+                print(
+                    "QoI stop uses the live CP monitor "
+                    f"(dead-zone faces excluded): {stop_cp_file}"
+                )
+            qoi_stop_report_file_paths.append(stop_cp_file)
+            cp_monitor["stop_report_name"] = stop_cp_name
 
         qoi_stop_report_names = [
             qoi_convergence_report_name,
@@ -5676,7 +5743,9 @@ if __name__ == "__main__":
                     "qoi_stop_include_cp requires the CP monitor "
                     "(cp_window or cp_full_membrane)."
                 )
-            qoi_stop_report_names.append(cp_monitor["report_name"])
+            qoi_stop_report_names.append(
+                cp_monitor.get("stop_report_name") or cp_monitor["report_name"]
+            )
         update_run_manifest_fields(
             case_path,
             convergence_stop_manifest_fields(
@@ -5688,7 +5757,10 @@ if __name__ == "__main__":
                 ramp_full_iteration=ramp_full_iteration,
                 stop_reports=qoi_stop_report_names if enable_qoi_convergence_stop else [],
                 cp_monitor_name=(
-                    None if cp_monitor is None else cp_monitor["report_name"]
+                    None
+                    if cp_monitor is None
+                    else cp_monitor.get("stop_report_name")
+                    or cp_monitor["report_name"]
                 ),
                 cp_monitor_scope=(
                     None if cp_monitor is None else cp_monitor["scope"]
