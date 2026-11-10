@@ -257,26 +257,50 @@ def test_checkpoint_fields_are_optional_positive_integers(monkeypatch, tmp_path)
         write_run_manifest(directory, rejected)
 
 
-def test_continue_may_raise_only_max_iterations(monkeypatch, tmp_path):
+def test_continue_keeps_solver_settings_and_records_its_own_section(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    from ro.manifest import append_continue_chunk, continue_record
+
     directory = write_test_run()
     payload = read_run_manifest(directory)
     raised = dict(payload)
     raised["solver_settings"] = dict(payload["solver_settings"])
-    raised["solver_settings"]["max_iterations"] = 2500
+    raised["solver_settings"]["max_iterations"] = 2010
+    raised["continue_from_iteration"] = 2000
     with pytest.raises(ManifestError, match="changed parameters"):
         write_run_manifest(directory, raised)
-    raised["continue_from_iteration"] = 2000
-    write_run_manifest(directory, raised)
+    kept = dict(payload)
+    kept["iterations_run"] = 2000
+    kept["continue"] = append_continue_chunk(
+        continue_record(None, start=2000, target=2020, every=10),
+        iterations=2010,
+        stop_reason="max_iter_reached",
+    )
+    write_run_manifest(directory, kept)
     stored = read_run_manifest(directory)
-    assert stored["continue_from_iteration"] == 2000
-    assert stored["solver_settings"]["max_iterations"] == 2500
-    stored["resume_fallback"] = "fresh"
+    assert stored["solver_settings"] == payload["solver_settings"]
+    assert stored["continue"]["start"] == 2000
+    assert stored["continue"]["target"] == 2020
+    assert stored["continue"]["continue_every"] == 10
+    assert stored["continue"]["chunks"] == [
+        {"iterations": 2010, "stop_reason": "max_iter_reached"}
+    ]
+    stored["continue"] = append_continue_chunk(
+        continue_record(stored["continue"], start=2010, target=2020, every=10),
+        iterations=2020,
+        stop_reason="max_iter_reached",
+    )
+    stored["iterations_run"] = 2020
     write_run_manifest(directory, stored)
-    assert read_run_manifest(directory)["resume_fallback"] == "fresh"
-    stored["resume_fallback"] = "checkpoint"
-    with pytest.raises(ManifestError, match="resume_fallback"):
-        write_run_manifest(directory, stored)
+    finished = read_run_manifest(directory)
+    assert finished["solver_settings"]["max_iterations"] == 2000
+    assert finished["continue"]["start"] == 2000
+    assert finished["continue"]["chunks"] == [
+        {"iterations": 2010, "stop_reason": "max_iter_reached"},
+        {"iterations": 2020, "stop_reason": "max_iter_reached"},
+    ]
 
 
 def test_run_manifest_round_trip(monkeypatch, tmp_path):

@@ -104,6 +104,7 @@ id has no ``_y1hNNN`` token):
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -658,6 +659,7 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_continue_from_iteration(payload)
     _optional_positive_int(payload, "continue_iteration_target", "Run")
     _optional_positive_int(payload, "continue_overall_limit", "Run")
+    _optional_continue_record(payload)
 
 
 def _optional_spacer_boundary_layers(payload: Mapping[str, Any]) -> None:
@@ -761,32 +763,118 @@ def _optional_continue_from_iteration(payload: Mapping[str, Any]) -> None:
         )
 
 
-def _continued_max_iterations(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> bool:
-    """True when the only solver_settings change is a higher iteration cap.
+def _positive_continue_int(value, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ManifestError(
+            f"Run manifest continue {label} must be an integer >= 1, "
+            f"got {value!r}."
+        )
+    return value
 
-    A continue chunk starts at ``continue_from_iteration`` and raises
-    ``max_iterations`` past the cap that finished the previous solve.
+
+def restore_run_parameters(payload: Mapping[str, Any], existing: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy locked run parameters from ``existing`` onto ``payload``.
+
+    A continue records its own section. It does not rewrite solver_settings
+    or the other run parameters. A normal solve does not call this.
     """
-    start = incoming.get("continue_from_iteration")
-    if isinstance(start, bool) or not isinstance(start, int) or start < 1:
-        return False
-    old = existing.get("solver_settings")
-    new = incoming.get("solver_settings")
-    if not isinstance(old, Mapping) or not isinstance(new, Mapping):
-        return False
-    old_max = old.get("max_iterations")
-    new_max = new.get("max_iterations")
-    if isinstance(old_max, bool) or isinstance(new_max, bool):
-        return False
-    if not isinstance(old_max, int) or not isinstance(new_max, int):
-        return False
-    if new_max <= old_max or new_max < start:
-        return False
-    old_id = dict(_solver_settings_identity(old))
-    new_id = dict(_solver_settings_identity(new))
-    old_id.pop("max_iterations", None)
-    new_id.pop("max_iterations", None)
-    return old_id == new_id
+    restored = dict(payload)
+    for field in _RUN_PARAMETER_FIELDS:
+        if field in existing:
+            restored[field] = copy.deepcopy(existing[field])
+    return restored
+
+
+def continue_record(previous, *, start, target, every) -> dict[str, Any]:
+    """Continue bookkeeping. Does not change ``solver_settings``.
+
+    ``start`` stays the iteration the continue began from. Later chunks
+    keep that start and the chunks already recorded.
+    """
+    start = _positive_continue_int(start, "start")
+    target = _positive_continue_int(target, "target")
+    every = _positive_continue_int(every, "continue_every")
+    if target <= start:
+        raise ManifestError(
+            "Run manifest continue target must be past start, "
+            f"got start={start}, target={target}."
+        )
+    chunks: list[dict[str, Any]] = []
+    if isinstance(previous, Mapping):
+        prior_start = previous.get("start")
+        if isinstance(prior_start, int) and not isinstance(prior_start, bool):
+            start = _positive_continue_int(prior_start, "start")
+        prior_chunks = previous.get("chunks")
+        if isinstance(prior_chunks, list):
+            chunks = [dict(item) for item in prior_chunks if isinstance(item, Mapping)]
+    return {
+        "start": start,
+        "target": target,
+        "continue_every": every,
+        "chunks": chunks,
+    }
+
+
+def append_continue_chunk(record, *, iterations, stop_reason) -> dict[str, Any]:
+    """Append one finished chunk. ``iterations`` is the counter it reached."""
+    if not isinstance(record, Mapping):
+        raise ManifestError(
+            "Run manifest continue must be an object, "
+            f"got {type(record).__name__}."
+        )
+    updated = dict(record)
+    chunks = [
+        dict(item)
+        for item in (record.get("chunks") or [])
+        if isinstance(item, Mapping)
+    ]
+    chunks.append(
+        {
+            "iterations": _positive_continue_int(iterations, "chunk iterations"),
+            "stop_reason": stop_reason,
+        }
+    )
+    updated["chunks"] = chunks
+    return updated
+
+
+def _optional_continue_record(payload: Mapping[str, Any]) -> None:
+    """Continue section. Absent on a solve that did not continue."""
+    if "continue" not in payload or payload["continue"] is None:
+        return
+    record = payload["continue"]
+    if not isinstance(record, Mapping):
+        raise ManifestError(
+            "Run manifest continue must be an object, "
+            f"got {type(record).__name__}."
+        )
+    start = _positive_continue_int(record.get("start"), "start")
+    target = _positive_continue_int(record.get("target"), "target")
+    _positive_continue_int(record.get("continue_every"), "continue_every")
+    if target <= start:
+        raise ManifestError(
+            "Run manifest continue target must be past start, "
+            f"got start={start}, target={target}."
+        )
+    chunks = record.get("chunks")
+    if not isinstance(chunks, list):
+        raise ManifestError(
+            "Run manifest continue chunks must be a list, "
+            f"got {chunks!r}."
+        )
+    for item in chunks:
+        if not isinstance(item, Mapping):
+            raise ManifestError(
+                "Run manifest continue chunks entries must be objects, "
+                f"got {item!r}."
+            )
+        _positive_continue_int(item.get("iterations"), "chunk iterations")
+        reason = item.get("stop_reason")
+        if reason not in STOP_REASON_VALUES:
+            raise ManifestError(
+                "Run manifest continue chunk stop_reason must be a solver "
+                f"stop reason, got {reason!r}."
+            )
 
 
 def _optional_hang(payload: Mapping[str, Any]) -> None:
@@ -1644,7 +1732,7 @@ def write_run_manifest(
             if field == "solver_settings":
                 if _solver_settings_parameter_changed(
                     existing[field], payload[field]
-                ) and not _continued_max_iterations(existing, payload):
+                ):
                     changed_list.append(field)
             elif existing[field] != payload[field]:
                 changed_list.append(field)

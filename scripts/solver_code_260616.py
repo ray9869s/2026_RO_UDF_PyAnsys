@@ -27,6 +27,7 @@ from ro.solve_checkpoint import (
     checkpoint_case_path,
     checkpoint_data_path,
     prune_checkpoints,
+    require_checkpoint_at,
     require_checkpoint_every,
     require_checkpoint_resume,
     require_continue_advanced,
@@ -36,6 +37,9 @@ from ro.solve_checkpoint import (
 )
 from ro.manifest import (
     MANIFEST_SCHEMA_VERSION,
+    append_continue_chunk,
+    continue_record,
+    restore_run_parameters,
     read_mesh_manifest,
     read_run_manifest,
     require_viscous_model,
@@ -487,6 +491,29 @@ def write_worker_run_manifest(
             and existing.get("iterations_run") is not None
         ):
             payload["iterations_run"] = existing["iterations_run"]
+        if getattr(cfg, "continue_from_iteration", None) is not None:
+            # The iteration cap for this chunk lives on the config the
+            # solver runs. The manifest keeps the original parameters
+            # and records the continue beside them.
+            payload = restore_run_parameters(payload, existing)
+            start = getattr(cfg, "continue_start", None)
+            if start is None:
+                start = cfg.continue_from_iteration
+            target = getattr(cfg, "continue_overall_limit", None)
+            if target is None:
+                target = getattr(cfg, "continue_iteration_target", None)
+            every = getattr(cfg, "continue_every", None)
+            if every is None or target is None:
+                raise ValueError(
+                    "A continue manifest needs continue_every and "
+                    "continue_overall_limit."
+                )
+            payload["continue"] = continue_record(
+                existing.get("continue"),
+                start=start,
+                target=target,
+                every=every,
+            )
     cell_count = mesh_manifest.get("cell_count")
     if cell_count is not None:
         if isinstance(cell_count, bool) or not isinstance(cell_count, int) or cell_count < 1:
@@ -523,6 +550,18 @@ def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=
         or (isinstance(stored, int) and not isinstance(stored, bool) and found > stored)
     ):
         payload["iterations_run"] = found
+    reached = payload.get("iterations_run")
+    record = payload.get("continue")
+    if (
+        isinstance(record, dict)
+        and isinstance(reached, int)
+        and not isinstance(reached, bool)
+    ):
+        payload["continue"] = append_continue_chunk(
+            record,
+            iterations=reached,
+            stop_reason=stop_reason,
+        )
     payload["analytic_cwall"] = _resolve_analytic_cwall_for_run(
         run_directory,
         payload["udf_version"],
@@ -4750,9 +4789,17 @@ if __name__ == "__main__":
             raise FileNotFoundError(
                 f"Checkpoint resume requires the run directory: {case_path}"
             )
-        found_checkpoint = require_latest_checkpoint(
-            case_path, geo_name, case_name
-        )
+        if continue_from_iteration is not None:
+            found_checkpoint = require_checkpoint_at(
+                case_path,
+                geo_name,
+                case_name,
+                continue_from_iteration,
+            )
+        else:
+            found_checkpoint = require_latest_checkpoint(
+                case_path, geo_name, case_name
+            )
         checkpoint_iteration = found_checkpoint.iteration
         staged_restart_case_file = str(found_checkpoint.case_path)
         staged_restart_data_file = str(found_checkpoint.data_path)

@@ -109,6 +109,7 @@ from ro.solve_checkpoint import (
     continue_absolute_targets,
     latest_checkpoint,
     refuse_finished_checkpoint,
+    remove_checkpoints_except,
     require_checkpoint_every,
 )
 from ro.mesh_spec import (
@@ -1465,10 +1466,18 @@ def continue_finished_leaf(
     overall = limits["overall_limit"]
     current = start
     for target in limits["chunk_targets"]:
+        removed = remove_checkpoints_except(
+            run_directory, geo_id, case_id, current
+        )
+        for path in removed:
+            print(f"Removed stale continue checkpoint: {path}")
         checkpoint = checkpoint_case_path(
             run_directory, geo_id, case_id, current
         )
         _copy_case_data(final_case, final_data, checkpoint)
+        print(
+            f"Continue checkpoint at iteration {current}: {checkpoint}"
+        )
         chunk_overrides = dict(solver_overrides)
         chunk_overrides["checkpoint_resume"] = True
         # Absolute end for this chunk, not the previous cap and not the
@@ -1476,6 +1485,8 @@ def continue_finished_leaf(
         chunk_overrides["max_iterations"] = target
         chunk_overrides["continue_iteration_target"] = target
         chunk_overrides["continue_overall_limit"] = overall
+        chunk_overrides["continue_start"] = start
+        chunk_overrides["continue_every"] = every
         chunk_overrides["continue_from_iteration"] = current
         print(
             f"Continue {run_directory} from iteration {current} "

@@ -419,6 +419,11 @@ continue_from_iteration = None
 continue_iteration_target = None
 # Absolute end of the whole continue (start + continue_iterations).
 continue_overall_limit = None
+# Iteration the continue began from. A later chunk still resumes from
+# continue_from_iteration, which has moved forward.
+continue_start = None
+# Interval between continue extracts. Recorded with the continue section.
+continue_every = None
 # Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"

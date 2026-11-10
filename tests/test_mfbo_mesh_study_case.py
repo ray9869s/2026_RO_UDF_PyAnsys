@@ -1014,7 +1014,9 @@ def test_continue_extracts_the_saved_final_and_each_interval(monkeypatch, tmp_pa
     assert (run / "D2450_a45_u0p2_p6M_iter_002000.cas.h5").is_file()
     assert (run / "D2450_a45_u0p2_p6M_iter_003000.dat.h5").is_file()
     assert seen["chunks"][0]["checkpoint_resume"] is True
-    assert (run / "D2450_a45_u0p2_p6M_checkpoint_002000.cas.h5").is_file()
+    # The second chunk starts at 2500, so the 2000 checkpoint is stale.
+    assert not (run / "D2450_a45_u0p2_p6M_checkpoint_002000.cas.h5").is_file()
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_002500.cas.h5").is_file()
 
 
 def test_continue_that_stays_at_2000_restores_the_final(monkeypatch, tmp_path):
@@ -1066,6 +1068,134 @@ def test_continue_that_stays_at_2000_restores_the_final(monkeypatch, tmp_path):
     assert final_case.read_bytes() == b"good-cas"
     assert final_data.read_bytes() == b"good-dat"
     assert (run / "D2450_a45_u0p2_p6M_iter_002000.cas.h5").read_bytes() == b"good-cas"
+
+
+def test_continue_smoke_from_2000_uses_2010_then_2020(monkeypatch, tmp_path):
+    from ro.campaign_geometry import merge_geometry_into_run_manifest
+    from ro.manifest import (
+        MANIFEST_SCHEMA_VERSION,
+        append_continue_chunk,
+        continue_record,
+        read_run_manifest,
+        write_run_manifest,
+    )
+    from ro.solve_checkpoint import (
+        checkpoint_case_path,
+        checkpoint_data_path,
+        list_checkpoints,
+        require_checkpoint_at,
+    )
+
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    run.mkdir(parents=True)
+    payload = merge_geometry_into_run_manifest(
+        {
+            "schema_version": 1,
+            "family": "diamond",
+            "geo_id": "D2450_a45",
+            "mesh_id": mesh_id,
+            "mesh_sha256": "a" * 64,
+            "run_id": "u0p2_p6M",
+            "u_mean_ms": 0.199281,
+            "p_gauge_pa": 6.0e6,
+            "u_target_ms": 0.2,
+            "inlet_bc_type": "parabolic",
+            "udf_version": "260816_RO_UDF.c",
+            "analytic_cwall": 1,
+            "solver_settings": {
+                "max_iterations": 2000,
+                "residual_target": 1.0e-7,
+                "operating_pressure": 101325.0,
+            },
+            "stop_reason": "max_iter_reached",
+            "created_utc": "2026-08-21T00:00:00Z",
+        },
+        "D2450_a45",
+        mesh_id=mesh_id,
+    )
+    payload["schema_version"] = MANIFEST_SCHEMA_VERSION
+    payload["iterations_run"] = 2000
+    write_run_manifest(run, payload)
+    final_case = run / "D2450_a45_u0p2_p6M_final.cas.h5"
+    final_data = run / "D2450_a45_u0p2_p6M_final.dat.h5"
+    final_case.write_bytes(b"good-cas")
+    final_data.write_bytes(b"good-dat")
+    stale = checkpoint_case_path(run, "D2450_a45", "u0p2_p6M", 2500)
+    stale.write_bytes(b"stale-cas")
+    checkpoint_data_path(stale).write_bytes(b"stale-dat")
+
+    def fake_solver(overrides, data_root, run_directory, **kwargs):
+        selected = require_checkpoint_at(
+            run_directory,
+            "D2450_a45",
+            "u0p2_p6M",
+            overrides["continue_from_iteration"],
+        )
+        seen.setdefault("selected", []).append(selected.case_path.name)
+        assert [item.iteration for item in list_checkpoints(
+            run_directory, "D2450_a45", "u0p2_p6M"
+        )] == [overrides["continue_from_iteration"]]
+        assert selected.case_path.read_bytes() == b"good-cas"
+        existing = read_run_manifest(run_directory)
+        updated = dict(existing)
+        updated["continue"] = append_continue_chunk(
+            continue_record(
+                existing.get("continue"),
+                start=overrides["continue_start"],
+                target=overrides["continue_overall_limit"],
+                every=overrides["continue_every"],
+            ),
+            iterations=overrides["continue_iteration_target"],
+            stop_reason="max_iter_reached",
+        )
+        updated["iterations_run"] = overrides["continue_iteration_target"]
+        updated["stop_reason"] = "max_iter_reached"
+        write_run_manifest(run_directory, updated)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver.campaign, "launch_solver", fake_solver)
+    code = driver.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--geo-id",
+            "D2450_a45",
+            "--case",
+            "u0p2_p6M",
+            "--m-min",
+            "0.003",
+            "--reuse-mesh",
+            "--continue-iterations",
+            "20",
+            "--continue-every",
+            "10",
+        ]
+    )
+    assert code == 0
+    assert seen["selected"] == [
+        "D2450_a45_u0p2_p6M_checkpoint_002000.cas.h5",
+        "D2450_a45_u0p2_p6M_checkpoint_002010.cas.h5",
+    ]
+    assert not stale.exists()
+    stored = read_run_manifest(run)
+    assert stored["solver_settings"]["max_iterations"] == 2000
+    assert stored["continue"] == {
+        "start": 2000,
+        "target": 2020,
+        "continue_every": 10,
+        "chunks": [
+            {"iterations": 2010, "stop_reason": "max_iter_reached"},
+            {"iterations": 2020, "stop_reason": "max_iter_reached"},
+        ],
+    }
 
 
 def test_resume_does_not_combine_with_mesh_only(monkeypatch, tmp_path):

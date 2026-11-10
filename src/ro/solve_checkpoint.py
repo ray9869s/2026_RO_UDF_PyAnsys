@@ -116,6 +116,55 @@ def latest_checkpoint(
     return found[-1]
 
 
+def checkpoint_at(
+    directory: str | Path,
+    geo: str,
+    run: str,
+    iteration: int,
+) -> Checkpoint | None:
+    """The pair named for ``iteration``, or None."""
+    wanted = _positive_int("iteration", iteration)
+    for item in list_checkpoints(directory, geo, run):
+        if item.iteration == wanted:
+            return item
+    return None
+
+
+def require_checkpoint_at(
+    directory: str | Path,
+    geo: str,
+    run: str,
+    iteration: int,
+) -> Checkpoint:
+    """Read the checkpoint named for this iteration, not the newest pair."""
+    found = checkpoint_at(directory, geo, run, iteration)
+    if found is None:
+        wanted = _positive_int("iteration", iteration)
+        raise FileNotFoundError(
+            f"No checkpoint at iteration {wanted} in {directory}. "
+            f"Expected {checkpoint_case_name(geo, run, wanted)}."
+        )
+    return found
+
+
+def remove_checkpoints_except(
+    directory: str | Path,
+    geo: str,
+    run: str,
+    keep_iteration: int,
+) -> list[Path]:
+    """Delete every checkpoint pair except the one named ``keep_iteration``."""
+    keep = _positive_int("keep_iteration", keep_iteration)
+    removed: list[Path] = []
+    for item in list_checkpoints(directory, geo, run):
+        if item.iteration == keep:
+            continue
+        for path in (item.case_path, item.data_path):
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
 def require_latest_checkpoint(
     directory: str | Path,
     geo: str,

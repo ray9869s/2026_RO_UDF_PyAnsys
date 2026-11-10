@@ -11,6 +11,8 @@ from ro.solve_checkpoint import (
     latest_checkpoint,
     list_checkpoints,
     prune_checkpoints,
+    remove_checkpoints_except,
+    require_checkpoint_at,
     require_checkpoint_every,
     require_continue_advanced,
     require_latest_checkpoint,
@@ -29,6 +31,25 @@ def test_continue_from_2000_reaches_2500():
     smoke = continue_absolute_targets(2000, 20, 10)
     assert smoke["overall_limit"] == 2020
     assert smoke["chunk_targets"] == (2010, 2020)
+
+
+def test_continue_selects_the_start_checkpoint_and_drops_stale_copies(tmp_path):
+    keep = checkpoint_case_path(tmp_path, "D2450_a45", "u0p2_p6M", 2000)
+    keep.write_bytes(b"start-cas")
+    checkpoint_data_path(keep).write_bytes(b"start-dat")
+    stale = checkpoint_case_path(tmp_path, "D2450_a45", "u0p2_p6M", 2500)
+    stale.write_bytes(b"stale-cas")
+    checkpoint_data_path(stale).write_bytes(b"stale-dat")
+    removed = remove_checkpoints_except(tmp_path, "D2450_a45", "u0p2_p6M", 2000)
+    assert {path.name for path in removed} == {
+        "D2450_a45_u0p2_p6M_checkpoint_002500.cas.h5",
+        "D2450_a45_u0p2_p6M_checkpoint_002500.dat.h5",
+    }
+    selected = require_checkpoint_at(tmp_path, "D2450_a45", "u0p2_p6M", 2000)
+    assert selected.case_path.name == "D2450_a45_u0p2_p6M_checkpoint_002000.cas.h5"
+    assert selected.case_path.read_bytes() == b"start-cas"
+    with pytest.raises(FileNotFoundError, match="iteration 2500"):
+        require_checkpoint_at(tmp_path, "D2450_a45", "u0p2_p6M", 2500)
 
 
 def test_continue_refuses_to_overwrite_when_the_counter_stays_put():

@@ -149,6 +149,81 @@ def test_workers_write_linked_manifests(monkeypatch, tmp_path):
     )
 
 
+def test_continue_write_keeps_solver_settings_and_appends_a_chunk(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    from ro.manifest import update_run_manifest_fields
+
+    meshing = load_meshing_code()
+    mesh_cfg = load_run_config()
+    populate_valid_meshing_config(mesh_cfg)
+    mesh_paths = meshing.resolve_meshing_paths(mesh_cfg)
+    mesh_paths["mesh_directory"].mkdir(parents=True)
+    mesh_paths["mesh_file"].write_bytes(b"test mesh bytes")
+    meshing.write_worker_mesh_manifest(
+        mesh_cfg,
+        mesh_paths["mesh_directory"],
+        mesh_paths["mesh_file"],
+        _matching_extent_metrics(mesh_cfg),
+        created_utc="2026-08-21T08:00:00Z",
+    )
+
+    solver = load_solver_code()
+    run_cfg = load_run_config()
+    populate_valid_solver_config(run_cfg)
+    run_cfg.family = mesh_cfg.family
+    run_cfg.geo_id = mesh_cfg.geo_id
+    run_cfg.mesh_id = mesh_cfg.mesh_id
+    run_cfg.run_id = "u0p2_p6M"
+    run_cfg.mesh_case_name = mesh_cfg.case_name
+    run_cfg.inlet_velocity_value = 0.2
+    run_cfg.outlet_gauge_pressure = 6.0e6
+    run_paths = solver.resolve_solver_paths(run_cfg)
+    run_paths["run_directory"].mkdir(parents=True)
+    solver.write_worker_run_manifest(
+        run_cfg,
+        run_paths["mesh_directory"],
+        run_paths["run_directory"],
+        created_utc="2026-08-21T08:00:00Z",
+    )
+    original = read_run_manifest(run_paths["run_directory"])["solver_settings"]
+    update_run_manifest_fields(
+        run_paths["run_directory"],
+        {"iterations_run": 2000, "stop_reason": "max_iter_reached"},
+    )
+    run_cfg.max_iterations = 2010
+    run_cfg.residual_target = 1.0e-12
+    run_cfg.continue_from_iteration = 2000
+    run_cfg.continue_start = 2000
+    run_cfg.continue_iteration_target = 2010
+    run_cfg.continue_overall_limit = 2020
+    run_cfg.continue_every = 10
+    solver.write_worker_run_manifest(
+        run_cfg,
+        run_paths["mesh_directory"],
+        run_paths["run_directory"],
+        created_utc="2026-08-21T09:00:00Z",
+    )
+    written = read_run_manifest(run_paths["run_directory"])
+    assert written["solver_settings"] == original
+    assert written["continue"]["start"] == 2000
+    assert written["continue"]["target"] == 2020
+    assert written["continue"]["continue_every"] == 10
+    assert written["continue"]["chunks"] == []
+    update_run_manifest_fields(
+        run_paths["run_directory"], {"iterations_run": 2010}
+    )
+    solver.finalize_worker_run_manifest(
+        run_paths["run_directory"], "max_iter_reached"
+    )
+    finished = read_run_manifest(run_paths["run_directory"])
+    assert finished["solver_settings"] == original
+    assert finished["continue"]["chunks"] == [
+        {"iterations": 2010, "stop_reason": "max_iter_reached"}
+    ]
+
+
 def test_parabolic_run_manifest_leaves_mean_null():
     solver = load_solver_code()
     cfg = load_run_config()
