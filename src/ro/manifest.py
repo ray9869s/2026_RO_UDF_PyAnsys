@@ -656,6 +656,8 @@ def _validate_run_payload(payload: Mapping[str, Any]) -> None:
     _optional_hang(payload)
     _optional_resume_fallback(payload)
     _optional_continue_from_iteration(payload)
+    _optional_positive_int(payload, "continue_iteration_target", "Run")
+    _optional_positive_int(payload, "continue_overall_limit", "Run")
 
 
 def _optional_spacer_boundary_layers(payload: Mapping[str, Any]) -> None:

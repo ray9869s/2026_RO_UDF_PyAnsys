@@ -129,10 +129,12 @@ from ro.fluent_report_helpers import (  # noqa: E402
 )
 from ro.cp_concentration_stats import (  # noqa: E402
     B_PERM_M_PER_S,
+    LMH_PER_METRE_PER_SECOND,
     cell_x_bounds,
     concentration_cp_report,
     concentration_cp_summary_rows,
     polygon_area,
+    select_positive_jw,
     window_x_bounds,
 )
 from ro.membrane_bl import (  # noqa: E402
@@ -844,6 +846,12 @@ _MEMBRANE_FACE_FIELD_KEYS = {
 }
 
 
+def _window_jw_positive(faces):
+    return any(
+        float(face["jw"]) > 0.0 and float(face["area"]) > 0.0 for face in faces
+    )
+
+
 def read_membrane_clip_faces(
     solver,
     surface_names,
@@ -852,6 +860,8 @@ def read_membrane_clip_faces(
     clip_name,
     extra_fields=(),
     include_centroids=False,
+    *,
+    _allow_shadow_fallback=True,
 ):
     """Per-face cm, Jw, and area on one x-range clip of the membrane walls.
 
@@ -904,13 +914,12 @@ def read_membrane_clip_faces(
             raise RuntimeError(
                 f"{clip_name}: {len(areas)} faces and {len(centroids)} centroids."
             )
-        columns = {}
-        for field_name in field_names:
+        def _read_scalar(field_name, boundary_value):
             scalar = solver.fields.field_data.get_scalar_field_data(
                 field_name=field_name,
                 surfaces=[clip_name],
                 node_value=False,
-                boundary_value=False,
+                boundary_value=boundary_value,
             )
             values = _scalar_values(scalar)
             if len(values) != len(areas):
@@ -918,7 +927,56 @@ def read_membrane_clip_faces(
                     f"{clip_name} field {field_name}: {len(values)} values "
                     f"for {len(areas)} faces."
                 )
-            columns[field_name] = values
+            return values
+
+        columns = {}
+        for field_name in field_names:
+            if field_name == FIELD_UDM_JW:
+                continue
+            columns[field_name] = _read_scalar(field_name, False)
+        # udm-6 is the cell water flux on F_C0. An empty channel has no
+        # spacer solid on the other side of the membrane, so the default
+        # adjacent-cell read can come back non-positive while the flux is
+        # on the boundary value, on udm-8 (LMH / 3.6e6), or on the shadow
+        # zone the base-name match does not select.
+        jw_columns = [
+            (
+                "udm-6 boundary_value=False",
+                _read_scalar(FIELD_UDM_JW, False),
+            )
+        ]
+        if not any(value > 0.0 for value in jw_columns[0][1]):
+            for field_name, boundary_value, scale, label in (
+                (FIELD_UDM_JW, True, 1.0, "udm-6 boundary_value=True"),
+                (
+                    FIELD_UDM_LMH,
+                    False,
+                    1.0 / LMH_PER_METRE_PER_SECOND,
+                    "udm-8/3.6e6 boundary_value=False",
+                ),
+                (
+                    FIELD_UDM_LMH,
+                    True,
+                    1.0 / LMH_PER_METRE_PER_SECOND,
+                    "udm-8/3.6e6 boundary_value=True",
+                ),
+            ):
+                raw = _read_scalar(field_name, boundary_value)
+                jw_columns.append(
+                    (label, [value * scale for value in raw])
+                )
+        selected = select_positive_jw(jw_columns)
+        if selected is None:
+            columns[FIELD_UDM_JW] = jw_columns[0][1]
+            print(
+                f"{clip_name}: no positive Jw on {list(surface_names)} "
+                "from udm-6 or udm-8 at either boundary_value."
+            )
+        else:
+            label, values = selected
+            columns[FIELD_UDM_JW] = values
+            if label != jw_columns[0][0]:
+                print(f"{clip_name}: Jw taken from {label}")
         faces = []
         for index in range(len(areas)):
             face = {"area": areas[index]}
@@ -929,9 +987,41 @@ def read_membrane_clip_faces(
             for field_name in field_names:
                 face[_MEMBRANE_FACE_FIELD_KEYS[field_name]] = columns[field_name][index]
             faces.append(face)
-        return faces
     finally:
         delete_iso_clip(solver, clip_name)
+    if not _allow_shadow_fallback or _window_jw_positive(faces):
+        return faces
+    shadows = [f"{name}-shadow" for name in surface_names]
+    print(
+        f"{clip_name}: no positive Jw on {list(surface_names)}; "
+        f"reading shadow zones {shadows}."
+    )
+    try:
+        shadow_faces = read_membrane_clip_faces(
+            solver,
+            shadows,
+            x_min_m,
+            x_max_m,
+            f"{clip_name}_shadow",
+            extra_fields,
+            include_centroids,
+            _allow_shadow_fallback=False,
+        )
+    except Exception as exc:
+        print(
+            f"{clip_name}: shadow zones {shadows} were not readable: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        shadow_faces = None
+    if shadow_faces and _window_jw_positive(shadow_faces):
+        print(f"{clip_name}: Jw taken from shadow zones {shadows}")
+        return shadow_faces
+    raise RuntimeError(
+        f"{clip_name}: no window face has Jw > 0 on {list(surface_names)}. "
+        "Tried udm-6 and udm-8 (LMH/3.6e6), boundary_value true and false, "
+        f"and shadow zones {shadows}. The empty channel has no spacer "
+        "walls; those reads are where the fluid-side flux is stored."
+    )
 
 
 def collect_concentration_cp_faces(

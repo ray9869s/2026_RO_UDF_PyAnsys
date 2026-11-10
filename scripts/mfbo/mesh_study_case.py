@@ -106,6 +106,7 @@ from ro.paths import MESH_ID_RE, project_root
 from ro.solve_checkpoint import (
     checkpoint_case_path,
     checkpoint_data_path,
+    continue_absolute_targets,
     latest_checkpoint,
     refuse_finished_checkpoint,
     require_checkpoint_every,
@@ -1340,6 +1341,37 @@ def _copy_case_data(source_case, source_data, dest_case):
     return dest_case, dest_data
 
 
+def _pair_matches(left_case, right_case):
+    left_data = checkpoint_data_path(left_case)
+    right_data = checkpoint_data_path(right_case)
+    return (
+        sha256_file(left_case) == sha256_file(right_case)
+        and sha256_file(left_data) == sha256_file(right_data)
+    )
+
+
+def _keep_or_restore_final(final_case, final_data, snapshot, iteration):
+    """Keep an existing iteration snapshot and put it back on the final.
+
+    A zero-iteration continue writes the final again. The snapshot taken
+    before that write is the case to solve from, and it is not replaced.
+    """
+    snapshot = Path(snapshot)
+    if snapshot.is_file() and checkpoint_data_path(snapshot).is_file():
+        if _pair_matches(final_case, snapshot):
+            print(f"Continue snapshot at iteration {iteration} kept: {snapshot}")
+            return
+        print(
+            f"Restoring the final from the iteration {iteration} snapshot "
+            f"{snapshot}. The current final differs, so a zero-iteration "
+            "write is not used."
+        )
+        _copy_case_data(snapshot, checkpoint_data_path(snapshot), final_case)
+        return
+    _copy_case_data(final_case, final_data, snapshot)
+    print(f"Continue snapshot at iteration {iteration}: {snapshot}")
+
+
 def _iteration_from_manifest(run_directory):
     path = Path(run_directory) / "manifest.json"
     if not path.is_file():
@@ -1417,8 +1449,7 @@ def continue_finished_leaf(
     snapshot = (
         Path(run_directory) / f"{geo_id}_{case_id}_iter_{start:06d}.cas.h5"
     )
-    _copy_case_data(final_case, final_data, snapshot)
-    print(f"Continue snapshot at iteration {start}: {snapshot}")
+    _keep_or_restore_final(final_case, final_data, snapshot, start)
     code = _extract_dirname(
         data_root,
         run_directory,
@@ -1430,21 +1461,25 @@ def continue_finished_leaf(
     )
     if code:
         return code
+    limits = continue_absolute_targets(start, additional, every)
+    overall = limits["overall_limit"]
     current = start
-    while current - start < additional:
-        chunk = min(every, additional - (current - start))
-        target = current + chunk
+    for target in limits["chunk_targets"]:
         checkpoint = checkpoint_case_path(
             run_directory, geo_id, case_id, current
         )
         _copy_case_data(final_case, final_data, checkpoint)
         chunk_overrides = dict(solver_overrides)
         chunk_overrides["checkpoint_resume"] = True
+        # Absolute end for this chunk, not the previous cap and not the
+        # additional count. The loaded case still says 2000.
         chunk_overrides["max_iterations"] = target
+        chunk_overrides["continue_iteration_target"] = target
+        chunk_overrides["continue_overall_limit"] = overall
         chunk_overrides["continue_from_iteration"] = current
         print(
             f"Continue {run_directory} from iteration {current} "
-            f"toward {target}."
+            f"toward {target} (overall limit {overall})."
         )
         solver_result = campaign.launch_solver(
             chunk_overrides,
@@ -1460,6 +1495,19 @@ def continue_finished_leaf(
             return _exit_code(solver_result.returncode)
         new_iteration, stop_reason = _iteration_from_manifest(run_directory)
         if new_iteration <= current:
+            saved = (
+                Path(run_directory)
+                / f"{geo_id}_{case_id}_iter_{current:06d}.cas.h5"
+            )
+            if saved.is_file() and checkpoint_data_path(saved).is_file():
+                _copy_case_data(
+                    saved, checkpoint_data_path(saved), final_case
+                )
+                print(
+                    f"Restored the final from {saved}. Continue stayed at "
+                    f"iteration {new_iteration} and must not leave a "
+                    "different final in place."
+                )
             raise RuntimeError(
                 "Continue did not advance the iteration counter: "
                 f"{current} -> {new_iteration}."

@@ -948,6 +948,8 @@ def test_continue_extracts_the_saved_final_and_each_interval(monkeypatch, tmp_pa
         seen.setdefault("chunks", []).append(
             {
                 "max_iterations": overrides["max_iterations"],
+                "continue_iteration_target": overrides["continue_iteration_target"],
+                "continue_overall_limit": overrides["continue_overall_limit"],
                 "continue_from_iteration": overrides["continue_from_iteration"],
                 "checkpoint_resume": overrides["checkpoint_resume"],
             }
@@ -990,11 +992,15 @@ def test_continue_extracts_the_saved_final_and_each_interval(monkeypatch, tmp_pa
     assert seen["chunks"] == [
         {
             "max_iterations": 2500,
+            "continue_iteration_target": 2500,
+            "continue_overall_limit": 3000,
             "continue_from_iteration": 2000,
             "checkpoint_resume": True,
         },
         {
             "max_iterations": 3000,
+            "continue_iteration_target": 3000,
+            "continue_overall_limit": 3000,
             "continue_from_iteration": 2500,
             "checkpoint_resume": True,
         },
@@ -1009,6 +1015,57 @@ def test_continue_extracts_the_saved_final_and_each_interval(monkeypatch, tmp_pa
     assert (run / "D2450_a45_u0p2_p6M_iter_003000.dat.h5").is_file()
     assert seen["chunks"][0]["checkpoint_resume"] is True
     assert (run / "D2450_a45_u0p2_p6M_checkpoint_002000.cas.h5").is_file()
+
+
+def test_continue_that_stays_at_2000_restores_the_final(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    run.mkdir(parents=True)
+    final_case = run / "D2450_a45_u0p2_p6M_final.cas.h5"
+    final_data = run / "D2450_a45_u0p2_p6M_final.dat.h5"
+    final_case.write_bytes(b"good-cas")
+    final_data.write_bytes(b"good-dat")
+    (run / "manifest.json").write_text(
+        json.dumps({"iterations_run": 2000, "stop_reason": "max_iter_reached"}),
+        encoding="utf-8",
+    )
+
+    def fake_solver(overrides, data_root, run_directory, **kwargs):
+        assert overrides["max_iterations"] == 2500
+        assert overrides["continue_iteration_target"] == 2500
+        assert overrides["continue_from_iteration"] == 2000
+        final_case.write_bytes(b"rewritten-cas")
+        final_data.write_bytes(b"rewritten-dat")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver.campaign, "launch_solver", fake_solver)
+    with pytest.raises(RuntimeError, match="2000 -> 2000"):
+        driver.main(
+            [
+                "--data-root",
+                str(tmp_path),
+                "--geo-id",
+                "D2450_a45",
+                "--case",
+                "u0p2_p6M",
+                "--m-min",
+                "0.003",
+                "--reuse-mesh",
+                "--continue-iterations",
+                "500",
+                "--continue-every",
+                "500",
+            ]
+        )
+    assert final_case.read_bytes() == b"good-cas"
+    assert final_data.read_bytes() == b"good-dat"
+    assert (run / "D2450_a45_u0p2_p6M_iter_002000.cas.h5").read_bytes() == b"good-cas"
 
 
 def test_resume_does_not_combine_with_mesh_only(monkeypatch, tmp_path):

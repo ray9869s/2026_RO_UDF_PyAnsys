@@ -297,6 +297,49 @@ def resume_iteration_plan(
     }
 
 
+def continue_absolute_targets(start: int, additional: int, every: int) -> dict:
+    """Absolute iteration numbers for one continue.
+
+    The loaded case still carries the previous cap. A chunk target of
+    ``continue_every`` alone does not move a case that is already past
+    that count. The first target is ``start + every``, and the overall
+    limit is ``start + additional``.
+    """
+    done = _positive_int("start", start)
+    extra = _positive_int("additional", additional)
+    interval = _positive_int("every", every)
+    overall = done + extra
+    targets = []
+    current = done
+    while current < overall:
+        current += min(interval, overall - current)
+        targets.append(current)
+    return {"overall_limit": overall, "chunk_targets": tuple(targets)}
+
+
+def require_continue_advanced(start_iteration: int, end_iteration) -> int:
+    """Raise when a continue chunk did not pass its start iteration.
+
+    Callers must do this before writing the final case/data. A zero-step
+    solve would otherwise replace the saved final with a different file
+    at the same iteration.
+    """
+    start = _positive_int("start_iteration", start_iteration)
+    if isinstance(end_iteration, bool) or not isinstance(end_iteration, int):
+        raise RuntimeError(
+            "Continue did not advance the iteration counter: "
+            f"{start} -> {end_iteration}. "
+            "Refusing to overwrite the final case/data."
+        )
+    if end_iteration <= start:
+        raise RuntimeError(
+            "Continue did not advance the iteration counter: "
+            f"{start} -> {end_iteration}. "
+            "Refusing to overwrite the final case/data."
+        )
+    return end_iteration
+
+
 def refuse_finished_checkpoint(iteration: int, max_iterations) -> None:
     """Raise when the manifest limit says this checkpoint has nothing left."""
     if isinstance(max_iterations, bool) or not isinstance(max_iterations, int):

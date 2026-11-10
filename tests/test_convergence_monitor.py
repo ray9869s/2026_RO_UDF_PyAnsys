@@ -282,8 +282,11 @@ def test_live_cp_monitor_drops_faces_where_udm9_is_zero():
         "cp_monitor_cb_yi",
         998.2,
         0.05844,
+        b_perm_m_per_s=2.5e-8,
     )
     assert "udm-9" not in window
-    assert "IF(udm-9>0, udm-7, 0)" in live
+    assert "udm-9>0" in live
+    assert "udm-6" in live
+    assert "AND(" in live
     assert "cp_monitor_cb_yi" in live
     assert "cp_monitor_membrane_window" in live

@@ -82,19 +82,43 @@ def cp_monitor_definition(
     )
 
 
-def cp_live_cm_definition(clip: str) -> str:
-    """Area-mean udm-7 where udm-9 is positive, on one surface clip.
+def cp_live_cm_definition(
+    clip: str,
+    cb_report: str,
+    density_kg_per_m3: float,
+    molecular_weight_kg_per_mol: float,
+    b_perm_m_per_s: float,
+) -> str:
+    """Area-mean udm-7 on faces that stay in the live canon.
 
-    The UDF stores udm-9 as 0 when ``c_p >= c_0``. Those dead-zone faces
-    stay in the ``cp_window`` area average and are left out of this one.
+    udm-9 is 0 when ``c_p >= c_0``. The modulus also needs ``c_p < c_b``,
+    and ``c_b`` can sit below ``c_0``. The predicate is udm-9 > 0 and
+    ``B*udm-7/(udm-6+B) < c_b``, which is ``c_p < min(c_0, c_b)`` when the
+    UDF zero and this comparison are both applied.
     """
     if not isinstance(clip, str) or not clip or any(
         token in clip for token in ("'", '"', "[", "]", ",", " ")
     ):
         raise ValueError(f"clip name must be one token, got {clip!r}.")
+    density = float(density_kg_per_m3)
+    molar_mass = float(molecular_weight_kg_per_mol)
+    permeability = float(b_perm_m_per_s)
+    if density <= 0.0 or molar_mass <= 0.0 or permeability <= 0.0:
+        raise ValueError(
+            "density, molecular weight, and B must be positive, "
+            f"got density={density!r}, molar_mass={molar_mass!r}, "
+            f"B={permeability!r}."
+        )
+    if not isinstance(cb_report, str) or not cb_report:
+        raise ValueError(f"cb report name is required, got {cb_report!r}.")
+    bulk = f"({cb_report}*{density:.16g}/{molar_mass:.16g})"
+    permeate = (
+        f"({permeability:.16g}*udm-7/(udm-6+{permeability:.16g}))"
+    )
+    live = f"AND(udm-9>0,{permeate}<{bulk})"
     return (
-        f"AreaInt(IF(udm-9>0, udm-7, 0), ['{clip}'])"
-        f" / AreaInt(IF(udm-9>0, 1, 0), ['{clip}'])"
+        f"AreaInt(IF({live}, udm-7, 0), ['{clip}'])"
+        f" / AreaInt(IF({live}, 1, 0), ['{clip}'])"
     )
 
 
@@ -103,8 +127,14 @@ def cp_live_monitor_definition(
     cb_report: str,
     density_kg_per_m3: float,
     molecular_weight_kg_per_mol: float,
+    *,
+    b_perm_m_per_s: float,
 ) -> str:
-    """Live-face udm-7 mean divided by the window bulk concentration."""
+    """Live-face udm-7 mean divided by the window bulk concentration.
+
+    The face test is ``c_p < min(c_0, c_b)``: udm-9 drops ``c_p >= c_0``,
+    and the expression also drops ``c_p >= c_b``.
+    """
     density = float(density_kg_per_m3)
     molar_mass = float(molecular_weight_kg_per_mol)
     if density <= 0.0 or molar_mass <= 0.0:
@@ -114,7 +144,13 @@ def cp_live_monitor_definition(
         )
     if not isinstance(cb_report, str) or not cb_report:
         raise ValueError(f"cb report name is required, got {cb_report!r}.")
-    cm = cp_live_cm_definition(clip)
+    cm = cp_live_cm_definition(
+        clip,
+        cb_report,
+        density,
+        molar_mass,
+        b_perm_m_per_s,
+    )
     return (
         f"({cm}) / ({cb_report} * {density:.16g} / {molar_mass:.16g})"
     )

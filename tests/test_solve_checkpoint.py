@@ -7,14 +7,36 @@ import pytest
 from ro.solve_checkpoint import (
     checkpoint_case_path,
     checkpoint_data_path,
+    continue_absolute_targets,
     latest_checkpoint,
     list_checkpoints,
     prune_checkpoints,
     require_checkpoint_every,
+    require_continue_advanced,
     require_latest_checkpoint,
     resume_iteration_plan,
     run_checkpointed_iterations,
 )
+
+
+def test_continue_from_2000_reaches_2500():
+    limits = continue_absolute_targets(2000, 500, 500)
+    assert limits["overall_limit"] == 2500
+    assert limits["chunk_targets"] == (2500,)
+    longer = continue_absolute_targets(2000, 1000, 500)
+    assert longer["overall_limit"] == 3000
+    assert longer["chunk_targets"] == (2500, 3000)
+    smoke = continue_absolute_targets(2000, 20, 10)
+    assert smoke["overall_limit"] == 2020
+    assert smoke["chunk_targets"] == (2010, 2020)
+
+
+def test_continue_refuses_to_overwrite_when_the_counter_stays_put():
+    with pytest.raises(RuntimeError, match="2000 -> 2000"):
+        require_continue_advanced(2000, 2000)
+    with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+        require_continue_advanced(2000, None)
+    assert require_continue_advanced(2000, 2500) == 2500
 
 
 def test_checkpoint_every_defaults_off_and_rejects_non_positive():

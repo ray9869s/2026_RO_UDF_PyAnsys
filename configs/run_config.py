@@ -414,6 +414,11 @@ resume_fallback = None
 # Iteration already stored in the final data for one --continue-iterations
 # chunk. Absent on a fresh solve and on a checkpoint resume.
 continue_from_iteration = None
+# Absolute end of this continue chunk (start + continue_every, capped at
+# the overall limit). The loaded case still carries the previous cap.
+continue_iteration_target = None
+# Absolute end of the whole continue (start + continue_iterations).
+continue_overall_limit = None
 # Write per-iteration history (Fluent report files).
 enable_lmh_udm_avg_report_file = True
 lmh_udm_avg_report_file_name = "lmh_udm_avg.out"

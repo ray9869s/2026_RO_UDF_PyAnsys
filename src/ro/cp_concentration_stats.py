@@ -246,6 +246,49 @@ def distribution_cp_metrics(faces, c_b, *, b_perm=B_PERM_M_PER_S):
     return metrics
 
 
+LIVE_EXCLUSION_RULE = "c_p >= min(c_0, c_b)"
+# udm-8 is Jw * MS_TO_LMH. Same factor as udfs/260822_RO_UDF.c.
+LMH_PER_METRE_PER_SECOND = 3_600_000.0
+
+
+def live_exclusion_threshold(c_b, c_0):
+    """Permeate concentration at or above which a face is outside the canon.
+
+    The modulus divides by ``c_b - c_p``. The UDF dead zone is ``c_p >= c_0``
+    (udm-9 stored as 0). When the window bulk sits below the inlet reference,
+    a face with ``c_b <= c_p < c_0`` is still in the udm-9 test and makes the
+    denominator non-positive. The exclusion is the same value the denominator
+    uses: ``min(c_0, c_b)``.
+    """
+    bulk = float(c_b)
+    inlet = float(c_0)
+    if not math.isfinite(bulk) or not math.isfinite(inlet) or inlet <= 0.0:
+        raise ValueError(
+            f"c_b and c_0 must be finite and c_0 positive, got c_b={c_b!r}, "
+            f"c_0={inlet!r}."
+        )
+    return min(bulk, inlet)
+
+
+def select_positive_jw(columns):
+    """First Jw column with a sample above zero.
+
+    ``columns`` is ``(label, values)`` in read order. A column that is not
+    above zero but contains a negative sample is the last resort, with the
+    sign flipped: a membrane wall with no spacer on the other side can
+    report that flux on the inward normal. Returns None when every sample
+    is zero.
+    """
+    flipped = None
+    for label, values in columns:
+        numbers = [float(value) for value in values]
+        if any(value > 0.0 for value in numbers):
+            return label, numbers
+        if flipped is None and any(value < 0.0 for value in numbers):
+            flipped = (f"{label} absolute", [-value for value in numbers])
+    return flipped
+
+
 def live_canon_window(
     faces,
     c_b,
@@ -253,26 +296,22 @@ def live_canon_window(
     b_perm=B_PERM_M_PER_S,
     c_inlet_ref=C_INLET_REF_MOL_PER_M3,
 ):
-    """Area-weighted local canon on faces with ``c_p < c_0``.
+    """Area-weighted local canon on faces below the exclusion threshold.
 
     Each live face uses its own permeate concentration
     ``c_p = B c_m / (J_w + B)`` and the window mixing-cup ``c_b``:
 
         M = (c_m - c_p) / (c_b - c_p)
 
-    A face with ``c_p >= c_0`` is the dead zone. The UDF stores udm-9 as 0
-    there (``C_INLET_REF - c_p`` is not positive). Those faces stay in
-    ``dead_zone_area_fraction`` and are left out of the average, instead of
-    being entered as 0. ``c_b - c_p <= 0`` on a face that is still below
-    ``c_0`` raises: that modulus is undefined.
+    A face with ``c_p >= min(c_0, c_b)`` is the dead zone. The UDF stores
+    udm-9 as 0 when ``c_p >= c_0``. When ``c_b < c_0``, faces with
+    ``c_b <= c_p < c_0`` are excluded too, because they are the faces that
+    make ``c_b - c_p`` non-positive. Those faces stay in
+    ``dead_zone_area_fraction`` and are left out of the average.
     """
     c_b = float(c_b)
     c0 = float(c_inlet_ref)
-    if not math.isfinite(c_b) or not math.isfinite(c0) or c0 <= 0.0:
-        raise ValueError(
-            f"c_b and c_0 must be finite and c_0 positive, got c_b={c_b!r}, "
-            f"c_0={c0!r}."
-        )
+    threshold = live_exclusion_threshold(c_b, c0)
     total_area = 0.0
     dead_area = 0.0
     live_area = 0.0
@@ -285,14 +324,15 @@ def live_canon_window(
             continue
         cp = cp_face_mol_per_m3(face["cm"], face["jw"], b_perm)
         total_area += area
-        if cp >= c0:
+        if cp >= threshold:
             dead_area += area
             continue
         denominator = c_b - cp
         if not math.isfinite(denominator) or denominator <= 0.0:
             raise ValueError(
-                "live canon needs c_b - c_p > 0 on every face with "
-                f"c_p < c_0, got c_b={c_b!r}, c_p={cp!r}, cm={face['cm']!r}."
+                "live canon needs c_b - c_p > 0 on every face below "
+                f"{LIVE_EXCLUSION_RULE}, got c_b={c_b!r}, "
+                f"c_p={cp!r}, cm={face['cm']!r}."
             )
         modulus = (float(face["cm"]) - cp) / denominator
         weighted += modulus * area
@@ -301,17 +341,22 @@ def live_canon_window(
         raise ValueError("membrane window has no positive face area.")
     if live_area <= 0.0:
         raise ValueError(
-            "live canon has no face with c_p < c_0 "
-            f"(dead area {dead_area!r} of {total_area!r})."
+            "live canon has no face below the exclusion "
+            f"{LIVE_EXCLUSION_RULE} "
+            f"(threshold {threshold!r}, dead area {dead_area!r} of "
+            f"{total_area!r})."
         )
     return {
         "cp_canon_live_avg": weighted / live_area,
         "dead_zone_area_fraction": dead_area / total_area,
+        "live_exclusion_threshold_mol_m3": threshold,
+        "live_exclusion_rule": LIVE_EXCLUSION_RULE,
     }
 
 
 def monitor_style_cm_means(
     faces,
+    c_b,
     *,
     b_perm=B_PERM_M_PER_S,
     c_inlet_ref=C_INLET_REF_MOL_PER_M3,
@@ -319,13 +364,12 @@ def monitor_style_cm_means(
     """Area-weighted udm-7 means with and without dead-zone faces.
 
     The solve-time ``cp_window`` monitor is the all-faces mean divided by
-    the window bulk concentration. A face with ``c_p >= c_0`` is the dead
-    zone and is omitted from the live mean. ``cm_area_mean_window_live``
-    is None when every face is dead.
+    the window bulk concentration. A face at or above
+    ``min(c_0, c_b)`` is the dead zone and is omitted from the live mean.
+    That is the same test as :func:`live_canon_window`.
+    ``cm_area_mean_window_live`` is None when every face is dead.
     """
-    c0 = float(c_inlet_ref)
-    if not math.isfinite(c0) or c0 <= 0.0:
-        raise ValueError(f"c_0 must be finite and positive, got {c0!r}.")
+    threshold = live_exclusion_threshold(c_b, c_inlet_ref)
     total_area = 0.0
     total_weighted = 0.0
     live_area = 0.0
@@ -343,7 +387,7 @@ def monitor_style_cm_means(
         total_area += area
         total_weighted += cm * area
         cp = cp_face_mol_per_m3(face["cm"], face["jw"], b_perm)
-        if cp >= c0:
+        if cp >= threshold:
             dead_area += area
             continue
         live_area += area
@@ -400,6 +444,7 @@ def concentration_cp_report(
     )
     monitor_cm = monitor_style_cm_means(
         window_faces,
+        c_b_window,
         b_perm=b_perm,
         c_inlet_ref=c_inlet_ref,
     )
@@ -417,6 +462,8 @@ def concentration_cp_report(
         "c_inlet_ref_mol_m3": float(c_inlet_ref),
         "cp_canon_live_window_avg": live["cp_canon_live_avg"],
         "dead_zone_area_fraction_window": live["dead_zone_area_fraction"],
+        "live_exclusion_threshold_mol_m3": live["live_exclusion_threshold_mol_m3"],
+        "live_exclusion_rule": live["live_exclusion_rule"],
         "monitor_cm": monitor_cm,
         "monitor_cp": monitor_style_cp(monitor_cm, c_b_window),
         "window": window,
@@ -464,6 +511,16 @@ def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
         _row(
             "dead_zone_area_fraction_window",
             report["dead_zone_area_fraction_window"],
+            "-",
+        ),
+        _row(
+            "live_exclusion_threshold_mol_m3",
+            report.get("live_exclusion_threshold_mol_m3"),
+            "mol/m3",
+        ),
+        _row(
+            "live_exclusion_rule",
+            report.get("live_exclusion_rule"),
             "-",
         ),
     ])

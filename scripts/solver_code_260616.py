@@ -29,6 +29,7 @@ from ro.solve_checkpoint import (
     prune_checkpoints,
     require_checkpoint_every,
     require_checkpoint_resume,
+    require_continue_advanced,
     require_latest_checkpoint,
     resume_iteration_plan,
     run_checkpointed_iterations,
@@ -101,7 +102,7 @@ from ro.fluent_report_helpers import (
     create_x_range_iso_clip,
     measure_membrane_wall_z_bounds_m,
 )
-from ro.cp_concentration_stats import window_x_bounds
+from ro.cp_concentration_stats import B_PERM_M_PER_S, window_x_bounds
 from ro.convergence_stop import (
     convergence_stop_manifest_fields,
     require_window_after_ramp,
@@ -421,6 +422,15 @@ def build_run_manifest_payload(cfg, mesh_manifest, *, created_utc=None, solver_a
                 f"got {continued!r}."
             )
         base["continue_from_iteration"] = continued
+    for field in ("continue_iteration_target", "continue_overall_limit"):
+        value = getattr(cfg, field, None)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"{field} must be an integer >= 1, got {value!r}."
+            )
+        base[field] = value
     _stamp_campaign_provenance(base, cfg, mesh_manifest)
     return merge_geometry_into_run_manifest(
         base,
@@ -472,6 +482,11 @@ def write_worker_run_manifest(
                 payload[kept] = existing[kept]
         if "checkpoint_iteration" in existing:
             payload["checkpoint_iteration"] = existing["checkpoint_iteration"]
+        if (
+            payload.get("iterations_run") is None
+            and existing.get("iterations_run") is not None
+        ):
+            payload["iterations_run"] = existing["iterations_run"]
     cell_count = mesh_manifest.get("cell_count")
     if cell_count is not None:
         if isinstance(cell_count, bool) or not isinstance(cell_count, int) or cell_count < 1:
@@ -501,10 +516,13 @@ def _resolve_analytic_cwall_for_run(run_directory, udf_version: str) -> int:
 def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=None):
     payload = read_run_manifest(run_directory)
     payload["stop_reason"] = stop_reason
-    if payload.get("iterations_run") is None:
-        found = iterations_run_from_case(run_directory)
-        if found is not None:
-            payload["iterations_run"] = found
+    found = iterations_run_from_case(run_directory)
+    stored = payload.get("iterations_run")
+    if found is not None and (
+        stored is None
+        or (isinstance(stored, int) and not isinstance(stored, bool) and found > stored)
+    ):
+        payload["iterations_run"] = found
     payload["analytic_cwall"] = _resolve_analytic_cwall_for_run(
         run_directory,
         payload["udf_version"],
@@ -876,7 +894,26 @@ if __name__ == "__main__":
         else cfg.turbulence_residual_target
     )
     residual_target = cfg.residual_target
-    max_iterations = cfg.max_iterations
+    max_iterations = int(cfg.max_iterations)
+    continue_from_iteration = getattr(cfg, "continue_from_iteration", None)
+    continue_iteration_target = getattr(cfg, "continue_iteration_target", None)
+    if continue_iteration_target is not None:
+        continue_iteration_target = int(continue_iteration_target)
+        if max_iterations < continue_iteration_target:
+            print(
+                f"Raising max_iterations from {max_iterations} to the "
+                f"continue chunk target {continue_iteration_target}."
+            )
+            max_iterations = continue_iteration_target
+    if continue_from_iteration is not None:
+        continue_from_iteration = int(continue_from_iteration)
+        if max_iterations <= continue_from_iteration:
+            raise RuntimeError(
+                "Continue chunk target is not past the saved iteration: "
+                f"max_iterations={max_iterations}, "
+                f"continue_from_iteration={continue_from_iteration}. "
+                "The previous absolute cap would run no iterations."
+            )
     run_calculation_enabled = cfg.run_calculation_enabled
     relaxation_profile = cfg.relaxation_profile
     species_implicit_under_relaxation = cfg.species_implicit_under_relaxation
@@ -3533,6 +3570,7 @@ def update_solve_time_cp_monitor(
                 CP_CB_REPORT,
                 density_kg_per_m3,
                 molecular_weight_kg_per_mol(salt_molecular_weight_g_per_mol),
+                b_perm_m_per_s=B_PERM_M_PER_S,
             )
             live_ratio = create_or_update_single_valued_expression_report(
                 single_expression_report_definitions=(
@@ -5872,6 +5910,12 @@ if __name__ == "__main__":
         if run_calculation_enabled:
             print("Starting solver calculation.")
             print(f"Maximum iterations requested: {max_iterations}")
+            if continue_from_iteration is not None:
+                print(
+                    f"Continue chunk target {max_iterations} "
+                    f"({max_iterations - continue_from_iteration} additional "
+                    f"from iteration {continue_from_iteration})."
+                )
             print(f"Residual target: {residual_target}")
             print(f"QoI convergence stop enabled: {enable_qoi_convergence_stop}")
 
@@ -5911,6 +5955,13 @@ if __name__ == "__main__":
                 return int(bounds[1])
 
             def _on_checkpoint(iteration):
+                if continue_from_iteration is not None:
+                    actual = _session_iteration()
+                    if actual is None or int(actual) <= int(continue_from_iteration):
+                        raise RuntimeError(
+                            "Refusing to write a checkpoint at iteration "
+                            f"{iteration}; the case counter is {actual}."
+                        )
                 case_file = str(
                     checkpoint_case_path(
                         case_path, geo_name, case_name, iteration
@@ -5939,10 +5990,35 @@ if __name__ == "__main__":
                 print(f"Recorded checkpoint_iteration={iteration}")
 
             def _run_iterations(count, *, start_iteration):
+                cursor = {"iteration": int(start_iteration)}
+
+                def _iterate(step):
+                    step = int(step)
+                    absolute = cursor["iteration"] + step
+                    if continue_from_iteration is not None:
+                        # iter_count is the additional count. The loaded
+                        # case still has its previous absolute cap, so
+                        # name this chunk's end before asking for the
+                        # extra iterations.
+                        print(
+                            f"Continue chunk iteration target {absolute} "
+                            f"({step} additional).",
+                            flush=True,
+                        )
+                        try:
+                            solution.run_calculation.number_of_iterations = (
+                                absolute
+                            )
+                        except Exception as exc:
+                            print(
+                                "WARNING: could not set number_of_iterations "
+                                f"to {absolute}: {type(exc).__name__}: {exc}"
+                            )
+                    cursor["iteration"] = absolute
+                    return solution.run_calculation.iterate(iter_count=step)
+
                 return run_checkpointed_iterations(
-                    lambda step: solution.run_calculation.iterate(
-                        iter_count=step
-                    ),
+                    _iterate,
                     count=count,
                     every=checkpoint_every,
                     start_iteration=start_iteration,
@@ -6153,16 +6229,26 @@ if __name__ == "__main__":
                             "was not reset."
                         )
 
+                    # A continue loads a case whose residuals are often
+                    # already under the check. Leaving the check on makes
+                    # iterate() return before the chunk target, and the
+                    # counter stays at the saved iteration.
+                    residual_check = continue_from_iteration is None
                     print(
                         "\nEnabling convergence-phase stopping: "
                         f"QoI reports active={bool(qoi_convergence_object_names)}, "
-                        "residual check_convergence=True."
+                        f"residual check_convergence={residual_check}."
                     )
+                    if not residual_check:
+                        print(
+                            "Continue keeps residual check_convergence off "
+                            f"through iteration {max_iterations}."
+                        )
 
                     set_residual_convergence_check(
                         solution=solution,
                         species_name=species_name,
-                        enable=True,
+                        enable=residual_check,
                         turbulence_equations=turbulence_equations,
                     )
                     for object_name in qoi_convergence_object_names:
@@ -6184,10 +6270,16 @@ if __name__ == "__main__":
 
                 else:
                     print("\nRamp convergence safety is disabled.")
+                    residual_check = continue_from_iteration is None
+                    if not residual_check:
+                        print(
+                            "Continue keeps residual check_convergence off "
+                            f"through iteration {max_iterations}."
+                        )
                     set_residual_convergence_check(
                         solution=solution,
                         species_name=species_name,
-                        enable=True,
+                        enable=residual_check,
                         turbulence_equations=turbulence_equations,
                     )
                     for object_name in qoi_convergence_object_names:
@@ -6358,6 +6450,12 @@ if __name__ == "__main__":
             print(
                 "WARNING: could not record monitor_change_last100 on the "
                 f"run manifest: {type(exc).__name__}: {exc}"
+            )
+
+        if continue_from_iteration is not None:
+            require_continue_advanced(
+                continue_from_iteration,
+                iterations_run_from_case(case_path),
             )
 
         publish_stop_reason_and_finals(
