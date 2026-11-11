@@ -95,25 +95,53 @@ def test_chunks_write_every_n_and_stop_when_the_counter_does_not_finish(tmp_path
     assert outcome["iterations_completed"] == 350
 
 
-def test_a_stale_read_does_not_skip_the_rest_of_the_solve():
+def test_fresh_solve_iterates_the_request_and_names_the_real_counter():
+    counter = {"n": 0}
     calls = []
     written = []
 
-    def read_iteration():
-        return 781
+    def iterate(step):
+        calls.append(step)
+        counter["n"] += step
 
     outcome = run_checkpointed_iterations(
-        lambda step: calls.append(step),
-        count=400,
+        iterate,
+        count=600,
         every=200,
-        start_iteration=600,
-        read_iteration=read_iteration,
+        start_iteration=0,
+        read_iteration=lambda: counter["n"],
         on_checkpoint=written.append,
     )
-    assert calls == [200, 200]
-    assert written == [800, 1000]
+    assert calls == [200, 200, 200]
+    assert written == [200, 400, 600]
+    assert outcome["end_iteration"] == 600
+    assert outcome["iterations_completed"] == 600
     assert outcome["stopped_early"] is False
-    assert outcome["end_iteration"] == 1000
+
+
+def test_a_counter_that_does_not_advance_writes_no_checkpoint():
+    written = []
+    with pytest.raises(RuntimeError, match="None -> None"):
+        run_checkpointed_iterations(
+            lambda step: None,
+            count=2000,
+            every=200,
+            start_iteration=0,
+            read_iteration=lambda: None,
+            on_checkpoint=written.append,
+        )
+    assert written == []
+    written.clear()
+    with pytest.raises(RuntimeError, match="did not advance"):
+        run_checkpointed_iterations(
+            lambda step: None,
+            count=400,
+            every=200,
+            start_iteration=600,
+            read_iteration=lambda: 781,
+            on_checkpoint=written.append,
+        )
+    assert written == []
 
 
 def test_checkpointing_off_is_one_iterate_and_writes_nothing():

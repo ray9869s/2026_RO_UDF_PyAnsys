@@ -68,6 +68,7 @@ from ro.solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
     SOLVER_EXIT_SUCCESS,
     STOP_REASON_DETERMINATION_FAILED,
+    STOP_REASON_ITERATION_UNKNOWN,
     STOP_REASON_HF_MONITOR_STABLE,
     STOP_REASON_LF_MONITOR_STABLE,
     FINAL_CASE_SHA256_FIELD,
@@ -568,7 +569,10 @@ def finalize_worker_run_manifest(run_directory, stop_reason, *, inlet_profile_g=
     )
     if payload["inlet_bc_type"] == "parabolic":
         if inlet_profile_g is None:
-            if stop_reason != STOP_REASON_DETERMINATION_FAILED:
+            if stop_reason not in (
+                STOP_REASON_DETERMINATION_FAILED,
+                STOP_REASON_ITERATION_UNKNOWN,
+            ):
                 raise RuntimeError(
                     "Cannot finalize a parabolic run manifest without "
                     "inlet_profile_G from fluent-*.trn."
@@ -715,7 +719,10 @@ def publish_stop_reason_and_finals(
         f"Run manifest finalized with stop_reason={solver_stop_reason}: "
         f"{run_manifest_path}"
     )
-    if solver_stop_reason == STOP_REASON_DETERMINATION_FAILED:
+    if solver_stop_reason in (
+        STOP_REASON_DETERMINATION_FAILED,
+        STOP_REASON_ITERATION_UNKNOWN,
+    ):
         try:
             isolate_failed_attempt_write(
                 solver,
@@ -727,7 +734,12 @@ def publish_stop_reason_and_finals(
                 "WARNING: isolated failed-attempt write failed: "
                 f"{type(isolate_exc).__name__}: {isolate_exc}"
             )
-        raise RuntimeError("stop_reason_determination_failed")
+        if solver_stop_reason == STOP_REASON_DETERMINATION_FAILED:
+            raise RuntimeError("stop_reason_determination_failed")
+        raise RuntimeError(
+            "iteration_unknown: the iteration counter did not advance. "
+            "Refusing to write the final case/data."
+        )
     solver.settings.file.write_case_data(file_name=as_fluent_path(final_case_file))
     print(f"Final case/data write command completed: {final_case_file}")
     return solver_stop_reason
@@ -6002,13 +6014,12 @@ if __name__ == "__main__":
                 return int(bounds[1])
 
             def _on_checkpoint(iteration):
-                if continue_from_iteration is not None:
-                    actual = _session_iteration()
-                    if actual is None or int(actual) <= int(continue_from_iteration):
-                        raise RuntimeError(
-                            "Refusing to write a checkpoint at iteration "
-                            f"{iteration}; the case counter is {actual}."
-                        )
+                actual = _session_iteration()
+                if actual is None or int(actual) != int(iteration):
+                    raise RuntimeError(
+                        "Refusing to write a checkpoint at iteration "
+                        f"{iteration}; the case counter is {actual}."
+                    )
                 case_file = str(
                     checkpoint_case_path(
                         case_path, geo_name, case_name, iteration

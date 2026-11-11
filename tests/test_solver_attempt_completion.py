@@ -19,6 +19,7 @@ from ro.solver_common import (
     FINAL_DATA_SHA256_FIELD,
     SOLVER_ATTEMPT_ID_FIELD,
     STOP_REASON_DETERMINATION_FAILED,
+    STOP_REASON_ITERATION_UNKNOWN,
     sha256_file,
 )
 from test_manifest import FAMILY, GEO_ID, MESH_ID, mesh_payload
@@ -111,6 +112,28 @@ def test_isolated_write_failure_does_not_mask_determination_failed(
         STOP_REASON_DETERMINATION_FAILED
     )
     assert not canonical.is_file()
+
+
+def test_iteration_unknown_does_not_write_the_final(monkeypatch, tmp_path):
+    solver = load_solver_code("r02_iteration_unknown")
+    cfg, run_directory = _prepared_run(monkeypatch, tmp_path, solver)
+    writes = []
+    canonical = run_directory / f"{cfg.geo_id}_{cfg.run_id}_final.cas.h5"
+    with pytest.raises(RuntimeError, match="did not advance"):
+        solver.publish_stop_reason_and_finals(
+            _fake_solver(writes),
+            run_directory,
+            STOP_REASON_ITERATION_UNKNOWN,
+            inlet_profile_g=None,
+            final_case_file=str(canonical),
+            as_fluent_path=str,
+        )
+    assert read_run_manifest(run_directory)["stop_reason"] == (
+        STOP_REASON_ITERATION_UNKNOWN
+    )
+    assert not canonical.is_file()
+    assert writes
+    assert all("_final.cas.h5" not in name for name in writes)
 
 
 def test_successful_reason_writes_canonical_and_stamps_hashes(

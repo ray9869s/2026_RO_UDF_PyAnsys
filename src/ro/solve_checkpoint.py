@@ -249,10 +249,11 @@ def run_checkpointed_iterations(
     (0 on a fresh solve). ``iterate(step)`` requests that many more
     iterations; it does not reset the counter.
 
-    When ``read_iteration`` reports a new value strictly inside a chunk,
-    the chunk stopped early. Later chunks are not requested, and the
-    checkpoint uses that value. A read that did not advance is ignored
-    so a stale transcript cannot skip the rest of the solve.
+    When ``read_iteration`` is set, the checkpoint is named with the
+    counter that read returns. A read that is missing or not strictly
+    past the counter at the start of the chunk raises. The requested
+    end is not a name for a checkpoint the case did not reach. A read
+    strictly inside the chunk stops the remaining chunks.
     """
     interval = require_checkpoint_every(every)
     start = _nonnegative_int("start_iteration", start_iteration)
@@ -266,11 +267,22 @@ def run_checkpointed_iterations(
         requested_end = cursor + step
         end = requested_end
         chunk_stopped = False
-        if read_iteration is not None and interval is not None:
+        if read_iteration is not None:
             after = read_iteration()
-            advanced = after is not None and (before is None or after > before)
-            if advanced and cursor < after < requested_end:
-                end = after
+            floor = cursor if before is None else before
+            if (
+                isinstance(after, bool)
+                or not isinstance(after, int)
+                or after <= floor
+            ):
+                raise RuntimeError(
+                    "Iteration counter did not advance: "
+                    f"{before} -> {after} after requesting {step} "
+                    f"iterations toward {requested_end}. "
+                    "Refusing to write a checkpoint or a final."
+                )
+            end = after
+            if after != requested_end:
                 chunk_stopped = True
         if on_checkpoint is not None and should_write_checkpoint(
             every=interval,
