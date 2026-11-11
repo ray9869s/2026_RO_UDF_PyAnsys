@@ -3475,6 +3475,7 @@ def update_solve_time_cp_monitor(
     *,
     z_min_m=None,
     z_max_m=None,
+    include_live=True,
 ):
     """Create the CP monitor: area-mean udm-7 / window c_b.
 
@@ -3614,7 +3615,7 @@ def update_solve_time_cp_monitor(
 
     live_name = None
     live_definition = None
-    if scope == "window":
+    if scope == "window" and include_live:
         try:
             live_definition = cp_live_monitor_definition(
                 CP_MEMBRANE_CLIP,
@@ -5760,6 +5761,9 @@ if __name__ == "__main__":
                 species_name=species_name,
                 density_kg_per_m3=mixture_density,
                 salt_molecular_weight_g_per_mol=salt_molecular_weight,
+                include_live=bool(
+                    getattr(cfg, "enable_cp_live_monitor", True)
+                ),
             )
 
 
@@ -6001,11 +6005,13 @@ if __name__ == "__main__":
                 pre_convergence_iterations = minimum_full_source_iterations
                 remaining_iterations = max_iterations - pre_convergence_iterations
                 if remaining_iterations <= 0:
-                    raise ValueError(
-                        "max_iterations must be larger than minimum_full_source_iterations. "
-                        f"max_iterations={max_iterations}, "
-                        f"minimum_full_source_iterations={minimum_full_source_iterations}"
+                    print(
+                        f"max_iterations {max_iterations} is inside the "
+                        f"{pre_convergence_iterations}-iteration ramp. "
+                        "Residual and QoI stopping stay off for this run."
                     )
+                    pre_convergence_iterations = max_iterations
+                    remaining_iterations = 0
 
             def _session_iteration():
                 bounds = iteration_bounds_from_case(case_path)

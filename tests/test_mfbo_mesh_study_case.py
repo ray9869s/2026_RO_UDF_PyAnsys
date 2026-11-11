@@ -1369,6 +1369,45 @@ def test_checkpoints_stay_unless_the_extract_passed(
         assert f"Kept checkpoints and setup case ({reason})." in out
 
 
+def test_fresh_smoke_keeps_campaign_v3_and_can_omit_cp_live(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    common = [
+        "--data-root",
+        str(tmp_path),
+        "--geo-id",
+        "D2450_a45",
+        "--m-min",
+        "0.003",
+        "--reuse-mesh",
+        "--max-iterations",
+        "20",
+        "--checkpoint-every",
+        "10",
+        "--convergence-profile",
+        "campaign_v3",
+    ]
+    assert driver.main([*common, "--case", "u0p2_p6M"]) == 0
+    live = seen["solver_overrides"]
+    assert live["max_iterations"] == 20
+    assert live["checkpoint_every"] == 10
+    assert live["qoi_stop_include_cp"] is True
+    assert live["run_id"] == "u0p2_p6M"
+    assert "enable_cp_live_monitor" not in live
+    run = (
+        tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    )
+    run.rename(tmp_path / "live_leaf")
+    assert driver.main([*common, "--case", "u0p2_p6M", "--no-cp-live"]) == 0
+    assert seen["solver_overrides"]["enable_cp_live_monitor"] is False
+    assert seen["solver_overrides"]["qoi_stop_include_cp"] is True
+
+
 def test_campaign_v3_profile_tightens_the_stop_and_keeps_the_cap():
     overrides = driver.convergence_profile_overrides("campaign_v3")
     assert overrides["qoi_stop_criterion"] == 1e-4

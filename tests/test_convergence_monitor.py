@@ -288,5 +288,7 @@ def test_live_cp_monitor_drops_faces_where_udm9_is_zero():
     assert "udm-9>0" in live
     assert "udm-6" in live
     assert "AND(" in live
+    assert "max(" in live
+    assert "1e-30 [m^2]" in live
     assert "cp_monitor_cb_yi" in live
     assert "cp_monitor_membrane_window" in live

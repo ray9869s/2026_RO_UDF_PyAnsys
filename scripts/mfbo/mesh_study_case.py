@@ -1239,6 +1239,24 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=(
+            "Override the solve iteration cap. A value inside the flux "
+            "ramp runs that many iterations with residual and QoI "
+            "stopping left off."
+        ),
+    )
+    parser.add_argument(
+        "--no-cp-live",
+        action="store_true",
+        help=(
+            "Do not create the cp_live report. The campaign_v3 stop "
+            "stays on cp_window, which is the ffd53e1 monitor."
+        ),
+    )
+    parser.add_argument(
         "--convergence-profile",
         default=None,
         choices=(CAMPAIGN_V3_PROFILE,),
@@ -1683,7 +1701,14 @@ def main(argv=None):
     run_directory = run_leaf(data_root, family, args.geo_id, study_id, case_id)
     if checkpoint_every is not None:
         solver_overrides["checkpoint_every"] = checkpoint_every
+    solver_overrides["run_id"] = case_id
+    solver_overrides["case_name"] = case_id
     solver_overrides.update(convergence_profile_overrides(args.convergence_profile))
+    if args.max_iterations is not None:
+        _require_positive("max-iterations", args.max_iterations)
+        solver_overrides["max_iterations"] = int(args.max_iterations)
+    if args.no_cp_live:
+        solver_overrides["enable_cp_live_monitor"] = False
     if args.continue_iterations is not None:
         return continue_finished_leaf(
             data_root=data_root,

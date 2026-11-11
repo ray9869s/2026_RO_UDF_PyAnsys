@@ -119,6 +119,25 @@ def test_fresh_solve_iterates_the_request_and_names_the_real_counter():
     assert outcome["stopped_early"] is False
 
 
+def test_twenty_iteration_smoke_names_checkpoints_10_and_20():
+    counter = {"n": 0}
+    written = []
+
+    def iterate(step):
+        counter["n"] += step
+
+    outcome = run_checkpointed_iterations(
+        iterate,
+        count=20,
+        every=10,
+        start_iteration=0,
+        read_iteration=lambda: counter["n"],
+        on_checkpoint=written.append,
+    )
+    assert written == [10, 20]
+    assert outcome["iterations_completed"] == 20
+
+
 def test_a_counter_that_does_not_advance_writes_no_checkpoint():
     written = []
     with pytest.raises(RuntimeError, match="None -> None"):

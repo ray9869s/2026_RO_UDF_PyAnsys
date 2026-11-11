@@ -116,9 +116,13 @@ def cp_live_cm_definition(
         f"({permeability:.16g}*udm-7/(udm-6+{permeability:.16g}))"
     )
     live = f"AND(udm-9>0,{permeate}<{bulk})"
+    # At initialization every udm is 0, so the live area is 0. A bare
+    # division is evaluated when the report file is opened and makes
+    # iterate() return before the first residual line.
+    live_area = f"AreaInt(IF({live}, 1, 0), ['{clip}'])"
     return (
         f"AreaInt(IF({live}, udm-7, 0), ['{clip}'])"
-        f" / AreaInt(IF({live}, 1, 0), ['{clip}'])"
+        f" / max({live_area}, 1e-30 [m^2])"
     )
 
 

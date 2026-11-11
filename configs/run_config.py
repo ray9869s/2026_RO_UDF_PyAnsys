@@ -388,6 +388,9 @@ qoi_initial_values_to_ignore = 200
 # and tightens qoi_stop_criterion via campaign_v3_stop_overrides.
 qoi_stop_include_cp = False
 qoi_window_after_ramp = False
+# The live CP expression is evaluated every iteration once its report
+# file is active. False keeps the ffd53e1 stop on cp_window.
+enable_cp_live_monitor = True
 # campaign_v3 relative-change stop. The window is previous_values samples
 # and must start after ramp_full_iteration. max_iterations stays 2000.
 campaign_v3_qoi_stop_criterion = 1e-4
@@ -1142,6 +1145,7 @@ def validate_for_solver():
     _require_bool("qoi_stop_include_cp", qoi_stop_include_cp)
     _require_bool("qoi_window_after_ramp", qoi_window_after_ramp)
     _require_bool("enable_cp_monitor_report_file", enable_cp_monitor_report_file)
+    _require_bool("enable_cp_live_monitor", enable_cp_live_monitor)
     if qoi_stop_include_cp and not enable_qoi_convergence_stop:
         raise ValueError(
             "qoi_stop_include_cp requires enable_qoi_convergence_stop=True"
