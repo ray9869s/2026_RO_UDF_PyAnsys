@@ -640,6 +640,7 @@ class TestPostConfigOverrideAllowlist:
             "channel_height_m",
             "results_dir",
             "case_path",
+            "report_dirname",
         }
         assert admitted_config_fields <= allowed
         assert extensions <= allowed
