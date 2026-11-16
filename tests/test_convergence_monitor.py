@@ -7,7 +7,9 @@ import json
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from types import SimpleNamespace
+
+from helpers import SCRIPTS_DIR, load_module, load_solver_code
 from ro.convergence_quality import evaluate_convergence_quality
 from ro.convergence_stop import (
     campaign_v3_stop_overrides,
@@ -15,9 +17,13 @@ from ro.convergence_stop import (
     launch_limit_overrides,
 )
 from ro.monitor_change import (
+    CP_LIVE_MEAN,
     MONITOR_CHANGE_LAST100,
+    cp_live_cm_definition,
     cp_live_monitor_definition,
     cp_monitor_definition,
+    fluent_expression_report_is_invalid,
+    format_expression_error_table,
     last100_monitor_changes,
     relative_change_last_iterations,
 )
@@ -284,11 +290,87 @@ def test_live_cp_monitor_drops_faces_where_udm9_is_zero():
         0.05844,
         b_perm_m_per_s=2.5e-8,
     )
+    body = cp_live_cm_definition(
+        "cp_monitor_membrane_window",
+        "cp_monitor_cb_yi",
+        998.2,
+        0.05844,
+        2.5e-8,
+    )
     assert "udm-9" not in window
-    assert "udm-9>0" in live
-    assert "udm-6" in live
-    assert "AND(" in live
-    assert "max(" in live
-    assert "1e-30 [m^2]" in live
+    assert "{udm-9}>0" in body
+    assert "{udm-6}" in body
+    assert "{udm-7}" in body
+    assert "udm-7" not in body.replace("{udm-7}", "")
+    assert "AND(" in body
+    assert "max(" in body
+    assert "1e-30*Area(" in body
+    assert "1e-30 [m^2]" not in body
+    assert live.startswith(f"{CP_LIVE_MEAN} /")
     assert "cp_monitor_cb_yi" in live
-    assert "cp_monitor_membrane_window" in live
+    assert "AreaInt" not in live
+
+
+def test_an_invalid_expression_stops_before_iterate(capsys):
+    solver = load_solver_code("expr_check_invalid")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            command = commands[0]
+            if "list-properties" in command:
+                return "Valid            : No\nUsed in          : 1 places"
+            return (
+                "Setup contains invalid expression\n"
+                "Expression                       Error                Used In\n"
+                "cp_live_mean                     udm - 7              cp_live"
+            )
+
+    class Named:
+        def get_object_names(self):
+            return ["cp_live_mean"]
+
+    session = SimpleNamespace(
+        scheme=Scheme(),
+        setup=SimpleNamespace(named_expressions=Named()),
+    )
+    with pytest.raises(RuntimeError, match="Refusing to iterate"):
+        solver.require_setup_expressions_valid(session)
+    printed = capsys.readouterr().out
+    assert "Expression" in printed
+    assert "Error" in printed
+    assert "Used In" in printed
+    assert "Setup contains invalid expression" in printed
+
+
+def test_a_valid_expression_report_does_not_block_iterate():
+    solver = load_solver_code("expr_check_valid")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            return "Valid            : Yes"
+
+    class Named:
+        def get_object_names(self):
+            return []
+
+    session = SimpleNamespace(
+        scheme=Scheme(),
+        setup=SimpleNamespace(named_expressions=Named()),
+    )
+    solver.require_setup_expressions_valid(session)
+
+
+def test_expression_report_text_is_the_setup_failure():
+    table = format_expression_error_table(
+        [("cp_live_mean", "udm - 7", "report definition cp_live")]
+    )
+    header = table.splitlines()[0]
+    assert header.startswith("Expression")
+    assert "Error" in header
+    assert header.endswith("Used In")
+    assert fluent_expression_report_is_invalid(
+        "Setup contains invalid expression"
+    )
+    assert fluent_expression_report_is_invalid("Valid            : No")
+    assert not fluent_expression_report_is_invalid("Valid            : Yes")
+    assert not fluent_expression_report_is_invalid("Input parameter  : No")

@@ -14,6 +14,7 @@ fixed print width of about three decimal places.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ro.solver_common import (
@@ -29,6 +30,9 @@ CP_MONITOR_FULL_MEMBRANE = "cp_full_membrane"
 # Area-mean udm-7 on faces where udm-9 > 0, over the same window c_b.
 # udm-9 is 0 on the dead zone. cp_window averages every face on the clip.
 CP_MONITOR_LIVE = "cp_live"
+# The area-mean lives in a named expression. The report definition stays
+# a ratio of names, which is the form cp_window already uses.
+CP_LIVE_MEAN = "cp_live_mean"
 CP_CM_REPORT = "cp_monitor_cm_avg"
 CP_CB_REPORT = "cp_monitor_cb_yi"
 CP_MEMBRANE_CLIP = "cp_monitor_membrane_window"
@@ -112,17 +116,21 @@ def cp_live_cm_definition(
     if not isinstance(cb_report, str) or not cb_report:
         raise ValueError(f"cb report name is required, got {cb_report!r}.")
     bulk = f"({cb_report}*{density:.16g}/{molar_mass:.16g})"
-    permeate = (
-        f"({permeability:.16g}*udm-7/(udm-6+{permeability:.16g}))"
-    )
-    live = f"AND(udm-9>0,{permeate}<{bulk})"
-    # At initialization every udm is 0, so the live area is 0. A bare
-    # division is evaluated when the report file is opened and makes
-    # iterate() return before the first residual line.
+    # A bare udm-7 is the subtraction ``udm - 7``. Fluent then reports
+    # "Setup contains invalid expression" and iterate() does not run.
+    cm = "{udm-7}"
+    flux = "{udm-6}"
+    cp = "{udm-9}"
+    permeate = f"({permeability:.16g}*{cm}/({flux}+{permeability:.16g}))"
+    live = f"AND({cp}>0,{permeate}<{bulk})"
+    # At initialization every udm is 0, so the live area is 0. The floor
+    # is a fraction of the clip area, which keeps the denominator an area
+    # without a unit literal.
     live_area = f"AreaInt(IF({live}, 1, 0), ['{clip}'])"
+    floor = f"1e-30*Area(['{clip}'])"
     return (
-        f"AreaInt(IF({live}, udm-7, 0), ['{clip}'])"
-        f" / max({live_area}, 1e-30 [m^2])"
+        f"AreaInt(IF({live}, {cm}, 0), ['{clip}'])"
+        f" / max({live_area}, {floor})"
     )
 
 
@@ -148,7 +156,9 @@ def cp_live_monitor_definition(
         )
     if not isinstance(cb_report, str) or not cb_report:
         raise ValueError(f"cb report name is required, got {cb_report!r}.")
-    cm = cp_live_cm_definition(
+    # The body is installed as the named expression CP_LIVE_MEAN. The
+    # report definition only names it, matching cp_window.
+    cp_live_cm_definition(
         clip,
         cb_report,
         density,
@@ -156,7 +166,7 @@ def cp_live_monitor_definition(
         b_perm_m_per_s,
     )
     return (
-        f"({cm}) / ({cb_report} * {density:.16g} / {molar_mass:.16g})"
+        f"{CP_LIVE_MEAN} / ({cb_report} * {density:.16g} / {molar_mass:.16g})"
     )
 
 
@@ -246,3 +256,40 @@ def monitor_changes(case_dir, n: int = 100) -> dict[str, float | None]:
 def last100_monitor_changes(case_dir) -> dict[str, float | None]:
     """The three acceptance-gate columns. Does not change PASS/FAIL."""
     return monitor_changes(case_dir, 100)
+
+
+# Scheme forms that print or return Fluent's expression check. The first
+# one is the formatted invalid-input table (Expression / Error / Used In).
+EXPRESSION_CHECK_FORMS = (
+    "(get-invalid-inputs-formated)",
+    "(get-invalid-inputs)",
+    "(expr-check)",
+    "(validate-named-expr-def)",
+    "(validate-expr-report-def)",
+)
+
+
+def format_expression_error_table(rows) -> str:
+    """The Expression / Error / Used In table Fluent prints for a bad setup."""
+    lines = [
+        f"{'Expression':<32} {'Error':<20} Used In",
+        f"{'-' * 32} {'-' * 20} {'-' * 12}",
+    ]
+    for expression, error, used_in in rows:
+        name = str(expression).replace("\n", " ")
+        reason = str(error).replace("\n", " ")
+        where = str(used_in).replace("\n", " ")
+        lines.append(f"{name[:32]:<32} {reason[:20]:<20} {where}")
+    return "\n".join(lines)
+
+
+def fluent_expression_report_is_invalid(text: str) -> bool:
+    """True when Fluent's own check text reports an invalid expression."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    lowered = text.casefold()
+    if "setup contains invalid expression" in lowered:
+        return True
+    if "invalid expression:" in lowered:
+        return True
+    return re.search(r"valid\s*[:=]\s*no\b", lowered) is not None

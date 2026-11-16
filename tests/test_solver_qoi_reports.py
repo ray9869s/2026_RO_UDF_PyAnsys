@@ -54,7 +54,8 @@ def make_solver_and_solution():
             results=SimpleNamespace(
                 surfaces=SimpleNamespace(iso_surface=iso_surfaces)
             )
-        )
+        ),
+        setup=SimpleNamespace(named_expressions=NamedGroup()),
     )
     surface_reports = NamedGroup()
     expression_reports = NamedGroup()
@@ -532,6 +533,13 @@ def test_cp_monitor_is_window_udm7_over_window_bulk():
     ratio = expression_reports["cp_window"]
     assert ratio.definition == result["definition"]
     assert ratio.print is True
+    live = expression_reports["cp_live"]
+    assert live.definition.startswith("cp_live_mean /")
+    assert "AreaInt" not in live.definition
+    body = solver.setup.named_expressions["cp_live_mean"].definition
+    assert "{udm-7}" in body
+    assert "{udm-6}" in body
+    assert "{udm-9}" in body
 
 
 def test_cp_monitor_falls_back_to_the_full_active_membrane():

@@ -118,13 +118,18 @@ from ro.monitor_change import (
     CP_MEMBRANE_CLIP,
     CP_MIDPLANE_CLIP,
     CP_MONITOR_FULL_MEMBRANE,
+    CP_LIVE_MEAN,
     CP_MONITOR_LIVE,
     CP_MONITOR_WINDOW,
+    EXPRESSION_CHECK_FORMS,
     REPORT_FILE_SIGNIFICANT_DIGITS,
     cb_salt_field_candidates,
+    cp_live_cm_definition,
     cp_live_monitor_definition,
     cp_monitor_definition,
     cp_report_file_name,
+    fluent_expression_report_is_invalid,
+    format_expression_error_table,
     last100_monitor_changes,
     molecular_weight_kg_per_mol,
 )
@@ -2886,6 +2891,87 @@ def create_or_update_surface_area_report(surface_report_definitions, report_name
     return report_definition
 
 
+def upsert_named_expression(named_expressions, name, definition):
+    """Create or replace one setup named expression."""
+    existing = list_named_object_names(
+        named_object=named_expressions,
+        object_label="setup.named_expressions",
+    )
+    if name not in existing:
+        named_expressions.create(name)
+        print(f"Named expression created: {name}")
+    else:
+        print(f"Named expression already exists. Updating: {name}")
+    named_expressions[name].definition = definition
+    print(f"{name} definition: {definition}")
+    return named_expressions[name]
+
+
+def _scheme_exec_text(solver, command):
+    """Run one scheme command and return the text Fluent printed."""
+    scheme = getattr(solver, "scheme", None)
+    if scheme is not None and hasattr(scheme, "exec"):
+        try:
+            return str(scheme.exec([command], wait=True, silent=False))
+        except TypeError:
+            try:
+                return str(scheme.exec([command]))
+            except Exception as exc:
+                return f"{type(exc).__name__}: {exc}"
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+    scheme_eval = getattr(solver, "scheme_eval", None)
+    if scheme_eval is not None:
+        try:
+            return str(scheme_eval.string_eval(command))
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
+def require_setup_expressions_valid(solver):
+    """Print Fluent's expression check and refuse to iterate when it fails.
+
+    A report definition Fluent has accepted into the setup can still be
+    invalid. ``iterate`` then prints ``Setup contains invalid expression``
+    and returns without a residual line. The check runs first.
+    """
+    chunks = []
+    for form in EXPRESSION_CHECK_FORMS:
+        text = _scheme_exec_text(solver, form)
+        print(f"Expression check {form}:")
+        print(text)
+        chunks.append(text)
+    names = _list_named_object_names_best_effort(
+        solver.setup.named_expressions
+    )
+    rows = []
+    for name in names:
+        listed = _scheme_exec_text(
+            solver,
+            "(ti-menu-load-string "
+            + json.dumps(
+                f"/define/named-expressions/list-properties {name}"
+            )
+            + ")",
+        )
+        print(f"Named expression {name}:")
+        print(listed)
+        chunks.append(listed)
+        error = "invalid" if fluent_expression_report_is_invalid(listed) else ""
+        rows.append((name, error, "named expression"))
+    if rows:
+        table = format_expression_error_table(rows)
+        print(table)
+        chunks.append(table)
+    report = "\n".join(chunks)
+    if fluent_expression_report_is_invalid(report):
+        raise RuntimeError(
+            "Setup contains invalid expressions. Refusing to iterate.\n"
+            + report
+        )
+
+
 def create_or_update_single_valued_expression_report(
     single_expression_report_definitions,
     report_name,
@@ -3616,28 +3702,37 @@ def update_solve_time_cp_monitor(
     live_name = None
     live_definition = None
     if scope == "window" and include_live:
-        try:
-            live_definition = cp_live_monitor_definition(
-                CP_MEMBRANE_CLIP,
-                CP_CB_REPORT,
-                density_kg_per_m3,
-                molecular_weight_kg_per_mol(salt_molecular_weight_g_per_mol),
-                b_perm_m_per_s=B_PERM_M_PER_S,
-            )
-            live_ratio = create_or_update_single_valued_expression_report(
-                single_expression_report_definitions=(
-                    solution.report_definitions.single_valued_expression
-                ),
-                report_name=CP_MONITOR_LIVE,
-                definition=live_definition,
-            )
-            configure_report_definition_for_transcript(live_ratio)
-            live_name = CP_MONITOR_LIVE
-        except Exception as exc:
-            print(
-                "WARNING: live CP monitor was not created; the stop keeps "
-                f"{report_name}. {type(exc).__name__}: {exc}"
-            )
+        molar_mass = molecular_weight_kg_per_mol(
+            salt_molecular_weight_g_per_mol
+        )
+        live_body = cp_live_cm_definition(
+            CP_MEMBRANE_CLIP,
+            CP_CB_REPORT,
+            density_kg_per_m3,
+            molar_mass,
+            B_PERM_M_PER_S,
+        )
+        upsert_named_expression(
+            solver.setup.named_expressions,
+            CP_LIVE_MEAN,
+            live_body,
+        )
+        live_definition = cp_live_monitor_definition(
+            CP_MEMBRANE_CLIP,
+            CP_CB_REPORT,
+            density_kg_per_m3,
+            molar_mass,
+            b_perm_m_per_s=B_PERM_M_PER_S,
+        )
+        live_ratio = create_or_update_single_valued_expression_report(
+            single_expression_report_definitions=(
+                solution.report_definitions.single_valued_expression
+            ),
+            report_name=CP_MONITOR_LIVE,
+            definition=live_definition,
+        )
+        configure_report_definition_for_transcript(live_ratio)
+        live_name = CP_MONITOR_LIVE
 
     print(
         f"CP monitor {report_name} ({scope}): {definition} "
@@ -6060,24 +6155,15 @@ if __name__ == "__main__":
                     step = int(step)
                     absolute = cursor["iteration"] + step
                     if continue_from_iteration is not None:
-                        # iter_count is the additional count. The loaded
-                        # case still has its previous absolute cap, so
-                        # name this chunk's end before asking for the
-                        # extra iterations.
+                        # iter_count is the additional count. Fluent 25.1
+                        # run_calculation has no number_of_iterations
+                        # attribute; setting it prints api-set-var and
+                        # does not change the iteration.
                         print(
                             f"Continue chunk iteration target {absolute} "
                             f"({step} additional).",
                             flush=True,
                         )
-                        try:
-                            solution.run_calculation.number_of_iterations = (
-                                absolute
-                            )
-                        except Exception as exc:
-                            print(
-                                "WARNING: could not set number_of_iterations "
-                                f"to {absolute}: {type(exc).__name__}: {exc}"
-                            )
                     cursor["iteration"] = absolute
                     return solution.run_calculation.iterate(iter_count=step)
 
@@ -6104,6 +6190,8 @@ if __name__ == "__main__":
                     start_iteration=monitor_cursor["n"],
                 )
                 monitor_cursor["n"] = outcome["end_iteration"]
+
+            require_setup_expressions_valid(solver)
 
             lf_stop_decision = None
             hf_stop_decision = None
