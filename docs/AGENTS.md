@@ -1,9 +1,10 @@
 # AGENTS.md
 
-Guidance for AI coding agents (Cursor, Codex, Claude Code) working in this repo.
-Read `REVIEW.md` for the findings history (F-01 … F-21). That file is a
-historical record of the July 2026 review; the live tree is this document plus
-`docs/RESTRUCTURE_PLAN.md`.
+The live campaign handoff is the repository-root `AGENTS.md`
+(`CLAUDE.md` points there): data roots, host smokes, and what main3 is
+running. This file is the longer project guide. Read `REVIEW.md` for
+the findings history (F-01 … F-21). That file is a historical record of
+the July 2026 review. The restructure plan is `docs/RESTRUCTURE_PLAN.md`.
 
 ## Project
 
