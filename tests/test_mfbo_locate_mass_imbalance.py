@@ -286,6 +286,39 @@ def test_copy_reuses_a_match_and_refuses_production(tmp_path):
         locate.copy_or_reuse_tree(source, "C:/ro_data/runs/copied", label="run leaf")
 
 
+def test_locate_copy_reads_the_manifest_under_the_copy_root(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_layout(directory):
+        seen["root"] = __import__("os").environ.get("RO_DATA_ROOT")
+        seen["directory"] = directory
+        raise RuntimeError("stop after the manifest read")
+
+    monkeypatch.setattr(locate, "layout_from_mesh_manifest", fake_layout)
+    monkeypatch.setenv("RO_DATA_ROOT", "C:/ro_data")
+    data_root = tmp_path / "mass_imbalance"
+    manifest = data_root / "meshes" / "diamond" / "D2450_a30" / "mesh" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+    prepared = {
+        "data_root": str(data_root),
+        "mesh_manifest": str(manifest),
+        "run_leaf": str(data_root / "runs"),
+        "case_file": str(data_root / "case.cas.h5"),
+        "identity": {
+            "geo_id": "D2450_a30",
+            "mesh_id": "mesh",
+            "run_id": "u0p2_p6M",
+            "run_leaf": "C:/ro_data/runs/diamond/D2450_a30/mesh/u0p2_p6M",
+        },
+    }
+    with pytest.raises(RuntimeError, match="stop after the manifest read"):
+        locate.locate_copy(prepared, role="study", top_n=5)
+    assert seen["root"] == str(data_root)
+    assert seen["directory"] == manifest.parent
+    assert __import__("os").environ.get("RO_DATA_ROOT") == "C:/ro_data"
+
+
 def test_emit_queue_lists_the_study_and_the_control(tmp_path):
     path = tmp_path / "mass_imbalance_jobs.json"
     assert locate.main(["--emit-queue", str(path), "--top", "50"]) == 0

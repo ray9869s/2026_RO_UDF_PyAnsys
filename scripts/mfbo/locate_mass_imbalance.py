@@ -41,7 +41,7 @@ if str(_SRC) not in sys.path:
 
 from ro.domain_layout import DEFAULT_EXTENT_REL_TOL, layout_from_mesh_manifest
 from ro.fluent_launch import fluent_mpi_argument
-from ro.paths import FAMILY_RE, GEO_ID_RE, MESH_ID_RE, RUN_ID_RE
+from ro.paths import FAMILY_RE, GEO_ID_RE, MESH_ID_RE, RUN_ID_RE, using_data_root
 from ro.solver_common import sha256_file
 
 MASS_IMBALANCE_FIELD = "mass-imbalance"
@@ -911,7 +911,12 @@ def locate_copy(prepared, *, role, top_n):
             "mass-imbalance was checked for Fluent 25.1, "
             f"got product_version {run_config.product_version!r}."
         )
-    layout = layout_from_mesh_manifest(Path(prepared["mesh_manifest"]).parent)
+    # The copy lives under the mass-imbalance data root. Reading it under
+    # the ambient RO_DATA_ROOT (often C:/ro_data) fails the location guard.
+    with using_data_root(prepared["data_root"]):
+        layout = layout_from_mesh_manifest(
+            Path(prepared["mesh_manifest"]).parent
+        )
     spans = layout.layout.spans(DOMAIN_X_MIN_M)
     tolerance = layout.layout.total_length_m * DEFAULT_EXTENT_REL_TOL
     kwargs = _launch_kwargs(prepared["run_leaf"], run_config)

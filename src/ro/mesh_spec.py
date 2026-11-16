@@ -15,6 +15,7 @@ import math
 import subprocess
 from pathlib import Path
 
+from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 from ro.paths import project_root
 from ro.solver_common import sha256_file
 
@@ -29,6 +30,8 @@ SPEC_FIELDS = (
 )
 FAMILIES = ("diamond", "empty", "ml", "pillar", "sin")
 OFFSET_METHOD = "last-ratio"
+MEMBRANE_FACE_LABELS = ("wall_top_mem", "wall_bottom_mem")
+MEMBRANE_FACE_GROWTH_RATE = 1.2
 # Smooth-transition mesh-id token. The membrane layer count is derived
 # from y1 and m_max; this token is not a family knob.
 BL_LAYERS = 4
@@ -62,7 +65,7 @@ def load_mesh_spec(path) -> dict:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"mesh spec must be a JSON object: {path}")
-    unknown = sorted(set(payload) - {"defaults", "families"})
+    unknown = sorted(set(payload) - {"defaults", "families", "geometries"})
     if unknown or "defaults" not in payload or "families" not in payload:
         raise ValueError(
             "mesh spec must contain defaults and families, "
@@ -89,7 +92,57 @@ def load_mesh_spec(path) -> dict:
         merged.update(_checked_fields(family, entry, partial=True))
         _check_pair(family, merged)
         resolved["families"][family] = merged
+    resolved["geometries"] = _geometry_face_sizes(
+        payload.get("geometries", {})
+    )
     return resolved
+
+
+def _geometry_face_sizes(value) -> dict:
+    """Per-geometry membrane face size. Omitted or ``{}`` changes nothing."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"mesh spec geometries must be an object, got {value!r}."
+        )
+    allowed = set(CAMPAIGN_GEO_ID_ORDER)
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(
+            f"mesh spec geometries not in the campaign: {unknown}."
+        )
+    resolved = {}
+    for geo_id, entry in value.items():
+        if not isinstance(entry, dict) or set(entry) != {"membrane_face_size_mm"}:
+            raise ValueError(
+                "mesh spec geometry "
+                f"{geo_id} must be an object with membrane_face_size_mm, "
+                f"got {entry!r}."
+            )
+        size = entry["membrane_face_size_mm"]
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or size <= 0:
+            raise ValueError(
+                f"{geo_id} membrane_face_size_mm must be positive, got {size!r}."
+            )
+        resolved[geo_id] = float(size)
+    return resolved
+
+
+def geometry_membrane_face_size(spec, geo_id):
+    """Local face-size override for one geometry, or None when unset.
+
+    The size is recorded on the mesh manifest as ``local_face_size``.
+    Growth rate 1.2 is the campaign default and is omitted from the mesh id.
+    """
+    size = (spec.get("geometries") or {}).get(geo_id)
+    if size is None:
+        return None
+    return {
+        "labels": list(MEMBRANE_FACE_LABELS),
+        "size_mm": float(size),
+        "growth_rate": MEMBRANE_FACE_GROWTH_RATE,
+    }
 
 
 def family_settings(spec, family) -> dict:

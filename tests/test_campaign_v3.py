@@ -22,6 +22,7 @@ from ro.mesh_spec import (
     changes_for_settings,
     default_spec_path,
     family_settings,
+    geometry_membrane_face_size,
     load_mesh_spec,
     provenance_fields,
     require_changes_match,
@@ -147,6 +148,38 @@ def test_family_override_changes_only_that_family(tmp_path):
     assert _flag(by_geo["D2450_a45"], "--m-max") == "0.035"
     assert _flag(by_geo["M_c160"], "--m-max") == "0.035"
     assert _flag(by_geo["S_a144_l3465"], "--m-max") == "0.035"
+
+
+def test_geometry_face_size_is_off_until_a_geometry_sets_it(tmp_path):
+    spec = _spec()
+    assert spec["geometries"] == {}
+    assert geometry_membrane_face_size(spec, "S_a193_l1733") is None
+    jobs = CAMPAIGN.mesh_jobs(spec, default_spec_path())
+    assert "--local-face-size" not in jobs[0]["argv"]
+    raw = json.loads(default_spec_path().read_text(encoding="utf-8"))
+    raw["geometries"] = {"S_a193_l1733": {"membrane_face_size_mm": 0.020}}
+    path = tmp_path / "mesh_spec.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    loaded = load_mesh_spec(path)
+    face = geometry_membrane_face_size(loaded, "S_a193_l1733")
+    assert face["labels"] == ["wall_top_mem", "wall_bottom_mem"]
+    assert face["size_mm"] == pytest.approx(0.020)
+    assert face["growth_rate"] == pytest.approx(1.2)
+    mesh_jobs = CAMPAIGN.mesh_jobs(loaded, path)
+    by_geo = {_flag(job["argv"], "--geo-id"): job["argv"] for job in mesh_jobs}
+    encoded = _flag(by_geo["S_a193_l1733"], "--local-face-size")
+    assert json.loads(encoded)["size_mm"] == pytest.approx(0.020)
+    assert "--local-face-size" not in by_geo["D1225_a30"]
+    templates = CAMPAIGN.production_templates()
+    mesh_ids = CAMPAIGN.mesh_ids_for_spec(loaded, templates)
+    assert mesh_ids["S_a193_l1733"] == (
+        "max035_min006_cpg5_bl4_peel2_fs020_y1h020_bms034"
+    )
+    assert mesh_ids["D1225_a30"] == MESH_ID
+    raw["geometries"] = {"not_a_geo": {"membrane_face_size_mm": 0.020}}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="not in the campaign"):
+        load_mesh_spec(path)
 
 
 def test_unknown_family_field_is_refused(tmp_path):

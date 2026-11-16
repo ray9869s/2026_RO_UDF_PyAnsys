@@ -78,6 +78,7 @@ from ro.mesh_spec import (  # noqa: E402
     changes_for_settings,
     default_spec_path,
     family_settings,
+    geometry_membrane_face_size,
     load_mesh_spec,
     resolve_spec_path,
     spec_file_sha256,
@@ -184,9 +185,13 @@ def mesh_ids_for_spec(spec, templates=None):
     mesh_ids = {}
     for geo_id in CAMPAIGN_GEO_ID_ORDER:
         settings = family_settings(spec, family_for_geo_id(geo_id))
+        changes = changes_for_settings(settings)
+        face = geometry_membrane_face_size(spec, geo_id)
+        if face is not None:
+            changes["local_face_size"] = face
         overrides = mesh_study.apply_study_overrides(
             templates[geo_id],
-            changes_for_settings(settings),
+            changes,
         )
         mesh_ids[geo_id] = overrides["mesh_id"]
         mesh_ids[geo_id + ":layers"] = overrides["membrane_bl_y1"]["layers"]
@@ -224,6 +229,7 @@ def _study_argv(
     reuse_mesh,
     spec_token,
     keep_checkpoints=False,
+    membrane_face_size=None,
 ):
     argv = [
         "{python}",
@@ -257,6 +263,13 @@ def _study_argv(
         "--mesh-spec",
         spec_token,
     ]
+    if membrane_face_size is not None:
+        argv.extend(
+            [
+                "--local-face-size",
+                json.dumps(membrane_face_size, separators=(",", ":")),
+            ]
+        )
     if mesh_only:
         argv.append("--mesh-only")
     else:
@@ -302,6 +315,7 @@ def mesh_jobs(spec, spec_path, geo_ids=None):
                     mesh_only=True,
                     reuse_mesh=False,
                     spec_token=token,
+                    membrane_face_size=geometry_membrane_face_size(spec, geo_id),
                 ),
             )
         )
@@ -340,6 +354,9 @@ def solve_jobs(
                         reuse_mesh=True,
                         spec_token=token,
                         keep_checkpoints=keep_checkpoints,
+                        membrane_face_size=geometry_membrane_face_size(
+                            spec, geo_id
+                        ),
                     ),
                 )
             )
