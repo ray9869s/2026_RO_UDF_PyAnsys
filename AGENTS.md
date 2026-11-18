@@ -61,9 +61,18 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   `<queue>.state.json`, `<queue>.lock`, `<queue>.stop`,
   `<queue>.summary.log`, and `logs/<id>.log`. Exit 0 when nothing failed,
   2 when a job failed, 1 on preflight. A lock held by a live pid refuses
-  another start.
+  another start. Every runner also holds the host lock
+  (`ro.host_lock`, `RO_HOST_LOCK`, default `~/.pyfluent/fluent_host.lock`),
+  so a second queue file refuses to start, and before each job a Fluent
+  process still alive after a 120 s grace (`RO_ORPHAN_GRACE_S`) refuses
+  the start (exit 1, job stays pending). `succeeded` means exit 0 only;
+  the state record and summary line (`gate=`) carry the leaf's
+  `convergence_quality` from `RO_JOB_RESULT`. A job may set `timeout_s`;
+  `run --job-timeout-hours H` sets the default. A timed-out job's process
+  tree is killed and the job fails with `JOB_TIMEOUT` in its log.
 - `scripts/mfbo/reextract_runs.py` — re-extract a leaf outside production.
-  Renames `post/reports` to `post/reports_prev_<UTC>/`.
+  Renames `post/reports` to `post/reports_prev_<UTC>/` and copies the run
+  `manifest.json` into that archive.
   `--copy-from-production` copies the leaf, the mesh, and the geometry.
   It never points Fluent at `C:/ro_data`.
 - `scripts/convergence_audit.py` — PASS leaves only. Stop iteration,
@@ -77,14 +86,30 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   They never pull or launch long solves. `pending_checks.py --plan` is
   read-only and can be run in WSL.
 - `scripts/campaign_v3_reextract.py --emit-queue <json>` — observes the
-  campaign root and emits one full re-extract job for each current
-  `u0p2_p6M` PASS final (all mesh identities). It excludes archived run
-  leaves and `reports_iter*`. Each job rechecks PASS and the final
-  pair before archiving `post/reports`; existing queues are refused.
+  campaign root and emits one full re-extract job for each `u0p2_p6M`
+  final that is PASS or whose `post/reports` is stale (sidecar hash ≠
+  manifest final hash: every continued leaf, and D2450_a60 with no gate).
+  It prints `STALE`/`SKIP` lines and skips a leaf whose final pair or
+  manifest hashes are missing. Each job hashes the final pair against the
+  manifest before archiving `post/reports`; existing queues are refused.
+  `--emit-queue <json> --snapshot S_a072_l3465:2000 --snapshot
+  S_a072_l3465:2500` emits snapshot jobs instead: each extracts the saved
+  `*_iter_<N>` pair into `post/reports_iter<N>_meanfirst/` and never
+  touches `post/reports` or the manifest gate.
 
 Workers stay dated: `meshing_code_260616.py`, `solver_code_260616.py`.
 Paths go through `ro.paths`. A leaf is
 `runs/<family>/<geo_id>/<mesh_id>/<run_id>/`.
+
+Reporting binds a row to its final: `campaign_v3` `leaf_metrics`,
+`--compare` and `seminar_cases.csv` use `post/reports` only when its
+`extract_source.json` hashes equal the manifest final hashes
+(`ro.report_binding`); otherwise the metrics are blank and
+`report_binding` says why. Extracts write `post/<dir>.tmp_<id>`, clear
+the target sidecar and the manifest `convergence_quality` at start, and
+swap in only after every gate (the replaced directory is kept as
+`<dir>_prev_<UTC>`). A failed extract leaves its staging directory for
+inspection and no PASS.
 
 ## Data roots
 
@@ -103,15 +128,18 @@ never moved. v3 meshing uses `--geometry-suffix .pmdb` and
 
 ## Hard rules
 
-- Never write to `C:/ro_data` or `/mnt/c/ro_data`. Drivers refuse that
-  root. Do not relax the refusal so a copy will load.
+- Never write to `C:/ro_data` or `/mnt/c/ro_data`. Drivers and writers
+  refuse that root through `ro.paths.refuse_production_root` (realpath,
+  `..`, trailing dots, `\\?\` prefixes, junctions/samefile). Do not relax
+  the refusal so a copy will load.
 - Never `git pull` on the host while a queue is running from
   `C:/pyfluent`. The running process is the tree it started with.
   Pull only after that queue exits. Do not ask the operator to pull
   while main4 is running.
 - No `job_queue.py run --resume` and no `--retry-failed` unless the
   operator asks. `--resume` retries failed jobs and appends `--resume`
-  onto a `mesh_study_case` solve. A fresh start is `job_queue.py run
+  onto a `mesh_study_case` solve. A leaf whose final pair matches the
+  manifest hashes then runs the extract only; a mismatch refuses. A fresh start is `job_queue.py run
   <queue.json>` with neither flag.
 - Move a leaf aside instead of deleting it. Rename the directory to
   `<name>.prev_<UTC>`, UTC as `YYYYMMDDTHHMMSSZ`
@@ -202,11 +230,28 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   Every launch passes `-mpi=intel` (`configs/run_config.py`
   `fluent_mpi`, overridable with `RO_FLUENT_MPI`). An empty value omits
   the flag and brings the abort back.
-- Hang watchdog. Solve idle 60 min, extract idle 30 min
-  (`solve_hang_idle_minutes`, `extract_hang_idle_minutes`). A quiet
-  attempt log, transcript, and `post/` tree kills the recorded PIDs,
-  prints `HANG failure_class=hang`, and exits 75. Extract is retried
-  once. Solve is not. That failure is not a reason to `--resume`.
+- Hang watchdog. Solve idle 60 min, extract idle 30 min, mesh idle
+  90 min (`*_hang_idle_minutes`), plus per-attempt wall caps of 48 h,
+  6 h and 12 h (`*_wall_cap_hours`) that fire even while output flows
+  (`HANG_REASON wall_cap`). A quiet attempt log, transcript, and `post/`
+  tree kills the recorded PIDs, prints `HANG failure_class=hang`, and
+  exits 75. stdout is read on its own thread, so a Fluent/MPI grandchild
+  holding the pipe no longer blocks the stage. Extract is retried once.
+  Solve is not. Campaign meshing writes `mesh_attempt<N>.log`. A hang is
+  not a reason to `--resume`; after an extract hang `--resume` would only
+  re-extract.
+- Fail closed. `unknown_early_stop` (iterate returned below the cap with
+  no stop marker) writes only `failed_attempt_*` and exits non-zero. The
+  setup-expression check must pass positively: every named expression
+  lists `Valid : Yes`, or, with none, at least one check form ran without
+  an error; otherwise `Refusing to iterate`. If the host smoke refuses
+  with `no expression check could run`, read the printed check forms
+  before changing anything.
+- Monitor-change columns. `monitor_change_last100_*` is now the
+  end-to-end relative change and `monitor_trend_last100_*` the fitted
+  slope over 100 iterations, CP on `cp_live` only. The old maximum
+  deviation is `*_legacy`. Recorded only; the 2000-iteration cap and the
+  gate are unchanged.
 - `cp_live` vs `--no-cp-live`. Default is `cp_live` on, and the v3 stop
   watches it. `--no-cp-live` keeps the `ffd53e1` stop on `cp_window`.
   main3 was started with `--no-cp-live` because the unbraced expression
@@ -236,6 +281,25 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   before the worker writes the final mesh.
 
 ## Current state (2026-11-18)
+
+**Audit fixes pushed after `8ca0706` (not on the host until main4
+exits and the operator pulls).** Atomic extract and report/final
+binding, stale-aware re-extract emitter with `--snapshot`, move-aside
+resume fallback and BROKEN marker on a failed smoke restore, canonical
+production guard, host-wide Fluent lock with orphan check, fail-closed
+`unknown_early_stop` and expression check, job-state gate and
+extract-only `--resume`, watchdog wall caps / pipe handling / queue
+timeouts / meshing guard, end-to-end monitor change, window dP/L
+columns. These change solve, extract and queue code: the 20-iteration
+host smoke in “Smoke first” is required before any long queue. Host
+evidence behind them (operator-reported): every continued leaf's
+`post/reports` is from iteration 2000 while the final is 2500/4020;
+D2450_a60 has no gate (main3 stopped mid-continue); `.out` files are
+clean but oscillate; `c_b` sits 0.01–0.2 % below the x-normal cups;
+Pillar/ML/Empty have no dead zone; v2 is not re-extracted and compares
+via `cpc_window_avg_area`. Expect the re-extract emitter to list the
+continued leaves as `STALE`. Run the S_a072 snapshot jobs to measure the
+mean-first change over 2000→2500.
 
 **Benchmark CP decision (approved 2026-11-18).** Use
 `cp_meanfirst_live_window_avg` for campaign reporting, v3 comparisons,

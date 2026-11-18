@@ -113,7 +113,7 @@ area-weighted.
   UDM-7 after analytic wall reconstruction).
 - \(c_p\): face-local permeate-side reference \(J_s/J_w = B c_m/(J_w+B)\) (same
   as the flux boundary condition).
-- \(c_b\): mid-plane (\(z = \tfrac{1}{2}(z_{\min}+z_{\max})\), equal to \(z = 0\) on the campaign channel-centred mesh) **mass-weighted** (mixing-cup) salt
+- \(c_b\): mid-plane (\(z = \tfrac{1}{2}(z_{\min}+z_{\max})\), equal to \(z = 0\) on the campaign channel-centred mesh) **mass-weighted** salt
   concentration [mol/m³], clipped in \(x\) to each evaluation-window unit cell
   (not the whole domain). Implemented as Fluent `surface-massavg` on an
   x-range iso-clip of the mid-plane iso-surface. Do not use
@@ -121,6 +121,14 @@ area-weighted.
   conserved across buffer regions with no membrane source (see campaign
   probe STEP F / `_tmp_cell_profile.py`).
 - \(c_0\): inlet reference concentration (`c_inlet_ref`, 597.8268309 mol/m³).
+  This is not an x-normal mixing cup: on a z-normal plane the
+  `surface-massavg` weight is the through-plane mass flux \(|\rho w|\), and
+  cells are then aggregated by mid-plane area. The extract guard compares
+  each cell's value with the mean of the x-normal boundary cups (tolerance
+  0.5 %); host checks on campaign_v3 `u0p2_p6M` found the mid-plane value
+  0.01–0.2 % below the cups, always the same sign. The definition is kept
+  and reported as the mid-plane bulk concentration
+  (`docs/PAPER_METHODS_DOSSIER.md` §6.2).
 
 ## Metric reliability (grid exploration)
 
@@ -361,7 +369,7 @@ definitions below are unchanged. `cp_canon_window_avg` is still written.
 **Live canon (2026-11-02).** Benchmark comparison uses
 `cp_canon_live_window_avg`. On the evaluation-window membrane clip,
 each face keeps its own \(c_p = B c_m / (J_w + B)\) and the window
-mixing-cup \(c_b\):
+mid-plane bulk \(c_b\):
 
 \[
 M = (c_m - c_p) / (c_b - c_p)
@@ -532,7 +540,7 @@ Sinusoidal have \(k = 1.000\).
 
 From the rescale definition already in this file, \(k = 1\) means
 \(c_b = c_0\) at the printed precision. On those two classes the
-mid-plane mixing-cup does not rise above the inlet value.
+mid-plane bulk value does not rise above the inlet value.
 
 **Hypothesis (unverified):** \(c_b\) rises only when mixing carries
 rejected salt to the channel core, so \(c_b\) reflects mixing. The

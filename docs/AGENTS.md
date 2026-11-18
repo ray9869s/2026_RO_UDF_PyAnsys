@@ -43,8 +43,10 @@ channel mid-plane is \(z = 0\) — **not** \(z = h/2\). Sampling the mid-plane
 at \(h/2\) hits the upper membrane. Derive it from measured mesh bounds where
 possible; see `docs/metrics_conventions.md`.
 
-**CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with mid-plane
-mixing-cup \(c_b\) (`surface-massavg`) on the evaluation window. See
+**CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with the
+mid-plane bulk \(c_b\) (`surface-massavg` on a z-normal mid-plane clip, not
+an x-normal mixing cup; host check: 0.01–0.2 % below the cups, same sign)
+on the evaluation window. See
 `docs/metrics_conventions.md` (coordinate origin, metric reliability,
 `compute_cp_spread` default). The 2026-10-08 meeting adopts the
 concentration-statistics average and `CP_q999` for comparison. The

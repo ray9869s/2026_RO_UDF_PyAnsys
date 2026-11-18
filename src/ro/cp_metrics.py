@@ -395,7 +395,13 @@ def ratio_of_averages_cp_bae_approx(
     area_m2: float,
     c0_mol_per_m3: float,
 ) -> float:
-    """Wrong order: average(cm) and average(cp_perm) then divide."""
+    """Mean-first order: average cm and cp_perm over the area, then divide once.
+
+    This is the order the 2026-11-18 benchmark uses
+    (``cp_meanfirst_live_window_avg``), there against the window ``c_b`` on
+    live faces. Here the reference is ``c0`` (the UDF's udm-9 basis), so it
+    is a diagnostic, not the benchmark.
+    """
     if area_m2 <= 0.0:
         raise ValueError("area_m2 must be positive.")
     cm_avg = cm_area_sum / area_m2
@@ -413,7 +419,12 @@ def average_of_ratios_cp_bae_approx(
     cp_udm9_area_sum: float,
     area_m2: float,
 ) -> float:
-    """Correct order: UDM-9 is per-face CP already area-weighted into cells."""
+    """Average of per-face ratios: area mean of UDM-9 (per-face CP vs ``c0``).
+
+    Per-face ratios are singular where ``c_p`` approaches ``c0`` and are 0
+    on dead-zone faces, so this order is not the benchmark (see
+    ``ro.cp_concentration_stats.meanfirst_cp_metrics``).
+    """
     if area_m2 <= 0.0:
         raise ValueError("area_m2 must be positive.")
     return cp_udm9_area_sum / area_m2

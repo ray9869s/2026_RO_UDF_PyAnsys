@@ -59,8 +59,13 @@ area fraction is exactly zero. Otherwise the saved aggregates generally
 lack `cp_ref_area_live` and require field re-extraction.
 
 `scripts/campaign_v3_reextract.py --emit-queue ...` selects observed
-campaign `u0p2_p6M` PASS finals and preserves old reports with the existing
-`reports_prev_<UTC>` convention. The host checks time a full re-extract of
+campaign `u0p2_p6M` finals that are PASS or whose `post/reports` is not
+bound to the current final (§6.8), and preserves old reports with the
+existing `reports_prev_<UTC>` convention. `--snapshot S_a072_l3465:2000
+--snapshot S_a072_l3465:2500` re-extracts the saved `*_iter_<N>` pairs
+into `post/reports_iter<N>_meanfirst/` so the mean-first change over the
+drift interval can be measured; those extracts never touch `post/reports`
+or the manifest gate. The host checks time a full re-extract of
 `P_p80_h15/u0p2_p6M`. A targeted partial-extract/merge path is not included:
 it would need separate validation of window-bulk guards and preservation
 of existing report/gate fields. No new host timing is claimed before that
@@ -276,15 +281,16 @@ Jw    = 0.5 * (S - B + sqrt(max(disc, 0)))
 Jw    = max(Jw, 0)
 ```
 
-### 3.2 Permeate concentration
+### 3.2 Salt flux and permeate concentration
 
 ```
-cp = B * cm * Jw / (Jw + B)     when Jw + B > 1.0e-20
-cp = 0                          otherwise
-Js = max(cp, 0)                 (molar salt flux; cp here is Js)
+Js = B * cm * Jw / (Jw + B)     when Jw + B > 1.0e-20   [mol/m2/s]
+Js = 0                          otherwise
+Js = max(Js, 0)
+cp = Js / Jw = B * cm / (Jw + B)                        [mol/m3]
 ```
 
-(`udfs/260822_RO_UDF.c:661–668`, `:689–696`). The stored diagnostic uses the same quotient as `cp_perm = B * cm / (Jw + B)` (`:369–384`).
+The UDF computes the molar salt flux `Js` (`Js_phys`, `udfs/260822_RO_UDF.c:661–668`, `:689–696`); the expression `B*cm*Jw/(Jw+B)` is `Js`, not the permeate concentration. The permeate concentration is `cp = Js/Jw = B*cm/(Jw+B)`, which is the quotient the stored diagnostic and every Python CP definition use (`:369–384`; `src/ro/cp_concentration_stats.py`).
 
 ### 3.3 Wall-concentration reconstruction
 
@@ -355,7 +361,9 @@ Product version string `25.1.0`, 50 processors (`configs/run_config.py:94–95`)
 | QoI reports | `lmh_udm_avg` and `pressure_drop_spacer` | `configs/run_config.py:332`; `scripts/solver_code_260616.py:3105` |
 | QoI window | relative, criterion 1e-3, 100 previous values, ignore the first 200 | `configs/run_config.py:320–335` |
 
-The live stop is LMH and spacer pressure drop and the residual checks together (`configs/run_config.py:317–320`). The post-hoc gate in §6 is separate and can fail a run that stopped on this criterion.
+The live stop is LMH and spacer pressure drop and the residual checks together (`configs/run_config.py:317–320`). The post-hoc gate in §7 is separate and can fail a run that stopped on this criterion.
+
+**Campaign v3 stop (`--convergence-profile campaign_v3`).** The table above is the production stop. Campaign v3 solves replace it with `campaign_v3_stop_overrides` (`src/ro/convergence_stop.py`; `configs/run_config.py` `campaign_v3_qoi_*`): relative-change criterion 1e-4 over 100 previous values on `lmh_udm_avg`, `pressure_drop_spacer` and a CP monitor; the window starts after the flux ramp (ignore ≥ 150 iterations); residual target 1e-7; cap 2000 iterations for every family. The CP monitor is `cp_live` (window-live faces, `c_p < min(c_0, c_b)`) by default, or `cp_window` (all window faces, dead zone included) for solves run with `--no-cp-live` (main3). `--continue-iterations` extends a finished final with the residual check off and absolute chunk targets; only the QoI stop and the cap end a continue.
 
 Energy on/off, the pressure–velocity scheme, the convective schemes, and the under-relaxation factors are whatever is in `template_RO_setup.cas.h5` (`configs/run_config.py:236`). This repository does not record those template values.
 
@@ -443,9 +451,20 @@ Until 2026-10-09, `src/ro/domain_layout.py` treated lead = 3 as a D2450 cell-cou
 
 ### 6.2 Bulk concentration `c_b`
 
-Channel mid-plane `z = 0.5 * (z_min + z_max)` from the fluid bounds (`src/ro/fluent_report_helpers.py:196–201`). Per evaluation cell, an x-range clip of that plane, surface-massavg of salt (`src/ro/fluent_report_helpers.py:1632–1648`). Mass-weighted. Each cell’s ratios use that cell’s `c_b`; the window ratios use the window mid-plane `c_b` (`src/ro/cp_concentration_stats.py:248–251`).
+Channel mid-plane `z = 0.5 * (z_min + z_max)` from the fluid bounds (`src/ro/fluent_report_helpers.py:196–201`). Per evaluation cell, an x-range clip of that plane, surface-massavg of salt (`src/ro/fluent_report_helpers.py:1632–1648`), times `rho / M_NaCl`. The window value `c_b_window_mol_m3` aggregates the per-cell values by mid-plane area. Each cell’s ratios use that cell’s `c_b`; the window ratios use the window `c_b` (`src/ro/cp_concentration_stats.py:248–251`).
 
-A guard compares each cell’s mid-plane `c_b` with the mean of the mixing-cup concentrations on the two flanking x-normal cell boundaries. Relative tolerance 0.005 (`src/ro/fluent_report_helpers.py:286–299`).
+**It is a mid-plane bulk concentration, not an x-normal mixing cup.** On a z-normal plane Fluent’s `surface-massavg` weights by the through-plane mass flux `|rho w|`; a mixing cup weights an x-normal cross-section by the streamwise flux `rho u`. The paper reports it as the evaluation-window mid-plane bulk concentration. The definition is kept unchanged (decision 2026-11-18).
+
+A guard compares each cell’s mid-plane `c_b` with the mean of the x-normal mixing cups on the two flanking cell boundaries. Relative tolerance 0.005; a larger difference aborts the extract (`src/ro/fluent_report_helpers.py:392`, `:395–445`).
+
+**Error-table method.** For each leaf and evaluation cell `n`, read from `post/reports/summary_metrics_wide.csv`:
+
+```
+cup_n   = 0.5 * (Y_{n-1} + Y_n) * rho / M_NaCl          (Y_k = pp_salt_mass_fraction_unit_cell_boundary_k_massavg)
+err_n   = (pp_c_b_midplane_cell_n_mol_m3 - cup_n) / cup_n
+```
+
+with `rho = 998.2 kg/m3` and `M_NaCl = 0.05844 kg/mol`. Tabulate `min`, `max` and the sign of `err_n` per leaf, and the window-level `(c_b_window_mol_m3 - mean_n cup_n) / mean_n cup_n`. Host result on campaign_v3 `u0p2_p6M` (operator-reported read-only check, 2026-11-18): every `err_n` lies between −0.01 % and −0.2 %, always negative. A relative `c_b` error `ε` changes the CP excess `CP − 1` by about `−CP · ε · c_b/(c_b − c_p) / (CP − 1)`: with `ε = −0.2 %`, `c_p ≪ c_b` and CP = 1.2 that is +1.2 % of the excess (a low `c_b` raises CP). The guard bounds `|ε|` at 0.5 %.
 
 ### 6.3 LMH, both bases
 
@@ -490,6 +509,8 @@ pressure_drop_spacer_per_m = pressure_drop_spacer / active_length        [Pa/m]
 
 `active_length = n_active * cell_length_x` (`src/ro/fluent_report_helpers.py:461–469`; divide at `scripts/pyfluent_report_extract.py:2241–2243`). This is the spacer span, not the full inlet-to-outlet domain. `pressure_drop_per_m` (full domain) is a different column (`scripts/pyfluent_report_extract.py:2233`).
 
+The active span includes the lead-excluded developing cells and the entry loss, while CP and LMH use the evaluation window. `pp_pressure_drop_periodic_per_m` is the evaluation-window value: the sum of per-cell plane-to-plane drops over the window cells divided by their length (`src/ro/fluent_report_helpers.py:3330–3363`). Campaign v3 benchmark tables (`leaf_metrics`, `--compare`, `seminar_cases.csv`) report both; `pressure_drop_spacer_per_m` remains the default dP/L until the paper chooses (**OPEN**).
+
 ### 6.5 Concentration-statistics CP (paper definition)
 
 Per face, `cp = B * cm / (Jw + B)` (`src/ro/cp_concentration_stats.py:117–129`). `B` is parsed from `udfs/260822_RO_UDF.c:194`.
@@ -526,6 +547,27 @@ Jw = B * (cm / c_0 - 1)
 
 (`docs/metrics_conventions.md:275–278`). Near contact lines `Jw` falls to about `2B` and the stored value diverges (`docs/metrics_conventions.md:264–268`). The paper averages and `CP_q999` do not use this per-face quotient. They use one reference `cp` in the denominator `c_b - cp_ref`, and they abort when that denominator is not positive (§6.5).
 
+### 6.7 Dead zone and agreement of CP definitions (host evidence)
+
+Dead faces are membrane faces with `c_p ≥ min(c_0, c_b)`: there `Jw ≲ B` and `c_m` sits near the osmotic limit. They carry `udm-9 = 0`. The definitions treat them differently:
+
+| Column | Dead faces | Effect when the dead fraction is not zero |
+| --- | --- | --- |
+| `cp_meanfirst_live_window_avg` (benchmark) | excluded | none by construction |
+| `cp_canon_live_window_avg` (per-face live) | excluded | per-face ratios can jump when a face crosses the mask (S_a072 −1.37 %) |
+| `cpc_window_avg_area` = `cp_meanfirst_window_avg` | included in both means | `c_m` near the osmotic limit raises the numerator |
+| `cpc_window_avg_flux` | included in the `c_m` area mean, excluded from the flux-weighted `c_p` | numerator inflated |
+| `cp_q999_window_*` | included in the quantile | saturates at dead-zone `c_m` once the dead area exceeds 0.1 % |
+| `cp_canon_window_avg` | `udm-9 = 0` enters the mean | deflated by about `(1 − f_dead)` |
+
+Host evidence (operator-reported read-only checks on campaign_v3 `u0p2_p6M`, 2026-11-18): Pillar, ML and Empty have zero dead area, and all CP definitions agree to 4 decimals there. Only the remaining families (Diamond, Sinusoidal) can separate the definitions; the S_a072_l3465 per-face drift is the observed case, and the live mean-first column is the benchmark for all families. `campaign_reextract_v2` has negligible dead area (`cpc_window_avg_area` equals the canon column), so v2 is not re-extracted: `--compare` uses its `cpc_window_avg_area` as the v2 mean-first value (`V2_CP_METRIC`, labelled `v2_cp_metric`).
+
+### 6.8 Reporting provenance
+
+A reported row uses `post/reports` only when its `extract_source.json` final case/data hashes equal the run manifest's `final_case_sha256`/`final_data_sha256` (`src/ro/report_binding.py`). A continued leaf keeps its pre-continue `post/reports` next to a newer final; that row is blank with the reason in `report_binding` until it is re-extracted. Extracts are staged in `post/<dir>.tmp_<id>` and swapped in only after every gate passed (`src/ro/atomic_reports.py`).
+
+Monitor-change columns (recorded, not gating; `src/ro/monitor_change.py`): `monitor_change_last100_*` is the end-to-end relative change `|m(L) − m(L−100)| / |m(L)|`, `monitor_trend_last100_*` the least-squares slope over the last 100 iterations times 100 relative to the mean, on `lmh_udm_avg`, `pressure_drop_spacer` and the window-live `cp_live`. The earlier UG 37.18 maximum deviation is kept as `*_legacy`. Host check: the `.out` histories have no duplicate or non-monotonic rows and 15–20 significant digits, yet 101 distinct values in the last 100 iterations; snapshots at 2000 and 4020 agree to 6 digits. The legacy ~1e-4 was the oscillation amplitude, not drift.
+
 ---
 
 ## 7. Convergence gate
@@ -534,7 +576,7 @@ Jw = B * (cm / c_0 - 1)
 
 | Check | Threshold | Unit | On failure | Source |
 | --- | --- | --- | --- | --- |
-| `abs(lmh_mass_balance - lmh_udm_avg) / abs(lmh_udm_avg)` | 1e-3 | — | FAIL | `src/ro/convergence_quality.py:30` |
+| `abs(lmh_mass_balance - lmh_udm_avg) / abs(lmh_mass_balance)` (`lmh_relative_difference`) | 1e-3 | — | FAIL | `src/ro/convergence_quality.py:30`; ratio `scripts/pyfluent_report_extract.py:2741–2745` |
 | Mass-balance relative error (boundary permeate vs `abs(volint total mass source)`) | 1e-3 | — | FAIL | `src/ro/convergence_quality.py:31`; definition `scripts/pyfluent_report_extract.py:2221–2227` |
 | Final continuity residual | 1e-4 | — | FAIL | `src/ro/convergence_quality.py:32` |
 | Pressure-drop relative spread over the evaluation window | none | — | WARNING only | `src/ro/convergence_quality.py:7–14` |
