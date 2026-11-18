@@ -22,7 +22,7 @@ import math
 import sys
 from pathlib import Path
 
-from ro.report_binding import report_binding_reason
+from ro.report_binding import BROKEN_MARKER, report_binding_reason
 from ro.solver_common import (
     FINAL_CASE_SHA256_FIELD,
     FINAL_DATA_SHA256_FIELD,
@@ -88,6 +88,8 @@ def require_reextract_final(leaf, root, *, verify_hashes=True):
     """
     leaf, root = Path(leaf).resolve(), Path(root).resolve()
     family, geo, mesh, run = _leaf_identity(leaf, root)
+    if (leaf / BROKEN_MARKER).exists():
+        raise ValueError(f"Leaf has a {BROKEN_MARKER} marker; restore it by hand first: {leaf}")
     manifest = json.loads((leaf / "manifest.json").read_text(encoding="utf-8"))
     stale = report_binding_reason(leaf)
     if manifest.get("convergence_quality") != "PASS" and stale is None:

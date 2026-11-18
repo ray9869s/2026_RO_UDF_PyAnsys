@@ -18,6 +18,8 @@ from ro.extract_skip import EXTRACT_SOURCE_FILENAME
 from ro.solver_common import FINAL_CASE_SHA256_FIELD, FINAL_DATA_SHA256_FIELD
 
 REPORT_BOUND = "bound"
+# Written by scripts/host/pending_checks.py when a smoke restore fails.
+BROKEN_MARKER = "BROKEN"
 
 
 def _read_json(path):
@@ -35,6 +37,8 @@ def _short(value):
 def report_binding_reason(run_directory, reports_dirname="reports"):
     """None when the reports describe the current final; else why not."""
     run_directory = Path(run_directory)
+    if (run_directory / BROKEN_MARKER).exists():
+        return f"leaf has a {BROKEN_MARKER} marker (failed restore)"
     reports = run_directory / "post" / reports_dirname
     if not (reports / "summary_metrics_wide.csv").is_file():
         return f"post/{reports_dirname}/summary_metrics_wide.csv is missing"

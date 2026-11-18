@@ -83,6 +83,7 @@ import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
 import mfbo.solve_campaign_case as campaign
+from ro.atomic_reports import utc_stamp
 from ro.bulk_size import bulk_max_size_suffix
 from ro.aspect_ceiling import aspect_ceiling_suffix
 from ro.campaign_matrix import format_production_mesh_id
@@ -1388,6 +1389,16 @@ def _json_object(flag, text):
     return value
 
 
+def move_leaf_aside(run_directory, *, now=None):
+    """Rename a leaf to ``<name>.prev_<UTC>``. Never deletes; refuses a clash."""
+    run_directory = Path(run_directory)
+    aside = run_directory.with_name(f"{run_directory.name}.prev_{utc_stamp(now)}")
+    if aside.exists():
+        raise FileExistsError(f"Refusing to replace moved-aside leaf: {aside}")
+    run_directory.rename(aside)
+    return aside
+
+
 def report_dirname_for_iteration(iteration):
     """Extract directory name ``reports_iter<N>`` under ``post/``."""
     if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 1:
@@ -1805,11 +1816,11 @@ def main(argv=None):
                     "them. Use --continue-iterations to extend this leaf."
                 )
             if run_directory.is_dir():
+                aside = move_leaf_aside(run_directory)
                 print(
-                    "Resume fallback: removing incomplete run leaf "
-                    f"{run_directory}"
+                    "Resume fallback: incomplete run leaf moved aside to "
+                    f"{aside}"
                 )
-                shutil.rmtree(run_directory)
             solver_overrides["resume_fallback"] = "fresh"
             print(f"resume_fallback: fresh ({run_directory})")
         else:

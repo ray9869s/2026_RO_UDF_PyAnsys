@@ -117,6 +117,27 @@ def move_absent(source, destination):
     source.rename(destination)
 
 
+BROKEN_MARKER = "BROKEN"
+
+
+def write_broken_markers(leaf, payload):
+    """``<leaf>.BROKEN.json`` beside the leaf, and ``<leaf>/BROKEN`` inside it.
+
+    The inside marker makes reporting refuse whatever now sits at the leaf
+    path (``ro.report_binding``). Returns the marker paths written.
+    """
+    text = json.dumps(payload, indent=2) + "\n"
+    written = []
+    beside = leaf.with_name(f"{leaf.name}.{BROKEN_MARKER}.json")
+    beside.write_text(text, encoding="utf-8")
+    written.append(str(beside))
+    if leaf.is_dir() and not leaf.is_symlink():
+        inside = leaf / BROKEN_MARKER
+        inside.write_text(text, encoding="utf-8")
+        written.append(str(inside))
+    return written
+
+
 def require_final(leaf, geo, case):
     for extension in ("cas", "dat"):
         require_file(leaf / f"{geo}_{case}_final.{extension}.h5")
@@ -231,13 +252,35 @@ class Checks:
                 raise RuntimeError(f"Smoke command exited {code}")
         finally:
             if moved or not had_original:
-                # Preserve all generated smoke artifacts, even on validation failure.
-                if leaf.exists():
-                    move_absent(leaf, smoke_archive)
-                    details["smoke_archive"] = str(smoke_archive)
-                if moved:
+                self.restore_after_smoke(leaf, original, smoke_archive, moved, details)
+
+    def restore_after_smoke(self, leaf, original, smoke_archive, moved, details):
+        """Archive the smoke, then put the original back; never delete.
+
+        Each rename is tried even when the other fails. A failed restore
+        leaves a BROKEN marker so no report reads the smoke as the leaf.
+        """
+        errors = []
+        try:
+            # Preserve all generated smoke artifacts, even on validation failure.
+            if leaf.exists():
+                move_absent(leaf, smoke_archive)
+                details["smoke_archive"] = str(smoke_archive)
+        except Exception as exc:  # noqa: BLE001 - recorded, then re-raised below
+            errors.append(f"smoke archive: {type(exc).__name__}: {exc}")
+        finally:
+            if moved:
+                try:
                     move_absent(original, leaf)
                     details["original_restored"] = True
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"restore original: {type(exc).__name__}: {exc}")
+        if errors:
+            details["original_restored"] = details.get("original_restored", False)
+            details["broken_markers"] = write_broken_markers(
+                leaf, {"leaf": str(leaf), "original": str(original),
+                       "smoke_archive": str(smoke_archive), "errors": errors})
+            raise RuntimeError("Smoke restore failed: " + "; ".join(errors))
 
     def mesh(self, details, geo, *, face=None, ar=None):
         mesh_id = BASE_MESH + ("_ar250" if ar else "")

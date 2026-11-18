@@ -104,6 +104,46 @@ def test_smoke_restores_original_and_preserves_new_leaf_on_failure(monkeypatch, 
     assert not (original / "solver_log_synthetic.txt").exists()
 
 
+def test_failed_restore_still_archives_smoke_and_writes_broken_marker(monkeypatch, tmp_path):
+    checks = host.Checks(tmp_path)
+    leaf = plant_final(tmp_path)
+    original = leaf.with_name(leaf.name + ".prev_X")
+    smoke = leaf.with_name(leaf.name + ".smoke.prev_X")
+    leaf.rename(original)
+    plant_smoke(leaf)
+    real_move = host.move_absent
+
+    def first_move_fails(source, destination):
+        if destination == smoke:
+            raise PermissionError("synthetic open handle in the smoke leaf")
+        return real_move(source, destination)
+
+    monkeypatch.setattr(host, "move_absent", first_move_fails)
+    details = {}
+    with pytest.raises(RuntimeError, match="Smoke restore failed"):
+        checks.restore_after_smoke(leaf, original, smoke, True, details)
+    # The smoke is still at the leaf path, the original is untouched, and
+    # reporting refuses the leaf.
+    assert original.is_dir() and leaf.is_dir()
+    assert (leaf / host.BROKEN_MARKER).is_file()
+    assert leaf.with_name(leaf.name + ".BROKEN.json").is_file()
+    assert details["original_restored"] is False
+    from ro.report_binding import report_binding_reason
+    assert "BROKEN" in report_binding_reason(leaf)
+    with pytest.raises(ValueError, match="BROKEN"):
+        emitter.require_reextract_final(leaf, tmp_path, verify_hashes=False)
+
+
+def test_restore_runs_even_when_smoke_archive_fails_first(monkeypatch, tmp_path):
+    checks = host.Checks(tmp_path)
+    leaf = plant_final(tmp_path)
+    original = leaf.with_name(leaf.name + ".prev_X")
+    leaf.rename(original)  # smoke never created the leaf
+    details = {}
+    checks.restore_after_smoke(leaf, original, leaf.with_name("s"), True, details)
+    assert details["original_restored"] is True and leaf.is_dir()
+
+
 def test_failed_initial_move_aborts_smoke_before_any_command(monkeypatch, tmp_path):
     checks = host.Checks(tmp_path)
     checks.attempt.mkdir(parents=True)

@@ -896,6 +896,29 @@ def test_resume_without_a_checkpoint_pair_starts_fresh(monkeypatch, tmp_path):
     assert seen["solver_overrides"]["resume_fallback"] == "fresh"
     assert "checkpoint_resume" not in seen["solver_overrides"]
     assert not (run / "D2450_a45_u0p2_p6M_setup.cas.h5").exists()
+    # Moved aside, never deleted (AGENTS.md hard rule).
+    aside = list(run.parent.glob("u0p2_p6M.prev_*"))
+    assert len(aside) == 1
+    assert (aside[0] / "D2450_a45_u0p2_p6M_setup.cas.h5").read_bytes() == b"setup"
+
+
+def test_move_leaf_aside_refuses_existing_target(tmp_path):
+    from datetime import datetime, timezone
+
+    moment = datetime(2026, 11, 18, 1, 2, 3, tzinfo=timezone.utc)
+    leaf = tmp_path / "u0p2_p6M"
+    leaf.mkdir()
+    aside = driver.move_leaf_aside(leaf, now=moment)
+    assert aside.name == "u0p2_p6M.prev_20261118T010203Z" and aside.is_dir()
+    leaf.mkdir()
+    with pytest.raises(FileExistsError):
+        driver.move_leaf_aside(leaf, now=moment)
+    assert leaf.is_dir()
+
+
+def test_resume_fallback_source_never_deletes():
+    source = (SCRIPTS_DIR / "mfbo" / "mesh_study_case.py").read_text(encoding="utf-8")
+    assert "shutil.rmtree" not in source
 
 
 def test_resume_without_a_run_leaf_starts_fresh(monkeypatch, tmp_path):
