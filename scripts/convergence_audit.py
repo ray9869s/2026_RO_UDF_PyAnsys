@@ -1,9 +1,13 @@
 """Audit PASS-leaf convergence from monitor report files.
 
 For each run whose manifest ``convergence_quality`` is PASS, report the
-stop iteration, the final continuity and nacl residuals, and the UG 37.18
-relative change of LMH, spacer pressure drop, and CP over the last 20 and
-last 100 iterations.
+stop iteration, the final continuity and nacl residuals, and the change
+of LMH, spacer pressure drop, and CP over the last 20 and last 100
+iterations: the end-to-end relative change ``monitor_change_last<N>_*``,
+the fitted-slope trend ``monitor_trend_last<N>_*``, and the previous UG
+37.18 maximum deviation as ``monitor_change_last<N>_*_legacy``
+(definitions in ``ro.monitor_change``). The new CP columns read the
+window-live ``cp_live.out``; the legacy CP column keeps ``cp_window``.
 
 Monitor history is read from the report files
 (``lmh_udm_avg.out``, ``pressure_drop_spacer.out``, ``cp_window.out`` or
@@ -27,12 +31,15 @@ from pathlib import Path
 
 from ro.monitor_change import (
     CP_MONITOR_FULL_MEMBRANE,
+    CP_MONITOR_LIVE,
     CP_MONITOR_WINDOW,
     DP_REPORT_FILE,
     LMH_REPORT_FILE,
     cp_report_file_name,
+    end_to_end_relative_change,
     read_report_series,
     relative_change_last_iterations,
+    trend_relative_change,
 )
 from ro.residual_transcript import (
     _clock_and_remaining_from_right,
@@ -68,6 +75,17 @@ _COLUMNS = (
     "monitor_change_last100_dp",
     "monitor_change_last20_cp",
     "monitor_change_last100_cp",
+    *(
+        f"monitor_trend_last{n}_{label}"
+        for label in ("lmh", "dp", "cp")
+        for n in (20, 100)
+    ),
+    *(
+        f"monitor_change_last{n}_{label}_legacy"
+        for label in ("lmh", "dp", "cp")
+        for n in (20, 100)
+    ),
+    "cp_live_source",
     "lmh_source",
     "dp_source",
     "cp_source",
@@ -265,10 +283,20 @@ def audit_leaf(case_dir: Path, manifest: dict) -> dict:
         "cp_source": cp_source,
         "residual_source": "transcript" if rows else "missing",
     }
-    for label, series in (("lmh", lmh), ("dp", dp), ("cp", cp)):
+    live, live_source = _monitor_series(
+        case_dir, cp_report_file_name(CP_MONITOR_LIVE), CP_MONITOR_LIVE, rows
+    )
+    record["cp_live_source"] = live_source
+    for label, series, legacy in (("lmh", lmh, lmh), ("dp", dp, dp), ("cp", live, cp)):
         for n in (20, 100):
             record[f"monitor_change_last{n}_{label}"] = _fmt(
-                relative_change_last_iterations(series, n)
+                end_to_end_relative_change(series, n)
+            )
+            record[f"monitor_trend_last{n}_{label}"] = _fmt(
+                trend_relative_change(series, n)
+            )
+            record[f"monitor_change_last{n}_{label}_legacy"] = _fmt(
+                relative_change_last_iterations(legacy, n)
             )
     return record
 

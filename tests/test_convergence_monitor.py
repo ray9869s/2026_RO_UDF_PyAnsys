@@ -24,8 +24,12 @@ from ro.monitor_change import (
     cp_monitor_definition,
     fluent_expression_report_is_invalid,
     format_expression_error_table,
+    MONITOR_CHANGE_LAST100_LEGACY,
+    MONITOR_TREND_LAST100,
+    end_to_end_relative_change,
     last100_monitor_changes,
     relative_change_last_iterations,
+    trend_relative_change,
 )
 from ro.solver_common import fluent_report_relative_change
 
@@ -78,16 +82,50 @@ def test_last100_reads_report_files_and_prefers_the_window_cp_file(tmp_path):
         encoding="utf-8",
     )
     changes = last100_monitor_changes(tmp_path)
-    assert tuple(changes) == MONITOR_CHANGE_LAST100
+    assert set(MONITOR_CHANGE_LAST100) <= set(changes)
+    assert set(MONITOR_TREND_LAST100) <= set(changes)
+    assert set(MONITOR_CHANGE_LAST100_LEGACY) <= set(changes)
     assert changes["monitor_change_last100_lmh"] == pytest.approx(
         abs(24.001 - 20.0) / 24.001
     )
-    assert changes["monitor_change_last100_dp"] == pytest.approx(0.0)
-    assert changes["monitor_change_last100_cp"] == pytest.approx(0.0)
+    assert changes["monitor_change_last100_lmh_legacy"] == pytest.approx(
+        abs(24.001 - 20.0) / 24.001
+    )
+    assert changes["monitor_change_last100_dp"] is None  # no sample at <= 150
+    assert changes["monitor_change_last100_dp_legacy"] == pytest.approx(0.0)
+    # New CP columns read cp_live.out only; cp_window is legacy.
+    assert changes["monitor_change_last100_cp"] is None
+    assert changes["monitor_change_last100_cp_legacy"] == pytest.approx(0.0)
 
     (tmp_path / "cp_window.out").unlink()
     fallback = last100_monitor_changes(tmp_path)
-    assert fallback["monitor_change_last100_cp"] == pytest.approx(abs(9.0 - 1.0) / 9.0)
+    assert fallback["monitor_change_last100_cp_legacy"] == pytest.approx(abs(9.0 - 1.0) / 9.0)
+    assert fallback["monitor_change_last100_cp"] is None
+
+
+def test_oscillation_reads_as_drift_not_amplitude(tmp_path):
+    """Host evidence: 101 distinct values but no drift 2000 -> 4020."""
+    wobble = _tail(3900, 4020, lambda i: 1.2 * (1 + 1e-4 * (-1) ** i))
+    (tmp_path / "cp_live.out").write_text(_report(wobble), encoding="utf-8")
+    (tmp_path / "cp_window.out").write_text(_report(wobble), encoding="utf-8")
+    changes = last100_monitor_changes(tmp_path)
+    assert changes["monitor_change_last100_cp_legacy"] == pytest.approx(2e-4, rel=1e-3)
+    assert changes["monitor_change_last100_cp"] == pytest.approx(0.0, abs=1e-12)
+    assert changes["monitor_trend_last100_cp"] < 1e-5
+    assert changes["monitor_change_last100_cp_live"] == pytest.approx(2e-4, rel=1e-3)
+
+
+def test_drift_is_seen_by_change_and_trend():
+    drift = _tail(1900, 2000, lambda i: 10.0 + 1e-3 * (i - 1900))
+    assert end_to_end_relative_change(drift, 100) == pytest.approx(0.1 / 10.1)
+    assert trend_relative_change(drift, 100) == pytest.approx(0.1 / 10.05)
+
+
+def test_series_are_sorted_and_last_row_wins():
+    appended = [(1950, 5.0), (2000, 5.0), (1900, 4.0), (1950, 5.0), (2000, 5.5)]
+    assert end_to_end_relative_change(appended, 100) == pytest.approx(1.5 / 5.5)
+    assert end_to_end_relative_change([(5, 1.0)], 100) is None
+    assert trend_relative_change([(1, 1.0), (2, 2.0)], 100) is None
 
 
 def test_campaign_v3_stop_bumps_the_ignore_prefix_past_the_ramp():
@@ -259,15 +297,17 @@ def test_audit_groups_report_files_and_scientific_transcript_fallback(tmp_path, 
     assert by_run["capped"]["stop_iteration"] == "2000"
     assert by_run["capped"]["nacl_final"] == "4e-08"
     assert by_run["capped"]["cp_source"] == "report_file"
-    assert float(by_run["capped"]["monitor_change_last100_cp"]) == pytest.approx(0.0)
     assert by_run["transcript_only"]["group"] == "stopped_early"
     assert by_run["transcript_only"]["stop_iteration"] == "30"
     assert by_run["transcript_only"]["continuity_final"] == "2.5e-07"
     assert by_run["transcript_only"]["lmh_source"] == "transcript"
     assert by_run["transcript_only"]["residual_source"] == "transcript"
-    assert float(by_run["transcript_only"]["monitor_change_last100_lmh"]) == pytest.approx(
+    assert by_run["transcript_only"]["monitor_change_last100_lmh"] == ""
+    assert float(by_run["transcript_only"]["monitor_change_last100_lmh_legacy"]) == pytest.approx(
         abs(11.0 - 10.0) / 11.0
     )
+    assert float(by_run["capped"]["monitor_change_last100_cp_legacy"]) == pytest.approx(0.0)
+    assert by_run["capped"]["monitor_change_last100_cp"] == ""  # no cp_live.out
 
     output = tmp_path / "out" / "convergence_audit.csv"
     assert audit.main([str(tmp_path), "-o", str(output)]) == 0

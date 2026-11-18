@@ -1,15 +1,35 @@
-"""Solve-time CP monitor definition and report-file relative changes.
+"""Solve-time CP monitor definition and report-file monitor changes.
 
 The CP monitor is the area-weighted mean of film-corrected wall
 concentration (``udm-7``, mol/m3) divided by the window bulk
-concentration. ``c_b`` is the mid-plane mixing-cup used at extraction:
-``surface-massavg`` of the salt mass fraction on the evaluation-window
-mid-plane, times density over molecular weight. Mixture density is
-uniform, so one window clip matches the area-weighted aggregate of the
-per-cell mixing cups.
+concentration. ``c_b`` is the evaluation-window mid-plane bulk value:
+Fluent ``surface-massavg`` of the salt mass fraction on a z-normal
+mid-plane clip, times density over molecular weight. It is not an
+x-normal mixing cup. On a z-normal plane the massavg weight is the
+through-plane mass flux, and the extract aggregates per-cell values by
+area, so one solve-time window clip is close to, but not identical to,
+the extracted ``c_b_window_mol_m3``. Host checks put the mid-plane value
+0.01-0.2 % below the x-normal cups, always the same sign.
 
 Report files are the source of record. Fluent's transcript columns use a
 fixed print width of about three decimal places.
+
+Monitor-change columns (recorded only; they do not set PASS/FAIL):
+
+- ``monitor_change_last<N>_<q>``: end-to-end relative change
+  ``|m(L) - m(L-N)| / |m(L)|`` between the last iteration ``L`` and the
+  last sample at or before ``L-N``. A converged monitor that oscillates
+  reads its drift, not its oscillation amplitude.
+- ``monitor_trend_last<N>_<q>``: least-squares slope over the samples in
+  ``[L-N, L]`` times ``N``, relative to their mean.
+- ``monitor_change_last<N>_<q>_legacy``: the previous statistic, the
+  UG 37.18 maximum deviation ``max|m(L)-m(k)|/|m(L)|`` over the window.
+
+``q`` is ``lmh`` (``lmh_udm_avg.out``), ``dp`` (``pressure_drop_spacer.out``)
+and ``cp``. The new ``cp`` columns read the window-live ``cp_live.out``
+(dead-zone faces excluded) and are blank without it; ``cp_window``
+includes the dead zone and is only used for the legacy column. Series are
+sorted by iteration and the last value per iteration wins.
 """
 
 from __future__ import annotations
@@ -46,6 +66,12 @@ MONITOR_CHANGE_LAST100 = (
     "monitor_change_last100_dp",
     "monitor_change_last100_cp",
 )
+MONITOR_TREND_LAST100 = (
+    "monitor_trend_last100_lmh",
+    "monitor_trend_last100_dp",
+    "monitor_trend_last100_cp",
+)
+MONITOR_CHANGE_LAST100_LEGACY = tuple(f"{name}_legacy" for name in MONITOR_CHANGE_LAST100)
 
 # Salt mass-fraction field names extraction tries, excluding udm-7.
 # udm-7 is the wall concentration, not the bulk.
@@ -200,6 +226,55 @@ def relative_change_last_iterations(series, n: int) -> float | None:
     return fluent_report_relative_change(window)
 
 
+def clean_series(series) -> list[tuple[int, float]]:
+    """Sorted by iteration; for a repeated iteration the last row wins."""
+    by_iteration = {}
+    for iteration, value in series:
+        by_iteration[int(iteration)] = float(value)
+    return sorted(by_iteration.items())
+
+
+def end_to_end_relative_change(series, n: int) -> float | None:
+    """``|m(L) - m(L-n)| / |m(L)|``; ``m(L-n)`` is the last sample <= L-n.
+
+    None without a sample that old, or when ``m(L)`` is zero.
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError(f"iteration window must be an integer >= 1, got {n!r}.")
+    points = clean_series(series)
+    if len(points) < 2:
+        return None
+    last_iteration, last_value = points[-1]
+    earlier = [value for iteration, value in points if iteration <= last_iteration - n]
+    if not earlier or last_value == 0.0:
+        return None
+    return abs(last_value - earlier[-1]) / abs(last_value)
+
+
+def trend_relative_change(series, n: int) -> float | None:
+    """``|slope| * n / |mean|`` of a least-squares line over ``[L-n, L]``.
+
+    None with fewer than three samples in the window or a zero mean.
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError(f"iteration window must be an integer >= 1, got {n!r}.")
+    points = clean_series(series)
+    if not points:
+        return None
+    last_iteration = points[-1][0]
+    window = [(i, v) for i, v in points if i >= last_iteration - n]
+    if len(window) < 3:
+        return None
+    count = len(window)
+    mean_x = sum(i for i, _ in window) / count
+    mean_y = sum(v for _, v in window) / count
+    sxx = sum((i - mean_x) ** 2 for i, _ in window)
+    if sxx == 0.0 or mean_y == 0.0:
+        return None
+    slope = sum((i - mean_x) * (v - mean_y) for i, v in window) / sxx
+    return abs(slope) * n / abs(mean_y)
+
+
 def read_report_series(path) -> list[tuple[int, float]]:
     file_path = Path(path)
     if not file_path.is_file():
@@ -230,31 +305,40 @@ def _change_at(case_dir, filename: str, n: int) -> float | None:
 
 
 def monitor_changes(case_dir, n: int = 100) -> dict[str, float | None]:
-    """Relative changes of LMH, spacer dP, and CP over the last ``n`` iterations.
+    """End-to-end change, trend, and legacy max deviation over ``n`` iterations.
 
-    Missing report files leave that entry None. CP prefers ``cp_window.out``
-    and otherwise reads ``cp_full_membrane.out``.
+    See the module docstring. Missing report files leave that entry None.
+    The new CP columns read ``cp_live.out`` only. The legacy CP column
+    prefers ``cp_window.out`` and otherwise reads ``cp_full_membrane.out``.
     """
     directory = Path(case_dir)
-    cp_path = cp_report_path(directory)
-    cp_series = [] if cp_path is None else read_report_series(cp_path)
     prefix = "monitor_change_last100" if int(n) == 100 else f"monitor_change_last{int(n)}"
-    changes = {
-        f"{prefix}_lmh": _change_at(directory, LMH_REPORT_FILE, n),
-        f"{prefix}_dp": _change_at(directory, DP_REPORT_FILE, n),
-        f"{prefix}_cp": relative_change_last_iterations(cp_series, n),
-    }
+    trend = "monitor_trend_last100" if int(n) == 100 else f"monitor_trend_last{int(n)}"
+    lmh = read_report_series(directory / LMH_REPORT_FILE)
+    dp = read_report_series(directory / DP_REPORT_FILE)
     live_path = directory / cp_report_file_name(CP_MONITOR_LIVE)
+    live = read_report_series(live_path)
+    cp_path = cp_report_path(directory)
+    legacy_cp = [] if cp_path is None else read_report_series(cp_path)
+    changes = {
+        f"{prefix}_lmh": end_to_end_relative_change(lmh, n),
+        f"{prefix}_dp": end_to_end_relative_change(dp, n),
+        f"{prefix}_cp": end_to_end_relative_change(live, n),
+        f"{trend}_lmh": trend_relative_change(lmh, n),
+        f"{trend}_dp": trend_relative_change(dp, n),
+        f"{trend}_cp": trend_relative_change(live, n),
+        f"{prefix}_lmh_legacy": relative_change_last_iterations(lmh, n),
+        f"{prefix}_dp_legacy": relative_change_last_iterations(dp, n),
+        f"{prefix}_cp_legacy": relative_change_last_iterations(legacy_cp, n),
+    }
     if live_path.is_file():
-        changes[f"{prefix}_cp_live"] = relative_change_last_iterations(
-            read_report_series(live_path),
-            n,
-        )
+        # Kept from earlier extracts: the legacy statistic on cp_live.
+        changes[f"{prefix}_cp_live"] = relative_change_last_iterations(live, n)
     return changes
 
 
 def last100_monitor_changes(case_dir) -> dict[str, float | None]:
-    """The three acceptance-gate columns. Does not change PASS/FAIL."""
+    """Monitor-change columns over 100 iterations. Does not change PASS/FAIL."""
     return monitor_changes(case_dir, 100)
 
 
