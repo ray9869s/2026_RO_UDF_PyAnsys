@@ -27,7 +27,10 @@ layer count. The token ``_mblN`` is added only when the pin differs from
 the count ``m_max`` would choose. ``--bulk-max-size`` appends ``_bmsNNN``
 after those (``round(mm * 1000)``, so 0.034 mm is ``_bms034``) and fills
 the volume with polyhedra at that max cell length. Omitted, the volume
-fill stays poly-hexcore. ``--mesh-only`` prints the mesh cell count and
+fill stays poly-hexcore. ``--max-aspect-ratio 250`` appends ``_ar250``
+and uses a hard global ceiling without the prism override. The ceiling,
+gate mode, and measured maximum are recorded in the mesh manifest.
+``--mesh-only`` prints the mesh cell count and
 the recorded membrane layer count, and does not solve.
 ``--mesh-spec`` checks the knobs against that family's entry and stamps
 the file's SHA-256 and the git HEAD on the mesh and run manifests.
@@ -81,6 +84,7 @@ import batch_solver_sweep
 import mfbo._common as mfbo_common
 import mfbo.solve_campaign_case as campaign
 from ro.bulk_size import bulk_max_size_suffix
+from ro.aspect_ceiling import aspect_ceiling_suffix
 from ro.campaign_matrix import format_production_mesh_id
 from ro.local_sizing import (
     local_sizing_suffix,
@@ -211,9 +215,13 @@ def collect_overrides(
     membrane_bl_layers=None,
     bulk_max_size_mm=None,
     peel_layers=None,
+    max_aspect_ratio=None,
 ):
     """Return the mesh knobs the caller set. At least one is required."""
     changes = {}
+    if max_aspect_ratio is not None:
+        aspect_ceiling_suffix(max_aspect_ratio)
+        changes["max_aspect_ratio_threshold"] = float(max_aspect_ratio)
     if m_max is not None:
         _require_positive("m_max", m_max)
         changes["m_max"] = float(m_max)
@@ -260,7 +268,7 @@ def collect_overrides(
             "--bl-first-height-factor, --spacer-bl-layers, "
             "--local-proximity, --local-face-size, "
             "--membrane-bl-y1-um, --membrane-bl-layers, "
-            "--bulk-max-size, --peel-layers). "
+            "--bulk-max-size, --peel-layers, --max-aspect-ratio). "
             "The production baseline is "
             "reextract_runs.py --copy-from-production."
         )
@@ -341,6 +349,7 @@ def study_mesh_id(
     membrane_bl_layers=None,
     bulk_max_size_mm=None,
     bl_growth_rate=None,
+    max_aspect_ratio=None,
 ):
     """Production formatter, plus ``_fNNN``, local-sizing, ``_y1h``, ``_mbl``, and ``_bms``."""
     mesh_id = format_production_mesh_id(
@@ -376,6 +385,7 @@ def study_mesh_id(
         )
         mesh_id += membrane_layer_override_suffix(membrane_bl_layers, derived)
     mesh_id += bulk_max_size_suffix(bulk_max_size_mm)
+    mesh_id += aspect_ceiling_suffix(max_aspect_ratio)
     if MESH_ID_RE.fullmatch(mesh_id) is None:
         raise ValueError(f"study mesh_id is invalid: {mesh_id!r}.")
     return mesh_id
@@ -459,6 +469,7 @@ def apply_study_overrides(template, changes):
         membrane_bl_layers=overrides.get("membrane_bl_layers"),
         bulk_max_size_mm=overrides.get("bulk_max_size_mm"),
         bl_growth_rate=growth,
+        max_aspect_ratio=overrides.get("max_aspect_ratio_threshold"),
     )
     layer_count = overrides.pop("membrane_bl_layers", None)
     if overrides.get("membrane_bl_y1_um") is not None:
@@ -479,6 +490,10 @@ def apply_study_overrides(template, changes):
     require_distinct_mesh_id(mesh_id, template["mesh_id"])
     overrides["mesh_id"] = mesh_id
     overrides["case_name"] = mesh_id
+    if "max_aspect_ratio_threshold" in changes:
+        # This study uses the measured global maximum, including prism cells.
+        overrides["max_prism_aspect_ratio_threshold"] = None
+        overrides["fail_if_quality_not_parsed"] = True
     if "bl_height_factor" in changes:
         overrides["bl_height_factor"] = factor
     return overrides
@@ -845,6 +860,21 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
             f"(mesh_run_record status={status!r})."
         )
     mismatches = []
+    requested_ar = overrides.get("max_aspect_ratio_threshold")
+    if requested_ar is not None:
+        recorded_ar = manifest.get("max_aspect_ratio_threshold")
+        if recorded_ar != requested_ar or manifest.get("aspect_ratio_gate") != "hard":
+            mismatches.append("max_aspect_ratio_threshold or aspect_ratio_gate differs")
+        measured = manifest.get("AR_max")
+        if (
+            isinstance(measured, bool)
+            or not isinstance(measured, (int, float))
+            or not math.isfinite(measured)
+            or measured <= 0
+            or measured > requested_ar
+            or manifest.get("max_prism_aspect_ratio_threshold") is not None
+        ):
+            mismatches.append("AR_max does not establish the requested hard global ceiling")
     for override_key, manifest_key in _REUSE_MANIFEST_FIELDS:
         recorded = manifest[manifest_key] if manifest_key in manifest else _MISSING
         requested = overrides[override_key] if override_key in overrides else _MISSING
@@ -1321,6 +1351,14 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--max-aspect-ratio", type=int, default=None,
+        help=(
+            "Hard global aspect-ratio ceiling for a sensitivity mesh. "
+            "Adds _arN to its mesh id; orthogonal quality stays a hard limit. "
+            "Cannot combine with --max-prism-aspect-ratio."
+        ),
+    )
+    parser.add_argument(
         "--mesh-spec",
         default=None,
         help=(
@@ -1607,6 +1645,8 @@ def continue_finished_leaf(
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.max_aspect_ratio is not None and args.max_prism_aspect_ratio is not None:
+        raise ValueError("--max-aspect-ratio cannot combine with --max-prism-aspect-ratio.")
     if args.resume and args.mesh_only:
         raise ValueError("--resume does not combine with --mesh-only.")
     if args.continue_iterations is not None and args.resume:
@@ -1635,6 +1675,7 @@ def main(argv=None):
         membrane_bl_layers=args.membrane_bl_layers,
         bulk_max_size_mm=args.bulk_max_size,
         peel_layers=args.peel_layers,
+        max_aspect_ratio=args.max_aspect_ratio,
     )
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]

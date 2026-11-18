@@ -26,7 +26,9 @@ records the error, and MISSING when that file is absent too. Jobs pass
 ``--max-prism-aspect-ratio 250``. That ceiling applies only when the
 mesher can separate prism cell zones from bulk polyhedra. A mixed zone
 keeps the global aspect-ratio ceiling of 150. Orthogonal quality stays
-the hard limit. The estimate is linear in cell count from D2450_a45 at
+the hard limit. ``--max-aspect-ratio 250`` instead applies a hard global
+ceiling, disables the prism override, and appends ``_ar250`` to the mesh id.
+The estimate is linear in cell count from D2450_a45 at
 4.34 M cells and 6.5 h. ``--geo-id`` limits an emitted queue. The default
 is every geometry.
 
@@ -87,6 +89,7 @@ from ro.mesh_spec import (  # noqa: E402
     spec_file_sha256,
 )
 from ro.paths import project_root  # noqa: E402
+from ro.aspect_ceiling import aspect_ceiling_from_mesh_id, aspect_ceiling_suffix  # noqa: E402
 from ro.solver_common import make_base_case_name  # noqa: E402
 
 DATA_ROOT = "C:/ro_data_mfbo/campaign_v3"
@@ -181,7 +184,7 @@ def production_templates():
     return templates
 
 
-def mesh_ids_for_spec(spec, templates=None):
+def mesh_ids_for_spec(spec, templates=None, *, max_aspect_ratio=None):
     """Study mesh id each geometry gets from its family settings."""
     if templates is None:
         templates = production_templates()
@@ -189,6 +192,9 @@ def mesh_ids_for_spec(spec, templates=None):
     for geo_id in CAMPAIGN_GEO_ID_ORDER:
         settings = family_settings(spec, family_for_geo_id(geo_id))
         changes = changes_for_settings(settings)
+        if max_aspect_ratio is not None:
+            aspect_ceiling_suffix(max_aspect_ratio)
+            changes["max_aspect_ratio_threshold"] = float(max_aspect_ratio)
         face = geometry_membrane_face_size(spec, geo_id)
         if face is not None:
             changes["local_face_size"] = face
@@ -235,6 +241,7 @@ def _study_argv(
     membrane_face_size=None,
     max_iterations=2000,
     no_cp_live=False,
+    max_aspect_ratio=None,
 ):
     argv = [
         "{python}",
@@ -259,8 +266,6 @@ def _study_argv(
         _fmt_mm(settings["bulk_max_size_mm"]),
         "--peel-layers",
         str(int(settings["peel"])),
-        "--max-prism-aspect-ratio",
-        f"{PRISM_AR_MAX_LIMIT:.0f}",
         "--geometry-suffix",
         ".pmdb",
         "--geometry-root",
@@ -268,6 +273,11 @@ def _study_argv(
         "--mesh-spec",
         spec_token,
     ]
+    if max_aspect_ratio is None:
+        argv.extend(["--max-prism-aspect-ratio", f"{PRISM_AR_MAX_LIMIT:.0f}"])
+    else:
+        suffix = aspect_ceiling_suffix(max_aspect_ratio)
+        argv.extend(["--max-aspect-ratio", suffix.removeprefix("_ar")])
     if membrane_face_size is not None:
         argv.extend(
             [
@@ -307,7 +317,7 @@ def selected_geo_ids(geo_ids):
     return tuple(geo_id for geo_id in CAMPAIGN_GEO_ID_ORDER if geo_id in chosen)
 
 
-def mesh_jobs(spec, spec_path, geo_ids=None):
+def mesh_jobs(spec, spec_path, geo_ids=None, *, max_aspect_ratio=None):
     """One mesh job per geometry. No solve."""
     token = spec_argv_token(spec_path)
     jobs = []
@@ -315,7 +325,7 @@ def mesh_jobs(spec, spec_path, geo_ids=None):
         settings = family_settings(spec, family_for_geo_id(geo_id))
         jobs.append(
             _job(
-                f"mesh-{geo_id}",
+                f"mesh-{geo_id}{aspect_ceiling_suffix(max_aspect_ratio)}",
                 _study_argv(
                     geo_id,
                     settings,
@@ -324,6 +334,7 @@ def mesh_jobs(spec, spec_path, geo_ids=None):
                     reuse_mesh=False,
                     spec_token=token,
                     membrane_face_size=geometry_membrane_face_size(spec, geo_id),
+                    max_aspect_ratio=max_aspect_ratio,
                 ),
             )
         )
@@ -339,6 +350,7 @@ def solve_jobs(
     geo_ids=None,
     max_iterations_by_family=None,
     no_cp_live=False,
+    max_aspect_ratio=None,
 ):
     """Solves in velocity order. Each reuses the mesh when it exists."""
     token = spec_argv_token(spec_path)
@@ -356,7 +368,7 @@ def solve_jobs(
             settings = family_settings(spec, family_for_geo_id(geo_id))
             jobs.append(
                 _job(
-                    f"{run_id}-{geo_id}",
+                    f"{run_id}-{geo_id}{aspect_ceiling_suffix(max_aspect_ratio)}",
                     _study_argv(
                         geo_id,
                         settings,
@@ -367,6 +379,7 @@ def solve_jobs(
                         keep_checkpoints=keep_checkpoints,
                         max_iterations=caps[family_for_geo_id(geo_id)],
                         no_cp_live=no_cp_live,
+                        max_aspect_ratio=max_aspect_ratio,
                         membrane_face_size=geometry_membrane_face_size(
                             spec, geo_id
                         ),
@@ -421,6 +434,7 @@ def quality_gate(
     *,
     aspect_split=None,
     prism_ar_limit=None,
+    ar_limit=AR_MAX_LIMIT,
 ):
     """PASS, FAIL, or MISSING. Limits are the production mesh quality gate.
 
@@ -436,7 +450,7 @@ def quality_gate(
         return "FAIL"
     if aspect_ratio_failure_message(
         ar_max,
-        bulk_limit=AR_MAX_LIMIT,
+        bulk_limit=ar_limit,
         prism_limit=prism_ar_limit,
         aspect_split=aspect_split,
     ) is not None:
@@ -556,6 +570,7 @@ def mesh_table_rows(data_root, mesh_ids):
     for geo_id in CAMPAIGN_GEO_ID_ORDER:
         family = family_for_geo_id(geo_id)
         mesh_id = mesh_ids[geo_id]
+        hard_ceiling = aspect_ceiling_from_mesh_id(mesh_id)
         path = mesh_manifest_path(data_root, geo_id, mesh_id)
         error = None
         if path.is_file():
@@ -580,9 +595,17 @@ def mesh_table_rows(data_root, mesh_ids):
                 aspect,
                 skewness,
                 fraction,
-                aspect_split=aspect_split,
-                prism_ar_limit=prism_limit,
+                aspect_split=aspect_split if hard_ceiling is None else None,
+                prism_ar_limit=prism_limit if hard_ceiling is None else None,
+                ar_limit=hard_ceiling if hard_ceiling is not None else AR_MAX_LIMIT,
             )
+            if hard_ceiling is not None and (
+                manifest.get("max_aspect_ratio_threshold") != hard_ceiling
+                or manifest.get("aspect_ratio_gate") != "hard"
+                or prism_limit is not None
+            ):
+                gate = "FAIL"
+                error = "Mesh manifest does not record the encoded hard global AR ceiling."
         else:
             logged = _metrics_from_log(mesh_log_path(data_root, geo_id, mesh_id))
             failure = _record_failure(
@@ -609,8 +632,9 @@ def mesh_table_rows(data_root, mesh_ids):
                     aspect,
                     logged["skewness_max"],
                     logged["skewed_face_fraction"],
-                    aspect_split=split,
-                    prism_ar_limit=prism_limit,
+                    aspect_split=split if hard_ceiling is None else None,
+                    prism_ar_limit=prism_limit if hard_ceiling is None else None,
+                    ar_limit=hard_ceiling if hard_ceiling is not None else AR_MAX_LIMIT,
                 )
                 if gate == "MISSING" and failure is not None:
                     gate = "FAIL"
@@ -892,6 +916,10 @@ def build_parser():
         help="Solve iteration cap for one family. Repeatable; all default to 2000.",
     )
     parser.add_argument(
+        "--max-aspect-ratio", type=int, default=None,
+        help="Hard global AR ceiling for sensitivity meshes; adds _arN to mesh ids.",
+    )
+    parser.add_argument(
         "--no-cp-live", action="store_true",
         help="Pass --no-cp-live to emitted solves (stop on cp_window).",
     )
@@ -953,12 +981,14 @@ def main(argv=None):
     )
     spec = load_mesh_spec(spec_path)
     needs_mesh_ids = args.mesh_table or args.compare or args.seminar_csv
-    mesh_ids = mesh_ids_for_spec(spec) if needs_mesh_ids or args.emit_queue else None
+    mesh_ids = mesh_ids_for_spec(
+        spec, max_aspect_ratio=args.max_aspect_ratio
+    ) if needs_mesh_ids or args.emit_queue else None
     if args.emit_queue:
         if mesh_ids is None:
             mesh_ids = mesh_ids_for_spec(spec)
         jobs = (
-            mesh_jobs(spec, spec_path, geo_ids=args.geo_id)
+            mesh_jobs(spec, spec_path, geo_ids=args.geo_id, max_aspect_ratio=args.max_aspect_ratio)
             if args.mesh_only
             else solve_jobs(
                 spec,
@@ -968,6 +998,7 @@ def main(argv=None):
                 geo_ids=args.geo_id,
                 max_iterations_by_family=caps,
                 no_cp_live=args.no_cp_live,
+                max_aspect_ratio=args.max_aspect_ratio,
             )
         )
         path = write_queue(args.emit_queue, jobs)

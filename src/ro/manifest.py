@@ -64,9 +64,17 @@ the one ``max_size_mm`` would choose adds ``_mblN`` after ``_y1h``:
                                total_thickness_mm, labels}
 
 Optional polyhedra bulk size in millimetres, omitted when the volume
-fill is poly-hexcore. The mesh id ends with ``_bmsNNN``
+fill is poly-hexcore. The mesh id includes ``_bmsNNN``
 (``round(mm * 1000)``), after ``_y1h`` and ``_mbl``:
   bulk_max_size_mm:           float > 0
+
+Explicit hard global aspect-ratio sensitivity meshes end with ``_arN``.
+The suffix requires the matching ceiling, gate mode and measured maximum:
+  max_aspect_ratio_threshold: positive integer ceiling (stored as float)
+  aspect_ratio_gate:          "hard"
+  AR_max:                    measured global maximum, <= the ceiling
+No prism override is allowed on these meshes. Standard meshes omit these
+two optional gate fields and keep their existing identities.
 
 Optional prism aspect-ratio ceiling. Omitted when the global ceiling is
 the only aspect-ratio check. It does not change ``mesh_id``. A usable
@@ -116,6 +124,7 @@ from pathlib import Path
 from typing import Any
 
 from ro.bulk_size import bulk_max_size_suffix
+from ro.aspect_ceiling import recorded_aspect_ceiling_suffix
 from ro.fluent_launch import fluent_mpi_token
 from ro.geometry_registry import family_for_known_geo_id, validate_known_geo_id
 from ro.local_sizing import local_sizing_suffix
@@ -435,9 +444,23 @@ def _validate_mesh_payload(payload: Mapping[str, Any]) -> None:
     y1_suffix = _mesh_membrane_bl_suffix(payload)
     layer_suffix = _mesh_membrane_layer_suffix(payload)
     bulk_suffix = _mesh_bulk_suffix(payload)
+    try:
+        ar_suffix = recorded_aspect_ceiling_suffix(
+            mesh_id, payload.get("max_aspect_ratio_threshold")
+        )
+    except ValueError as exc:
+        raise ManifestError(f"Mesh manifest {exc}") from exc
+    if ar_suffix:
+        if payload.get("aspect_ratio_gate") != "hard":
+            raise ManifestError("Mesh manifest _ar mesh requires aspect_ratio_gate='hard'.")
+        if payload.get("max_prism_aspect_ratio_threshold") is not None:
+            raise ManifestError("Mesh manifest _ar mesh requires a global ceiling without a prism override.")
+        _require_number(payload, "AR_max", "Mesh")
+        if not 0 < payload["AR_max"] <= payload["max_aspect_ratio_threshold"]:
+            raise ManifestError("Mesh manifest AR_max must satisfy the hard global ceiling.")
     peel_token = (
         f"_peel{payload['peel']}{local_suffix}{y1_suffix}"
-        f"{layer_suffix}{bulk_suffix}"
+        f"{layer_suffix}{bulk_suffix}{ar_suffix}"
     )
     if not mesh_id.endswith(peel_token):
         raise ManifestError(
@@ -1310,6 +1333,8 @@ def _changed_fields(
 
 
 _OPTIONAL_MESH_PARAMETER_FIELDS = (
+    "max_aspect_ratio_threshold",
+    "aspect_ratio_gate",
     "local_proximity",
     "local_face_size",
     "membrane_bl_y1",

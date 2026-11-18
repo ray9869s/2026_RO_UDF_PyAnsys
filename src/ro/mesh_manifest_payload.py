@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.bulk_size import bulk_max_size_suffix
+from ro.aspect_ceiling import recorded_aspect_ceiling_suffix
 from ro.campaign_geometry import merge_geometry_into_mesh_manifest
 from ro.local_sizing import parse_local_face_size, parse_local_proximity
 from ro.membrane_bl import SPACER_BOUNDARY_LAYERS_SKIPPED, resolve_membrane_bl
@@ -93,6 +94,10 @@ def build_mesh_manifest_payload(
         base["bulk_max_size_mm"] = float(raw_bulk)
         bulk_max_size_suffix(base["bulk_max_size_mm"])
     prism_limit = getattr(cfg, "max_prism_aspect_ratio_threshold", None)
+    ar_limit = getattr(cfg, "max_aspect_ratio_threshold", None)
+    if recorded_aspect_ceiling_suffix(cfg.mesh_id, ar_limit):
+        base["max_aspect_ratio_threshold"] = float(ar_limit)
+        base["aspect_ratio_gate"] = "hard"
     if prism_limit is not None:
         base["max_prism_aspect_ratio_threshold"] = float(prism_limit)
     aspect_split = mesh_metrics.get("aspect_split")

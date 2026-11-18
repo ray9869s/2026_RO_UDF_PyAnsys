@@ -19,6 +19,7 @@ import types
 from pathlib import Path
 
 from ro.bulk_size import bulk_max_size_suffix as _bulk_max_size_suffix
+from ro.aspect_ceiling import recorded_aspect_ceiling_suffix as _recorded_ar_suffix
 from ro.local_sizing import local_sizing_suffix as _local_sizing_suffix
 from ro.membrane_bl import (
     derived_membrane_layer_count as _derived_membrane_layer_count,
@@ -902,9 +903,14 @@ def validate_for_meshing():
         raise ValueError(
             f"run_config.py bulk_max_size_mm is invalid: {exc}"
         ) from exc
+    ar_suffix = _recorded_ar_suffix(mesh_id, max_aspect_ratio_threshold)
+    if ar_suffix and max_prism_aspect_ratio_threshold is not None:
+        raise ValueError("An _ar mesh requires a hard global ceiling without a prism override.")
+    if ar_suffix and fail_if_quality_not_parsed is not True:
+        raise ValueError("An _ar mesh requires fail_if_quality_not_parsed=True.")
     peel_token = (
         f"_peel{int(peel_layers)}{local_suffix}{y1_suffix}"
-        f"{layer_suffix}{bulk_suffix}"
+        f"{layer_suffix}{bulk_suffix}{ar_suffix}"
     )
     if not mesh_id.endswith(peel_token):
         raise ValueError(
