@@ -374,3 +374,53 @@ def test_expression_report_text_is_the_setup_failure():
     assert fluent_expression_report_is_invalid("Valid            : No")
     assert not fluent_expression_report_is_invalid("Valid            : Yes")
     assert not fluent_expression_report_is_invalid("Input parameter  : No")
+
+
+def _session(scheme, names=(), listing="Valid            : Yes"):
+    class Named:
+        def get_object_names(self):
+            return list(names)
+
+    return SimpleNamespace(scheme=scheme, setup=SimpleNamespace(named_expressions=Named()))
+
+
+def test_expression_check_fails_closed_when_no_check_can_run():
+    """Audit B1-05: every scheme call raising is not a pass."""
+    solver = load_solver_code("expr_check_no_scheme")
+
+    class Broken:
+        def exec(self, commands, wait=True, silent=False):
+            raise ConnectionError("scheme unavailable")
+
+    with pytest.raises(RuntimeError, match="no expression check could run"):
+        solver.require_setup_expressions_valid(_session(Broken()))
+    with pytest.raises(RuntimeError, match="no expression check could run"):
+        solver.require_setup_expressions_valid(_session(None))
+
+
+def test_expression_check_fails_closed_on_unbound_forms():
+    solver = load_solver_code("expr_check_unbound")
+
+    class Unbound:
+        def exec(self, commands, wait=True, silent=False):
+            return "Error: eval: unbound variable"
+
+    with pytest.raises(RuntimeError, match="did not positively pass"):
+        solver.require_setup_expressions_valid(_session(Unbound()))
+
+
+def test_named_expression_must_list_valid_yes():
+    solver = load_solver_code("expr_check_named_silent")
+
+    class Silent:
+        def exec(self, commands, wait=True, silent=False):
+            return ""  # listing printed nothing about validity
+
+    with pytest.raises(RuntimeError, match="Valid : Yes"):
+        solver.require_setup_expressions_valid(_session(Silent(), names=["cp_live_mean"]))
+
+    class Good:
+        def exec(self, commands, wait=True, silent=False):
+            return "Valid            : Yes\nUsed in          : 1 places"
+
+    solver.require_setup_expressions_valid(_session(Good(), names=["cp_live_mean"]))

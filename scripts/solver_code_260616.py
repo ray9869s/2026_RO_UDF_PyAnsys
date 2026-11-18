@@ -69,6 +69,7 @@ from ro.solver_common import (
     SOLVER_EXIT_SUCCESS,
     STOP_REASON_DETERMINATION_FAILED,
     STOP_REASON_ITERATION_UNKNOWN,
+    STOP_REASON_UNKNOWN_EARLY_STOP,
     STOP_REASON_HF_MONITOR_STABLE,
     STOP_REASON_LF_MONITOR_STABLE,
     FINAL_CASE_SHA256_FIELD,
@@ -128,8 +129,10 @@ from ro.monitor_change import (
     cp_live_monitor_definition,
     cp_monitor_definition,
     cp_report_file_name,
+    expression_check_positive,
     fluent_expression_report_is_invalid,
     format_expression_error_table,
+    named_expression_listed_valid,
     last100_monitor_changes,
     molecular_weight_kg_per_mol,
 )
@@ -709,7 +712,8 @@ def publish_stop_reason_and_finals(
     """Finalize the run manifest, then publish canonical finals or isolate.
 
     ``None`` stop reason becomes ``stop_reason_determination_failed``. That
-    path never writes the canonical ``*_final.cas.h5`` pair. Isolated write
+    path, ``iteration_unknown`` and ``unknown_early_stop`` never write the
+    canonical ``*_final.cas.h5`` pair. Isolated write
     failure is warned and does not replace the determination failure.
     """
     if not solver_stop_reason:
@@ -727,6 +731,7 @@ def publish_stop_reason_and_finals(
     if solver_stop_reason in (
         STOP_REASON_DETERMINATION_FAILED,
         STOP_REASON_ITERATION_UNKNOWN,
+        STOP_REASON_UNKNOWN_EARLY_STOP,
     ):
         try:
             isolate_failed_attempt_write(
@@ -741,6 +746,11 @@ def publish_stop_reason_and_finals(
             )
         if solver_stop_reason == STOP_REASON_DETERMINATION_FAILED:
             raise RuntimeError("stop_reason_determination_failed")
+        if solver_stop_reason == STOP_REASON_UNKNOWN_EARLY_STOP:
+            raise RuntimeError(
+                "unknown_early_stop: iterate returned below the cap with no "
+                "stop marker. Refusing to write the final case/data."
+            )
         raise RuntimeError(
             "iteration_unknown: the iteration counter did not advance. "
             "Refusing to write the final case/data."
@@ -2908,7 +2918,11 @@ def upsert_named_expression(named_expressions, name, definition):
 
 
 def _scheme_exec_text(solver, command):
-    """Run one scheme command and return the text Fluent printed."""
+    """Run one scheme command and return the text Fluent printed.
+
+    ``None`` means there was no scheme interface; an exception becomes
+    ``"<Type>: <message>"``. Neither counts as a check that ran.
+    """
     scheme = getattr(solver, "scheme", None)
     if scheme is not None and hasattr(scheme, "exec"):
         try:
@@ -2926,7 +2940,7 @@ def _scheme_exec_text(solver, command):
             return str(scheme_eval.string_eval(command))
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
-    return ""
+    return None
 
 
 def require_setup_expressions_valid(solver):
@@ -2937,11 +2951,14 @@ def require_setup_expressions_valid(solver):
     and returns without a residual line. The check runs first.
     """
     chunks = []
+    form_texts = []
+    listings = {}
     for form in EXPRESSION_CHECK_FORMS:
         text = _scheme_exec_text(solver, form)
         print(f"Expression check {form}:")
         print(text)
-        chunks.append(text)
+        form_texts.append(text)
+        chunks.append("" if text is None else text)
     names = _list_named_object_names_best_effort(
         solver.setup.named_expressions
     )
@@ -2957,8 +2974,9 @@ def require_setup_expressions_valid(solver):
         )
         print(f"Named expression {name}:")
         print(listed)
-        chunks.append(listed)
-        error = "invalid" if fluent_expression_report_is_invalid(listed) else ""
+        listings[name] = listed
+        chunks.append("" if listed is None else listed)
+        error = "" if named_expression_listed_valid(listed) else "invalid"
         rows.append((name, error, "named expression"))
     if rows:
         table = format_expression_error_table(rows)
@@ -2969,6 +2987,13 @@ def require_setup_expressions_valid(solver):
         raise RuntimeError(
             "Setup contains invalid expressions. Refusing to iterate.\n"
             + report
+        )
+    passed, reason = expression_check_positive(form_texts, listings)
+    print(f"Expression check result: {'PASS' if passed else 'FAIL'} ({reason})")
+    if not passed:
+        raise RuntimeError(
+            f"Expression check did not positively pass ({reason}). "
+            "Refusing to iterate.\n" + report
         )
 
 

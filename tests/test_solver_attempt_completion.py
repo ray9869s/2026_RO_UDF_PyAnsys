@@ -192,3 +192,25 @@ def test_new_attempt_rewrites_manifest_without_final_hashes(
     assert FINAL_CASE_SHA256_FIELD not in second
     assert FINAL_DATA_SHA256_FIELD not in second
     assert canonical.is_file()
+
+
+def test_unknown_early_stop_does_not_write_the_final(monkeypatch, tmp_path):
+    """Audit B1-04: an unexplained early return must not publish a final."""
+    from ro.solver_common import STOP_REASON_UNKNOWN_EARLY_STOP
+
+    solver = load_solver_code("r02_unknown_early_stop")
+    cfg, run_directory = _prepared_run(monkeypatch, tmp_path, solver)
+    writes = []
+    canonical = run_directory / f"{cfg.geo_id}_{cfg.run_id}_final.cas.h5"
+    with pytest.raises(RuntimeError, match="unknown_early_stop"):
+        solver.publish_stop_reason_and_finals(
+            _fake_solver(writes),
+            run_directory,
+            STOP_REASON_UNKNOWN_EARLY_STOP,
+            inlet_profile_g=None,
+            final_case_file=str(canonical),
+            as_fluent_path=str,
+        )
+    assert read_run_manifest(run_directory)["stop_reason"] == STOP_REASON_UNKNOWN_EARLY_STOP
+    assert not canonical.is_file()
+    assert writes and all("failed_attempt_" in name for name in writes)

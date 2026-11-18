@@ -283,6 +283,52 @@ def format_expression_error_table(rows) -> str:
     return "\n".join(lines)
 
 
+_CHECK_DID_NOT_RUN_RE = re.compile(
+    r"unbound variable|invalid function|^\s*error\b|^[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def expression_check_ran(text) -> bool:
+    """True when a check form returned output that is not an error.
+
+    ``None`` (no scheme interface), an exception text from the wrapper,
+    or Fluent's ``unbound variable`` / ``invalid function`` mean the form
+    did not run and prove nothing.
+    """
+    if text is None:
+        return False
+    return _CHECK_DID_NOT_RUN_RE.search(str(text)) is None
+
+
+def named_expression_listed_valid(text) -> bool:
+    """True only when the listing positively says ``Valid : Yes``."""
+    if not isinstance(text, str):
+        return False
+    return re.search(r"valid\s*[:=]\s*yes\b", text.casefold()) is not None
+
+
+def expression_check_positive(form_texts, named_listings) -> tuple[bool, str]:
+    """(passed, reason). Passing needs positive evidence, not silence.
+
+    Every named expression must list ``Valid : Yes``. With no named
+    expression, at least one check form must have run. Any invalid marker
+    fails.
+    """
+    texts = [text for text in form_texts if text is not None]
+    texts += [text for text in named_listings.values() if text is not None]
+    if any(fluent_expression_report_is_invalid(str(text)) for text in texts):
+        return False, "Fluent reported an invalid expression"
+    not_valid = [name for name, text in named_listings.items() if not named_expression_listed_valid(text)]
+    if not_valid:
+        return False, "named expression(s) not listed as Valid : Yes: " + ", ".join(not_valid)
+    if named_listings:
+        return True, "every named expression is Valid : Yes"
+    if any(expression_check_ran(text) for text in form_texts):
+        return True, "a check form ran and reported nothing invalid"
+    return False, "no expression check could run"
+
+
 def fluent_expression_report_is_invalid(text: str) -> bool:
     """True when Fluent's own check text reports an invalid expression."""
     if not isinstance(text, str) or not text.strip():
