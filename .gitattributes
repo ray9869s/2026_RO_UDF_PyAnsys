@@ -2,3 +2,5 @@
 *.h text eol=lf
 *.py text eol=lf
 *.scm text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
