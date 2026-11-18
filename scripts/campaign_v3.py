@@ -139,6 +139,7 @@ SEMINAR_CASES_COLUMNS = (
     "lmh_window_module",
     "convergence_quality",
     "report_binding",
+    "pp_pressure_drop_periodic_per_m",
     "mesh_spec_sha256",
     "git_head",
 )
@@ -171,6 +172,8 @@ COMPARE_COLUMNS = (
     "v2_cp_metric",
     "v2_report_binding",
     "v3_report_binding",
+    "v2_dp_per_m_window",
+    "v3_dp_per_m_window",
 )
 
 
@@ -752,6 +755,10 @@ def _run_manifest(run_directory):
 def leaf_metrics(run_directory, *, cp_metric=None):
     """CP, excess, q999, dP/L, LMH, and the convergence gate for one leaf.
 
+    dP/L is reported twice: ``dp_per_m`` is ``pressure_drop_spacer_per_m``
+    (the active span, lead cells included) and ``dp_per_m_window`` is
+    ``pp_pressure_drop_periodic_per_m`` (the evaluation window).
+
     CP is ``cp_meanfirst_live_window_avg`` unless ``cp_metric`` names
     another column (v2 uses ``cpc_window_avg_area``). Excess is that value
     minus 1. ``cpc`` is ``cpc_window_avg_flux``. q999 is
@@ -782,6 +789,9 @@ def leaf_metrics(run_directory, *, cp_metric=None):
         "cp_excess": None if cp is None else cp - 1.0,
         "q999": _optional_float(wide.get("cp_q999_window_flux")),
         "dp_per_m": _optional_float(wide.get("pressure_drop_spacer_per_m")),
+        # Evaluation-window periodic dP/L (same span as CP and LMH). Reported
+        # beside the active-span value; the default is not changed yet.
+        "dp_per_m_window": _optional_float(wide.get("pp_pressure_drop_periodic_per_m")),
         "lmh_exposed": _optional_float(wide.get("lmh_window_exposed")),
         "lmh_installed": _optional_float(wide.get("lmh_window_module")),
         "gate": gate,
@@ -836,6 +846,8 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                     "v3_q999": v3["q999"],
                     "v2_dp_per_m": v2["dp_per_m"],
                     "v3_dp_per_m": v3["dp_per_m"],
+                    "v2_dp_per_m_window": v2["dp_per_m_window"],
+                    "v3_dp_per_m_window": v3["dp_per_m_window"],
                     "v2_lmh_exposed": v2["lmh_exposed"],
                     "v3_lmh_exposed": v3["lmh_exposed"],
                     "v2_lmh_installed": v2["lmh_installed"],
@@ -880,6 +892,7 @@ def seminar_rows(data_root, mesh_ids):
                     ],
                     "cp_q999_window_flux": metrics["q999"],
                     "pressure_drop_spacer_per_m": metrics["dp_per_m"],
+                    "pp_pressure_drop_periodic_per_m": metrics["dp_per_m_window"],
                     "lmh_window_exposed": metrics["lmh_exposed"],
                     "lmh_window_module": metrics["lmh_installed"],
                     "convergence_quality": metrics["gate"],

@@ -97,6 +97,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
                 "dead_zone_area_fraction_window",
                 "cp_q999_window_flux",
                 "pressure_drop_spacer_per_m",
+                "pp_pressure_drop_periodic_per_m",
                 "lmh_window_exposed",
                 "lmh_window_module",
             ],
@@ -111,6 +112,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
                 "dead_zone_area_fraction_window": dead,
                 "cp_q999_window_flux": q999,
                 "pressure_drop_spacer_per_m": dp,
+                "pp_pressure_drop_periodic_per_m": None if dp is None else dp * 0.97,
                 "lmh_window_exposed": exposed,
                 "lmh_window_module": installed,
             }
@@ -743,3 +745,25 @@ def test_keep_checkpoints_is_only_on_solve_jobs(tmp_path):
                 str(tmp_path / "queue.json"),
             ]
         )
+
+
+def test_benchmark_tables_report_both_dp_per_m_columns(tmp_path):
+    """Audit A2-06: active-span and evaluation-window dP/L side by side."""
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+    _write_leaf(tmp_path / "v3", "D2450_a45", MESH_ID, "u0p2_p6M", cp=1.2, q999=1.3, dp=1000.0,
+                exposed=24.0, installed=23.0, gate="PASS")
+    _write_leaf(tmp_path / "v2", "D2450_a45", CAMPAIGN.production_mesh_id("D2450_a45"), "u0p2_p6M",
+                cp=1.1, q999=1.3, dp=900.0, exposed=24.0, installed=23.0, gate="PASS")
+    metrics = CAMPAIGN.leaf_metrics(CAMPAIGN.run_leaf(tmp_path / "v3", "D2450_a45", MESH_ID, "u0p2_p6M"))
+    assert metrics["dp_per_m"] == pytest.approx(1000.0)
+    assert metrics["dp_per_m_window"] == pytest.approx(970.0)
+    seminar = next(row for row in CAMPAIGN.seminar_rows(tmp_path / "v3", mesh_ids)
+                   if row["geo_id"] == "D2450_a45" and row["run_id"] == "u0p2_p6M")
+    assert seminar["pressure_drop_spacer_per_m"] == pytest.approx(1000.0)
+    assert seminar["pp_pressure_drop_periodic_per_m"] == pytest.approx(970.0)
+    assert "pp_pressure_drop_periodic_per_m" in CAMPAIGN.SEMINAR_CASES_COLUMNS
+    compare = next(row for row in CAMPAIGN.comparison_rows(tmp_path / "v2", tmp_path / "v3", mesh_ids)
+                   if row["geo_id"] == "D2450_a45" and row["run_id"] == "u0p2_p6M")
+    assert compare["v2_dp_per_m_window"] == pytest.approx(873.0)
+    assert compare["v3_dp_per_m_window"] == pytest.approx(970.0)
+    assert {"v2_dp_per_m_window", "v3_dp_per_m_window"} <= set(CAMPAIGN.COMPARE_COLUMNS)
