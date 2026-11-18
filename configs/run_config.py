@@ -741,6 +741,13 @@ def _require_optional_git_head(name, value):
 # moves on. The final case and data are left in place.
 extract_hang_idle_minutes = 30.0
 solve_hang_idle_minutes = 60.0
+# Meshing is guarded the same way: the attempt log and mesh_log_*.txt.
+mesh_hang_idle_minutes = 90.0
+# Per-attempt wall-clock caps. Any output resets the idle timer, so a
+# worker that loops while printing is only stopped by these.
+extract_wall_cap_hours = 6.0
+solve_wall_cap_hours = 48.0
+mesh_wall_cap_hours = 12.0
 
 
 def validate_common():
@@ -768,6 +775,13 @@ def validate_common():
     _require_positive_number(
         "solve_hang_idle_minutes", solve_hang_idle_minutes
     )
+    for _name, _value in (
+        ("mesh_hang_idle_minutes", mesh_hang_idle_minutes),
+        ("extract_wall_cap_hours", extract_wall_cap_hours),
+        ("solve_wall_cap_hours", solve_wall_cap_hours),
+        ("mesh_wall_cap_hours", mesh_wall_cap_hours),
+    ):
+        _require_positive_number(_name, _value)
 
 
 def _require_geometry_root(value):

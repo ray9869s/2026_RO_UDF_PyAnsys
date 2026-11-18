@@ -619,12 +619,17 @@ def test_console_job_gets_a_discovery_console_and_a_plain_job_keeps_the_log(
 
     seen = []
 
-    def fake_run(argv, **kwargs):
-        del argv
-        seen.append(kwargs)
-        return type("Completed", (), {"returncode": 0})()
+    class FakePopen:
+        pid = 1
 
-    monkeypatch.setattr(job_queue.subprocess, "run", fake_run)
+        def __init__(self, argv, **kwargs):
+            del argv
+            seen.append(kwargs)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(job_queue.subprocess, "Popen", FakePopen)
     plain = (tmp_path / "plain.json").resolve()
     _write(plain, [{"id": "plain", "argv": _py("print(1)")}])
     assert job_queue.main(["run", str(plain)]) == job_queue.EXIT_OK

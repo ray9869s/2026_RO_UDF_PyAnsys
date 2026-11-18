@@ -12,6 +12,7 @@ Extract is retried once by the driver. Solve is not.
 from __future__ import annotations
 
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from ro.session_retry import (
 HANG_EXIT_CODE = 75
 FAILURE_CLASS_HANG = "hang"
 _HANG_LINE_RE = re.compile(
-    r"^HANG failure_class=hang stage=(extract|solve) "
+    r"^HANG failure_class=hang stage=(extract|solve|mesh) "
     r"idle_s=(\S+) killed_pids=([0-9,]*)\s*$",
     re.MULTILINE,
 )
@@ -119,25 +120,58 @@ def stop_job_pids(pids, *, killer=None) -> list[str]:
     return messages
 
 
-def idle_seconds(stage: str) -> float:
-    """Run-config minutes for this stage, converted to seconds."""
+_IDLE_CONFIG = {
+    "extract": ("extract_hang_idle_minutes", 30.0),
+    "solve": ("solve_hang_idle_minutes", 60.0),
+    "mesh": ("mesh_hang_idle_minutes", 90.0),
+}
+# Per-attempt wall-clock caps. Any output resets the idle timer, so a
+# child that loops while printing is only stopped by this cap.
+_WALL_CONFIG = {
+    "extract": ("extract_wall_cap_hours", 6.0),
+    "solve": ("solve_wall_cap_hours", 48.0),
+    "mesh": ("mesh_wall_cap_hours", 12.0),
+}
+# After the worker exits, stop reading a pipe a grandchild still holds.
+DRAIN_AFTER_EXIT_S = 30.0
+_EOF = object()
+
+
+def _run_config_value(stage: str, table):
     from ro.paths import project_root
     import importlib.util
 
+    if stage not in table:
+        raise ValueError(f"unknown watchdog stage {stage!r}")
     path = project_root() / "configs" / "run_config.py"
     spec = importlib.util.spec_from_file_location(
         f"hang_run_config_{stage}", path
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    name = (
-        "extract_hang_idle_minutes"
-        if stage == "extract"
-        else "solve_hang_idle_minutes"
-    )
-    default = 30.0 if stage == "extract" else 60.0
-    minutes = getattr(module, name, default)
-    return float(minutes) * 60.0
+    name, default = table[stage]
+    return float(getattr(module, name, default))
+
+
+def idle_seconds(stage: str) -> float:
+    """Run-config minutes for this stage, converted to seconds."""
+    return _run_config_value(stage, _IDLE_CONFIG) * 60.0
+
+
+def wall_cap_seconds(stage: str) -> float:
+    """Run-config per-attempt wall-clock cap for this stage, in seconds."""
+    return _run_config_value(stage, _WALL_CONFIG) * 3600.0
+
+
+def format_wall_cap_line(stage: str, wall_s: float) -> str:
+    return f"HANG_REASON wall_cap stage={stage} wall_s={float(wall_s):g}"
+
+
+def _close_quietly(stream):
+    try:
+        stream.close()
+    except Exception:  # noqa: BLE001 - best effort after a kill
+        pass
 
 
 def tee_until_hang(
@@ -152,12 +186,21 @@ def tee_until_hang(
     popen_factory=None,
     killer=None,
     poll_s=None,
+    wall_s=None,
+    drain_s=DRAIN_AFTER_EXIT_S,
 ):
     """Tee the child to ``log_path`` and stdout. Kill it when progress stops.
 
     Progress is the attempt log, ``extra_files`` (Fluent transcripts), and
-    any file under ``post/`` next to the log. The returned code is
-    ``HANG_EXIT_CODE`` when the watcher fires.
+    any file under ``post/`` next to the log. ``wall_s`` caps the whole
+    attempt even while output keeps flowing. The returned code is
+    ``HANG_EXIT_CODE`` when either fires.
+
+    The child's stdout is read on a separate thread. A Fluent/MPI
+    grandchild that inherited the pipe can keep it open after the worker
+    is killed or exits, so the main loop never blocks on it: it returns
+    after a kill, or ``drain_s`` after the worker exited, and closes the
+    pipe on a daemon thread.
     """
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +218,34 @@ def tee_until_hang(
     interval = poll_s if poll_s is not None else min(5.0, max(0.05, float(idle_s) / 20.0))
     stop = threading.Event()
     state = {"hung": False, "messages": []}
+    lines = queue.Queue()
+    started = time.monotonic()
+
+    def read():
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        except (ValueError, OSError):
+            pass
+        finally:
+            lines.put(_EOF)
+
+    def fire(reason_lines):
+        evidence = ""
+        try:
+            evidence = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            evidence = ""
+        pids = pids_to_stop(evidence, proc.pid)
+        messages = stop_job_pids(pids, killer=killer)
+        line = format_hang_line(stage, idle_s, pids)
+        state["messages"] = [line, *reason_lines, *messages]
+        state["hung"] = True
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
     def watch():
         last = progress_signature(
@@ -184,54 +255,83 @@ def tee_until_hang(
         while not stop.is_set():
             if stop.wait(interval):
                 return
+            now = time.monotonic()
+            if wall_s is not None and now - started >= float(wall_s):
+                fire([format_wall_cap_line(stage, wall_s)])
+                return
             current = progress_signature(
                 progress_paths(log_path, extra_files, post_dir)
             )
-            now = time.monotonic()
             if current != last:
                 last = current
                 last_change = now
                 continue
             if now - last_change < float(idle_s) or stop.is_set():
                 continue
-            evidence = ""
-            try:
-                evidence = log_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                evidence = ""
-            pids = pids_to_stop(evidence, proc.pid)
-            messages = stop_job_pids(pids, killer=killer)
-            line = format_hang_line(stage, idle_s, pids)
-            state["messages"] = [line, *messages]
-            state["hung"] = True
-            if proc.poll() is None:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
+            fire([])
             return
 
     print(
-        f"Hang watchdog: stage={stage} idle_s={float(idle_s):g}",
+        f"Hang watchdog: stage={stage} idle_s={float(idle_s):g}"
+        + ("" if wall_s is None else f" wall_s={float(wall_s):g}"),
         flush=True,
     )
+    reader = threading.Thread(target=read, name=f"hang-read-{stage}", daemon=True)
+    reader.start()
     thread = threading.Thread(target=watch, name=f"hang-watch-{stage}", daemon=True)
     thread.start()
     returncode = 1
     error = None
+    pipe_held = False
     try:
         with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
-            for line in proc.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log_file.write(line)
-                log_file.flush()
-            returncode = proc.wait()
+            exited_at = None
+            while True:
+                try:
+                    item = lines.get(timeout=interval)
+                except queue.Empty:
+                    item = None
+                if item is _EOF:
+                    break
+                if item is not None:
+                    sys.stdout.write(item)
+                    sys.stdout.flush()
+                    log_file.write(item)
+                    log_file.flush()
+                    continue
+                if state["hung"]:
+                    break
+                if proc.poll() is not None:
+                    exited_at = exited_at if exited_at is not None else time.monotonic()
+                    if time.monotonic() - exited_at >= float(drain_s):
+                        pipe_held = True
+                        break
+            while True:
+                try:
+                    item = lines.get_nowait()
+                except queue.Empty:
+                    break
+                if item is _EOF:
+                    continue
+                sys.stdout.write(item)
+                log_file.write(item)
+            if pipe_held:
+                note = (
+                    "WARNING: worker exited but its stdout is still open "
+                    f"after {float(drain_s):g} s (a grandchild holds the pipe); "
+                    "stopped reading.\n"
+                )
+                sys.stdout.write(note)
+                log_file.write(note)
+            if not state["hung"]:
+                returncode = proc.wait()
     except Exception as exc:
         error = exc
     finally:
         stop.set()
         thread.join(timeout=max(2.0, interval * 2))
+    if state["hung"] or pipe_held:
+        threading.Thread(target=_close_quietly, args=(proc.stdout,), daemon=True).start()
     if state["hung"]:
         with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
             for message in state["messages"]:

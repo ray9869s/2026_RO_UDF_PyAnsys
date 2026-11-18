@@ -713,6 +713,38 @@ def record_session_attempt_metadata(
 record_cad_import_attempts = record_session_attempt_metadata
 
 
+def guarded_meshing_runner(mesh_log_path):
+    """Run one meshing attempt under the hang watchdog.
+
+    The attempt log is ``mesh_attempt<N>.log`` next to the mesh log;
+    the Fluent meshing transcript (and its after-surface continuation)
+    count as progress. Idle and wall caps come from run_config.
+    """
+    from ro.hang_watchdog import idle_seconds, tee_until_hang, wall_cap_seconds
+
+    mesh_log_path = Path(mesh_log_path)
+    continuation = mesh_log_path.with_name(
+        f"{mesh_log_path.stem}_after_surface{mesh_log_path.suffix}"
+    )
+    counter = {"attempt": 0}
+
+    def run(cmd, env, cwd, check=False):
+        del check
+        counter["attempt"] += 1
+        return tee_until_hang(
+            cmd,
+            env=env,
+            cwd=cwd,
+            log_path=mesh_log_path.parent / f"mesh_attempt{counter['attempt']}.log",
+            stage="mesh",
+            idle_s=idle_seconds("mesh"),
+            wall_s=wall_cap_seconds("mesh"),
+            extra_files=(mesh_log_path, continuation),
+        )
+
+    return run
+
+
 def run_meshing_attempts(
     *,
     cmd,

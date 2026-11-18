@@ -64,7 +64,7 @@ EXIT_JOB_FAILED = 2
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _JOB_REQUIRED = ("id", "argv")
-_JOB_OPTIONAL = ("cwd", "env", "console")
+_JOB_OPTIONAL = ("cwd", "env", "console", "timeout_s")
 _RECORD_FIELDS = (
     "id",
     "status",
@@ -233,8 +233,53 @@ def load_queue(queue_path: Path) -> list[dict]:
             job["console"] = True
         elif "console" in item:
             raise QueueError(f"{label} console must be true.")
+        if "timeout_s" in item:
+            job["timeout_s"] = _validate_timeout(item["timeout_s"], f"{label} timeout_s")
         jobs.append(job)
     return jobs
+
+
+def _validate_timeout(value, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        raise QueueError(f"{label} must be a positive number of seconds, got {value!r}.")
+    return float(value)
+
+
+def kill_process_tree(proc) -> str:
+    """Kill ``proc`` and its children (Fluent, MPI). Windows uses taskkill /T."""
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        return (result.stdout or result.stderr or "").strip()
+    try:
+        proc.kill()
+    except OSError as exc:
+        return f"kill {proc.pid}: {exc}"
+    return f"killed {proc.pid}"
+
+
+def _run_with_timeout(argv, *, timeout_s, **kwargs):
+    """``subprocess.run`` that kills the whole tree on timeout.
+
+    Returns ``(returncode, timed_out)``. ``returncode`` is None on timeout.
+    """
+    proc = subprocess.Popen(argv, **kwargs)
+    try:
+        return proc.wait(timeout=timeout_s), False
+    except subprocess.TimeoutExpired:
+        message = kill_process_tree(proc)
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
+        print(f"job timed out after {timeout_s:g} s; {message}", file=sys.stderr, flush=True)
+        return None, True
 
 
 def argv_with_checkpoint_resume(argv: list[str]) -> list[str]:
@@ -246,8 +291,20 @@ def argv_with_checkpoint_resume(argv: list[str]) -> list[str]:
     return [*argv, "--resume"]
 
 
-def run_queue(queue, *, retry_failed: bool = False, resume: bool = False) -> int:
-    """Run the queue. Returns 0 or 2. Raises QueueError on preflight refusal."""
+def run_queue(
+    queue,
+    *,
+    retry_failed: bool = False,
+    resume: bool = False,
+    job_timeout_s: float | None = None,
+) -> int:
+    """Run the queue. Returns 0 or 2. Raises QueueError on preflight refusal.
+
+    ``job_timeout_s`` applies to jobs without their own ``timeout_s``;
+    a timed-out job's process tree is killed and the job is failed.
+    """
+    if job_timeout_s is not None:
+        job_timeout_s = _validate_timeout(job_timeout_s, "job timeout")
     if not isinstance(retry_failed, bool):
         raise QueueError(
             f"retry_failed must be a bool, got {retry_failed!r}."
@@ -268,6 +325,7 @@ def run_queue(queue, *, retry_failed: bool = False, resume: bool = False) -> int
                 files,
                 retry_failed=retry_failed,
                 resume=resume,
+                job_timeout_s=job_timeout_s,
             )
         finally:
             _release_lock(host_lock)
@@ -335,6 +393,10 @@ def main(argv=None) -> int:
                 args.queue,
                 retry_failed=args.retry_failed,
                 resume=args.resume,
+                job_timeout_s=(
+                    None if args.job_timeout_hours is None
+                    else args.job_timeout_hours * 3600.0
+                ),
             )
         else:
             raise QueueError(f"unknown command {args.command!r}.")
@@ -366,6 +428,15 @@ def _parser() -> argparse.ArgumentParser:
             "Mesh-only jobs are retried without that flag."
         ),
     )
+    run_parser.add_argument(
+        "--job-timeout-hours",
+        type=float,
+        default=None,
+        help=(
+            "Kill a job's process tree and fail it after this many hours. "
+            "A job's own timeout_s takes precedence. Default: no timeout."
+        ),
+    )
     status_parser = sub.add_parser("status", help="Print the job table.")
     status_parser.add_argument("queue", help="Queue JSON file.")
     return parser
@@ -377,6 +448,7 @@ def _run_locked(
     *,
     retry_failed: bool,
     resume: bool = False,
+    job_timeout_s: float | None = None,
 ) -> int:
     state = _load_or_create_state(files.state, jobs)
     _ensure_ids_match(state, jobs)
@@ -416,6 +488,7 @@ def _run_locked(
             state,
             files,
             append_resume=resume and status == "failed",
+            timeout_s=job.get("timeout_s", job_timeout_s),
         )
     if any(record["status"] == "failed" for record in state["jobs"]):
         return EXIT_JOB_FAILED
@@ -450,6 +523,7 @@ def _execute_job(
     files: QueueFiles,
     *,
     append_resume: bool = False,
+    timeout_s: float | None = None,
 ) -> None:
     head = read_git_head()
     if head != state["queue_head"]:
@@ -480,6 +554,7 @@ def _execute_job(
         env.update(job["env"])
     env[JOB_RESULT_ENV] = str(result_path.resolve())
     console = job.get("console") is True
+    timed_out = False
     try:
         if console:
             # The process that starts Discovery needs a console. Holding the
@@ -490,12 +565,12 @@ def _execute_job(
                 "Discovery job. Output is also on its console.\n",
                 encoding="utf-8",
             )
-            completed = subprocess.run(
+            returncode, timed_out = _run_with_timeout(
                 argv,
+                timeout_s=timeout_s,
                 cwd=job.get("cwd"),
                 env=env,
                 shell=False,
-                check=False,
                 **discovery_stdio_kwargs(),
             )
         else:
@@ -504,15 +579,20 @@ def _execute_job(
                 # No CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, or
                 # CREATE_NO_WINDOW. A child that starts Discovery cannot
                 # inherit this redirection: the backend process never appears.
-                completed = subprocess.run(
+                returncode, timed_out = _run_with_timeout(
                     argv,
+                    timeout_s=timeout_s,
                     cwd=job.get("cwd"),
                     env=env,
                     stdout=handle,
                     stderr=subprocess.STDOUT,
                     shell=False,
-                    check=False,
                 )
+            if timed_out:
+                with log_path.open("ab") as handle:
+                    handle.write(
+                        f"\nJOB_TIMEOUT timeout_s={timeout_s:g}\n".encode("utf-8")
+                    )
     except OSError as exc:
         with log_path.open("ab") as handle:
             message = f"job failed to start: {exc}\n"
@@ -524,9 +604,9 @@ def _execute_job(
         _append_summary(files.summary, _summary_line(record))
         return
 
-    record["return_code"] = completed.returncode
+    record["return_code"] = returncode
     record["ended_at"] = utc_now()
-    record["status"] = "succeeded" if completed.returncode == 0 else "failed"
+    record["status"] = "succeeded" if returncode == 0 and not timed_out else "failed"
     record.update(read_job_result(result_path))
     _write_json_atomic(files.state, state)
     _append_summary(files.summary, _summary_line(record))

@@ -197,7 +197,7 @@ def run_solver_worker_tee(cmd, env, cwd, log_path, progress_files=()):
     No growth in that log, the Fluent transcripts, or ``post/`` for the
     run-config idle limit kills this attempt's Fluent PIDs and the worker.
     """
-    from ro.hang_watchdog import idle_seconds
+    from ro.hang_watchdog import idle_seconds, wall_cap_seconds
 
     return tee_until_hang(
         cmd,
@@ -206,6 +206,7 @@ def run_solver_worker_tee(cmd, env, cwd, log_path, progress_files=()):
         log_path=log_path,
         stage="solve",
         idle_s=idle_seconds("solve"),
+        wall_s=wall_cap_seconds("solve"),
         extra_files=progress_files,
     )
 

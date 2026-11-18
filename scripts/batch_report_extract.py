@@ -496,7 +496,7 @@ def run_extract_worker_tee(cmd, env, log_path):
     No growth in that log or in ``post/`` for the run-config idle limit
     kills this attempt's Fluent PIDs and the worker.
     """
-    from ro.hang_watchdog import idle_seconds
+    from ro.hang_watchdog import idle_seconds, wall_cap_seconds
 
     return tee_until_hang(
         cmd,
@@ -504,6 +504,7 @@ def run_extract_worker_tee(cmd, env, log_path):
         log_path=log_path,
         stage="extract",
         idle_s=idle_seconds("extract"),
+        wall_s=wall_cap_seconds("extract"),
     )
 
 

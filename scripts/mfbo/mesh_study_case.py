@@ -977,6 +977,9 @@ def launch_meshing(overrides, data_root, mesh_directory, mesh_id, max_retries):
         mesh_log_path=Path(mesh_directory) / f"mesh_log_{mesh_id}.txt",
         mesh_run_record_path=Path(mesh_directory) / "mesh_run_record.json",
         max_retries=max_retries,
+        runner=batch_meshing.guarded_meshing_runner(
+            Path(mesh_directory) / f"mesh_log_{mesh_id}.txt"
+        ),
     )
     if result is None:
         raise RuntimeError("Meshing worker did not return a process result.")
