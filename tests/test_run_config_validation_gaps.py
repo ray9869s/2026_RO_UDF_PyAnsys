@@ -641,6 +641,7 @@ class TestPostConfigOverrideAllowlist:
             "results_dir",
             "case_path",
             "report_dirname",
+            "report_snapshot_iteration",
         }
         assert admitted_config_fields <= allowed
         assert extensions <= allowed

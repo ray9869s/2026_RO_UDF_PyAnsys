@@ -91,12 +91,17 @@ from ro.mesh_spec import (  # noqa: E402
 from ro.paths import project_root  # noqa: E402
 from ro.aspect_ceiling import aspect_ceiling_from_mesh_id, aspect_ceiling_suffix  # noqa: E402
 from ro.solver_common import make_base_case_name  # noqa: E402
+from ro.report_binding import REPORT_BOUND, report_binding_reason  # noqa: E402
 
 DATA_ROOT = "C:/ro_data_mfbo/campaign_v3"
 GEOMETRY_ROOT = "C:/ro_data_mfbo/geometries_pmdb"
 V2_ROOT = "C:/ro_data_mfbo/campaign_reextract_v2"
 PRESSURE_PA = 6.0e6
 BENCHMARK_CP_METRIC = "cp_meanfirst_live_window_avg"
+# campaign_reextract_v2 is not re-extracted. Its dead-zone area is
+# negligible, so the all-face area mean-first value (equal to
+# cp_meanfirst_window_avg) stands in for the live benchmark column.
+V2_CP_METRIC = "cpc_window_avg_area"
 # Preserve the original queue order, then append the intermediate speeds.
 VELOCITY_ORDER = (0.2, 0.1, 0.3, 0.05, 0.15, 0.25)
 # run_config.py mesh quality gate.
@@ -133,6 +138,7 @@ SEMINAR_CASES_COLUMNS = (
     "lmh_window_exposed",
     "lmh_window_module",
     "convergence_quality",
+    "report_binding",
     "mesh_spec_sha256",
     "git_head",
 )
@@ -162,6 +168,9 @@ COMPARE_COLUMNS = (
     "v3_lmh_installed",
     "v2_gate",
     "v3_gate",
+    "v2_cp_metric",
+    "v2_report_binding",
+    "v3_report_binding",
 )
 
 
@@ -740,16 +749,24 @@ def _run_manifest(run_directory):
     return _read_json(path)
 
 
-def leaf_metrics(run_directory):
+def leaf_metrics(run_directory, *, cp_metric=None):
     """CP, excess, q999, dP/L, LMH, and the convergence gate for one leaf.
 
-    CP is ``cp_meanfirst_live_window_avg``. Excess is that value minus 1.
-    ``cpc`` is ``cpc_window_avg_flux``. q999 is ``cp_q999_window_flux``,
-    not that value minus 1. Installed LMH is ``lmh_window_module``.
+    CP is ``cp_meanfirst_live_window_avg`` unless ``cp_metric`` names
+    another column (v2 uses ``cpc_window_avg_area``). Excess is that value
+    minus 1. ``cpc`` is ``cpc_window_avg_flux``. q999 is
+    ``cp_q999_window_flux``, not that value minus 1. Installed LMH is
+    ``lmh_window_module``.
+
+    ``post/reports`` is used only when its ``extract_source.json`` hashes
+    equal the manifest final hashes. Otherwise every metric is blank and
+    ``report_binding`` says why (a continued leaf keeps its pre-continue
+    reports next to a newer final and gate).
     """
-    wide = _wide_row(run_directory)
+    binding = report_binding_reason(run_directory)
+    wide = _wide_row(run_directory) if binding is None else {}
     manifest = _run_manifest(run_directory)
-    cp = _optional_float(wide.get(BENCHMARK_CP_METRIC))
+    cp = _optional_float(wide.get(cp_metric or BENCHMARK_CP_METRIC))
     gate = manifest.get("convergence_quality")
     if not isinstance(gate, str) or not gate.strip():
         gate = "MISSING"
@@ -768,6 +785,7 @@ def leaf_metrics(run_directory):
         "lmh_exposed": _optional_float(wide.get("lmh_window_exposed")),
         "lmh_installed": _optional_float(wide.get("lmh_window_module")),
         "gate": gate,
+        "report_binding": REPORT_BOUND if binding is None else binding,
         "mesh_spec_sha256": manifest.get("mesh_spec_sha256") or "",
         "git_head": manifest.get("git_head") or "",
     }
@@ -788,7 +806,9 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
         for geo_id in CAMPAIGN_GEO_ID_ORDER:
             v2_mesh = production_mesh_id(geo_id)
             v3_mesh = v3_mesh_ids[geo_id]
-            v2 = leaf_metrics(run_leaf(v2_root, geo_id, v2_mesh, run_id))
+            v2 = leaf_metrics(
+                run_leaf(v2_root, geo_id, v2_mesh, run_id), cp_metric=V2_CP_METRIC
+            )
             v3 = leaf_metrics(run_leaf(v3_root, geo_id, v3_mesh, run_id))
             if v2["cp"] is None or v3["cp"] is None or v2["cp"] == 0.0:
                 step = None
@@ -801,6 +821,7 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                     "run_id": run_id,
                     "v2_mesh_id": v2_mesh,
                     "benchmark_cp_metric": BENCHMARK_CP_METRIC,
+                    "v2_cp_metric": V2_CP_METRIC,
                     "v3_mesh_id": v3_mesh,
                     "v2_cp": v2["cp"],
                     "v3_cp": v3["cp"],
@@ -821,6 +842,8 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                     "v3_lmh_installed": v3["lmh_installed"],
                     "v2_gate": v2["gate"],
                     "v3_gate": v3["gate"],
+                    "v2_report_binding": v2["report_binding"],
+                    "v3_report_binding": v3["report_binding"],
                 }
             )
     return rows
@@ -860,6 +883,7 @@ def seminar_rows(data_root, mesh_ids):
                     "lmh_window_exposed": metrics["lmh_exposed"],
                     "lmh_window_module": metrics["lmh_installed"],
                     "convergence_quality": metrics["gate"],
+                    "report_binding": metrics["report_binding"],
                     "mesh_spec_sha256": spec_hash or "",
                     "git_head": git_head or "",
                 }

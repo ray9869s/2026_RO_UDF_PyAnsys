@@ -58,16 +58,26 @@ def launch_extract(
     profile=None,
     extra_argv=None,
     report_dirname=None,
+    final_case=None,
+    final_data=None,
+    snapshot_iteration=None,
 ):
     """Run pyfluent_report_extract.py the way batch_report_extract.py does.
 
     ``profile=None`` keeps the worker argv unchanged. ``profile="mfbo"``
-    appends ``--profile mfbo``.
+    appends ``--profile mfbo``. ``final_case``/``final_data`` with
+    ``snapshot_iteration`` extract a saved ``*_iter_<N>`` pair; the worker
+    then leaves the run manifest gate alone.
     """
     run_directory = Path(run_directory)
     worker, base_config = extract_launcher_paths()
-    final_case = run_directory / f"{geo_id}_{run_id}_final.cas.h5"
-    final_data = run_directory / f"{geo_id}_{run_id}_final.dat.h5"
+    if (final_case is None) != (final_data is None):
+        raise ValueError("final_case and final_data are given together.")
+    if (final_case is None) != (snapshot_iteration is None):
+        raise ValueError("a non-final case/data pair needs snapshot_iteration.")
+    if final_case is None:
+        final_case = run_directory / f"{geo_id}_{run_id}_final.cas.h5"
+        final_data = run_directory / f"{geo_id}_{run_id}_final.dat.h5"
 
     def _build():
         overrides, error = batch_report_extract.build_post_case_overrides(
@@ -86,6 +96,8 @@ def launch_extract(
     overrides = call_with_data_root(data_root, _build)
     if report_dirname:
         overrides["report_dirname"] = report_dirname
+    if snapshot_iteration is not None:
+        overrides["report_snapshot_iteration"] = int(snapshot_iteration)
     env = extract_child_env(data_root, overrides, base_config)
     cmd = report_extract_argv(sys.executable, worker, profile)
     if extra_argv:

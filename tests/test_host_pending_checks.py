@@ -1,6 +1,7 @@
 """Pure artifact/transaction/command checks; never start Ansys or host commands."""
 
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,12 +29,18 @@ def write_wide(leaf, values):
         writer.writerow(values)
 
 
-def plant_final(root, geo="REF_empty", *, status="PASS", run="u0p2_p6M"):
+_FINAL_SHA = hashlib.sha256(b"synthetic final").hexdigest()
+_FINAL_HASHES = {"final_case_sha256": _FINAL_SHA, "final_data_sha256": _FINAL_SHA}
+
+
+def plant_final(root, geo="REF_empty", *, status="PASS", run="u0p2_p6M", bound=True):
     leaf = host.run_leaf(root, geo, case=run)
-    write_json(leaf / "manifest.json", {"convergence_quality": status, "iterations_run": 2000})
+    write_json(leaf / "manifest.json", {"convergence_quality": status, "iterations_run": 2000, **_FINAL_HASHES})
     for kind in ("cas", "dat"):
         (leaf / f"{geo}_{run}_final.{kind}.h5").write_bytes(b"synthetic final")
     write_wide(leaf, {"lmh_window_exposed": 25})
+    if bound:
+        write_json(leaf / "post" / "reports" / "extract_source.json", _FINAL_HASHES)
     return leaf
 
 
@@ -197,14 +204,15 @@ def test_pass_final_emitter_excludes_failed_archived_and_iteration_snapshots(tmp
     assert "--resume" not in jobs[0]["argv"]
     assert (passed / "post" / "reports").is_dir()
     (passed / "REF_empty_u0p2_p6M_final.dat.h5").unlink()
-    with pytest.raises(ValueError, match="final solution"):
-        emitter.pass_final_jobs(tmp_path)
+    skipped = []
+    assert emitter.pass_final_jobs(tmp_path, report=skipped.append) == []
+    assert any("final solution" in line for line in skipped)
 
 
 def test_pass_worker_rechecks_status_before_archiving(monkeypatch, tmp_path):
     leaf = plant_final(tmp_path, status="FAIL")
     monkeypatch.setattr(emitter.reextract_runs, "reextract_leaf", lambda *_a, **_kw: pytest.fail("must not extract"))
-    with pytest.raises(ValueError, match="not PASS"):
+    with pytest.raises(ValueError, match="neither PASS nor stale"):
         emitter.main(["--data-root", str(tmp_path), "--run-leaf", str(leaf)])
     assert (leaf / "post" / "reports").is_dir()
 

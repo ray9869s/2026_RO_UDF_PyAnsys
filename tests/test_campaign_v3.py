@@ -68,7 +68,20 @@ def _spec():
     return load_mesh_spec(default_spec_path())
 
 
-def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, installed, gate, cpc=None, dead=0.0, spec_hash="", git_head=""):
+_BOUND_HASHES = {"final_case_sha256": "c" * 64, "final_data_sha256": "d" * 64}
+
+
+def _bind(leaf, manifest=None, sidecar_hashes=None):
+    """Manifest final hashes plus a matching post/reports sidecar."""
+    payload = dict(manifest or {})
+    payload.update(_BOUND_HASHES)
+    (leaf / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (leaf / "post" / "reports" / "extract_source.json").write_text(
+        json.dumps(sidecar_hashes or _BOUND_HASHES), encoding="utf-8"
+    )
+
+
+def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, installed, gate, cpc=None, dead=0.0, spec_hash="", git_head="", bound=True, cpc_area=None):
     family = family_for_geo_id(geo_id)
     leaf = root / "runs" / family / geo_id / mesh_id / run_id
     reports = leaf / "post" / "reports"
@@ -80,6 +93,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
                 "cp_meanfirst_live_window_avg",
                 "cp_canon_live_window_avg",
                 "cpc_window_avg_flux",
+                "cpc_window_avg_area",
                 "dead_zone_area_fraction_window",
                 "cp_q999_window_flux",
                 "pressure_drop_spacer_per_m",
@@ -93,6 +107,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
                 "cp_meanfirst_live_window_avg": cp,
                 "cp_canon_live_window_avg": cp,
                 "cpc_window_avg_flux": cp if cpc is None else cpc,
+                "cpc_window_avg_area": cp if cpc_area is None else cpc_area,
                 "dead_zone_area_fraction_window": dead,
                 "cp_q999_window_flux": q999,
                 "pressure_drop_spacer_per_m": dp,
@@ -105,7 +120,10 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
         payload["mesh_spec_sha256"] = spec_hash
     if git_head:
         payload["git_head"] = git_head
-    (leaf / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    if bound:
+        _bind(leaf, payload)
+    else:
+        (leaf / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
     return leaf
 
 
@@ -115,6 +133,7 @@ def test_benchmark_uses_meanfirst_and_never_falls_back_to_old_canon(tmp_path):
     reports.mkdir(parents=True)
     summary = reports / "summary_metrics_wide.csv"
     summary.write_text("cp_canon_live_window_avg,cp_meanfirst_live_window_avg\n9,1.1\n", encoding="utf-8")
+    _bind(leaf)
     metrics = CAMPAIGN.leaf_metrics(leaf)
     assert metrics["cp"] == pytest.approx(1.1)
     assert metrics["cp_excess"] == pytest.approx(0.1)

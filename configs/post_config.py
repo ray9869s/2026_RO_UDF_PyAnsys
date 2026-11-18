@@ -12,6 +12,7 @@ POST_CONFIG_OVERRIDE_EXTENSIONS = frozenset({
     "results_dir",
     "case_path",
     "report_dirname",
+    "report_snapshot_iteration",
 })
 
 

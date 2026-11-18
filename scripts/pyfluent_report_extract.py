@@ -324,16 +324,35 @@ def load_python_config(config_path):
 
 
 def _report_dirname(value):
-    """``reports`` or ``reports_iter<N>``. Other names are refused."""
+    """``reports``, ``reports_iter<N>`` or ``reports_iter<N>_meanfirst``.
+
+    The ``_meanfirst`` form is a snapshot re-extract of a saved
+    ``*_iter_<N>`` pair. Other names are refused.
+    """
     if value is None or value == "":
         return "reports"
     text = str(value)
-    if text == "reports" or re.fullmatch(r"reports_iter[1-9][0-9]*", text):
+    if text == "reports" or re.fullmatch(
+        r"reports_iter[1-9][0-9]*(_meanfirst)?", text
+    ):
         return text
     raise ValueError(
-        "report_dirname must be 'reports' or 'reports_iter<N>', "
-        f"got {value!r}."
+        "report_dirname must be 'reports', 'reports_iter<N>' or "
+        f"'reports_iter<N>_meanfirst', got {value!r}."
     )
+
+
+def require_snapshot_layout(cfg):
+    """A ``_meanfirst`` directory needs ``report_snapshot_iteration`` and back."""
+    dirname = _report_dirname(getattr(cfg, "report_dirname", None))
+    iteration = getattr(cfg, "report_snapshot_iteration", None)
+    if dirname.endswith("_meanfirst") or iteration not in (None, ""):
+        if iteration in (None, "") or dirname != f"reports_iter{int(iteration)}_meanfirst":
+            raise ValueError(
+                "snapshot extract needs report_snapshot_iteration=N and "
+                f"report_dirname='reports_iter<N>_meanfirst', got "
+                f"{iteration!r} and {dirname!r}."
+            )
 
 
 def report_binds_manifest(cfg):
@@ -522,6 +541,7 @@ if __name__ == "__main__":
     geo_name = cfg.geo_name
     case_name = cfg.case_name
 
+    require_snapshot_layout(cfg)
     paths = resolve_report_case_paths(cfg)
     case_path = paths["case_path"]
     case_path_provenance = paths["case_path_provenance"]
@@ -3119,7 +3139,11 @@ if __name__ == "__main__":
         summary_wide_df = summary_wide_df[existing_front_columns + other_columns]
 
         # Recorded only. Not part of the PASS/FAIL gate.
-        monitor_changes = last100_monitor_changes(case_path)
+        # A snapshot extract reads a saved *_iter_<N> pair; the leaf's .out
+        # histories end later, so their tail does not describe it.
+        monitor_changes = (
+            last100_monitor_changes(case_path) if report_binds_manifest(cfg) else {}
+        )
         for column, value in monitor_changes.items():
             summary_wide_df[column] = value
 
@@ -3263,36 +3287,42 @@ if __name__ == "__main__":
                 active_cell_numbers=layout.active_cell_numbers(),
             )
 
-        try:
-            update_run_manifest_fields(
-                case_path,
-                {
-                    **manifest_quality_payload(quality_result),
-                    **_evaluation_window_selection.manifest_fields(),
-                    **campaign_midplane_manifest_fields(_found_center_z),
-                    **y1_diagnostic,
-                    **monitor_changes,
-                },
-            )
+        if not report_binds_manifest(cfg):
             print(
-                "Convergence quality    :",
-                quality_result["convergence_quality"],
-                (
-                    f"(failures={quality_result['failures']})"
-                    if quality_result["failures"]
-                    else ""
-                ),
-                (
-                    f"(warnings={quality_result['warnings']})"
-                    if quality_result["warnings"]
-                    else ""
-                ),
+                "Snapshot extract: run manifest gate not updated "
+                f"(report_snapshot_iteration={cfg.report_snapshot_iteration})."
             )
-        except Exception as exc:
-            raise RuntimeError(
-                "could not write convergence_quality to run manifest: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+        else:
+            try:
+                update_run_manifest_fields(
+                    case_path,
+                    {
+                        **manifest_quality_payload(quality_result),
+                        **_evaluation_window_selection.manifest_fields(),
+                        **campaign_midplane_manifest_fields(_found_center_z),
+                        **y1_diagnostic,
+                        **monitor_changes,
+                    },
+                )
+                print(
+                    "Convergence quality    :",
+                    quality_result["convergence_quality"],
+                    (
+                        f"(failures={quality_result['failures']})"
+                        if quality_result["failures"]
+                        else ""
+                    ),
+                    (
+                        f"(warnings={quality_result['warnings']})"
+                        if quality_result["warnings"]
+                        else ""
+                    ),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "could not write convergence_quality to run manifest: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
 
         write_extract_source_record(
             report_path,
@@ -3370,7 +3400,7 @@ if __name__ == "__main__":
                 f"{timing_error}"
             )
         else:
-            if extraction_wall_time_s is not None:
+            if extraction_wall_time_s is not None and report_binds_manifest(cfg):
                 try:
                     stamp_extraction_wall_time_on_run_manifest(
                         case_path,
