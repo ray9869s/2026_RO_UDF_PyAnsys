@@ -124,6 +124,11 @@ from ro.solver_common import STOP_REASON_MAX_ITER_REACHED, sha256_file
 _FLOAT_REL_TOL = 1.0e-9
 _FLOAT_ABS_TOL = 1.0e-12
 PRODUCTION_DATA_ROOT = Path("C:/ro_data")
+ADDITIONAL_P6M_VELOCITIES = {
+    "u0p05_p6M": 0.05,
+    "u0p15_p6M": 0.15,
+    "u0p25_p6M": 0.25,
+}
 
 MESH_PRINT_FIELDS = (
     "cell_count",
@@ -172,6 +177,24 @@ def _is_windows_absolute(text):
 
 def require_base_case(case):
     return campaign.require_base_case(case)
+
+
+def load_solver_template(geo_id, mesh_id, case_id):
+    """Additional v3 speeds inherit every setting from the u0p2 p6M case."""
+    velocity = ADDITIONAL_P6M_VELOCITIES.get(case_id)
+    source_id = "u0p2_p6M" if velocity is not None else case_id
+    entry, overrides, retries, settle_s = campaign.load_template(
+        geo_id, mesh_id, source_id
+    )
+    if velocity is not None:
+        changes = {
+            "run_id": case_id,
+            "case_name": case_id,
+            "inlet_velocity_value": velocity,
+        }
+        entry = {**entry, **changes}
+        overrides = {**overrides, **changes}
+    return entry, overrides, retries, settle_s
 
 
 def collect_overrides(
@@ -1691,7 +1714,7 @@ def main(argv=None):
         return 0
 
     checkpoint_every = require_checkpoint_every(args.checkpoint_every)
-    _entry, solver_template, solver_retries, settle_s = campaign.load_template(
+    _entry, solver_template, solver_retries, settle_s = load_solver_template(
         args.geo_id,
         production_mesh_id,
         case_id,

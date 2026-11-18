@@ -30,13 +30,15 @@ the hard limit. The estimate is linear in cell count from D2450_a45 at
 4.34 M cells and 6.5 h. ``--geo-id`` limits an emitted queue. The default
 is every geometry.
 
-The solve queue is u0p2, then u0p1, then u0p3. Every solve passes
+The solve queue is u0p2, u0p1, u0p3, u0p05, u0p15, then u0p25. Every solve passes
 ``--reuse-mesh`` and ``--checkpoint-every 200``. After a PASS extract,
 that run drops its checkpoint pairs and setup case. ``--keep-checkpoints``
 leaves them in place. Solve jobs pass ``--convergence-profile campaign_v3``: residuals stay
 1e-7, and LMH, spacer pressure drop, and the CP monitor must each
 change by less than 1e-4 over 100 iterations that start after the
-flux ramp. The iteration cap stays 2000. Other campaigns keep the
+flux ramp. The iteration cap defaults to 2000 for each family;
+``--max-iterations FAMILY=N`` overrides a family. ``--no-cp-live`` passes
+through to solves. Other campaigns keep the
 production 1e-3 LMH and pressure-drop stop.
 
 ``job_queue run`` is one Fluent at a time.
@@ -75,6 +77,7 @@ from ro.prism_aspect import (  # noqa: E402
     parse_aspect_split_text,
 )
 from ro.mesh_spec import (  # noqa: E402
+    FAMILIES,
     changes_for_settings,
     default_spec_path,
     family_settings,
@@ -90,8 +93,8 @@ DATA_ROOT = "C:/ro_data_mfbo/campaign_v3"
 GEOMETRY_ROOT = "C:/ro_data_mfbo/geometries_pmdb"
 V2_ROOT = "C:/ro_data_mfbo/campaign_reextract_v2"
 PRESSURE_PA = 6.0e6
-# u0p2 first, then the other two p6M speeds.
-VELOCITY_ORDER = (0.2, 0.1, 0.3)
+# Preserve the original queue order, then append the intermediate speeds.
+VELOCITY_ORDER = (0.2, 0.1, 0.3, 0.05, 0.15, 0.25)
 # run_config.py mesh quality gate.
 ORTHO_MIN_LIMIT = 0.05
 AR_MAX_LIMIT = 150.0
@@ -230,6 +233,8 @@ def _study_argv(
     spec_token,
     keep_checkpoints=False,
     membrane_face_size=None,
+    max_iterations=2000,
+    no_cp_live=False,
 ):
     argv = [
         "{python}",
@@ -277,6 +282,9 @@ def _study_argv(
             argv.append("--reuse-mesh")
         argv.extend(["--checkpoint-every", "200"])
         argv.extend(["--convergence-profile", "campaign_v3"])
+        argv.extend(["--max-iterations", str(max_iterations)])
+        if no_cp_live:
+            argv.append("--no-cp-live")
         if keep_checkpoints:
             argv.append("--keep-checkpoints")
     return argv
@@ -329,9 +337,12 @@ def solve_jobs(
     run_id_filter=None,
     keep_checkpoints=False,
     geo_ids=None,
+    max_iterations_by_family=None,
+    no_cp_live=False,
 ):
-    """Solves ordered u0p2, u0p1, u0p3. Each reuses the mesh when it exists."""
+    """Solves in velocity order. Each reuses the mesh when it exists."""
     token = spec_argv_token(spec_path)
+    caps = family_iteration_caps(max_iterations_by_family)
     selected = run_ids() if not run_id_filter else tuple(run_id_filter)
     unknown = [run_id for run_id in selected if run_id not in run_ids()]
     if unknown:
@@ -354,6 +365,8 @@ def solve_jobs(
                         reuse_mesh=True,
                         spec_token=token,
                         keep_checkpoints=keep_checkpoints,
+                        max_iterations=caps[family_for_geo_id(geo_id)],
+                        no_cp_live=no_cp_live,
                         membrane_face_size=geometry_membrane_face_size(
                             spec, geo_id
                         ),
@@ -361,6 +374,30 @@ def solve_jobs(
                 )
             )
     return jobs
+
+
+def family_iteration_caps(overrides=None):
+    """Resolve per-family caps without changing the mesh specification."""
+    caps = dict.fromkeys(FAMILIES, 2000)
+    for family, value in (overrides or {}).items():
+        if family not in caps:
+            raise ValueError(f"Unknown max-iterations family: {family!r}.")
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"max-iterations for {family} must be a positive integer.")
+        caps[family] = value
+    return caps
+
+
+def parse_family_iterations(tokens):
+    overrides = {}
+    for token in tokens or ():
+        family, separator, value = token.partition("=")
+        if not separator or not value.isascii() or not value.isdecimal():
+            raise ValueError("--max-iterations requires FAMILY=N (a positive integer).")
+        if family in overrides:
+            raise ValueError(f"Duplicate --max-iterations family: {family!r}.")
+        overrides[family] = int(value)
+    return family_iteration_caps(overrides)
 
 
 def estimate_solve_hours(cell_count):
@@ -851,6 +888,14 @@ def build_parser():
         help="Print the mesh quality table from manifests under the data root.",
     )
     parser.add_argument(
+        "--max-iterations", action="append", metavar="FAMILY=N",
+        help="Solve iteration cap for one family. Repeatable; all default to 2000.",
+    )
+    parser.add_argument(
+        "--no-cp-live", action="store_true",
+        help="Pass --no-cp-live to emitted solves (stop on cp_window).",
+    )
+    parser.add_argument(
         "--data-root",
         default=DATA_ROOT,
         help=f"Campaign data root (default {DATA_ROOT}).",
@@ -888,6 +933,11 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if (args.max_iterations or args.no_cp_live) and (
+        not args.emit_queue or args.mesh_only
+    ):
+        raise ValueError("--max-iterations and --no-cp-live require a solve --emit-queue.")
+    caps = parse_family_iterations(args.max_iterations)
     if args.mesh_only and args.run_id:
         raise ValueError("--mesh-only does not take --run-id.")
     if args.mesh_only and args.keep_checkpoints:
@@ -916,6 +966,8 @@ def main(argv=None):
                 run_id_filter=args.run_id,
                 keep_checkpoints=args.keep_checkpoints,
                 geo_ids=args.geo_id,
+                max_iterations_by_family=caps,
+                no_cp_live=args.no_cp_live,
             )
         )
         path = write_queue(args.emit_queue, jobs)

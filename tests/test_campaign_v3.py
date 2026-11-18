@@ -221,16 +221,22 @@ def test_mesh_only_queue_lists_every_geometry():
 def test_solve_queue_is_u0p2_first_and_reuses_the_mesh():
     spec = _spec()
     jobs = CAMPAIGN.solve_jobs(spec, default_spec_path())
-    assert len(jobs) == 93
+    assert len(jobs) == 186
     ids = [job["id"] for job in jobs]
     assert ids[:31] == [f"u0p2_p6M-{geo_id}" for geo_id in CAMPAIGN_GEO_ID_ORDER]
     assert ids[31:62] == [f"u0p1_p6M-{geo_id}" for geo_id in CAMPAIGN_GEO_ID_ORDER]
-    assert ids[62:] == [f"u0p3_p6M-{geo_id}" for geo_id in CAMPAIGN_GEO_ID_ORDER]
+    assert ids[62:93] == [f"u0p3_p6M-{geo_id}" for geo_id in CAMPAIGN_GEO_ID_ORDER]
+    for start, run_id in ((93, "u0p05_p6M"), (124, "u0p15_p6M"), (155, "u0p25_p6M")):
+        assert ids[start:start + 31] == [
+            f"{run_id}-{geo_id}" for geo_id in CAMPAIGN_GEO_ID_ORDER
+        ]
     for job in jobs:
         argv = job["argv"]
         assert "--reuse-mesh" in argv
         assert _flag(argv, "--checkpoint-every") == "200"
         assert _flag(argv, "--convergence-profile") == "campaign_v3"
+        assert _flag(argv, "--max-iterations") == "2000"
+        assert "--no-cp-live" not in argv
         assert "--keep-checkpoints" not in argv
         assert "--mesh-only" not in argv
         assert "--resume" not in argv
@@ -242,6 +248,69 @@ def test_solve_queue_is_u0p2_first_and_reuses_the_mesh():
     assert {_flag(job["argv"], "--case") for job in u0p2} == {"u0p2_p6M"}
     with pytest.raises(ValueError, match="run id"):
         CAMPAIGN.solve_jobs(spec, default_spec_path(), run_id_filter=["u0p2_p4M"])
+
+
+@pytest.mark.parametrize("run_id,velocity", [
+    ("u0p05_p6M", 0.05), ("u0p15_p6M", 0.15), ("u0p25_p6M", 0.25),
+])
+def test_new_velocity_templates_change_only_velocity_and_ids(run_id, velocity):
+    for geo_id in CAMPAIGN_GEO_ID_ORDER:
+        mesh_id = CAMPAIGN.production_mesh_id(geo_id)
+        base_entry, base, retries, settle = MESH_STUDY.load_solver_template(
+            geo_id, mesh_id, "u0p2_p6M"
+        )
+        entry, overrides, new_retries, new_settle = MESH_STUDY.load_solver_template(
+            geo_id, mesh_id, run_id
+        )
+        changes = {"inlet_velocity_value": velocity, "run_id": run_id, "case_name": run_id}
+        assert entry == {**base_entry, **changes}
+        assert overrides == {**base, **changes}
+        assert overrides["outlet_gauge_pressure"] == 6e6
+        assert (new_retries, new_settle) == (retries, settle)
+
+
+def test_emit_new_speeds_with_family_caps_and_cp_switch(tmp_path):
+    path = tmp_path / "speeds.json"
+    assert CAMPAIGN.main([
+        "--emit-queue", str(path),
+        "--run-id", "u0p05_p6M", "--run-id", "u0p15_p6M", "--run-id", "u0p25_p6M",
+        "--geo-id", "D1225_a30", "--geo-id", "P_p100_h00", "--geo-id", "M_c160",
+        "--max-iterations", "diamond=3100", "--max-iterations", "ml=2900",
+        "--no-cp-live",
+    ]) == 0
+    jobs = json.loads(path.read_text(encoding="utf-8"))
+    assert len(jobs) == 9
+    for job in jobs:
+        argv = job["argv"]
+        family = family_for_geo_id(_flag(argv, "--geo-id"))
+        assert int(_flag(argv, "--max-iterations")) == {
+            "diamond": 3100, "ml": 2900, "pillar": 2000,
+        }[family]
+        assert "--no-cp-live" in argv
+        assert "--resume" not in argv
+        MESH_STUDY.build_parser().parse_args(argv[2:])
+
+
+@pytest.mark.parametrize("tokens", [
+    ["diamond=0"], ["diamond=-1"], ["diamond=2.5"], ["diamond=nan"],
+    ["unknown=2000"], ["2000"], ["diamond=2000", "diamond=3000"],
+])
+def test_invalid_family_caps_do_not_write_a_queue(tmp_path, tokens):
+    path = tmp_path / "invalid.json"
+    argv = ["--emit-queue", str(path)]
+    for token in tokens:
+        argv.extend(["--max-iterations", token])
+    with pytest.raises(ValueError):
+        CAMPAIGN.main(argv)
+    assert not path.exists()
+
+
+def test_solve_options_require_solve_emission(tmp_path):
+    for option in (["--no-cp-live"], ["--max-iterations", "sin=3000"]):
+        with pytest.raises(ValueError, match="solve --emit-queue"):
+            CAMPAIGN.main(["--mesh-table", *option])
+        with pytest.raises(ValueError, match="solve --emit-queue"):
+            CAMPAIGN.main(["--emit-queue", str(tmp_path / "mesh.json"), "--mesh-only", *option])
 
 
 def test_mesh_table_lists_failures_and_estimates_time(tmp_path):
@@ -466,7 +535,7 @@ def test_comparison_step_uses_cp_itself(tmp_path):
         git_head=_HEAD,
     )
     rows = CAMPAIGN.comparison_rows(v2, v3, mesh_ids)
-    assert len(rows) == 93
+    assert len(rows) == 186
     row = rows[0]
     assert row["geo_id"] == "REF_empty"
     assert row["run_id"] == "u0p2_p6M"
@@ -524,7 +593,7 @@ def test_seminar_csv_schema(tmp_path):
         reader = csv.DictReader(handle)
         assert reader.fieldnames == list(CAMPAIGN.SEMINAR_CASES_COLUMNS)
         rows = list(reader)
-    assert len(rows) == 93
+    assert len(rows) == 186
     filled = next(row for row in rows if row["geo_id"] == "D2450_a45" and row["run_id"] == "u0p2_p6M")
     assert float(filled["cp_canon_live_window_avg"]) == pytest.approx(1.0854)
     assert float(filled["cp_excess"]) == pytest.approx(0.0854)

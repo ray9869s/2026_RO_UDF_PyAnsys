@@ -58,6 +58,17 @@ class TestNamingParityAcrossCampaign:
         )
         assert common.make_base_case_name(velocity, pressure) == base_name
 
+    @pytest.mark.parametrize("velocity,token", [
+        (0.05, "u0p05"), (0.15, "u0p15"), (0.25, "u0p25"),
+    ])
+    def test_fractional_velocity_identity(self, common, velocity, token):
+        assert common.velocity_to_case_token(velocity) == token
+        run_id = token + "_p6M"
+        assert common.make_base_case_name(velocity, 6e6) == run_id
+        common.require_run_id_matches_operating_point(run_id, velocity, 6e6)
+        with pytest.raises(ValueError, match="does not match"):
+            common.require_run_id_matches_operating_point("u0p2_p6M", velocity, 6e6)
+
     @pytest.mark.parametrize("velocity,pressure,base_name,mesh_name", CAMPAIGN_CASES)
     def test_resolve_case_names_from_operating_values(
         self, common, velocity, pressure, base_name, mesh_name

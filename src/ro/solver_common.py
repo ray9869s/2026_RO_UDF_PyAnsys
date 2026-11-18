@@ -87,8 +87,11 @@ MATRIX_BASE_CASE_RE = re.compile(r"^u\d+p\d+_p\d+M$")
 
 
 def velocity_to_case_token(u) -> str:
-    # 0.1 -> "u0p1"
-    return f"u0p{int(round(float(u) * 10))}"
+    # Preserve fractional speeds: 0.05 -> u0p05, 0.2 -> u0p2.
+    text = f"{float(u):.12f}".rstrip("0")
+    if text.endswith("."):
+        text += "0"
+    return "u" + text.replace(".", "p")
 
 
 def pressure_to_case_token(p) -> str:
