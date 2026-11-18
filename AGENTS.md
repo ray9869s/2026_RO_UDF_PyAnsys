@@ -72,6 +72,15 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
 - `scripts/mfbo/locate_mass_imbalance.py` — read-only diagnosis. Copies
   the leaf under `--data-root` and bins mass imbalance. Writes
   `mass_imbalance.md`, `top_cells.csv`, `histogram.csv`, `summary.json`.
+- `scripts/host/pending_checks.sh` / `.cmd` — Windows-only sequential
+  pending checks, individual logs and append-only PASS/FAIL summary.
+  They never pull or launch long solves. `pending_checks.py --plan` is
+  read-only and can be run in WSL.
+- `scripts/campaign_v3_reextract.py --emit-queue <json>` — observes the
+  campaign root and emits one full re-extract job for each current
+  `u0p2_p6M` PASS final (all mesh identities). It excludes archived run
+  leaves and `reports_iter*`. Each job rechecks PASS and the final
+  pair before archiving `post/reports`; existing queues are refused.
 
 Workers stay dated: `meshing_code_260616.py`, `solver_code_260616.py`.
 Paths go through `ro.paths`. A leaf is
@@ -228,6 +237,24 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
 
 ## Current state (2026-11-18)
 
+**Benchmark CP decision (approved 2026-11-18).** Use
+`cp_meanfirst_live_window_avg` for campaign reporting, v3 comparisons,
+and CP excess. Area-average cm and local cp over the same live
+evaluation-window membrane faces, then divide once:
+`(<cm>_live - <cp>_live) / (c_b_window - <cp>_live)`, where
+`cp_f = B*cm_f/(Jw_f+B)` and live means `cp_f < min(c0, c_b_window)`.
+Keep the existing `c_b_window_mol_m3` aggregation. Save `cp_ref_area_live`,
+the live area and mask metadata. `cp_meanfirst_window_avg` includes all
+window membrane faces and equals `cpc_window_avg_area`. Preserve every
+existing CP definition/column; do not overwrite old per-face live canon.
+The MFBO adapter and solver stop rule stay unchanged. Old summaries
+without the new benchmark column remain blank in v3 comparisons.
+
+Operator-reported evidence on S_a072_l3465, iterations 2000 -> 2500:
+per-face live canon -1.37%, `cm_area_mean_window_live` -0.035%, LMH
++0.044%, dP 0.000%. This is supplied evidence, not a host measurement
+made by WSL. See `docs/PAPER_METHODS_DOSSIER.md` for the full decision.
+
 **main4 is running from `C:/pyfluent`**, as reported by the operator.
 Its starting revision, flags, jobs, and results were not supplied.
 Push these additions to GitHub only. The operator will pull on the
@@ -238,11 +265,77 @@ The previous main3 handoff below is historical evidence, not a claim
 about main4 or proof that its pending host checks have passed.
 
 WSL validation for these additions: `scripts/run_full_pytest.sh`,
-2346 passed, 1 skipped, 4 existing curvature warnings. CLI-only checks
-emitted 93 new-velocity jobs and 2 AR-sensitivity jobs under `/tmp`;
-those WSL queues are validation artifacts, not host queues.
+2364 passed, 1 skipped, 4 existing curvature warnings. The host launcher's
+read-only plan and Bash syntax were checked in WSL. Earlier CLI-only
+checks emitted 93 new-velocity jobs and 2 AR-sensitivity jobs under `/tmp`;
+those WSL queues are validation artifacts, not host queues. No Windows,
+Fluent, or Task Scheduler success is claimed before the host runs them.
 
 **Pending, after main4 exits and the operator pulls:**
+
+Run `bash scripts/host/pending_checks.sh` from the prepared host checkout,
+or launch `C:\pyfluent\scripts\host\pending_checks.cmd` as the interactive
+Task Scheduler action (`schtasks /Create ... /IT`; start an already
+configured task with `schtasks /Run /TN <task-name>`). The wrapper uses
+`%ProgramFiles%\Git\bin\bash.exe`; override `GIT_BASH_EXE` if installed
+elsewhere. Preview without launching Fluent:
+`python scripts/host/pending_checks.py --plan`.
+
+The launcher runs these checks in order, rechecking live Windows
+processes and queue locks before each one:
+
+- Fresh REF_empty `u0p2_p6M` cp_live-ON smoke: exactly residual
+  iterations 1–20, nonempty checkpoint pairs 10/20, positive window
+  LMH and a cp_live history. It requires a finished original beyond
+  20 iterations, renames it to `.prev_<UTC>` before launch, keeps
+  checkpoints, preserves the smoke as `.smoke.prev_<UTC>`, and restores
+  the original in `finally`. A failed initial rename aborts the smoke
+  before Fluent. A recovery JSON records both paths. After a forced
+  process/machine termination, inspect that journal before another run.
+- S_a193_l1733 mesh-only at 0.025 and 0.020 mm membrane face size,
+  then D1225_a30 and S_a193_l1733 mesh-only with the hard global
+  ceiling 250. Mesh leaves must be absent; existing leaves are refused
+  and preserved. Each summary reports cells, max AR, minimum ortho and
+  gate, including parsed mesh-log metrics on a gate failure. A finer
+  candidate is offered only when its mesh passes and global AR <=150.
+- D2450_a30 mass-imbalance locate on a fresh copy under
+  `C:/ro_data_mfbo/mass_imbalance/pending_<UTC>`; prints cell/region bins.
+- Timed full re-extract of the finished PASS P_p80_h15 `u0p2_p6M`
+  final. Requires the new mean-first columns and mask, and records
+  `extract_wall_time_s` from the fresh timing JSON plus elapsed time.
+  Existing `post/reports` is archived; iteration reports are untouched.
+
+Every step appends one PASS/FAIL line to
+`C:/ro_data_mfbo/campaign_v3/queues/logs/pending_checks_summary.txt`.
+Failures do not prevent later checks; an active queue/session prevents
+any new Fluent launch. Per-step logs, recovery journal, and printed
+follow-ups are under `queues/logs/pending_checks_<UTC>/`. Exit 0 means
+all checks passed, 2 means an individual check failed, 1 is startup
+refusal. A crash can require manual restoration from the recovery journal;
+the script never deletes a leaf or kills unrelated sessions.
+
+At the end it prints commands only. Choose one passing finer candidate
+for the four failed geometries, then use its `CHOSEN_FACE_SIZE` for
+the 0.10 m/s x31 queue. The helper adds explicit face-size overrides
+without changing the canonical mesh spec/hash, so the test mesh can
+be reused. AR250 solves remain standard sizing. Velocity follow-ups
+are: bounded REF_empty 0.05 m/s smoke first (require PASS), 0.10 m/s
+x31, then 0.05/0.15/0.25 m/s x five representatives: REF_empty,
+D2450_a45, M_c267, P_p80_h15, S_a144_l3465. P_p100_h00 and M_c160 are
+not the representatives. Printed solves use `--no-cp-live` unless
+the initial cp_live smoke passed. No long solve or queue is started.
+
+Re-extract queue emission after the checks (final reports only):
+
+```text
+python scripts/campaign_v3_reextract.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/reextract_pass_finals.json
+python scripts/mfbo/job_queue.py run C:/ro_data_mfbo/campaign_v3/queues/reextract_pass_finals.json
+```
+
+The observed count is printed; do not hardcode 25 or invent missing
+leaves. This uses the full extract. A targeted partial-extract path
+is deferred until its bulk validation/report merge is validated.
+Use the timed P_p80_h15 result for scheduling, not an invented runtime.
 
 1. Run the full Windows pytest suite separately. WSL/Actions results
    do not establish a Windows baseline. The solve-template and mesh
@@ -262,7 +355,7 @@ python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/ve
    A filtered example (6 jobs), with explicit per-family overrides:
 
 ```text
-python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/velocities_extra_filtered.json --run-id u0p05_p6M --run-id u0p15_p6M --run-id u0p25_p6M --geo-id REF_empty --geo-id P_p100_h00 --max-iterations empty=2000 --max-iterations pillar=2000 --no-cp-live
+python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/velocities_extra_filtered.json --run-id u0p05_p6M --run-id u0p15_p6M --run-id u0p25_p6M --geo-id REF_empty --geo-id P_p80_h15 --max-iterations empty=2000 --max-iterations pillar=2000 --no-cp-live
 ```
 
    Repeat `--max-iterations FAMILY=N` for measured family-specific

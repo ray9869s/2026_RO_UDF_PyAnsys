@@ -52,14 +52,19 @@ modulus above remains the definition of `cp_canon_window_avg`. The
 meeting did not choose the area versus flux reference.
 **2026-10-19.** Comparison uses `cpc_window_avg_flux` and
 `cp_q999_window_flux`. `CP_q999` is auxiliary and mesh-sensitive.
-**2026-11-02.** Benchmark CP is `cp_canon_live_window_avg`: local
+**2026-11-02 (superseded for benchmark selection on 2026-11-18).** CP was `cp_canon_live_window_avg`: local
 \(c_p\) per face, area-weighted, with faces where \(c_p \ge c_0\) left
 out of the average. `cpc_window_avg_flux` stays a secondary column.
 `cp_canon_window_avg` still counts those faces as 0. See
 `docs/metrics_conventions.md`.
 
-**CP averaging:** per-face \(M\), then area-weight; never ratio of area-averaged
-\(c_m\) and \(c_p\) when the denominator is face-dependent.
+**2026-11-18 benchmark CP:** `cp_meanfirst_live_window_avg` area-averages
+\(c_m\) and local \(c_p\) over the same live evaluation-window faces, then
+divides once: \((\langle c_m\rangle-\langle c_p\rangle)/(c_b-\langle c_p\rangle)\).
+Keep the existing window bulk and live mask. Old canonical columns retain
+their per-face / per-unit-cell definitions; do not rename or overwrite them.
+The MFBO adapter and solver stopping are unchanged. See the decision and
+operator-reported evidence in `docs/PAPER_METHODS_DOSSIER.md`.
 
 **CP window:** CP table metrics are always evaluation-window restricted
 (mesh manifest `n_lead_excluded` / `n_trail_excluded`), not all active cells.

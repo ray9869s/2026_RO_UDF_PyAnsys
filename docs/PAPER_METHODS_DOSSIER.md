@@ -7,7 +7,7 @@ Paper decisions already fixed, and where the code records them:
 | Decision | Value used here | Source |
 | --- | --- | --- |
 | Flow regime | laminar | `configs/run_config.py:291` |
-| Concentration polarisation | `cpc_window_avg_flux` and `cp_q999_window_flux` | `src/ro/cp_concentration_stats.py:201–234`; `src/ro/extract_profile.py:74–75` |
+| Concentration polarisation | Benchmark: `cp_meanfirst_live_window_avg`. Flux-based CP and q999 remain diagnostics and MFBO inputs. | `src/ro/cp_concentration_stats.py` `meanfirst_cp_metrics`; `scripts/campaign_v3.py` `BENCHMARK_CP_METRIC` |
 | LMH | window module area `lmh_window_module` is the paper and MFBO value; window exposed area is reported alongside; `lmh_mass_balance` is the gate only | `src/ro/evaluation_window_table.py:429–461`; `src/ro/mfbo_adapter.py:1157` |
 | Convergence gate | post-hoc gate, independent of the solver stop | `src/ro/convergence_quality.py:1–32` |
 | Production UDF | `udfs/260822_RO_UDF.c` | `configs/run_config.py:243` |
@@ -15,6 +15,57 @@ Paper decisions already fixed, and where the code records them:
 | Evaluation window | per-geometry `configs/evaluation_window_table.json` (≥ 10.395 mm, whole cells and spacer periods, max over PASS speeds). The table and `docs/EVALUATION_WINDOW.md` were generated on the host and are not in this checkout | `scripts/mfbo/development_length.py:23–35`, `:65`, `:78`; `src/ro/evaluation_window_table.py:81–83` |
 
 The 2D pilot UDF `udfs/260929_RO_UDF.c` is not the 3D campaign UDF.
+
+**Benchmark CP decision, 2026-11-18 (supersedes older benchmark selections below).**
+The benchmark uses average first, divide once:
+
+\[
+CP_{\mathrm{meanfirst,live}}=
+\frac{\langle c_m\rangle_{A,L}-\langle c_p\rangle_{A,L}}
+{c_{b,W}-\langle c_p\rangle_{A,L}},\qquad
+c_{p,f}=\frac{B c_{m,f}}{J_{w,f}+B}.
+\]
+
+Both averages use face area on both evaluation-window membrane walls, with
+the same live mask `c_p < min(c_0, c_b_window_mol_m3)`. There is no extra
+positive-flux mask. `c_b_window_mol_m3` keeps its existing definition:
+mid-plane `surface-massavg` per evaluation unit cell, then mid-plane-area
+weighting across the window. It is not replaced by a combined-window
+mass-average report. Face samples normally use adjacent-cell UDM-7/UDM-6.
+
+The all-faces companion `cp_meanfirst_window_avg` includes dead-zone faces
+and equals existing `cpc_window_avg_area`. New `cp_ref_area_live` records
+the live area-mean permeate concentration in mol/m3; the extraction also
+records live area, exclusion rule, and exclusion threshold. Non-positive
+live area or denominator fails explicitly. Existing CP columns retain
+their definitions. `cpc_window_avg_flux` continues to use a flux-weighted
+permeate reference and is not the new benchmark.
+
+**Operator-reported evidence:** campaign_v3 `S_a072_l3465`, iterations
+2000 -> 2500: per-face live canon -1.37%,
+`cm_area_mean_window_live` -0.035%, LMH +0.044%, dP 0.000%.
+These values were supplied by the operator, not measured in this WSL
+checkout. They motivate using the mean-first metric for the benchmark;
+they do not establish its numerical change without the live permeate
+mean and bulk concentration at both snapshots.
+
+Campaign v3 comparison/excess and seminar reporting use the new live
+mean-first column. Unre-extracted leaves stay blank; there is no fallback
+to another CP definition. The MFBO adapter and solver stop rule are
+unchanged. Historical `reports_iter*` are not automatically re-extracted.
+All-faces values can be recovered from saved `cpc_window_avg_area`;
+live values can be recovered the same way only when the recorded dead
+area fraction is exactly zero. Otherwise the saved aggregates generally
+lack `cp_ref_area_live` and require field re-extraction.
+
+`scripts/campaign_v3_reextract.py --emit-queue ...` selects observed
+campaign `u0p2_p6M` PASS finals and preserves old reports with the existing
+`reports_prev_<UTC>` convention. The host checks time a full re-extract of
+`P_p80_h15/u0p2_p6M`. A targeted partial-extract/merge path is not included:
+it would need separate validation of window-bulk guards and preservation
+of existing report/gate fields. No new host timing is claimed before that
+check runs. Historical full extracts took 30–38.7 min per leaf; use the
+new `report_extract_timing.json` measurement for v3 scheduling.
 
 ---
 
