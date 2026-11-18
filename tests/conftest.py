@@ -16,3 +16,6 @@ def _isolated_host_lock(tmp_path_factory, monkeypatch):
     """Queue runners in tests never touch the real ~/.pyfluent host lock."""
     monkeypatch.setenv("RO_HOST_LOCK", str(tmp_path_factory.mktemp("hostlock") / "fluent_host.lock"))
     monkeypatch.setenv("RO_ORPHAN_GRACE_S", "0")
+    # The Windows host would otherwise list real processes (PowerShell) for
+    # every queue test, and a live Fluent there would refuse the test job.
+    monkeypatch.setattr("ro.host_lock.windows_processes", lambda: [])

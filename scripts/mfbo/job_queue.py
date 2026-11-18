@@ -280,6 +280,11 @@ def _run_with_timeout(argv, *, timeout_s, **kwargs):
             pass
         print(f"job timed out after {timeout_s:g} s; {message}", file=sys.stderr, flush=True)
         return None, True
+    except BaseException:
+        # KeyboardInterrupt or any other exit: never release the queue and
+        # host locks while the job's Fluent tree is still alive.
+        kill_process_tree(proc)
+        raise
 
 
 def argv_with_checkpoint_resume(argv: list[str]) -> list[str]:

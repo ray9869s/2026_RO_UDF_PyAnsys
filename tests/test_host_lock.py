@@ -95,3 +95,27 @@ def test_pending_checks_sees_the_host_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(host.job_queue, "pid_is_alive", lambda pid: True)
     with pytest.raises(RuntimeError, match="live queue lock"):
         host.require_idle(tmp_path, processes=[])
+
+
+def test_tests_never_reach_the_real_process_lister():
+    """conftest stubs windows_processes; a queue test on the host stays offline."""
+    assert host_lock.windows_processes() == []
+
+
+def test_interrupted_wait_kills_the_job_tree(monkeypatch):
+    killed = []
+
+    class Proc:
+        pid = 5
+
+        def __init__(self, *a, **k):
+            pass
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(job_queue.subprocess, "Popen", Proc)
+    monkeypatch.setattr(job_queue, "kill_process_tree", lambda proc: killed.append(proc.pid) or "")
+    with pytest.raises(KeyboardInterrupt):
+        job_queue._run_with_timeout(["x"], timeout_s=None)
+    assert killed == [5]
