@@ -464,3 +464,12 @@ def test_named_expression_must_list_valid_yes():
             return "Valid            : Yes\nUsed in          : 1 places"
 
     solver.require_setup_expressions_valid(_session(Good(), names=["cp_live_mean"]))
+
+
+def test_incommensurate_oscillation_end_to_end_is_phase_sensitive_trend_is_not():
+    import math
+
+    wobble = _tail(1900, 2000, lambda i: 1.2 * (1 + 1e-4 * math.sin(2 * math.pi * i / 7)))
+    change = end_to_end_relative_change(wobble, 100)
+    assert change > 5e-5  # reads part of the amplitude, not drift
+    assert trend_relative_change(wobble, 100) < 2e-5

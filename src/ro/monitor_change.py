@@ -18,10 +18,12 @@ Monitor-change columns (recorded only; they do not set PASS/FAIL):
 
 - ``monitor_change_last<N>_<q>``: end-to-end relative change
   ``|m(L) - m(L-N)| / |m(L)|`` between the last iteration ``L`` and the
-  last sample at or before ``L-N``. A converged monitor that oscillates
-  reads its drift, not its oscillation amplitude.
+  last sample at or before ``L-N``. It is phase-sensitive: on a monitor
+  that oscillates it reads anywhere from 0 (``N`` a multiple of the
+  period) up to the peak-to-peak amplitude.
 - ``monitor_trend_last<N>_<q>``: least-squares slope over the samples in
-  ``[L-N, L]`` times ``N``, relative to their mean.
+  ``[L-N, L]`` times ``N``, relative to their mean. This is the drift
+  measure: a stationary oscillation fits a slope near 0.
 - ``monitor_change_last<N>_<q>_legacy``: the previous statistic, the
   UG 37.18 maximum deviation ``max|m(L)-m(k)|/|m(L)|`` over the window.
 

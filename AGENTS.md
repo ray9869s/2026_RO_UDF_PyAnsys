@@ -232,7 +232,7 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   the flag and brings the abort back.
 - Hang watchdog. Solve idle 60 min, extract idle 30 min, mesh idle
   90 min (`*_hang_idle_minutes`), plus per-attempt wall caps of 48 h,
-  6 h and 12 h (`*_wall_cap_hours`) that fire even while output flows
+  2 h and 12 h (`*_wall_cap_hours`) that fire even while output flows
   (`HANG_REASON wall_cap`). A quiet attempt log, transcript, and `post/`
   tree kills the recorded PIDs, prints `HANG failure_class=hang`, and
   exits 75. stdout is read on its own thread, so a Fluent/MPI grandchild
@@ -248,10 +248,12 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   with `no expression check could run`, read the printed check forms
   before changing anything.
 - Monitor-change columns. `monitor_change_last100_*` is now the
-  end-to-end relative change and `monitor_trend_last100_*` the fitted
-  slope over 100 iterations, CP on `cp_live` only. The old maximum
-  deviation is `*_legacy`. Recorded only; the 2000-iteration cap and the
-  gate are unchanged.
+  end-to-end relative change (phase-sensitive on an oscillating monitor)
+  and `monitor_trend_last100_*` the fitted slope over 100 iterations (the
+  drift measure). CP reads `cp_live` only, so `--no-cp-live` leaves (all
+  of main3) have blank new CP columns. LMH/dP use the active-span
+  monitors. The old maximum deviation is `*_legacy`. Recorded only; the
+  2000-iteration cap and the gate are unchanged.
 - `cp_live` vs `--no-cp-live`. Default is `cp_live` on, and the v3 stop
   watches it. `--no-cp-live` keeps the `ffd53e1` stop on `cp_window`.
   main3 was started with `--no-cp-live` because the unbraced expression
@@ -290,8 +292,27 @@ production guard, host-wide Fluent lock with orphan check, fail-closed
 `unknown_early_stop` and expression check, job-state gate and
 extract-only `--resume`, watchdog wall caps / pipe handling / queue
 timeouts / meshing guard, end-to-end monitor change, window dP/L
-columns. These change solve, extract and queue code: the 20-iteration
-host smoke in “Smoke first” is required before any long queue. Host
+columns. These change solve, extract, meshing and queue code. Before any
+long queue, on the host:
+
+1. Windows pytest.
+2. The cp_live-ON fresh smoke in “Smoke first”, **and** the
+   `--no-cp-live` control again: the earlier pass on `ae98e7c` does not
+   cover the new fail-closed expression check. No Fluent 25.1 output of
+   the check forms or of `list-properties` (`Valid : Yes`) is captured
+   in this repo; the format comes from test fixtures. If either smoke
+   refuses with `did not positively pass` or `no expression check could
+   run`, save the printed check output and stop; do not relax the check
+   blind. `pending_checks` runs only the cp_live-ON smoke.
+3. One mesh-only smoke on a `.pmdb` geometry into a fresh study leaf
+   (e.g. under `C:/ro_data_mfbo/meshstudy`) before the pending mesh-only
+   steps: campaign meshing now runs with a piped stdout under the
+   watchdog (`mesh_attempt1.log`), which no smoke with `--reuse-mesh`
+   exercises.
+4. The v2 binding check: count `campaign_reextract_v2` `u0p2_p6M`
+   manifests with `final_data_sha256` and sidecars that match it. If v2
+   lacks them, `--compare` blanks every v2 row; decide how to treat v2
+   before relying on the comparison. Host
 evidence behind them (operator-reported): every continued leaf's
 `post/reports` is from iteration 2000 while the final is 2500/4020;
 D2450_a60 has no gate (main3 stopped mid-continue); `.out` files are
@@ -329,7 +350,8 @@ The previous main3 handoff below is historical evidence, not a claim
 about main4 or proof that its pending host checks have passed.
 
 WSL validation for these additions: `scripts/run_full_pytest.sh`,
-2364 passed, 1 skipped, 4 existing curvature warnings. The host launcher's
+2364 passed, 1 skipped, 4 existing curvature warnings (2440 after the
+audit fixes below). The host launcher's
 read-only plan and Bash syntax were checked in WSL. Earlier CLI-only
 checks emitted 93 new-velocity jobs and 2 AR-sensitivity jobs under `/tmp`;
 those WSL queues are validation artifacts, not host queues. No Windows,
