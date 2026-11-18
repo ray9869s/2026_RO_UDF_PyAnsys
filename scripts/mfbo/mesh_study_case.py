@@ -1639,7 +1639,82 @@ def continue_finished_leaf(
     return 0
 
 
+# Set once main knows the run leaf; read by the job-result writer.
+_JOB_RESULT_LEAF = {}
+JOB_RESULT_ENV = "RO_JOB_RESULT"
+
+
+def write_job_result(path, run_directory):
+    """``{"run_directory", "convergence_quality"}`` for the queue state.
+
+    ``job_queue`` sets ``RO_JOB_RESULT`` per job and records this next to
+    the return code, so a succeeded (exit 0) job still shows FAIL or None.
+    """
+    gate = None
+    if run_directory is not None:
+        manifest = Path(run_directory) / "manifest.json"
+        if manifest.is_file():
+            try:
+                gate = _read_json(manifest).get("convergence_quality")
+            except (OSError, ValueError):
+                gate = None
+    payload = {
+        "run_directory": None if run_directory is None else str(run_directory),
+        "convergence_quality": gate,
+    }
+    Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def require_published_final(run_directory, geo_id, case_id):
+    """The final pair on disk is the one the run manifest published."""
+    manifest = _read_json(Path(run_directory) / "manifest.json")
+    for path, field in zip(
+        _final_paths(run_directory, geo_id, case_id),
+        ("final_case_sha256", "final_data_sha256"),
+    ):
+        expected = manifest.get(field)
+        if not expected or sha256_file(path) != expected:
+            raise RuntimeError(
+                f"Resume: {path.name} does not match manifest {field}; "
+                "refusing to extract or re-solve an ambiguous final."
+            )
+
+
+def extract_and_validate(data_root, run_directory, entry, *, geo_id, mesh_id, case_id):
+    """Extract the final into post/reports and validate the wide summary."""
+    extract_result = mfbo_common.launch_extract(
+        data_root,
+        run_directory,
+        entry,
+        geo_id=geo_id,
+        mesh_id=mesh_id,
+        run_id=case_id,
+    )
+    if extract_result.returncode != 0:
+        return _exit_code(extract_result.returncode)
+    summary = Path(run_directory) / "post" / "reports" / "summary_metrics_wide.csv"
+    valid, message = batch_report_extract.validate_summary_wide_csv(summary)
+    if not valid:
+        print(f"FAILED_METRIC_VALIDATION: {message}")
+        return 1
+    return 0
+
+
 def main(argv=None):
+    _JOB_RESULT_LEAF.clear()
+    try:
+        return _main(argv)
+    finally:
+        result_path = os.environ.get(JOB_RESULT_ENV)
+        if result_path:
+            try:
+                write_job_result(result_path, _JOB_RESULT_LEAF.get("run_directory"))
+            except OSError as exc:
+                print(f"WARNING: could not write job result {result_path}: {exc}")
+
+
+def _main(argv=None):
     args = build_parser().parse_args(argv)
     if args.max_aspect_ratio is not None and args.max_prism_aspect_ratio is not None:
         raise ValueError("--max-aspect-ratio cannot combine with --max-prism-aspect-ratio.")
@@ -1759,6 +1834,7 @@ def main(argv=None):
     solver_overrides = solver_overrides_for_study(solver_template, study_id)
     solver_overrides.update(provenance)
     run_directory = run_leaf(data_root, family, args.geo_id, study_id, case_id)
+    _JOB_RESULT_LEAF["run_directory"] = run_directory
     if checkpoint_every is not None:
         solver_overrides["checkpoint_every"] = checkpoint_every
     solver_overrides["run_id"] = case_id
@@ -1783,6 +1859,24 @@ def main(argv=None):
             additional=args.continue_iterations,
             every=args.continue_every,
             keep_checkpoints=args.keep_checkpoints,
+        )
+    if args.resume and run_directory.is_dir() and final_pair_ready(
+        run_directory, args.geo_id, case_id
+    ):
+        # The solve already published its final; only the extract failed
+        # (hang, gate exception). Re-solving would overwrite hours of work.
+        require_published_final(run_directory, args.geo_id, case_id)
+        print(
+            f"Resume: final pair is ready in {run_directory}; running the "
+            "extract only."
+        )
+        return extract_and_validate(
+            data_root,
+            run_directory,
+            _entry,
+            geo_id=args.geo_id,
+            mesh_id=study_id,
+            case_id=case_id,
         )
     if args.resume:
         found = (
@@ -1841,22 +1935,16 @@ def main(argv=None):
     if not batch_solver_sweep.solver_worker_succeeded(solver_result.returncode):
         return _exit_code(solver_result.returncode)
 
-    extract_result = mfbo_common.launch_extract(
+    code = extract_and_validate(
         data_root,
         run_directory,
         _entry,
         geo_id=args.geo_id,
         mesh_id=study_id,
-        run_id=case_id,
+        case_id=case_id,
     )
-    if extract_result.returncode != 0:
-        return _exit_code(extract_result.returncode)
-
-    summary = run_directory / "post" / "reports" / "summary_metrics_wide.csv"
-    valid, message = batch_report_extract.validate_summary_wide_csv(summary)
-    if not valid:
-        print(f"FAILED_METRIC_VALIDATION: {message}")
-        return 1
+    if code:
+        return code
     if checkpoint_every is not None:
         outcome = release_after_pass(
             run_directory,

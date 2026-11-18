@@ -660,3 +660,30 @@ def test_console_job_gets_a_discovery_console_and_a_plain_job_keeps_the_log(
     assert log.name == "convert-one.log"
     assert kwargs["env"]["RO_DISCOVERY_CONSOLE"] == "1"
     assert "Discovery job" in log.read_text(encoding="utf-8")
+
+
+def test_state_records_the_worker_gate(tmp_path, monkeypatch):
+    """Audit B4-01: succeeded is exit 0; the gate is recorded beside it."""
+    _pin_head(monkeypatch)
+    queue = (tmp_path / "jobs.json").resolve()
+    source = (
+        "import json, os\n"
+        "open(os.environ['RO_JOB_RESULT'], 'w').write(json.dumps("
+        "{'run_directory': 'C:/x/leaf', 'convergence_quality': 'FAIL'}))\n"
+    )
+    _write(queue, [{"id": "gate_job", "argv": _py(source)}, {"id": "silent", "argv": _py("pass")}])
+    assert job_queue.main(["run", str(queue)]) == job_queue.EXIT_OK
+    records = _read_state(queue)["jobs"]
+    assert records[0]["status"] == "succeeded"
+    assert records[0]["convergence_quality"] == "FAIL"
+    assert records[0]["run_directory"] == "C:/x/leaf"
+    assert "convergence_quality" not in records[1]
+    summary = Path(str(queue) + ".summary.log").read_text(encoding="utf-8")
+    assert "gate=FAIL" in summary
+    assert "FAIL" in job_queue.status_report(str(queue))
+
+
+def test_old_state_without_gate_fields_still_loads(tmp_path):
+    state = tmp_path / "q.json.state.json"
+    _write(state, {"queue_head": _HEAD, "jobs": [_record("a")]})
+    assert job_queue.read_state(state)["jobs"][0]["id"] == "a"

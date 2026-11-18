@@ -19,6 +19,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -263,6 +264,21 @@ def reextract_snapshot(leaf, root, iteration):
 
 
 def main(argv=None):
+    code = None
+    try:
+        code = _main(argv)
+        return code
+    finally:
+        result_path = os.environ.get("RO_JOB_RESULT")
+        if result_path and _RESULT_LEAF:
+            campaign.mesh_study.write_job_result(result_path, _RESULT_LEAF[0])
+
+
+_RESULT_LEAF = []
+
+
+def _main(argv=None):
+    _RESULT_LEAF.clear()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", default=campaign.DATA_ROOT)
     actions = parser.add_mutually_exclusive_group(required=True)
@@ -304,6 +320,7 @@ def main(argv=None):
         validate_meanfirst_summary(args.run_leaf, snapshot_dirname(args.snapshot_iteration))
         return 0
     leaf = require_reextract_final(args.run_leaf, root)
+    _RESULT_LEAF.append(leaf)
     result = reextract_runs.reextract_leaf(leaf, profile="full")
     if result.returncode:
         return result.returncode

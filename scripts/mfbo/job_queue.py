@@ -12,7 +12,10 @@ the log redirection.
 
 Sidecars use the queue path ``<queue>`` as a prefix:
 
-- ``<queue>.state.json`` — status, UTC times, return code, log path, git HEAD
+- ``<queue>.state.json`` — status, UTC times, return code, log path, git
+  HEAD, and (when the worker writes ``RO_JOB_RESULT``) the leaf's
+  ``convergence_quality`` and ``run_directory``. ``succeeded`` means exit 0
+  only; read the gate for PASS.
 - ``<queue>.stop`` — finish the current job, then stop before the next
 - ``<queue>.lock`` — runner pid; a live pid refuses another start
 - the host lock (``ro.host_lock``, ``RO_HOST_LOCK``) — one runner per host
@@ -71,6 +74,10 @@ _RECORD_FIELDS = (
     "log_path",
     "git_head",
 )
+# Written from the worker's RO_JOB_RESULT file. Optional so state files
+# written before these fields existed still load.
+_RECORD_OPTIONAL = ("convergence_quality", "run_directory")
+JOB_RESULT_ENV = "RO_JOB_RESULT"
 _STATUSES = frozenset({"pending", "running", "succeeded", "failed"})
 
 
@@ -460,7 +467,10 @@ def _execute_job(
     record["return_code"] = None
     record["log_path"] = str(log_path.resolve())
     record["git_head"] = head
+    for key in _RECORD_OPTIONAL:
+        record.pop(key, None)
     _write_json_atomic(files.state, state)
+    result_path = files.logs / f"{job['id']}.{record['started_at'].replace(':', '')}.result.json"
 
     argv = [part.replace("{python}", sys.executable) for part in job["argv"]]
     if append_resume:
@@ -468,6 +478,7 @@ def _execute_job(
     env = os.environ.copy()
     if "env" in job:
         env.update(job["env"])
+    env[JOB_RESULT_ENV] = str(result_path.resolve())
     console = job.get("console") is True
     try:
         if console:
@@ -516,8 +527,31 @@ def _execute_job(
     record["return_code"] = completed.returncode
     record["ended_at"] = utc_now()
     record["status"] = "succeeded" if completed.returncode == 0 else "failed"
+    record.update(read_job_result(result_path))
     _write_json_atomic(files.state, state)
     _append_summary(files.summary, _summary_line(record))
+
+
+def read_job_result(path: Path) -> dict:
+    """Gate and leaf the worker wrote to ``RO_JOB_RESULT``; {} when absent.
+
+    ``succeeded`` only means exit 0. The gate shows whether the leaf the
+    job touched is PASS, FAIL, or has none.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"WARNING: unreadable job result {path}: {exc}", file=sys.stderr, flush=True)
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    result = {}
+    for key in _RECORD_OPTIONAL:
+        value = payload.get(key)
+        result[key] = value if isinstance(value, str) else None
+    return result
 
 
 def _summary_line(record: dict) -> str:
@@ -529,10 +563,13 @@ def _summary_line(record: dict) -> str:
     rc = "-" if record["return_code"] is None else str(record["return_code"])
     git_head = record["git_head"] or "-"
     log_path = record["log_path"] or "-"
-    return (
+    line = (
         f"{when} id={record['id']} status={record['status']} "
         f"rc={rc} git={git_head} log={log_path}"
     )
+    if "convergence_quality" in record:
+        line += f" gate={record['convergence_quality'] or '-'}"
+    return line
 
 
 def _append_summary(path: Path, line: str) -> None:
@@ -544,7 +581,7 @@ def _append_summary(path: Path, line: str) -> None:
 
 
 def _render_table(records: list[dict]) -> str:
-    headers = ["id", "status", "rc", "started_at", "ended_at", "git_head", "log"]
+    headers = ["id", "status", "rc", "gate", "started_at", "ended_at", "git_head", "log"]
     rows = []
     for record in records:
         rc = record["return_code"]
@@ -553,6 +590,7 @@ def _render_table(records: list[dict]) -> str:
                 record["id"],
                 record["status"],
                 "-" if rc is None else str(rc),
+                record.get("convergence_quality") or "-",
                 record["started_at"] or "-",
                 record["ended_at"] or "-",
                 record["git_head"] or "-",
@@ -588,7 +626,7 @@ def _blank_record(job_id: str) -> dict:
 
 def _validate_record(item, index: int) -> dict:
     label = f"state job {index}"
-    _require_exact_keys(item, _RECORD_FIELDS, (), label)
+    _require_exact_keys(item, _RECORD_FIELDS, _RECORD_OPTIONAL, label)
     rc = item["return_code"]
     if rc is not None and (
         isinstance(rc, bool) or not isinstance(rc, int)
@@ -600,6 +638,13 @@ def _validate_record(item, index: int) -> dict:
     record["status"] = item["status"]
     record["return_code"] = rc
     for key in ("started_at", "ended_at", "log_path", "git_head"):
+        value = item[key]
+        if value is not None and not isinstance(value, str):
+            raise QueueError(f"{label} {key} must be a string or null.")
+        record[key] = value
+    for key in _RECORD_OPTIONAL:
+        if key not in item:
+            continue
         value = item[key]
         if value is not None and not isinstance(value, str):
             raise QueueError(f"{label} {key} must be a string or null.")

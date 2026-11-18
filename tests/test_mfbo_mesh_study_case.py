@@ -921,6 +921,68 @@ def test_resume_fallback_source_never_deletes():
     assert "shutil.rmtree" not in source
 
 
+def _final_ready_leaf(tmp_path, mesh_id, *, manifest_hashes=True, checkpoint=True):
+    import hashlib
+
+    run = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    run.mkdir(parents=True)
+    payload = {"convergence_quality": None}
+    for kind in ("cas", "dat"):
+        data = f"final-{kind}".encode()
+        (run / f"D2450_a45_u0p2_p6M_final.{kind}.h5").write_bytes(data)
+        if manifest_hashes:
+            payload[f"final_{'case' if kind == 'cas' else 'data'}_sha256"] = hashlib.sha256(data).hexdigest()
+        if checkpoint:
+            (run / f"D2450_a45_u0p2_p6M_checkpoint_001800.{kind}.h5").write_bytes(b"c")
+    (run / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    return run
+
+
+def test_resume_with_a_published_final_runs_the_extract_only(monkeypatch, tmp_path):
+    """Audit B4-02: an extract hang must not cost a re-solve."""
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    run = _final_ready_leaf(tmp_path, mesh_id)
+    result = tmp_path / "job.result.json"
+    monkeypatch.setenv("RO_JOB_RESULT", str(result))
+    argv = ["--data-root", str(tmp_path), "--geo-id", "D2450_a45", "--case", "u0p2_p6M",
+            "--m-min", "0.003", "--resume"]
+    assert driver.main(argv) == 0
+    assert seen.get("solved") is None
+    assert seen["extracted"] is True
+    assert (run / "D2450_a45_u0p2_p6M_checkpoint_001800.cas.h5").is_file()
+    assert json.loads(result.read_text(encoding="utf-8"))["run_directory"] == str(run)
+
+
+def test_resume_refuses_a_final_that_does_not_match_the_manifest(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    _final_ready_leaf(tmp_path, mesh_id, manifest_hashes=False)
+    with pytest.raises(RuntimeError, match="does not match manifest"):
+        driver.main(["--data-root", str(tmp_path), "--geo-id", "D2450_a45", "--case",
+                     "u0p2_p6M", "--m-min", "0.003", "--resume"])
+    assert seen.get("solved") is None and seen.get("extracted") is None
+
+
+def test_write_job_result_reads_the_gate(tmp_path):
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "manifest.json").write_text(json.dumps({"convergence_quality": "FAIL"}), encoding="utf-8")
+    out = tmp_path / "r.json"
+    assert driver.write_job_result(out, leaf) == {"run_directory": str(leaf), "convergence_quality": "FAIL"}
+    assert driver.write_job_result(out, None)["convergence_quality"] is None
+
+
 def test_resume_without_a_run_leaf_starts_fresh(monkeypatch, tmp_path):
     seen = {}
     _patch_study_main(monkeypatch, tmp_path, seen)
