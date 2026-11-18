@@ -18,6 +18,7 @@ not pointed at ``C:/ro_data``. The geometry file is copied, never moved.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,7 +91,10 @@ def parse_run_leaf(value):
 def archive_reports(run_leaf, *, now=None):
     """Rename ``post/reports`` to ``post/reports_prev_<UTC>``. Never deletes.
 
-    Returns the archive path, or None when there is no reports directory.
+    The run ``manifest.json`` is copied into the archive as
+    ``manifest.json`` so the gate that described those reports is kept
+    with them. Returns the archive path, or None when there is no
+    reports directory.
     """
     reports = Path(run_leaf) / "post" / "reports"
     if not reports.exists():
@@ -105,6 +109,9 @@ def archive_reports(run_leaf, *, now=None):
             f"Refusing to replace existing report archive: {dest}"
         )
     reports.rename(dest)
+    manifest = Path(run_leaf) / "manifest.json"
+    if manifest.is_file():
+        shutil.copy2(manifest, dest / "manifest.json")
     return dest
 
 

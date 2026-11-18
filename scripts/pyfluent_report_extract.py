@@ -65,6 +65,11 @@ from ro.evaluation_window_table import (  # noqa: E402
     window_lmh,
 )
 from ro.extract_skip import write_extract_source_record  # noqa: E402
+from ro.atomic_reports import (  # noqa: E402
+    begin_report_extract,
+    promote_staged_reports,
+    staging_report_path,
+)
 from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
 from ro.session_retry import print_fluent_launch_identity  # noqa: E402
 from ro.solver_common import (  # noqa: E402
@@ -331,6 +336,15 @@ def _report_dirname(value):
     )
 
 
+def report_binds_manifest(cfg):
+    """True when this extract describes the canonical final.
+
+    A snapshot re-extract (``report_snapshot_iteration`` set) reads a saved
+    ``*_iter_<N>`` pair and must not touch the run manifest gate.
+    """
+    return getattr(cfg, "report_snapshot_iteration", None) in (None, "")
+
+
 def resolve_report_case_paths(cfg):
     """Locate the case directory without a 03_Results fallback.
 
@@ -516,10 +530,13 @@ if __name__ == "__main__":
     final_data_file = paths["final_data_file"]
     final_data_file_provenance = paths["final_data_file_provenance"]
     post_path = paths["post_path"]
-    report_path = paths["report_path"]
+    # Outputs go to post/<dir>.tmp_<id> and are swapped in only after
+    # every gate passed and the manifest was updated (ro.atomic_reports).
+    final_report_path = paths["report_path"]
+    report_path = staging_report_path(final_report_path)
 
     post_path.mkdir(parents=True, exist_ok=True)
-    report_path.mkdir(parents=True, exist_ok=True)
+    report_path.mkdir(parents=True, exist_ok=False)
 
     summary_csv_path = report_path / "summary_metrics.csv"
     mass_balance_csv_path = report_path / "mass_balance.csv"
@@ -553,6 +570,12 @@ if __name__ == "__main__":
             f"case_path={case_path} from {case_path_provenance})"
         )
 
+    for _action in begin_report_extract(
+        case_path,
+        final_report_path,
+        bind_manifest=report_binds_manifest(cfg),
+    ):
+        print("Extract start:", _action)
     sync_run_manifest_analytic_cwall(case_path)
     _run_manifest_for_window = read_run_manifest(case_path)
     if str(cfg.geo_name) != _run_manifest_for_window["geo_id"]:
@@ -3279,6 +3302,20 @@ if __name__ == "__main__":
                 SOLVER_ATTEMPT_ID_FIELD: run_manifest.get(SOLVER_ATTEMPT_ID_FIELD),
             },
         )
+
+        # Every gate passed and the manifest is updated: swap the staged
+        # directory in. The replaced one is kept as <dir>_prev_<UTC>.
+        _staged_report_path = report_path
+        _replaced = promote_staged_reports(_staged_report_path, final_report_path)
+        report_path = final_report_path
+        summary_csv_path = report_path / summary_csv_path.name
+        summary_wide_csv_path = report_path / summary_wide_csv_path.name
+        mass_balance_csv_path = report_path / mass_balance_csv_path.name
+        pressure_csv_path = report_path / pressure_csv_path.name
+        shear_csv_path = report_path / shear_csv_path.name
+        raw_report_json_path = report_path / raw_report_json_path.name
+        if _replaced is not None:
+            print("Previous report directory kept as:", _replaced)
 
         # ----------------------------------------------------------
         # Print saved files
