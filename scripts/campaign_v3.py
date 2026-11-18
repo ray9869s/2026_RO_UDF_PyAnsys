@@ -11,8 +11,8 @@ A family object overrides those fields. The smooth-transition ``bl``
 token stays 4.
 
 CP in the comparison and in ``seminar_cases.csv`` is
-``cp_canon_live_window_avg`` (local ``c_p`` per face, dead zone
-excluded). CP excess is that value minus 1. ``cp_rel_change`` uses
+``cp_meanfirst_live_window_avg`` (area-average cm and cp over live faces,
+then divide once against the existing window bulk). CP excess is that value minus 1. ``cp_rel_change`` uses
 that CP. ``cpc_window_avg_flux`` and ``dead_zone_area_fraction_window``
 are written beside it. A leaf that has not been re-extracted leaves
 the live column blank.
@@ -96,6 +96,7 @@ DATA_ROOT = "C:/ro_data_mfbo/campaign_v3"
 GEOMETRY_ROOT = "C:/ro_data_mfbo/geometries_pmdb"
 V2_ROOT = "C:/ro_data_mfbo/campaign_reextract_v2"
 PRESSURE_PA = 6.0e6
+BENCHMARK_CP_METRIC = "cp_meanfirst_live_window_avg"
 # Preserve the original queue order, then append the intermediate speeds.
 VELOCITY_ORDER = (0.2, 0.1, 0.3, 0.05, 0.15, 0.25)
 # run_config.py mesh quality gate.
@@ -115,11 +116,15 @@ SOLVE_TIME_REFERENCE_CELLS = 4_340_000
 SOLVE_TIME_REFERENCE_HOURS = 6.5
 
 SEMINAR_CASES_COLUMNS = (
+    "benchmark_cp_metric",
     "family",
     "geo_id",
     "mesh_id",
     "run_id",
     "cp_canon_live_window_avg",
+    "cp_meanfirst_live_window_avg",
+    "cp_meanfirst_window_avg",
+    "cp_ref_area_live",
     "cp_excess",
     "cpc_window_avg_flux",
     "dead_zone_area_fraction_window",
@@ -132,6 +137,7 @@ SEMINAR_CASES_COLUMNS = (
     "git_head",
 )
 COMPARE_COLUMNS = (
+    "benchmark_cp_metric",
     "family",
     "geo_id",
     "run_id",
@@ -737,18 +743,21 @@ def _run_manifest(run_directory):
 def leaf_metrics(run_directory):
     """CP, excess, q999, dP/L, LMH, and the convergence gate for one leaf.
 
-    CP is ``cp_canon_live_window_avg``. Excess is that value minus 1.
+    CP is ``cp_meanfirst_live_window_avg``. Excess is that value minus 1.
     ``cpc`` is ``cpc_window_avg_flux``. q999 is ``cp_q999_window_flux``,
     not that value minus 1. Installed LMH is ``lmh_window_module``.
     """
     wide = _wide_row(run_directory)
     manifest = _run_manifest(run_directory)
-    cp = _optional_float(wide.get("cp_canon_live_window_avg"))
+    cp = _optional_float(wide.get(BENCHMARK_CP_METRIC))
     gate = manifest.get("convergence_quality")
     if not isinstance(gate, str) or not gate.strip():
         gate = "MISSING"
     return {
         "cp": cp,
+        "cp_canon_live_window_avg": _optional_float(wide.get("cp_canon_live_window_avg")),
+        "cp_meanfirst_window_avg": _optional_float(wide.get("cp_meanfirst_window_avg")),
+        "cp_ref_area_live": _optional_float(wide.get("cp_ref_area_live")),
         "cpc": _optional_float(wide.get("cpc_window_avg_flux")),
         "dead_zone_area_fraction": _optional_float(
             wide.get("dead_zone_area_fraction_window")
@@ -791,6 +800,7 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                     "geo_id": geo_id,
                     "run_id": run_id,
                     "v2_mesh_id": v2_mesh,
+                    "benchmark_cp_metric": BENCHMARK_CP_METRIC,
                     "v3_mesh_id": v3_mesh,
                     "v2_cp": v2["cp"],
                     "v3_cp": v3["cp"],
@@ -817,7 +827,7 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
 
 
 def seminar_rows(data_root, mesh_ids):
-    """Benchmark figure table. CP is ``cp_canon_live_window_avg``."""
+    """Benchmark figure table. Missing mean-first CP stays blank; no fallback."""
     rows = []
     for run_id in run_ids():
         for geo_id in CAMPAIGN_GEO_ID_ORDER:
@@ -835,7 +845,11 @@ def seminar_rows(data_root, mesh_ids):
                     "geo_id": geo_id,
                     "mesh_id": mesh_id,
                     "run_id": run_id,
-                    "cp_canon_live_window_avg": metrics["cp"],
+                    "cp_canon_live_window_avg": metrics["cp_canon_live_window_avg"],
+                    "benchmark_cp_metric": BENCHMARK_CP_METRIC,
+                    "cp_meanfirst_live_window_avg": metrics["cp"],
+                    "cp_meanfirst_window_avg": metrics["cp_meanfirst_window_avg"],
+                    "cp_ref_area_live": metrics["cp_ref_area_live"],
                     "cp_excess": metrics["cp_excess"],
                     "cpc_window_avg_flux": metrics["cpc"],
                     "dead_zone_area_fraction_window": metrics[

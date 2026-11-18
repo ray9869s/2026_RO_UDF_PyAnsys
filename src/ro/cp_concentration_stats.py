@@ -419,6 +419,51 @@ def monitor_style_cp(means, c_b):
     }
 
 
+def meanfirst_cp_metrics(
+    faces, c_b, *, b_perm=B_PERM_M_PER_S, c_inlet_ref=C_INLET_REF_MOL_PER_M3,
+):
+    """Area-average cm and local permeate concentration, then divide once.
+
+    Both variants use one window bulk. Live faces satisfy the existing
+    c_p < min(c_0, c_b) mask; there is no extra positive-Jw mask.
+    """
+    threshold = live_exclusion_threshold(c_b, c_inlet_ref)
+    area_sum = cm_sum = cp_sum = 0.0
+    live_area = live_cm_sum = live_cp_sum = 0.0
+    for face in _require_faces(faces):
+        area = float(face["area"])
+        if not math.isfinite(area):
+            raise ValueError("mean-first CP requires finite face areas.")
+        if area <= 0.0:
+            continue
+        cm = float(face["cm"])
+        cp = cp_face_mol_per_m3(cm, face["jw"], b_perm)
+        area_sum += area
+        cm_sum += cm * area
+        cp_sum += cp * area
+        if cp < threshold:
+            live_area += area
+            live_cm_sum += cm * area
+            live_cp_sum += cp * area
+    if area_sum <= 0.0:
+        raise ValueError("mean-first CP requires positive window membrane area.")
+    if live_area <= 0.0:
+        raise ValueError("mean-first live CP requires positive live membrane area.")
+    live_cp = live_cp_sum / live_area
+    return {
+        "cp_meanfirst_live_window_avg": _cp_ratio(
+            live_cm_sum / live_area, live_cp, c_b, label="area_live (mean-first live)"
+        ),
+        "cp_meanfirst_window_avg": _cp_ratio(
+            cm_sum / area_sum, cp_sum / area_sum, c_b, label="area (mean-first)"
+        ),
+        "cp_ref_area_live": live_cp,
+        "live_membrane_area_window_m2": live_area,
+        "live_exclusion_rule": LIVE_EXCLUSION_RULE,
+        "live_exclusion_threshold_mol_m3": threshold,
+    }
+
+
 def concentration_cp_report(
     window_faces,
     cell_faces,
@@ -435,6 +480,9 @@ def concentration_cp_report(
     value. Window ratios use the window mid-plane ``c_b``. Each cell uses
     that cell's mid-plane ``c_b``.
     """
+    meanfirst = meanfirst_cp_metrics(
+        window_faces, c_b_window, b_perm=b_perm, c_inlet_ref=c_inlet_ref
+    )
     window = distribution_cp_metrics(window_faces, c_b_window, b_perm=b_perm)
     live = live_canon_window(
         window_faces,
@@ -456,6 +504,7 @@ def concentration_cp_report(
         c_b_cell = c_b_by_cell[cell] if cell in c_b_by_cell else c_b_by_cell[str(cell)]
         cells[str(cell)] = distribution_cp_metrics(faces, c_b_cell, b_perm=b_perm)
     return {
+        **meanfirst,
         "b_perm_m_per_s": float(b_perm),
         "quantile_definition": QUANTILE_DEFINITION,
         "c_b_window_mol_m3": float(c_b_window),
@@ -491,6 +540,10 @@ def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
             _row("c1_area_mean_window", c1_area_mean_window, "mol/m3")
         )
     rows.extend([
+        _row("cp_meanfirst_live_window_avg", report.get("cp_meanfirst_live_window_avg"), "-"),
+        _row("cp_meanfirst_window_avg", report.get("cp_meanfirst_window_avg"), "-"),
+        _row("cp_ref_area_live", report.get("cp_ref_area_live"), "mol/m3"),
+        _row("live_membrane_area_window_m2", report.get("live_membrane_area_window_m2"), "m2"),
         _row("cm_q999_window", window["cm_q999"], "mol/m3"),
         _row("cm_q99_window", window["cm_q99"], "mol/m3"),
         _row("cp_ref_area", window["cp_ref_area"], "mol/m3"),

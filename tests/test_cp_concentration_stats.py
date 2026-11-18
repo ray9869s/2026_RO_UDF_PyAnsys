@@ -14,6 +14,7 @@ from ro.cp_concentration_stats import (
     distribution_cp_metrics,
     live_canon_window,
     live_exclusion_threshold,
+    meanfirst_cp_metrics,
     monitor_style_cm_means,
     monitor_style_cp,
     production_b_perm_m_per_s,
@@ -230,3 +231,43 @@ def test_select_positive_jw_prefers_the_first_positive_column():
     assert flipped[0] == "udm-6 boundary_value=True absolute"
     assert flipped[1] == pytest.approx([0.0, 3.0e-6])
     assert select_positive_jw([("udm-6 boundary_value=False", [0.0, 0.0])]) is None
+
+
+def test_meanfirst_averages_local_cp_with_area_and_divides_once():
+    # Unequal areas and fluxes distinguish all three averaging definitions.
+    faces = [_face(4, 1, 3), _face(12, 2, 1), _face(40, 1, 0.1)]
+    report = concentration_cp_report(
+        faces, {}, 12, {}, b_perm=1, c_inlet_ref=10
+    )
+    wide = summary_rows_to_wide_record(concentration_cp_summary_rows(report))
+    cm_live = (4 * 3 + 12) / 4
+    cp_live = (2 * 3 + 4) / 4
+    expected = (cm_live - cp_live) / (12 - cp_live)
+    assert wide["cp_meanfirst_live_window_avg"] == pytest.approx(expected)
+    assert wide["cp_ref_area_live"] == pytest.approx(cp_live)
+    assert wide["live_membrane_area_window_m2"] == 4
+    assert wide["live_exclusion_rule"] == "c_p >= min(c_0, c_b)"
+    assert wide["cp_meanfirst_live_window_avg"] != pytest.approx(wide["cp_canon_live_window_avg"])
+    assert wide["cp_meanfirst_window_avg"] == pytest.approx(wide["cpc_window_avg_area"])
+    from ro.extract_profile import filter_mfbo_summary_rows
+    filtered = summary_rows_to_wide_record(filter_mfbo_summary_rows(concentration_cp_summary_rows(report)))
+    for key in ("cp_meanfirst_live_window_avg", "cp_meanfirst_window_avg", "cp_ref_area_live",
+                "live_exclusion_rule", "cm_area_mean_window_live"):
+        assert filtered[key] == wide[key]
+
+
+def test_meanfirst_zero_dead_area_matches_all_faces_and_does_not_drop_zero_flux():
+    faces = [_face(2, 0, 3), _face(4, 1, 1)]
+    result = meanfirst_cp_metrics(faces, 12, b_perm=1, c_inlet_ref=10)
+    assert result["cp_ref_area_live"] == 2
+    assert result["cp_meanfirst_live_window_avg"] == result["cp_meanfirst_window_avg"]
+    assert result["live_membrane_area_window_m2"] == 4
+
+
+def test_meanfirst_fails_on_empty_live_area_and_nonpositive_window_denominator():
+    with pytest.raises(ValueError, match="positive live membrane area"):
+        meanfirst_cp_metrics([_face(40, 1, 1)], 12, b_perm=1, c_inlet_ref=10)
+    with pytest.raises(ValueError, match="positive window membrane area"):
+        meanfirst_cp_metrics([_face(4, 1, 0)], 12, b_perm=1, c_inlet_ref=10)
+    with pytest.raises(ValueError, match="mean-first.*must be positive"):
+        meanfirst_cp_metrics([_face(4, 1, 1), _face(40, 1, 10)], 12, b_perm=1, c_inlet_ref=10)

@@ -43,6 +43,7 @@ COLUMNS = (
     "cp_L2_window_avg",
     "cm_max",
     "cp_canon_live_window_avg",
+    "cp_meanfirst_live_window_avg",
     "dead_zone_area_fraction_window",
     "abs_cpc_minus_canon",
     "flag",
@@ -128,6 +129,7 @@ def survey_row(group, family, geo_id, mesh_id, run_id, summary_path, manifest_pa
         "cp_L2_window_avg": _finite(wide.get("cp_L2_window_avg")),
         "cm_max": _finite(wide.get("cm_max")),
         "cp_canon_live_window_avg": _finite(wide.get("cp_canon_live_window_avg")),
+        "cp_meanfirst_live_window_avg": _finite(wide.get("cp_meanfirst_live_window_avg")),
         "dead_zone_area_fraction_window": _finite(
             wide.get("dead_zone_area_fraction_window")
         ),

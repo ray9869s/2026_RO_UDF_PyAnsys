@@ -77,6 +77,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
         writer = csv.DictWriter(
             handle,
             fieldnames=[
+                "cp_meanfirst_live_window_avg",
                 "cp_canon_live_window_avg",
                 "cpc_window_avg_flux",
                 "dead_zone_area_fraction_window",
@@ -89,6 +90,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
         writer.writeheader()
         writer.writerow(
             {
+                "cp_meanfirst_live_window_avg": cp,
                 "cp_canon_live_window_avg": cp,
                 "cpc_window_avg_flux": cp if cpc is None else cpc,
                 "dead_zone_area_fraction_window": dead,
@@ -105,6 +107,21 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
         payload["git_head"] = git_head
     (leaf / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
     return leaf
+
+
+def test_benchmark_uses_meanfirst_and_never_falls_back_to_old_canon(tmp_path):
+    leaf = tmp_path / "leaf"
+    reports = leaf / "post" / "reports"
+    reports.mkdir(parents=True)
+    summary = reports / "summary_metrics_wide.csv"
+    summary.write_text("cp_canon_live_window_avg,cp_meanfirst_live_window_avg\n9,1.1\n", encoding="utf-8")
+    metrics = CAMPAIGN.leaf_metrics(leaf)
+    assert metrics["cp"] == pytest.approx(1.1)
+    assert metrics["cp_excess"] == pytest.approx(0.1)
+    assert metrics["cp_canon_live_window_avg"] == 9
+    summary.write_text("cp_canon_live_window_avg\n9\n", encoding="utf-8")
+    assert CAMPAIGN.leaf_metrics(leaf)["cp"] is None
+    assert CAMPAIGN.leaf_metrics(leaf)["cp_excess"] is None
 
 
 def test_default_spec_is_the_passed_bulk_mesh():
