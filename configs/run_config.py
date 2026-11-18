@@ -745,7 +745,9 @@ solve_hang_idle_minutes = 60.0
 mesh_hang_idle_minutes = 90.0
 # Per-attempt wall-clock caps. Any output resets the idle timer, so a
 # worker that loops while printing is only stopped by these.
-extract_wall_cap_hours = 6.0
+# Full extracts took 30-39 min; 2 h stops a 3.5 h-class hang that keeps
+# printing. Raise it for a mesh that is known to extract slower.
+extract_wall_cap_hours = 2.0
 solve_wall_cap_hours = 48.0
 mesh_wall_cap_hours = 12.0
 

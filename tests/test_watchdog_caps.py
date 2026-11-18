@@ -107,7 +107,7 @@ def test_wall_caps_and_mesh_idle_come_from_run_config():
     from ro.hang_watchdog import idle_seconds, wall_cap_seconds
 
     assert idle_seconds("mesh") == 90 * 60
-    assert wall_cap_seconds("extract") == 6 * 3600
+    assert wall_cap_seconds("extract") == 2 * 3600
     assert wall_cap_seconds("solve") == 48 * 3600
     assert wall_cap_seconds("mesh") == 12 * 3600
     for name in ("batch_report_extract.py", "batch_solver_sweep.py"):
