@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ro.manifest import ManifestError, read_run_manifest
+from ro.paths import refuse_production_root
 from ro.solver_common import (
     FINAL_CASE_SHA256_FIELD,
     FINAL_DATA_SHA256_FIELD,
@@ -39,6 +40,7 @@ def write_extract_source_record(
 ) -> Path:
     """Atomically write the extract source binding next to the wide CSV."""
     reports_dir = Path(reports_dir)
+    refuse_production_root(reports_dir)
     path = reports_dir / EXTRACT_SOURCE_FILENAME
     payload = {
         FINAL_CASE_SHA256_FIELD: record.get(FINAL_CASE_SHA256_FIELD),

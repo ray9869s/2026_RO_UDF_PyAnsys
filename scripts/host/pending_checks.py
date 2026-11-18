@@ -30,7 +30,7 @@ from mfbo import job_queue
 from ro.child_output import subprocess_text_kwargs
 from ro.mesh_common import load_mesh_run_record
 from ro.mesh_spec import default_spec_path, family_settings, load_mesh_spec
-from ro.paths import mesh_dir, project_root, run_dir, using_data_root
+from ro.paths import mesh_dir, project_root, refuse_production_root, run_dir, using_data_root
 from ro.residual_transcript import parse_residual_table, select_solve_transcript
 from ro.solve_checkpoint import list_checkpoints
 from ro.monitor_change import read_report_series
@@ -110,6 +110,8 @@ def require_idle(root, *, processes=None):
 
 def move_absent(source, destination):
     """Rename only; never merge, replace, delete, or fall back to copying."""
+    refuse_production_root(source)
+    refuse_production_root(destination)
     if source.is_symlink() or not source.is_dir():
         raise ValueError(f"Expected a real leaf directory: {source}")
     if destination.exists() or destination.is_symlink():

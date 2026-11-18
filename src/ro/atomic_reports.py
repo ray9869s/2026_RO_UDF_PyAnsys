@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ro.extract_skip import EXTRACT_SOURCE_FILENAME
 from ro.manifest import update_run_manifest_fields
+from ro.paths import refuse_production_root
 
 STAGING_MARKER = ".tmp_"
 
@@ -32,6 +33,7 @@ def utc_stamp(now=None) -> str:
 def staging_report_path(report_path, attempt_id=None, *, now=None) -> Path:
     """``post/<dir>.tmp_<id>``; ``<id>`` defaults to ``<UTC>_<pid>``."""
     report_path = Path(report_path)
+    refuse_production_root(report_path)
     if attempt_id is None:
         attempt_id = f"{utc_stamp(now)}_{os.getpid()}"
     return report_path.parent / f"{report_path.name}{STAGING_MARKER}{attempt_id}"
@@ -49,6 +51,7 @@ def begin_report_extract(case_path, report_path, *, bind_manifest=True):
     ``convergence_quality`` is cleared to ``None``. Returns the list of
     actions taken, for logging.
     """
+    refuse_production_root(report_path)
     actions = []
     sidecar = Path(report_path) / EXTRACT_SOURCE_FILENAME
     if sidecar.is_file():
@@ -67,6 +70,7 @@ def promote_staged_reports(staging, final, *, now=None):
     existing archive of that name is refused, never replaced.
     """
     staging, final = Path(staging), Path(final)
+    refuse_production_root(final)
     if not staging.is_dir():
         raise FileNotFoundError(f"staged report directory is missing: {staging}")
     archive = None

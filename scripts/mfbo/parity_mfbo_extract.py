@@ -14,6 +14,8 @@ import json
 import sys
 from pathlib import Path
 
+from ro.paths import is_production_path
+
 _SRC = Path(__file__).resolve().parents[2] / "src"
 _SCRIPTS = Path(__file__).resolve().parents[1]
 for _path in (_SRC, _SCRIPTS):
@@ -101,13 +103,7 @@ def _run_identity(run_leaf):
 
 
 def _under_production_leaf(run_leaf) -> bool:
-    text = str(run_leaf).strip().replace("\\", "/").casefold().rstrip("/")
-    return (
-        text == "c:/ro_data"
-        or text.startswith("c:/ro_data/")
-        or text == "/mnt/c/ro_data"
-        or text.startswith("/mnt/c/ro_data/")
-    )
+    return is_production_path(str(run_leaf).strip())
 
 
 def parity_copy_dir(data_root, run_leaf) -> Path:

@@ -142,7 +142,14 @@ from ro.manifest_validation import (
     validate_mesh_geometry_fields,
     validate_run_geometry_fields,
 )
-from ro.paths import mesh_dir, mesh_id_bl_tokens, meshes_root, run_dir, runs_root
+from ro.paths import (
+    mesh_dir,
+    mesh_id_bl_tokens,
+    meshes_root,
+    refuse_production_root,
+    run_dir,
+    runs_root,
+)
 from ro.solver_common import STOP_REASON_VALUES
 from ro.udm_layout import parse_ro_analytic_cwall_from_case
 
@@ -1598,6 +1605,7 @@ def write_mesh_manifest(
     payload: Mapping[str, Any],
 ) -> Path:
     directory = Path(mesh_directory)
+    refuse_production_root(directory)
     _validate_mesh_payload(payload)
     _validate_mesh_location(directory, payload)
     manifest_path = directory / "manifest.json"
@@ -1747,6 +1755,7 @@ def write_run_manifest(
     payload: Mapping[str, Any],
 ) -> Path:
     directory = Path(run_directory)
+    refuse_production_root(directory)
     _validate_run_payload(payload)
     _validate_run_location(directory, payload)
     manifest_path = directory / "manifest.json"

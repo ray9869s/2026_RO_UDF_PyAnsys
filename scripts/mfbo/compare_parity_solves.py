@@ -14,6 +14,8 @@ import math
 import sys
 from pathlib import Path
 
+from ro.paths import refuse_production_root
+
 SOURCE_GEO_ID = "P_p100_h30"
 SOURCE_MESH_ID = "max085_min006_cpg5_bl4_peel2"
 SOURCE_RUN_ID = "u0p2_p6M"
@@ -48,9 +50,7 @@ def resolve_data_root(value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError("data root is required.")
     text = value.strip().replace("\\", "/")
-    folded = text.casefold().rstrip("/")
-    if folded == "c:/ro_data" or folded.startswith("c:/ro_data/"):
-        raise ValueError(f"Refusing production data root: {value}")
+    refuse_production_root(text)
     if _is_windows_absolute(text):
         path = Path(text)
     else:
@@ -58,11 +58,7 @@ def resolve_data_root(value):
         if not path.is_absolute():
             raise ValueError(f"data root must be absolute, got {value!r}.")
         path = path.resolve()
-    resolved = path.as_posix().casefold().rstrip("/")
-    if resolved == "c:/ro_data" or resolved.startswith("c:/ro_data/"):
-        raise ValueError(f"Refusing production data root: {value}")
-    if resolved == "/mnt/c/ro_data" or resolved.startswith("/mnt/c/ro_data/"):
-        raise ValueError(f"Refusing production data root: {value}")
+    refuse_production_root(path)
     return path
 
 

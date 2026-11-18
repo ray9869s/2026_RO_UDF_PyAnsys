@@ -83,6 +83,7 @@ import batch_report_extract
 import batch_solver_sweep
 import mfbo._common as mfbo_common
 import mfbo.solve_campaign_case as campaign
+from ro.paths import is_production_path, refuse_production_root  # noqa: E402
 from ro.atomic_reports import utc_stamp
 from ro.bulk_size import bulk_max_size_suffix
 from ro.aspect_ceiling import aspect_ceiling_suffix
@@ -159,9 +160,7 @@ def resolve_data_root(value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError("data root is required.")
     text = value.strip().replace("\\", "/")
-    folded = text.casefold().rstrip("/")
-    if folded == "c:/ro_data" or folded.startswith("c:/ro_data/"):
-        raise ValueError(f"Refusing production data root: {value}")
+    refuse_production_root(text)
     if _is_windows_absolute(text):
         path = Path(text)
     else:
@@ -169,11 +168,7 @@ def resolve_data_root(value):
         if not path.is_absolute():
             raise ValueError(f"data root must be absolute, got {value!r}.")
         path = path.resolve()
-    resolved = path.as_posix().casefold().rstrip("/")
-    if resolved == "c:/ro_data" or resolved.startswith("c:/ro_data/"):
-        raise ValueError(f"Refusing production data root: {value}")
-    if resolved == "/mnt/c/ro_data" or resolved.startswith("/mnt/c/ro_data/"):
-        raise ValueError(f"Refusing production data root: {value}")
+    refuse_production_root(path)
     return path
 
 
@@ -631,13 +626,7 @@ def resolve_geometry_root(value):
 
 
 def _under_production_text(text):
-    folded = str(text).replace("\\", "/").casefold().rstrip("/")
-    return (
-        folded == "c:/ro_data"
-        or folded.startswith("c:/ro_data/")
-        or folded == "/mnt/c/ro_data"
-        or folded.startswith("/mnt/c/ro_data/")
-    )
+    return is_production_path(str(text))
 
 
 def pmdb_source_file(geometry_root, family, geo_id):
@@ -717,13 +706,7 @@ def require_passed_parity(geometry_root, geo_id):
 
 
 def _under_production_tree(path):
-    folded = Path(path).as_posix().casefold().rstrip("/")
-    return (
-        folded == "c:/ro_data"
-        or folded.startswith("c:/ro_data/")
-        or folded == "/mnt/c/ro_data"
-        or folded.startswith("/mnt/c/ro_data/")
-    )
+    return is_production_path(path)
 
 
 def ensure_production_geometry_dsco(data_root, family, geo_id):
@@ -1392,6 +1375,7 @@ def _json_object(flag, text):
 def move_leaf_aside(run_directory, *, now=None):
     """Rename a leaf to ``<name>.prev_<UTC>``. Never deletes; refuses a clash."""
     run_directory = Path(run_directory)
+    refuse_production_root(run_directory)
     aside = run_directory.with_name(f"{run_directory.name}.prev_{utc_stamp(now)}")
     if aside.exists():
         raise FileExistsError(f"Refusing to replace moved-aside leaf: {aside}")

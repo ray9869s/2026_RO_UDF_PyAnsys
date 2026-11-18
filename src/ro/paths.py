@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 from collections.abc import Collection, Iterator, Mapping
 from contextlib import contextmanager
@@ -41,6 +42,93 @@ def project_root() -> Path:
         if (candidate / "pyproject.toml").is_file():
             return candidate
     raise RuntimeError("Could not locate project root containing pyproject.toml.")
+
+
+# Production data roots. Never written (AGENTS.md hard rule).
+PRODUCTION_DATA_ROOTS = ("C:/ro_data", "/mnt/c/ro_data")
+_WINDOWS_PREFIXES = ("//?/", "//./")
+
+
+def _canonical_text(value) -> str:
+    """Folded, ``..``-collapsed text form with Windows quirks removed.
+
+    Strips the extended-length ``//?/`` prefix and the trailing dots/spaces Windows ignores in
+    a component, collapses ``.``/``..``, and case-folds.
+    """
+    text = os.fspath(value).replace("\\", "/")
+    for prefix in _WINDOWS_PREFIXES:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    drive = ""
+    if len(text) >= 2 and text[1] == ":":
+        drive, text = text[:2], text[2:]
+    parts = [
+        part if part in (".", "..") else part.rstrip(". ")
+        for part in text.split("/")
+    ]
+    body = posixpath.normpath("/".join(parts) or "/")
+    if body.startswith("//"):
+        body = "/" + body.lstrip("/")
+    return (drive + body).casefold().rstrip("/") or "/"
+
+
+def _under(candidate: str, root: str) -> bool:
+    return candidate == root or candidate.startswith(root + "/")
+
+
+def _existing_ancestors(path: str):
+    current = path
+    while True:
+        if os.path.exists(current):
+            yield current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return
+        current = parent
+
+
+def is_production_path(path, *, roots=PRODUCTION_DATA_ROOTS) -> bool:
+    """True when ``path`` is a production root or anything under it.
+
+    Checks the text form, ``os.path.realpath`` (symlinks, junctions, and on
+    Windows 8.3 names) and, for each production root that exists on this
+    machine, ``os.path.samefile`` against every existing ancestor.
+    """
+    raw = os.fspath(path)
+    canonical_roots = [_canonical_text(root) for root in roots]
+    candidates = {_canonical_text(raw)}
+    try:
+        real = os.path.realpath(raw)
+    except (OSError, ValueError):
+        real = None
+    if real:
+        candidates.add(_canonical_text(real))
+    for candidate in candidates:
+        if any(_under(candidate, root) for root in canonical_roots):
+            return True
+    if real:
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for ancestor in _existing_ancestors(real):
+                try:
+                    if os.path.samefile(ancestor, root):
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def refuse_production_root(path, *, roots=PRODUCTION_DATA_ROOTS):
+    """Raise ``ValueError`` when ``path`` is under a production root.
+
+    Every writer calls this before creating, renaming or rewriting a file.
+    Returns ``path`` unchanged otherwise.
+    """
+    if is_production_path(path, roots=roots):
+        raise ValueError(f"Refusing production data root: {path}")
+    return path
 
 
 def data_root() -> Path:

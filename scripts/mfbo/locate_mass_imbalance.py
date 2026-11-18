@@ -35,6 +35,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from ro.paths import is_production_path
+
 _SRC = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -111,11 +113,7 @@ def _folded(value) -> str:
 
 
 def under_production(value) -> bool:
-    folded = _folded(value)
-    return any(
-        folded == root or folded.startswith(root + "/")
-        for root in _PRODUCTION_ROOTS
-    )
+    return is_production_path(str(value))
 
 
 def _normalize(value):

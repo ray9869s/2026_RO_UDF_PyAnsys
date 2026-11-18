@@ -27,6 +27,8 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ro.paths import is_production_path
+
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.discovery_session import attach_queued_discovery_log
 from ro.solver_common import sha256_file
@@ -96,13 +98,7 @@ def _under_campaign_data(path) -> bool:
             texts.append(candidate.resolve().as_posix())
         except OSError:
             pass
-    for text in texts:
-        folded = _folded(text)
-        if folded == "c:/ro_data" or folded.startswith("c:/ro_data/"):
-            return True
-        if folded == "/mnt/c/ro_data" or folded.startswith("/mnt/c/ro_data/"):
-            return True
-    return False
+    return any(is_production_path(text) for text in texts)
 
 
 def resolve_source_root(value: str) -> Path:

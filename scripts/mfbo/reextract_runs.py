@@ -29,7 +29,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import mfbo._common as mfbo_common
 from ro.manifest import read_run_manifest
-from ro.paths import RUN_ID_RE
+from ro.paths import RUN_ID_RE, is_production_path
 
 _PRODUCTION_ROOTS = ("c:/ro_data", "/mnt/c/ro_data")
 
@@ -39,11 +39,7 @@ def _folded(path) -> str:
 
 
 def _under_production(path) -> bool:
-    folded = _folded(path)
-    return any(
-        folded == root or folded.startswith(root + "/")
-        for root in _PRODUCTION_ROOTS
-    )
+    return is_production_path(path)
 
 
 def _is_windows_absolute(text: str) -> bool:
@@ -97,6 +93,8 @@ def archive_reports(run_leaf, *, now=None):
     reports directory.
     """
     reports = Path(run_leaf) / "post" / "reports"
+    if is_production_path(reports):
+        raise ValueError(f"Refusing a run under production C:/ro_data: {run_leaf}")
     if not reports.exists():
         return None
     if not reports.is_dir():
