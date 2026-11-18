@@ -42,10 +42,20 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   `--convergence-profile campaign_v3`. `--mesh-only` does not solve.
   `--continue-iterations` / `--continue-every` extend a finished final.
   `--max-iterations` overrides the cap. `--no-cp-live` skips the live CP
-  report and leaves the stop on `cp_window`.
+  report and leaves the stop on `cp_window`. `--max-aspect-ratio 250`
+  selects a hard global ceiling and a distinct `_ar250` mesh leaf.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
-  0.3 m/s. `--emit-queue` writes JSON. `--compare` reads
+  0.3 m/s, followed by 0.05, 0.15, 0.25 m/s. The additional run cases
+  are `u0p05_p6M`, `u0p15_p6M`, `u0p25_p6M`; every setting other than
+  inlet velocity and run identity is inherited from `u0p2_p6M`.
+  `--emit-queue` writes JSON; without `--run-id` it now selects all
+  six speeds (186 jobs). Repeat `--geo-id` to restrict geometries.
+  `--max-iterations FAMILY=N` is repeatable, defaults to 2000 for
+  every family (`diamond`, `empty`, `ml`, `pillar`, `sin`), and applies
+  to solves. `--no-cp-live` passes through to solves.
+  `--max-aspect-ratio 250` selects sensitivity meshes for emission,
+  mesh tables, comparisons, and seminar CSVs. `--compare` reads
   `campaign_reextract_v2`. It does not launch Fluent on import.
 - `scripts/mfbo/job_queue.py` — one job at a time. Sidecars are
   `<queue>.state.json`, `<queue>.lock`, `<queue>.stop`,
@@ -89,7 +99,7 @@ never moved. v3 meshing uses `--geometry-suffix .pmdb` and
 - Never `git pull` on the host while a queue is running from
   `C:/pyfluent`. The running process is the tree it started with.
   Pull only after that queue exits. Do not ask the operator to pull
-  while main3 is running.
+  while main4 is running.
 - No `job_queue.py run --resume` and no `--retry-failed` unless the
   operator asks. `--resume` retries failed jobs and appends `--resume`
   onto a `mesh_study_case` solve. A fresh start is `job_queue.py run
@@ -202,13 +212,104 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   until a host mesh test picks a size. A geometry entry
   `{"membrane_face_size_mm": ...}` becomes `local_face_size` on
   `wall_top_mem` and `wall_bottom_mem`.
+- Hard global AR sensitivity. `--max-aspect-ratio 250` on either
+  campaign driver appends `_ar250` after all sizing tokens:
+  `max035_min006_cpg5_bl4_peel2_y1h020_bms034_ar250`. It cannot alias
+  the standard mesh or an `_fsNNN` mesh. Combined finer-face / AR
+  requests keep both tokens and are a fourth, separate mesh identity.
+  This option replaces the prism-only override with the hard global
+  check; it cannot combine with `--max-prism-aspect-ratio`. Quality
+  parsing is required. Orthogonal quality, skewness, and skewed-face
+  fraction keep their hard limits. The mesh manifest records
+  `aspect_ratio_gate: "hard"`, `max_aspect_ratio_threshold: 250.0`,
+  and measured `AR_max`. A missing, inconsistent, or exceeded ceiling
+  refuses manifest acceptance or reuse. An AR above 250 still fails
+  before the worker writes the final mesh.
 
-## Current state (2026-11-16)
+## Current state (2026-11-18)
 
-Origin `main` is `65d6dcd`. The host queue was started from `ae98e7c`
+**main4 is running from `C:/pyfluent`**, as reported by the operator.
+Its starting revision, flags, jobs, and results were not supplied.
+Push these additions to GitHub only. The operator will pull on the
+host after main4 exits. Do not modify the host checkout,
+change a running queue, or overlap Fluent sessions.
+
+The previous main3 handoff below is historical evidence, not a claim
+about main4 or proof that its pending host checks have passed.
+
+WSL validation for these additions: `scripts/run_full_pytest.sh`,
+2346 passed, 1 skipped, 4 existing curvature warnings. CLI-only checks
+emitted 93 new-velocity jobs and 2 AR-sensitivity jobs under `/tmp`;
+those WSL queues are validation artifacts, not host queues.
+
+**Pending, after main4 exits and the operator pulls:**
+
+1. Run the full Windows pytest suite separately. WSL/Actions results
+   do not establish a Windows baseline. The solve-template and mesh
+   gate additions need host validation; retain the 20-iteration smoke
+   requirement above before any long solve queue. No host smoke was
+   run from WSL. Reconcile the older pending checks below with main4's
+   actual logs before rerunning any work.
+2. New velocities. These commands only emit JSON and never launch
+   Fluent. Run them from the prepared host shell above so queue `cwd`
+   points at `C:/pyfluent`. All 31 geometries at the three new speeds
+   (93 jobs; every family defaults to 2000):
+
+```text
+python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/velocities_extra.json --run-id u0p05_p6M --run-id u0p15_p6M --run-id u0p25_p6M --no-cp-live
+```
+
+   A filtered example (6 jobs), with explicit per-family overrides:
+
+```text
+python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/velocities_extra_filtered.json --run-id u0p05_p6M --run-id u0p15_p6M --run-id u0p25_p6M --geo-id REF_empty --geo-id P_p100_h00 --max-iterations empty=2000 --max-iterations pillar=2000 --no-cp-live
+```
+
+   Repeat `--max-iterations FAMILY=N` for measured family-specific
+   caps; omitted families remain at 2000. These defaults are caps,
+   not evidence of convergence at a new velocity. Omitting
+   `--no-cp-live` selects live CP and requires its host smoke to pass.
+3. AR sensitivity: D1225_a30 and S_a193_l1733 at the standard v3
+   sizing and `u0p2_p6M`. The operator reported AR about 212 and 228;
+   the new manifest must record what the new mesh actually measures.
+   Leave `configs/mesh_spec_v3.json` `geometries` as `{}` for this
+   standard-sizing comparison. Do not substitute finer-face entries
+   into this queue. Emit the two mesh-and-solve jobs:
+
+```text
+python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/ar250_u0p2.json --run-id u0p2_p6M --geo-id D1225_a30 --geo-id S_a193_l1733 --max-aspect-ratio 250 --no-cp-live
+```
+
+   These jobs mesh if the `_ar250` leaf is absent, otherwise reuse
+   only a matching successful mesh. They then solve/extract under
+   `runs/<family>/<geo_id>/max035_min006_cpg5_bl4_peel2_y1h020_bms034_ar250/u0p2_p6M/`.
+   Existing run leaves are still refused. For mesh inspection before
+   solving, emit a separate two-job mesh-only queue:
+
+```text
+python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/ar250_meshes.json --mesh-only --geo-id D1225_a30 --geo-id S_a193_l1733 --max-aspect-ratio 250
+python scripts/campaign_v3.py --mesh-table --max-aspect-ratio 250
+```
+
+   The table is read after those mesh jobs have finished. Success
+   requires a written mesh, manifest gate `hard`, recorded ceiling
+   250, measured `AR_max <= 250`, and orthogonal quality at least
+   0.05. Compare the same geometries' extracted QoIs at `u0p2_p6M`
+   with their separately identified finer-membrane meshes. Do not
+   claim an AR sensitivity result until both solves/extracts exist.
+
+Queue execution remains one job at a time, only after host validation
+and main4 exits: `python scripts/mfbo/job_queue.py run <queue.json>`.
+Do not add `--resume` or `--retry-failed`. Emit only the desired queue;
+the examples above are alternatives, not instructions to enqueue every
+example together.
+
+## Previous handoff (2026-11-16; historical)
+
+At that handoff, origin `main` was `65d6dcd`. The host queue was started from `ae98e7c`
 and must keep running that tree.
 
-**main3 is running**, with `--no-cp-live`, one Fluent at a time:
+**main3 was running**, with `--no-cp-live`, one Fluent at a time:
 
 - Fresh `u0p2_p6M` solves: `empty/REF_empty`, `pillar/P_p100_h00`.
   Their earlier finals were the initialized field (no residual lines,
@@ -231,7 +332,7 @@ face size and reads a mass-imbalance copy with
 `RO_DATA_ROOT` set to `C:/ro_data_mfbo/mass_imbalance`. Neither commit
 is in the running host tree. Pull them only after main3 exits.
 
-**Pending, after main3 exits and the host has pulled:**
+**Previously pending after main3 (current completion is unverified):**
 
 1. `cp_live` smoke. The `--no-cp-live` fresh smoke (REF_empty, 20/20)
    and the continue smoke (D2450_a45, iterations 2001–2020) already
