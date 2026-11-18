@@ -28,6 +28,7 @@ import campaign_v3 as campaign
 import campaign_v3_reextract as reextract
 from mfbo import job_queue
 from ro.child_output import subprocess_text_kwargs
+from ro.host_lock import host_lock_path
 from ro.mesh_common import load_mesh_run_record
 from ro.mesh_spec import default_spec_path, family_settings, load_mesh_spec
 from ro.paths import mesh_dir, project_root, refuse_production_root, run_dir, using_data_root
@@ -97,7 +98,9 @@ def require_idle(root, *, processes=None):
             if (("job_queue.py" in lower and re.search(r"\brun\b", lower))
                     or any(worker in lower for worker in workers)):
                 busy.append(f"pid={pid} {command}")
-    for lock in (Path(root) / "queues").rglob("*.lock"):
+    host_lock = host_lock_path()
+    locks = [*(Path(root) / "queues").rglob("*.lock"), *([host_lock] if host_lock.is_file() else [])]
+    for lock in locks:
         text = lock.read_text(encoding="ascii").strip()
         if not text.isdecimal() or int(text) <= 0:
             raise RuntimeError(f"Unrecognised queue lock: {lock}")

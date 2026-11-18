@@ -15,6 +15,9 @@ Sidecars use the queue path ``<queue>`` as a prefix:
 - ``<queue>.state.json`` — status, UTC times, return code, log path, git HEAD
 - ``<queue>.stop`` — finish the current job, then stop before the next
 - ``<queue>.lock`` — runner pid; a live pid refuses another start
+- the host lock (``ro.host_lock``, ``RO_HOST_LOCK``) — one runner per host
+  across all queue files. Before each job a live Fluent process (after a
+  ``RO_ORPHAN_GRACE_S`` grace) refuses the start with exit 1.
 - ``<queue>.summary.log`` — one line per finished attempt, also printed
 - ``<queue dir>/logs/<id>.log`` — that job's stdout and stderr.
   A console job writes the same file from inside the process.
@@ -50,6 +53,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from ro.discovery_session import discovery_stdio_kwargs  # noqa: E402
+from ro.host_lock import host_lock_path, wait_for_no_fluent  # noqa: E402
 
 EXIT_OK = 0
 EXIT_PREFLIGHT = 1
@@ -248,14 +252,35 @@ def run_queue(queue, *, retry_failed: bool = False, resume: bool = False) -> int
     files = queue_files(queue_path)
     _acquire_lock(files.lock)
     try:
-        return _run_locked(
-            jobs,
-            files,
-            retry_failed=retry_failed,
-            resume=resume,
-        )
+        host_lock = host_lock_path()
+        host_lock.parent.mkdir(parents=True, exist_ok=True)
+        _acquire_lock(host_lock)
+        try:
+            return _run_locked(
+                jobs,
+                files,
+                retry_failed=retry_failed,
+                resume=resume,
+            )
+        finally:
+            _release_lock(host_lock)
     finally:
         _release_lock(files.lock)
+
+
+def require_no_live_fluent(job_id: str) -> None:
+    """Refuse to start ``job_id`` while any Fluent process is live.
+
+    The previous job's solver gets ``RO_ORPHAN_GRACE_S`` (default 120 s)
+    to exit. A process left after that is an orphan or a session started
+    outside this runner; starting another would overlap Fluent sessions.
+    """
+    found = wait_for_no_fluent()
+    if found:
+        raise QueueError(
+            f"live Fluent process(es) before job {job_id}; refusing to start: "
+            + "; ".join(found)
+        )
 
 
 def status_report(queue) -> str:
@@ -377,6 +402,7 @@ def _run_locked(
             raise QueueError(
                 f"job {record['id']} has status {status!r}."
             )
+        require_no_live_fluent(record["id"])
         _execute_job(
             job,
             record,
