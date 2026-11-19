@@ -254,13 +254,15 @@ Control, already passed on `ae98e7c`: the same command with
 `--no-cp-live` (keep `--keep-checkpoints`). Continue smoke, only on a
 final that is the real 2000-iteration solution (D2450_a45 `u0p2_p6M`).
 Expect new residual rows through iteration 2020, snapshots
-`D2450_a45_u0p2_p6M_iter_002010` and `..._iter_002020` (case and data),
-and `post/reports_iter2000`, `post/reports_iter2010`,
-`post/reports_iter2020` (unpadded). Each chunk reads a continue checkpoint
-copied from the final, `D2450_a45_u0p2_p6M_checkpoint_002000` then
-`..._checkpoint_002010`; a PASS gate deletes those unless
-`--keep-checkpoints` is passed. `--checkpoint-every 200` writes no
-in-chunk checkpoint at 2010 or 2020.
+`D2450_a45_u0p2_p6M_iter_002000` (the final saved at continue start),
+`..._iter_002010` and `..._iter_002020` (case and data), and
+`post/reports_iter2000`, `post/reports_iter2010`, `post/reports_iter2020`
+(unpadded). Each chunk reads a continue checkpoint copied from the final
+(`..._checkpoint_002000`, then `..._checkpoint_002010`); every chunk start
+deletes the other checkpoints, so at most `..._checkpoint_002010` remains,
+and only with `--keep-checkpoints` or a non-PASS gate. With
+`--checkpoint-every 200` a 10-iteration chunk writes no in-chunk
+checkpoint unless it stops early.
 
 ```text
 python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 --geo-id D2450_a45 --case u0p2_p6M --m-max 0.035 --m-min 0.006 --m-cpg 5 --bl-layers 4 --membrane-bl-y1-um 2 --bulk-max-size 0.034 --peel-layers 2 --max-prism-aspect-ratio 250 --geometry-suffix .pmdb --geometry-root C:/ro_data_mfbo/geometries_pmdb --mesh-spec configs/mesh_spec_v3.json --reuse-mesh --checkpoint-every 200 --convergence-profile campaign_v3 --continue-iterations 20 --continue-every 10

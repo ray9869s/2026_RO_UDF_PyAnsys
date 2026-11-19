@@ -26,7 +26,8 @@ from ro.mesh_spec import (
 driver = load_module("mesh_study_case_effective", SCRIPTS_DIR / "mfbo" / "mesh_study_case.py")
 
 # configs/mesh_spec_v3.json at 7f4ad9b, the spec the 27 existing v3 meshes
-# were made with (byte for byte, so its hash is the recorded one).
+# were made with. These LF bytes hash to a9c001573a04..., the prefix the host
+# printed as recorded (HEAD hashes to e58ebc6752c9..., the current one).
 SPEC_7F4AD9B = (
     "{\n"
     '  "defaults": {\n'
@@ -61,6 +62,7 @@ def _old_spec(tmp_path: Path) -> Path:
 def test_spec_changes_since_7f4ad9b_leave_every_campaign_geometry_unchanged(tmp_path):
     old_path = _old_spec(tmp_path)
     old, new = load_mesh_spec(old_path), load_mesh_spec(default_spec_path())
+    assert spec_file_sha256(old_path).startswith("a9c001573a04")
     assert spec_file_sha256(old_path) != spec_file_sha256(default_spec_path())
     for geo_id in CAMPAIGN_GEO_ID_ORDER:
         family = family_for_geo_id(geo_id)
