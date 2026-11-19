@@ -152,7 +152,7 @@ def test_extract_retries_one_hang_then_fails(tmp_path, capsys):
         Path(log_path).write_text(
             "FLUENT_LAUNCH pid=4242\n"
             + format_hang_line("extract", 1800, [4242])
-            + "\n",
+            + "\nKILL_VERIFIED pids=4242\n",
             encoding="utf-8",
         )
         return type("R", (), {"returncode": HANG_EXIT_CODE})()
@@ -197,7 +197,7 @@ def test_extract_hang_then_success_does_not_set_failure_class(
         calls.append(1)
         if len(calls) == 1:
             Path(log_path).write_text(
-                format_hang_line("extract", 1800, [11, 22]) + "\n",
+                format_hang_line("extract", 1800, [11, 22]) + "\nKILL_VERIFIED pids=11,22\n",
                 encoding="utf-8",
             )
             return type("R", (), {"returncode": HANG_EXIT_CODE})()

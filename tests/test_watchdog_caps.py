@@ -338,8 +338,10 @@ def test_process_tree_helpers():
     assert pids == {10} and "lister down" in snap_error
     survivors, error = wait_gone({10}, lister=broken, timeout_s=0)
     assert survivors == [10] and "lister down" in error
-    # A failed listing is never reported as verified.
+    # A failed listing is never reported as verified, before or after the kill.
     assert kill_verification_line({10}, [], verify_error=error).startswith("KILL_INCOMPLETE")
+    unlisted = kill_verification_line(pids, [], snapshot_error=snap_error)
+    assert unlisted.startswith("KILL_INCOMPLETE") and "tree_listing_error" in unlisted
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX kill path")
@@ -414,3 +416,24 @@ def test_extract_does_not_retry_after_kill_incomplete(tmp_path):
         runner=runner, sleeper=lambda s: None, killer=lambda pid: "", process_lister=lambda: [])
     assert len(calls) == 1 and attempts == 1
     assert result.returncode == HANG_EXIT_CODE
+
+
+@pytest.mark.parametrize("kill_line", ["", "KILL_INCOMPLETE survivors= pids=5 tree_listing_error='x'\n"])
+def test_extract_retries_a_hang_only_after_kill_verified(tmp_path, kill_line):
+    batch = load_module("batch_report_extract_kill_verified", SCRIPTS_DIR / "batch_report_extract.py")
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    calls = []
+
+    def runner(cmd, env, log_path):
+        calls.append(log_path)
+        Path(log_path).write_text(
+            "HANG failure_class=hang stage=extract idle_s=1 killed_pids=5\n" + kill_line,
+            encoding="utf-8")
+        return type("R", (), {"returncode": HANG_EXIT_CODE})()
+
+    env = {"PYFLUENT_POST_OVERRIDES": json.dumps({"report_snapshot_iteration": 1})}
+    _result, attempts, _kinds, _logs = batch.run_extract_attempts(
+        cmd=["x"], env=env, run_directory=leaf, geo_id="g", mesh_id="m", run_id="r",
+        runner=runner, sleeper=lambda s: None, killer=lambda pid: "", process_lister=lambda: [])
+    assert len(calls) == 1 and attempts == 1

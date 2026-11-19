@@ -100,14 +100,19 @@ def wait_gone(pids, *, lister=list_processes, timeout_s=VERIFY_KILL_S,
 
 
 def kill_verification_line(tree, survivors, *, snapshot_error=None, verify_error=None) -> str:
-    """``KILL_VERIFIED pids=...`` or ``KILL_INCOMPLETE survivors=... pids=...``."""
+    """``KILL_VERIFIED pids=...`` or ``KILL_INCOMPLETE survivors=... pids=...``.
+
+    Verified only when the pre-kill tree listing succeeded (``tree`` is the
+    whole tree, not just the roots) and every listed pid is gone. A failed
+    listing before or after the kill is ``KILL_INCOMPLETE``.
+    """
     pids = ",".join(str(pid) for pid in sorted(tree))
     notes = ""
     if snapshot_error:
         notes += f" tree_listing_error={snapshot_error!r}"
     if verify_error:
         notes += f" verify_listing_error={verify_error!r}"
-    if verify_error or survivors:
+    if snapshot_error or verify_error or survivors:
         alive = ",".join(str(pid) for pid in survivors)
         return f"KILL_INCOMPLETE survivors={alive} pids={pids}{notes}"
     return f"KILL_VERIFIED pids={pids}{notes}"

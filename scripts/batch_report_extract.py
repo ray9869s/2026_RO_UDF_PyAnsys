@@ -595,13 +595,16 @@ def run_extract_attempts(
                 "idle_s": hang["idle_s"],
                 "killed_pids": list(hang["killed_pids"]),
             }
-            # A process that survived the kill would overlap a new session.
-            kill_incomplete = "KILL_INCOMPLETE" in evidence
-            will_retry = hang_retries < 1 and not kill_incomplete
-            if kill_incomplete:
+            # Retry only after a verified kill: a survivor, or a kill whose
+            # tree could not be listed, could overlap a new session.
+            kill_verified = (
+                "KILL_VERIFIED" in evidence and "KILL_INCOMPLETE" not in evidence
+            )
+            will_retry = hang_retries < 1 and kill_verified
+            if not kill_verified:
                 print(
-                    "  extract hang: KILL_INCOMPLETE (a process survived the kill); "
-                    "not retrying.",
+                    "  extract hang: kill not verified (KILL_INCOMPLETE or no "
+                    "KILL_VERIFIED line); not retrying.",
                     flush=True,
                 )
             print(
