@@ -107,13 +107,15 @@ def report_binding_status(run_directory, reports_dirname="reports"):
 
 
 def report_binding_unverifiable(run_directory, reports_dirname="reports"):
-    """True when binding fails only for lack of hash evidence.
+    """True only when there is no hash evidence either way.
 
-    That is: the reports and a readable manifest exist, no BROKEN marker,
-    and either the manifest has no final hashes, the sidecar is missing,
-    or the sidecar omits a hash field. A sidecar hash that differs from the
-    manifest is evidence of a different final and is never unverifiable.
-    Only the frozen v2 baseline may be reported on this basis.
+    Conflicts are checked first: any final hash present on both the
+    manifest and the sidecar that differs means the reports describe
+    another final (never unverifiable). After that, ``True`` only when
+    neither the manifest nor the sidecar carries any final hash. Partial
+    evidence (one side has hashes, the other none) is not "no evidence"
+    and stays blank. Also False for a BROKEN marker, missing reports or an
+    unreadable manifest/sidecar. Only the frozen v2 baseline may use this.
     """
     run_directory = Path(run_directory)
     if report_binding_reason(run_directory, reports_dirname) is None:
@@ -127,21 +129,15 @@ def report_binding_unverifiable(run_directory, reports_dirname="reports"):
         manifest = _read_json(run_directory / "manifest.json")
     except (OSError, ValueError):
         return False
-    expected = {
-        FINAL_CASE_SHA256_FIELD: manifest.get(FINAL_CASE_SHA256_FIELD),
-        FINAL_DATA_SHA256_FIELD: manifest.get(FINAL_DATA_SHA256_FIELD),
-    }
-    if not all(expected.values()):
-        return True
     sidecar = reports / EXTRACT_SOURCE_FILENAME
-    if not sidecar.is_file():
-        return True
-    try:
-        source = _read_json(sidecar)
-    except (OSError, ValueError):
-        return False
-    conflicts = [
-        field for field, value in expected.items()
-        if source.get(field) and source.get(field) != value
-    ]
-    return not conflicts
+    source = {}
+    if sidecar.is_file():
+        try:
+            source = _read_json(sidecar)
+        except (OSError, ValueError):
+            return False
+    fields = (FINAL_CASE_SHA256_FIELD, FINAL_DATA_SHA256_FIELD)
+    for field in fields:
+        if manifest.get(field) and source.get(field) and manifest[field] != source[field]:
+            return False
+    return not any(manifest.get(field) or source.get(field) for field in fields)

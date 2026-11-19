@@ -106,12 +106,19 @@ Reporting binds a row to its final: `campaign_v3` `leaf_metrics`,
 `extract_source.json` hashes equal the manifest final hashes
 (`ro.report_binding`); otherwise the metrics are blank and
 `report_binding` says why. Exception, v2 baseline only: in `--compare`
-a v2 leaf whose binding fails only for missing hash evidence (manifest
-without final hashes, no sidecar, or a sidecar without the hash fields)
-is reported with `v2_report_binding=unverified`, and `--compare` prints
-the bound/unverified/blank counts. A v2 sidecar naming a different
-final, a `BROKEN` marker or missing reports stay blank. v3 and
-`seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`,
+a v2 leaf with no hash evidence at all (no final hash on the manifest
+and none on the sidecar, or no sidecar) is reported with
+`v2_report_binding=unverified`, and `--compare` prints the
+bound/unverified/blank counts. Any hash present on both sides that
+differs is checked first and blanks the row; partial evidence (hashes on
+one side only), a `BROKEN` marker or missing reports also stay blank.
+Unverified rows get no `cp_rel_change` unless `--include-unverified-v2`
+(then `cp_rel_change_includes_unverified=True`). v2 CP
+(`cpc_window_avg_area`) is used only when
+|`cp_canon_window_avg` − `cpc_window_avg_area`| ≤ 1e-4
+(`V2_DEAD_ZONE_CP_ABS_TOL`, negligible dead zone); otherwise `v2_cp` is
+blank and `v2_cp_status` says why (`v2_cp_canon_minus_area_abs` holds
+the difference). v3 and `seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`,
 move the target sidecar aside (`extract_source.invalidated_<UTC>.json`)
 and clear the manifest `convergence_quality` at start, and end in
 `ro.atomic_reports.publish_extract`: hash the final pair, write the
@@ -324,9 +331,10 @@ long queue, on the host:
    exercises.
 4. The v2 binding check: count `campaign_reextract_v2` `u0p2_p6M`
    manifests with `final_data_sha256` and sidecars that match it. v2
-   rows without that evidence are reported as `unverified` (the
-   `--compare` summary line counts them); quote the count with any v2
-   comparison. Host
+   rows with no hash evidence are reported as `unverified` (the
+   `--compare` summary line counts them) and left out of
+   `cp_rel_change`; quote the count with any v2 comparison. Also count
+   rows whose `v2_cp_status` is not `ok` (dead zone above 1e-4). Host
 evidence behind them (operator-reported): every continued leaf's
 `post/reports` is from iteration 2000 while the final is 2500/4020;
 D2450_a60 has no gate (main3 stopped mid-continue); `.out` files are

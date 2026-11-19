@@ -81,7 +81,7 @@ def _bind(leaf, manifest=None, sidecar_hashes=None):
     )
 
 
-def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, installed, gate, cpc=None, dead=0.0, spec_hash="", git_head="", bound=True, cpc_area=None):
+def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, installed, gate, cpc=None, dead=0.0, spec_hash="", git_head="", bound=True, cpc_area=None, cp_canon=None):
     family = family_for_geo_id(geo_id)
     leaf = root / "runs" / family / geo_id / mesh_id / run_id
     reports = leaf / "post" / "reports"
@@ -92,6 +92,7 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
             fieldnames=[
                 "cp_meanfirst_live_window_avg",
                 "cp_canon_live_window_avg",
+                "cp_canon_window_avg",
                 "cpc_window_avg_flux",
                 "cpc_window_avg_area",
                 "dead_zone_area_fraction_window",
@@ -107,6 +108,9 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
             {
                 "cp_meanfirst_live_window_avg": cp,
                 "cp_canon_live_window_avg": cp,
+                "cp_canon_window_avg": (
+                    cp_canon if cp_canon is not None else (cp if cpc_area is None else cpc_area)
+                ),
                 "cpc_window_avg_flux": cp if cpc is None else cpc,
                 "cpc_window_avg_area": cp if cpc_area is None else cpc_area,
                 "dead_zone_area_fraction_window": dead,
@@ -776,25 +780,73 @@ def _v2_leaf(root, geo_id="D2450_a45", run_id="u0p2_p6M", cp=1.1):
 
 
 def test_v2_leaf_without_hash_evidence_is_reported_unverified(tmp_path):
-    """v2 leaves that predate hash stamping are reported, labelled unverified."""
+    """No hash on either side: reported, labelled unverified, no delta by default."""
     mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
     leaf = _v2_leaf(tmp_path / "v2")  # manifest has no final hashes, no sidecar
     _write_leaf(tmp_path / "v3", "D2450_a45", MESH_ID, "u0p2_p6M", cp=1.2, q999=1.3, dp=1000.0,
                 exposed=24.0, installed=23.0, gate="PASS")
+
+    def row_of(rows):
+        return next(r for r in rows if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+
     compare = CAMPAIGN.comparison_rows(tmp_path / "v2", tmp_path / "v3", mesh_ids)
-    row = next(r for r in compare if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+    row = row_of(compare)
     assert row["v2_report_binding"] == "unverified"
     assert row["v2_cp"] == pytest.approx(1.1)
     assert row["v3_report_binding"] == "bound"
-    assert row["cp_rel_change"] == pytest.approx(0.1 / 1.1)
+    assert row["cp_rel_change"] is None  # excluded from deltas by default
+    assert row["cp_rel_change_includes_unverified"] is False
     summary = CAMPAIGN.compare_binding_summary(compare)
     assert "unverified=1" in summary and "bound=0" in summary
     assert f"blank={len(compare) - 1}" in summary
-    # Hashes on the manifest but no sidecar: still no evidence either way.
+
+    included = row_of(CAMPAIGN.comparison_rows(
+        tmp_path / "v2", tmp_path / "v3", mesh_ids, include_unverified=True))
+    assert included["cp_rel_change"] == pytest.approx(0.1 / 1.1)
+    assert included["cp_rel_change_includes_unverified"] is True
+
+    # Partial evidence (manifest hashes, no sidecar) is not "no evidence".
     (leaf / "manifest.json").write_text(json.dumps(dict(_BOUND_HASHES, convergence_quality="PASS")),
                                         encoding="utf-8")
-    assert CAMPAIGN.leaf_metrics(leaf, cp_metric=CAMPAIGN.V2_CP_METRIC,
-                                 allow_unverified=True)["report_binding"] == "unverified"
+    metrics = CAMPAIGN.leaf_metrics(leaf, cp_metric=CAMPAIGN.V2_CP_METRIC, allow_unverified=True)
+    assert metrics["cp"] is None and metrics["report_binding"] != "unverified"
+
+
+def test_v2_any_conflicting_hash_is_blank_before_missing_evidence(tmp_path):
+    """Manifest has only the case hash; the sidecar's case hash differs."""
+    leaf = _v2_leaf(tmp_path / "v2")
+    (leaf / "manifest.json").write_text(
+        json.dumps({"convergence_quality": "PASS", "final_case_sha256": "c" * 64}), encoding="utf-8")
+    (leaf / "post" / "reports" / "extract_source.json").write_text(
+        json.dumps({"final_case_sha256": "e" * 64}), encoding="utf-8")
+    metrics = CAMPAIGN.leaf_metrics(leaf, cp_metric=CAMPAIGN.V2_CP_METRIC, allow_unverified=True)
+    assert metrics["cp"] is None
+    assert metrics["report_binding"] != "unverified"
+
+
+def test_v2_cp_needs_negligible_dead_zone_evidence(tmp_path):
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+
+    def compare_row(cp_canon):
+        root = tmp_path / f"case_{cp_canon}"
+        _write_leaf(root / "v2", "D2450_a45", CAMPAIGN.production_mesh_id("D2450_a45"), "u0p2_p6M",
+                    cp=1.0, q999=1.3, dp=900.0, exposed=24.0, installed=23.0, gate="PASS",
+                    cpc_area=1.1, cp_canon=cp_canon)
+        _write_leaf(root / "v3", "D2450_a45", MESH_ID, "u0p2_p6M", cp=1.2, q999=1.3, dp=1000.0,
+                    exposed=24.0, installed=23.0, gate="PASS")
+        return next(r for r in CAMPAIGN.comparison_rows(root / "v2", root / "v3", mesh_ids)
+                    if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+
+    ok = compare_row(1.10005)
+    assert ok["v2_cp_status"] == "ok"
+    assert ok["v2_cp"] == pytest.approx(1.1)
+    assert ok["cp_rel_change"] == pytest.approx(0.1 / 1.1)
+    dead = compare_row(1.12)
+    assert dead["v2_cp"] is None and dead["cp_rel_change"] is None and dead["v2_cp_excess"] is None
+    assert "dead zone not negligible" in dead["v2_cp_status"]
+    assert dead["v2_cp_canon_minus_area_abs"] == pytest.approx(0.02)
+    assert CAMPAIGN.v2_cp_status({"cp": 1.1, "cp_canon_window_avg": None})[0].startswith(
+        "no cp_canon_window_avg")
 
 
 def test_v2_sidecar_naming_another_final_stays_blank(tmp_path):

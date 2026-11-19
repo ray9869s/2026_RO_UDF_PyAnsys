@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -107,6 +108,13 @@ BENCHMARK_CP_METRIC = "cp_meanfirst_live_window_avg"
 # negligible, so the all-face area mean-first value (equal to
 # cp_meanfirst_window_avg) stands in for the live benchmark column.
 V2_CP_METRIC = "cpc_window_avg_area"
+# v2 has no mean-first live CP. cpc_window_avg_area (all window faces) is
+# its mean-first value only when the leaf has no dead zone to speak of:
+# the per-face live canon cp_canon_window_avg must agree with it within
+# this absolute CP tolerance. Host evidence: on leaves with no dead zone
+# (Pillar/ML/Empty) every CP definition agrees to 4 decimals.
+V2_DEAD_ZONE_CP_ABS_TOL = 1e-4
+V2_CP_OK = "ok"
 # Preserve the original queue order, then append the intermediate speeds.
 VELOCITY_ORDER = (0.2, 0.1, 0.3, 0.05, 0.15, 0.25)
 # run_config.py mesh quality gate.
@@ -177,6 +185,9 @@ COMPARE_COLUMNS = (
     "v2_cp_metric",
     "v2_report_binding",
     "v3_report_binding",
+    "v2_cp_status",
+    "v2_cp_canon_minus_area_abs",
+    "cp_rel_change_includes_unverified",
     "v2_dp_per_m_window",
     "v3_dp_per_m_window",
 )
@@ -793,6 +804,7 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
     return {
         "cp": cp,
         "cp_canon_live_window_avg": _optional_float(wide.get("cp_canon_live_window_avg")),
+        "cp_canon_window_avg": _optional_float(wide.get("cp_canon_window_avg")),
         "cp_meanfirst_window_avg": _optional_float(wide.get("cp_meanfirst_window_avg")),
         "cp_ref_area_live": _optional_float(wide.get("cp_ref_area_live")),
         "cpc": _optional_float(wide.get("cpc_window_avg_flux")),
@@ -822,8 +834,34 @@ def _number_cell(value):
     return format(float(value), ".12g")
 
 
-def comparison_rows(v2_root, v3_root, v3_mesh_ids):
-    """One row per geometry and p6M speed. A missing leaf stays blank."""
+def v2_cp_status(metrics):
+    """``(status, |cp_canon_window_avg - cpc_window_avg_area|)`` for a v2 leaf.
+
+    ``"ok"`` only with per-leaf evidence that the dead zone is negligible.
+    """
+    area = metrics.get("cp")
+    canon = metrics.get("cp_canon_window_avg")
+    if area is None:
+        return "no cpc_window_avg_area", None
+    if canon is None:
+        return "no cp_canon_window_avg (no dead-zone evidence)", None
+    diff = abs(canon - area)
+    if not math.isfinite(diff):
+        return "non-finite CP", None
+    if diff > V2_DEAD_ZONE_CP_ABS_TOL:
+        return (
+            f"dead zone not negligible: |cp_canon_window_avg - cpc_window_avg_area|"
+            f"={diff:.3g} > {V2_DEAD_ZONE_CP_ABS_TOL:g}"
+        ), diff
+    return V2_CP_OK, diff
+
+
+def comparison_rows(v2_root, v3_root, v3_mesh_ids, *, include_unverified=False):
+    """One row per geometry and p6M speed. A missing leaf stays blank.
+
+    ``cp_rel_change`` skips v2 rows that are only ``unverified`` unless
+    ``include_unverified``. v2 CP is blank unless ``v2_cp_status`` is ok.
+    """
     rows = []
     for run_id in run_ids():
         for geo_id in CAMPAIGN_GEO_ID_ORDER:
@@ -835,7 +873,14 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                 allow_unverified=True,
             )
             v3 = leaf_metrics(run_leaf(v3_root, geo_id, v3_mesh, run_id))
-            if v2["cp"] is None or v3["cp"] is None or v2["cp"] == 0.0:
+            cp_status, dead_zone_diff = v2_cp_status(v2)
+            if cp_status != V2_CP_OK:
+                v2["cp"] = None
+                v2["cp_excess"] = None
+            delta_ok = v2["report_binding"] == REPORT_BOUND or (
+                include_unverified and v2["report_binding"] == REPORT_UNVERIFIED
+            )
+            if not delta_ok or v2["cp"] is None or v3["cp"] is None or v2["cp"] == 0.0:
                 step = None
             else:
                 step = (v3["cp"] - v2["cp"]) / v2["cp"]
@@ -871,6 +916,11 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                     "v3_gate": v3["gate"],
                     "v2_report_binding": v2["report_binding"],
                     "v3_report_binding": v3["report_binding"],
+                    "v2_cp_status": cp_status,
+                    "v2_cp_canon_minus_area_abs": dead_zone_diff,
+                    "cp_rel_change_includes_unverified": bool(
+                        step is not None and v2["report_binding"] == REPORT_UNVERIFIED
+                    ),
                 }
             )
     return rows
@@ -1012,6 +1062,14 @@ def build_parser():
         help="Write the v2 versus v3 CSV to this path.",
     )
     parser.add_argument(
+        "--include-unverified-v2",
+        action="store_true",
+        help=(
+            "With --compare: also compute cp_rel_change for v2 rows whose "
+            "binding is only 'unverified' (no hash evidence). Off by default."
+        ),
+    )
+    parser.add_argument(
         "--v2-root",
         default=V2_ROOT,
         help=f"Production reextract root (default {V2_ROOT}).",
@@ -1096,7 +1154,10 @@ def main(argv=None):
         rows = mesh_table_rows(args.data_root, mesh_ids)
         print(format_mesh_table(rows))
     if args.compare:
-        rows = comparison_rows(args.v2_root, args.data_root, mesh_ids)
+        rows = comparison_rows(
+            args.v2_root, args.data_root, mesh_ids,
+            include_unverified=args.include_unverified_v2,
+        )
         path = write_csv(args.compare, COMPARE_COLUMNS, rows)
         print(f"Wrote {len(rows)} comparison rows to {path}")
         print(compare_binding_summary(rows))
