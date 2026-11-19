@@ -261,12 +261,14 @@ def tee_until_hang(
         except OSError:
             evidence = ""
         pids = pids_to_stop(evidence, proc.pid)
-        messages = _kill_and_verify(
-            pids, proc, killer=killer, lister=process_lister, verify_kill_s=verify_kill_s,
-        )
-        line = format_hang_line(stage, idle_s, pids)
-        state["messages"] = [line, *reason_lines, *messages]
+        # Mark the hang before killing: the kill closes the pipe, and the
+        # main thread must not take the killed worker's exit code as the
+        # result while the verification below is still running.
+        state["messages"] = [format_hang_line(stage, idle_s, pids), *reason_lines]
         state["hung"] = True
+        state["messages"].extend(_kill_and_verify(
+            pids, proc, killer=killer, lister=process_lister, verify_kill_s=verify_kill_s,
+        ))
 
     def watch():
         last = progress_signature(
@@ -354,7 +356,10 @@ def tee_until_hang(
         error = exc
     finally:
         stop.set()
-        thread.join(timeout=max(2.0, interval * 2))
+        # After a hang, wait for the kill verification (listing included).
+        thread.join(
+            timeout=float(verify_kill_s) + 180.0 if state["hung"] else max(2.0, interval * 2)
+        )
     if state["hung"] or pipe_held:
         threading.Thread(target=_close_quietly, args=(proc.stdout,), daemon=True).start()
     if state["hung"]:

@@ -595,7 +595,15 @@ def run_extract_attempts(
                 "idle_s": hang["idle_s"],
                 "killed_pids": list(hang["killed_pids"]),
             }
-            will_retry = hang_retries < 1
+            # A process that survived the kill would overlap a new session.
+            kill_incomplete = "KILL_INCOMPLETE" in evidence
+            will_retry = hang_retries < 1 and not kill_incomplete
+            if kill_incomplete:
+                print(
+                    "  extract hang: KILL_INCOMPLETE (a process survived the kill); "
+                    "not retrying.",
+                    flush=True,
+                )
             print(
                 "  extract hang: failure_class=hang "
                 f"attempt={attempt} idle_s={hang['idle_s']} "

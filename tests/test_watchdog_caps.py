@@ -364,3 +364,53 @@ def test_queue_kill_process_tree_reports_verification(tmp_path):
         Ghost(), lister=lambda: [{"ProcessId": 99999999, "ParentProcessId": 1}], verify_kill_s=0
     )
     assert "KILL_INCOMPLETE survivors=99999999" in survivor
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc")
+def test_hang_result_waits_for_kill_verification(tmp_path):
+    """The kill closes the pipe; the result must still be the HANG, not the
+    killed worker's exit code, while verification is running."""
+    script = tmp_path / "worker.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'],"
+        " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "open(sys.argv[1], 'w').write(str(c.pid))\n"
+        "print('started', flush=True)\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    pid_file = tmp_path / "grandchild.pid"
+    try:
+        result = tee_until_hang(
+            [sys.executable, str(script), str(pid_file)], env=None,
+            log_path=tmp_path / "attempt.log", stage="extract", idle_s=0.8, poll_s=0.05,
+            killer=lambda pid: "noop", verify_kill_s=3,
+        )
+        assert result.returncode == HANG_EXIT_CODE
+        text = (tmp_path / "attempt.log").read_text(encoding="utf-8")
+        assert parse_hang_line(text) is not None
+        assert "KILL_INCOMPLETE" in text
+    finally:
+        _reap(pid_file)
+
+
+def test_extract_does_not_retry_after_kill_incomplete(tmp_path):
+    batch = load_module("batch_report_extract_kill_incomplete", SCRIPTS_DIR / "batch_report_extract.py")
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    calls = []
+
+    def runner(cmd, env, log_path):
+        calls.append(log_path)
+        Path(log_path).write_text(
+            "HANG failure_class=hang stage=extract idle_s=1 killed_pids=5\n"
+            "KILL_INCOMPLETE survivors=6 pids=5,6\n", encoding="utf-8")
+        return type("R", (), {"returncode": HANG_EXIT_CODE})()
+
+    env = {"PYFLUENT_POST_OVERRIDES": json.dumps({"report_snapshot_iteration": 1})}
+    result, attempts, _kinds, _logs = batch.run_extract_attempts(
+        cmd=["x"], env=env, run_directory=leaf, geo_id="g", mesh_id="m", run_id="r",
+        runner=runner, sleeper=lambda s: None, killer=lambda pid: "", process_lister=lambda: [])
+    assert len(calls) == 1 and attempts == 1
+    assert result.returncode == HANG_EXIT_CODE

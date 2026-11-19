@@ -278,7 +278,9 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   bounded to 2 s. Every kill (watchdog or queue `JOB_TIMEOUT`) lists the
   process tree first and then logs `KILL_VERIFIED pids=...` or
   `KILL_INCOMPLETE survivors=...` after up to 30 s; a survivor or a
-  failed process listing is never reported as verified. Extract is retried once.
+  failed process listing is never reported as verified. An extract hang
+  with `KILL_INCOMPLETE` is not retried (a survivor would overlap the
+  new session). Extract is retried once.
   Solve is not. Campaign meshing writes `mesh_attempt<N>.log`. A hang is
   not a reason to `--resume`; after an extract hang `--resume` would only
   re-extract. A console queue job (`console: true`,
