@@ -5,11 +5,16 @@ overrides ``defaults`` field by field. The smooth-transition ``bl`` token
 stays 4; the membrane stack is the last-ratio count at the requested y1.
 
 The SHA-256 of the file bytes and the git HEAD that launches the job are
-stamped on the mesh and run manifests.
+stamped on the mesh and run manifests. Mesh reuse does not compare the
+whole-file hash: an added geometry entry or a new family field must not
+invalidate every existing mesh. It compares the effective settings one
+geometry resolves to (``effective_mesh_settings``) through their
+fingerprint ``mesh_spec_effective_sha256``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import subprocess
@@ -201,12 +206,87 @@ def read_git_head(repo=None) -> str:
     return sha
 
 
-def provenance_fields(spec_path, *, git_head=None) -> dict:
-    """Manifest fields for one launch. Git HEAD is read at call time."""
+def effective_mesh_settings(spec, family, geo_id) -> dict:
+    """The mesh parameters ``spec`` resolves to for one geometry.
+
+    The family's merged fields (defaults overridden field by field) and the
+    geometry's membrane face size (None when unset). Nothing else in the
+    spec file changes the mesh this geometry gets.
+    """
+    settings = family_settings(spec, family)
+    size = (spec.get("geometries") or {}).get(geo_id)
     return {
+        "settings": {key: settings[key] for key in SPEC_FIELDS},
+        "membrane_face_size_mm": None if size is None else float(size),
+    }
+
+
+def effective_settings_sha256(effective) -> str:
+    """SHA-256 of the canonical JSON of ``effective_mesh_settings``."""
+    text = json.dumps(effective, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def provenance_fields(spec_path, *, git_head=None, family=None, geo_id=None) -> dict:
+    """Manifest fields for one launch. Git HEAD is read at call time.
+
+    With ``family`` and ``geo_id``, also ``mesh_spec_effective_sha256``,
+    the fingerprint mesh reuse compares.
+    """
+    fields = {
         "mesh_spec_sha256": spec_file_sha256(spec_path),
         "git_head": read_git_head() if git_head is None else _require_git_head(git_head),
     }
+    if family is not None or geo_id is not None:
+        effective = effective_mesh_settings(load_mesh_spec(spec_path), family, geo_id)
+        fields["mesh_spec_effective_sha256"] = effective_settings_sha256(effective)
+    return fields
+
+
+def legacy_manifest_mismatches(manifest, effective) -> list[str]:
+    """Differences between a mesh manifest's recorded parameters and ``effective``.
+
+    For a manifest written before ``mesh_spec_effective_sha256``: the
+    recorded mesh parameters are compared with the settings the current
+    spec resolves to. An empty list means the mesh is what the spec asks for.
+    """
+    settings = effective["settings"]
+    mismatches = []
+
+    def compare(label, recorded, expected):
+        if recorded is None or not _same(recorded, expected):
+            mismatches.append(f"{label}: recorded {recorded!r}, spec {expected!r}")
+
+    compare("m_max", manifest.get("max_size_mm"), settings["m_max"])
+    compare("m_min", manifest.get("min_size_mm"), settings["m_min"])
+    compare("cpg", manifest.get("cpg"), settings["cpg"])
+    compare("peel", manifest.get("peel"), settings["peel"])
+    compare("bulk_max_size_mm", manifest.get("bulk_max_size_mm"), settings["bulk_max_size_mm"])
+    stack = manifest.get("membrane_bl_y1")
+    stack = stack if isinstance(stack, dict) else {}
+    compare("membrane_bl_y1_um", stack.get("y1_um"), settings["membrane_bl_y1_um"])
+    if stack.get("offset_method") != settings["membrane_bl_offset_method"]:
+        mismatches.append(
+            f"membrane_bl_offset_method: recorded {stack.get('offset_method')!r}, "
+            f"spec {settings['membrane_bl_offset_method']!r}"
+        )
+    face = manifest.get("local_face_size")
+    expected_size = effective["membrane_face_size_mm"]
+    if expected_size is None:
+        if face is not None:
+            mismatches.append(f"local_face_size: recorded {face!r}, spec None")
+    else:
+        recorded_size = face.get("size_mm") if isinstance(face, dict) else None
+        if (
+            recorded_size is None
+            or not _same(recorded_size, expected_size)
+            or list(face.get("labels") or []) != list(MEMBRANE_FACE_LABELS)
+        ):
+            mismatches.append(
+                f"local_face_size: recorded {face!r}, spec size_mm {expected_size!r} "
+                f"on {list(MEMBRANE_FACE_LABELS)}"
+            )
+    return mismatches
 
 
 def _require_git_head(value) -> str:

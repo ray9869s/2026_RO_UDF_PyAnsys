@@ -119,7 +119,9 @@ from ro.solve_checkpoint import (
     require_checkpoint_every,
 )
 from ro.mesh_spec import (
+    effective_mesh_settings,
     family_settings,
+    legacy_manifest_mismatches,
     load_mesh_spec,
     provenance_fields,
     require_changes_match,
@@ -814,7 +816,9 @@ def _setting_text(value):
     return repr(value)
 
 
-def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha256):
+def require_reusable_mesh(
+    mesh_directory, overrides, geometry_file, geometry_sha256, *, spec_effective=None
+):
     """Raise unless ``mesh_directory`` is a successful mesh of these settings.
 
     Success is ``mesh_run_record.json`` status ``SUCCESS`` together with a
@@ -826,6 +830,13 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
     ``geometry_sha256`` is the hash this job requires. A manifest
     field ``geometry_sha256`` is the recorded hash when present; otherwise
     the hash of ``geometry_file`` is the recorded hash.
+
+    Mesh spec: a manifest with ``mesh_spec_effective_sha256`` must equal the
+    requested fingerprint; the whole-file ``mesh_spec_sha256`` is not
+    compared then. A manifest with only the whole-file hash is reused when
+    that hash is unchanged, or when its recorded parameters equal
+    ``spec_effective`` (the settings the current spec resolves to for this
+    geometry); that acceptance is printed. Any differing parameter refuses.
     """
     directory = Path(mesh_directory)
     manifest_path = directory / "manifest.json"
@@ -927,15 +938,44 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
             f"{_setting_text(recorded_bulk)}, "
             f"requested {_setting_text(requested_bulk)}"
         )
+    spec_note = None
     if "mesh_spec_sha256" in overrides:
         recorded_spec = manifest.get("mesh_spec_sha256")
         requested_spec = overrides["mesh_spec_sha256"]
-        if recorded_spec != requested_spec:
+        recorded_effective = manifest.get("mesh_spec_effective_sha256")
+        requested_effective = overrides.get("mesh_spec_effective_sha256")
+        if recorded_effective is not None:
+            if recorded_effective != requested_effective:
+                mismatches.append(
+                    "mesh_spec_effective_sha256: recorded "
+                    f"{_setting_text(recorded_effective)}, "
+                    f"requested {_setting_text(requested_effective)}"
+                )
+        elif recorded_spec == requested_spec:
+            pass
+        elif recorded_spec is None or spec_effective is None:
             mismatches.append(
                 "mesh_spec_sha256: recorded "
                 f"{_setting_text(recorded_spec)}, "
                 f"requested {_setting_text(requested_spec)}"
             )
+        else:
+            differences = legacy_manifest_mismatches(manifest, spec_effective)
+            if differences:
+                mismatches.append(
+                    "mesh_spec_sha256: recorded "
+                    f"{_setting_text(recorded_spec)}, "
+                    f"requested {_setting_text(requested_spec)}, and the "
+                    "effective parameters differ: " + "; ".join(differences)
+                )
+            else:
+                spec_note = (
+                    "Mesh spec: accepted on effective parameters. The recorded "
+                    f"whole-file mesh_spec_sha256 {recorded_spec} differs from the "
+                    f"current {requested_spec}, but every recorded mesh parameter "
+                    "equals what the current spec resolves to for this geometry: "
+                    + json.dumps(spec_effective, sort_keys=True)
+                )
     labels = overrides.get("wall_spacer_labels", _MISSING)
     if isinstance(labels, (list, tuple)):
         recorded_skip = manifest.get("spacer_boundary_layers", _MISSING)
@@ -955,7 +995,29 @@ def require_reusable_mesh(mesh_directory, overrides, geometry_file, geometry_sha
         raise ValueError(
             f"Refusing to reuse mesh leaf {directory}: " + "; ".join(mismatches) + "."
         )
+    if spec_note is not None:
+        print(spec_note, flush=True)
     return manifest
+
+
+def run_spec_provenance(provenance, mesh_manifest):
+    """Spec provenance for the solve on a reused mesh.
+
+    The run records the mesh's spec hash (the solver refuses a run hash that
+    differs from the mesh manifest). When reuse was accepted on effective
+    parameters, the mesh's whole-file hash replaces the current one.
+    """
+    recorded = mesh_manifest.get("mesh_spec_sha256") if isinstance(mesh_manifest, dict) else None
+    if not provenance or not recorded or recorded == provenance.get("mesh_spec_sha256"):
+        return provenance
+    updated = dict(provenance)
+    updated["mesh_spec_sha256"] = recorded
+    print(
+        f"Run mesh_spec_sha256 set to the reused mesh's {recorded} "
+        f"(current spec file {provenance.get('mesh_spec_sha256')}).",
+        flush=True,
+    )
+    return updated
 
 
 def launch_meshing(overrides, data_root, mesh_directory, mesh_id, max_retries):
@@ -1880,11 +1942,13 @@ def _main(argv=None):
     case, template, max_retries = load_mesh_template(args.geo_id)
     family = case["family"]
     provenance = {}
+    spec_effective = None
     if args.mesh_spec:
         spec_path = resolve_spec_path(args.mesh_spec)
         spec = load_mesh_spec(spec_path)
         require_changes_match(changes, family_settings(spec, family))
-        provenance = provenance_fields(spec_path)
+        spec_effective = effective_mesh_settings(spec, family, args.geo_id)
+        provenance = provenance_fields(spec_path, family=family, geo_id=args.geo_id)
     production_mesh_id = case["mesh_id"]
     suffix, geometry_root = resolve_geometry_request(
         args.geometry_suffix, args.geometry_root
@@ -1925,13 +1989,15 @@ def _main(argv=None):
             args.geo_id,
             **geometry_kwargs,
         )
-        require_reusable_mesh(
+        reused_manifest = require_reusable_mesh(
             leaf,
             overrides,
             geometry,
             sha256_file(geometry),
+            spec_effective=spec_effective,
         )
         print(f"Reusing mesh leaf {leaf}")
+        provenance = run_spec_provenance(provenance, reused_manifest)
     else:
         refuse_existing_directory(leaf, "mesh leaf")
         ensure_study_geometry(

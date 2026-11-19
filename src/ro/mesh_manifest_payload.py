@@ -106,6 +106,9 @@ def build_mesh_manifest_payload(
     spec_hash = getattr(cfg, "mesh_spec_sha256", None)
     if isinstance(spec_hash, str) and spec_hash:
         base["mesh_spec_sha256"] = spec_hash
+    effective_hash = getattr(cfg, "mesh_spec_effective_sha256", None)
+    if isinstance(effective_hash, str) and effective_hash:
+        base["mesh_spec_effective_sha256"] = effective_hash
     git_head = getattr(cfg, "git_head", None)
     if isinstance(git_head, str) and git_head:
         base["git_head"] = git_head

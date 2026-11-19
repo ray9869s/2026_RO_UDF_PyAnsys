@@ -344,6 +344,18 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   main3 was started with `--no-cp-live` because the unbraced expression
   was rejected. Do not flip that flag on a running queue. The next
   solve uses `cp_live` only after the 20-iteration smoke above passes.
+- Mesh spec on reuse. `--reuse-mesh` does not compare the whole-file
+  `mesh_spec_sha256`: adding `geometries`, a velocity or a suffix rule to
+  `configs/mesh_spec_v3.json` must not block every existing mesh. New
+  mesh manifests record `mesh_spec_effective_sha256`, the fingerprint of
+  the settings the spec resolves to for that geometry (family fields over
+  defaults, plus its `membrane_face_size_mm`); reuse requires that to
+  match. A manifest with only the whole-file hash (all 27 meshes from
+  `7f4ad9b`) is reused when its recorded `max_size_mm`, `min_size_mm`,
+  `cpg`, `peel`, `bulk_max_size_mm`, membrane y1 / offset method and
+  `local_face_size` equal what the current spec resolves to; the driver
+  prints `Mesh spec: accepted on effective parameters ...` and the solve
+  records the mesh's whole-file hash. Any differing parameter refuses.
 - Mesh id suffixes. `_fsNNN` is the membrane face size in millimetres
   (`0.025` → `_fs025`), inserted after `_peel`. Growth rate 1.2 is
   omitted; any other rate appends `gNNN` (`_fs020g115`). The campaign

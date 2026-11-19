@@ -353,14 +353,23 @@ def _stamp_campaign_provenance(base, cfg, mesh_manifest):
     """Copy the campaign spec hash and the launching git HEAD when set.
 
     The spec hash on the mesh manifest wins. A run that names a different
-    hash is refused. Git HEAD is the solve, not the mesh.
+    whole-file hash is refused unless both name the same effective-settings
+    fingerprint (``mesh_spec_effective_sha256``). Git HEAD is the solve,
+    not the mesh.
     """
     recorded = None
+    recorded_effective = None
     if isinstance(mesh_manifest, dict):
         recorded = mesh_manifest.get("mesh_spec_sha256")
+        recorded_effective = mesh_manifest.get("mesh_spec_effective_sha256")
     requested = getattr(cfg, "mesh_spec_sha256", None)
+    requested_effective = getattr(cfg, "mesh_spec_effective_sha256", None)
+    same_effective = (
+        recorded_effective not in (None, "")
+        and recorded_effective == requested_effective
+    )
     if requested is not None and requested != "":
-        if recorded not in (None, "") and recorded != requested:
+        if recorded not in (None, "") and recorded != requested and not same_effective:
             raise ValueError(
                 "mesh_spec_sha256 does not match the mesh manifest: "
                 f"mesh={recorded}, run={requested}."
@@ -368,6 +377,9 @@ def _stamp_campaign_provenance(base, cfg, mesh_manifest):
     spec_hash = recorded or requested
     if spec_hash:
         base["mesh_spec_sha256"] = spec_hash
+    effective_hash = recorded_effective or requested_effective
+    if isinstance(effective_hash, str) and effective_hash:
+        base["mesh_spec_effective_sha256"] = effective_hash
     git_head = getattr(cfg, "git_head", None)
     if isinstance(git_head, str) and git_head:
         base["git_head"] = git_head

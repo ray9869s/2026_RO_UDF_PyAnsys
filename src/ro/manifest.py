@@ -97,6 +97,8 @@ Optional campaign provenance, omitted on leaves that were not launched
 with a mesh spec. Both are written on the mesh manifest and copied onto
 the run manifest (``git_head`` on the run is the solve's revision):
   mesh_spec_sha256:           lowercase SHA-256 of the spec file bytes
+  mesh_spec_effective_sha256: SHA-256 of the settings the spec resolves to
+                              for this geometry (mesh reuse compares this)
   git_head:                   full 40-character git revision
 
 Optional, parsed from the solver transcript. Absent when the UDF line
@@ -972,6 +974,13 @@ def _optional_provenance(payload: Mapping[str, Any], kind: str) -> None:
                 "unset, not null."
             )
         _require_sha256(payload, "mesh_spec_sha256", kind)
+    if "mesh_spec_effective_sha256" in payload:
+        if payload["mesh_spec_effective_sha256"] is None:
+            raise ManifestError(
+                f"{kind} manifest mesh_spec_effective_sha256 must be omitted "
+                "when unset, not null."
+            )
+        _require_sha256(payload, "mesh_spec_effective_sha256", kind)
     if "git_head" in payload:
         value = payload["git_head"]
         if not isinstance(value, str) or _GIT_HEAD_RE.fullmatch(value) is None:
@@ -1347,6 +1356,7 @@ _OPTIONAL_MESH_PARAMETER_FIELDS = (
     "membrane_bl_y1",
     "bulk_max_size_mm",
     "mesh_spec_sha256",
+    "mesh_spec_effective_sha256",
     "git_head",
     "max_prism_aspect_ratio_threshold",
     "spacer_boundary_layers",

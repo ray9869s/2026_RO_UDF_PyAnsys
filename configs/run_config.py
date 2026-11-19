@@ -253,7 +253,11 @@ fail_if_quality_not_parsed = False
 # Campaign v3 provenance. None on a production leaf. A campaign job sets
 # both through PYFLUENT_RUN_OVERRIDES. mesh_spec_sha256 is the SHA-256 of
 # the mesh spec file. git_head is the revision that launched this job.
+# mesh_spec_effective_sha256 fingerprints the settings the spec resolves
+# to for this geometry (ro.mesh_spec.effective_mesh_settings); mesh reuse
+# compares it instead of the whole-file hash.
 mesh_spec_sha256 = None
+mesh_spec_effective_sha256 = None
 git_head = None
 
 # When True: surface mesh first (no shadow-copy constraint), then
@@ -770,6 +774,7 @@ def validate_common():
     _require_positive_number("processor_count", processor_count)
     resolve_fluent_mpi(fluent_mpi)
     _require_optional_sha256("mesh_spec_sha256", mesh_spec_sha256)
+    _require_optional_sha256("mesh_spec_effective_sha256", mesh_spec_effective_sha256)
     _require_optional_git_head("git_head", git_head)
     _require_positive_number(
         "extract_hang_idle_minutes", extract_hang_idle_minutes
