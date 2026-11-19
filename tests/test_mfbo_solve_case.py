@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from helpers import SCRIPTS_DIR, load_module, production_refusal
 from ro.geometry_registry import format_mfbo_pillar_geo_id, pillar_registry_entry
 
 
@@ -74,7 +74,7 @@ def test_data_root_refuses_production_tree(tmp_path):
         "/mnt/c/ro_data",
         "/mnt/c/ro_data/runs",
     ):
-        with pytest.raises(ValueError, match="production data root"):
+        with pytest.raises(ValueError, match=production_refusal(value)):
             driver.resolve_data_root(value)
     assert driver.resolve_data_root(str(tmp_path)) == tmp_path.resolve()
     assert driver.resolve_data_root("C:/ro_data_mfbo/case") == Path(

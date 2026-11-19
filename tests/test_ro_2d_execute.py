@@ -554,7 +554,7 @@ def test_case_launch_switches_by_text_menu_then_reads_mesh(
 
     monkeypatch.setattr("ro_2d_pilot.execute.solve_case", solve)
     record = run_case(_config(), tmp_path / "ro2d", launcher=launcher)
-    mesh_read = "read_mesh:" + str(next((tmp_path / "ro2d").rglob("*.msh")))
+    mesh_read = "read_mesh:" + next((tmp_path / "ro2d").rglob("*.msh")).as_posix()
     assert events == [
         "launch:meshing:2",
         "meshing_finalizer",

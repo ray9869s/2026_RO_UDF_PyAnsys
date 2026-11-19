@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from helpers import SCRIPTS_DIR, load_module, production_refusal
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 
 processes = load_module(
@@ -154,7 +154,7 @@ def test_a_failed_geometry_is_recorded_and_the_next_runs(tmp_path):
 def test_output_root_under_campaign_data_is_refused(tmp_path):
     with pytest.raises(ValueError, match="C:/ro_data"):
         convert.resolve_output_root("C:/ro_data/geometries_pmdb")
-    with pytest.raises(ValueError, match="C:/ro_data"):
+    with pytest.raises(ValueError, match=production_refusal("/mnt/c/ro_data/geometries", "C:/ro_data")):
         convert.resolve_output_root("/mnt/c/ro_data/geometries")
     from pathlib import Path
 

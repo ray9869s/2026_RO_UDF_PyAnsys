@@ -17,6 +17,20 @@ CONFIGS_DIR = REPO_ROOT / "configs"
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
 
+def production_refusal(value, message="production data root") -> str:
+    """Regex for the refusal of a production path ``value`` on this OS.
+
+    Windows forms (``C:/ro_data``, ``C:\\ro_data``) reach the production
+    check on every OS. A POSIX ``/mnt/c/ro_data`` path is not absolute on
+    Windows, so there it is refused one step earlier ("must be absolute").
+    """
+    import os
+
+    if os.name == "nt" and str(value).startswith("/"):
+        return rf"{message}|must be absolute"
+    return message
+
+
 def load_module(name: str, path: Path) -> ModuleType:
     """Load a Python module from an absolute file path."""
     spec = importlib.util.spec_from_file_location(name, path)

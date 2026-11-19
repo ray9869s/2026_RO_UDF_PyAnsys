@@ -61,7 +61,7 @@ def test_child_gets_data_root_and_parent_env_stays(monkeypatch, tmp_path):
     assert calls[0]["stdout"] is not None
     assert calls[0]["creationflags"] is None
     argv = calls[0]["argv"]
-    assert argv[1].endswith("scripts/generate_pillar_cad.py")
+    assert Path(argv[1]).as_posix().endswith("scripts/generate_pillar_cad.py")
     assert "--d-p-mm" in argv
     assert "--out-dir" in argv
     assert str(out_dir) in argv
@@ -79,7 +79,7 @@ def test_mesh_argv_passes_fidelity_settings_and_solve_does_not(tmp_path):
         mesh_dir=tmp_path / "mesh",
     )
     mesh_argv = calls[0]["argv"]
-    assert mesh_argv[1].endswith("scripts/mfbo/mesh_mfbo_case.py")
+    assert Path(mesh_argv[1]).as_posix().endswith("scripts/mfbo/mesh_mfbo_case.py")
     assert mesh_argv[mesh_argv.index("--mesh-id") + 1] == MESH_ID
     assert mesh_argv[mesh_argv.index("--m-max") + 1] == "0.085"
     assert mesh_argv[mesh_argv.index("--m-min") + 1] == "0.006"

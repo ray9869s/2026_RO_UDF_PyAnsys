@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from helpers import SCRIPTS_DIR, load_module, production_refusal
 
 
 def load_driver():
@@ -22,7 +22,7 @@ def test_out_root_refuses_production_tree_and_existing_cases(tmp_path):
         r"C:\ro_data\meshes",
         "/mnt/c/ro_data/geom_smoke",
     ):
-        with pytest.raises(ValueError, match="production data root"):
+        with pytest.raises(ValueError, match=production_refusal(value)):
             driver.resolve_out_root(value)
     resolved = driver.resolve_out_root(str(tmp_path))
     assert resolved == tmp_path.resolve()

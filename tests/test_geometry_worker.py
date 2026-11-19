@@ -79,6 +79,10 @@ time.sleep(60)
 
 
 def _running(pid: int) -> bool:
+    if os.name == "nt":
+        from ro.geometry_worker import _pid_alive
+
+        return _pid_alive(pid)
     stat = Path(f"/proc/{pid}/stat")
     try:
         text = stat.read_text(encoding="utf-8")
@@ -143,7 +147,7 @@ def test_health_pid_can_differ_from_the_launcher_pid(tmp_path: Path, monkeypatch
 def test_exited_launcher_is_ready_when_the_interpreter_pid_is_alive(tmp_path: Path) -> None:
     interpreter = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
-        start_new_session=True,
+        **({} if os.name == "nt" else {"start_new_session": True}),
     )
     supervisor = GeometryWorkerSupervisor(tmp_path / "worker", ready_timeout_s=2)
     supervisor._token = "launch-token"
@@ -178,7 +182,7 @@ def test_exited_launcher_is_ready_when_the_interpreter_pid_is_alive(tmp_path: Pa
         )
         assert supervisor.healthy() is False
     finally:
-        os.kill(interpreter.pid, signal.SIGKILL)
+        interpreter.kill()
         interpreter.wait(timeout=5)
 
 
@@ -321,7 +325,7 @@ def handler(request):
 def on_stop():
     if backend is None or backend.poll() is not None:
         return
-    os.kill(backend.pid, signal.SIGKILL)
+    backend.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
     backend.wait(timeout=5)
 
 

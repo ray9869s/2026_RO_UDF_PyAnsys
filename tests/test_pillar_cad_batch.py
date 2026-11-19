@@ -509,7 +509,7 @@ def test_default_generate_path_is_unchanged(tmp_path):
     geo_id = format_mfbo_pillar_geo_id(*DESIGN_A)
     out_dir = tmp_path / "geometries" / "pillar" / geo_id
     drivers.generate(design=PillarDesign(*DESIGN_A), geo_id=geo_id, out_dir=out_dir)
-    assert calls[0][1].endswith("scripts/generate_pillar_cad.py")
+    assert Path(calls[0][1]).as_posix().endswith("scripts/generate_pillar_cad.py")
     assert "--batch" not in calls[0]
     assert "--serve" not in calls[0]
     sidecar = json.loads((out_dir / f"{geo_id}_generate_wall_time.json").read_text(encoding="utf-8"))

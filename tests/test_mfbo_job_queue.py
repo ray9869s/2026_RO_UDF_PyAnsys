@@ -57,6 +57,7 @@ def test_success_writes_state_log_and_summary(tmp_path, monkeypatch, capsys):
     _pin_head(monkeypatch)
     queue = (tmp_path / "jobs.json").resolve()
     marker = tmp_path / "marker.txt"
+    lock_seen = tmp_path / "lock_seen.txt"
     state_path = Path(str(queue) + ".state.json")
     lock_path = Path(str(queue) + ".lock")
     source = (
@@ -68,9 +69,11 @@ def test_success_writes_state_log_and_summary(tmp_path, monkeypatch, capsys):
         "job = state['jobs'][0]\n"
         "if job['status'] != 'running' or not job['started_at'] or not job['git_head']:\n"
         "    raise SystemExit('state was not running before the command')\n"
+        # Not os.getppid(): on Windows a venv python.exe is a launcher that
+        # starts the real interpreter as its child, so the job's parent is the
+        # launcher. The test compares the lock with the runner pid instead.
         f"lock = Path({str(lock_path)!r}).read_text(encoding='utf-8').strip()\n"
-        "if lock != str(os.getppid()):\n"
-        "    raise SystemExit('lock pid ' + lock + ' != parent ' + str(os.getppid()))\n"
+        f"Path({str(lock_seen)!r}).write_text(lock, encoding='utf-8')\n"
         f"Path({str(marker)!r}).write_text(sys.executable, encoding='utf-8')\n"
         "sys.stdout.write('hello-log\\n')\n"
     )
@@ -78,6 +81,8 @@ def test_success_writes_state_log_and_summary(tmp_path, monkeypatch, capsys):
 
     assert job_queue.main(["run", str(queue)]) == job_queue.EXIT_OK
 
+    # The runner is this process (main() runs in-process): it held the lock.
+    assert lock_seen.read_text(encoding="utf-8") == str(os.getpid())
     assert marker.read_text(encoding="utf-8") == sys.executable
     state = _read_state(queue.resolve())
     record = state["jobs"][0]

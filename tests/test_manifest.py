@@ -401,7 +401,7 @@ def test_iter_run_manifests_includes_manifest_path_in_validation_error(
 
     with pytest.raises(
         ManifestError,
-        match=r"runs/diamond/D2450_a45/.+/manifest.json: Run manifest missing",
+        match=r"runs[\\/]diamond[\\/]D2450_a45[\\/].+[\\/]manifest.json: Run manifest missing",
     ):
         list(iter_run_manifests())
 

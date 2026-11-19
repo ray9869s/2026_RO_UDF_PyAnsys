@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import REPO_ROOT, SCRIPTS_DIR, load_module
+from helpers import REPO_ROOT, SCRIPTS_DIR, load_module, production_refusal
 from ro.mfbo_adapter import (
     EXAMPLE_FIDELITY_TABLE,
     LF_MESH_ID,
@@ -214,7 +214,7 @@ def test_data_root_refuses_production(tmp_path):
         "/mnt/c/ro_data",
         "/mnt/c/ro_data/runs",
     ):
-        with pytest.raises(ValueError, match="production data root"):
+        with pytest.raises(ValueError, match=production_refusal(value)):
             resolve_data_root(value)
     assert resolve_data_root(tmp_path) == tmp_path.resolve()
 

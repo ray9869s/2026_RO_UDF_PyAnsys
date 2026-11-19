@@ -192,7 +192,7 @@ def test_pmdb_orientation_open_uses_the_sibling_scdocx_on_25_1(tmp_path):
         probe.open_design_for_orientation(modeler, lone)
 
 
-def test_diamond_cli_does_not_launch_and_refuses_the_cad_tree(tmp_path):
+def test_diamond_cli_does_not_launch_and_refuses_the_cad_tree(tmp_path, monkeypatch):
     probe = load_probe()
     bore = probe.build_parser().parse_args(
         ["--family", "diamond", "--d-h-mm", "0.3"]
@@ -243,6 +243,10 @@ def test_diamond_cli_does_not_launch_and_refuses_the_cad_tree(tmp_path):
     missing = probe.build_parser().parse_args(
         ["--family", "diamond", "--work-dir", str(tmp_path)]
     )
+    # The real CAD exists on the host: point the cases at absent files so the
+    # refusal is tested without ever reaching launch_fluent.
+    absent = [{"geo_id": f"D{i}", "cad_path": str(tmp_path / f"absent_{i}.dsco")} for i in range(9)]
+    monkeypatch.setattr(probe, "production_diamond_cases", lambda: absent)
     with pytest.raises(FileNotFoundError, match="Diamond reference CAD is missing"):
         probe.run_diamond_reference(missing)
 
