@@ -472,32 +472,22 @@ _CHECK_DID_NOT_RUN_RE = re.compile(
 )
 
 
-# Check-form outputs recognised as "ran and found nothing invalid". Anything
-# else (empty, "None", "#f", an error, or text not seen before) proves
-# nothing and fails closed.
-_CHECK_PASS_EXACT = frozenset({"()", "'()", "nil", "#t", "#true"})
-_CHECK_PASS_RE = re.compile(
-    r"\bno invalid (?:inputs?|expressions?)\b|\ball (?:named )?expressions are valid\b"
-    r"|valid\s*[:=]\s*yes\b",
-    re.IGNORECASE,
-)
+# The only check-form output recognised as "ran and found nothing invalid":
+# an empty list from the invalid-input forms. Everything else (empty text,
+# "None", "#f", "#t", errors, text not captured from Fluent 25.1 yet) proves
+# nothing and fails closed. Extend this only from logged host output.
+INVALID_INPUT_FORMS = ("(get-invalid-inputs-formated)", "(get-invalid-inputs)")
+_EMPTY_LIST_OUTPUTS = frozenset({"()", "'()"})
 
 
-def expression_check_ran(text) -> bool:
-    """True only for a recognised "nothing invalid" output.
-
-    ``None``, empty text, ``"None"``, ``"#f"``, an exception text from the
-    wrapper, Fluent's ``unbound variable`` / ``invalid function``, and any
-    unrecognised output prove nothing.
-    """
-    if text is None:
+def expression_check_ran(text, form=None) -> bool:
+    """True only for ``()`` / ``'()`` returned by an invalid-input form."""
+    if text is None or form not in INVALID_INPUT_FORMS:
         return False
     stripped = str(text).strip()
     if not stripped or _CHECK_DID_NOT_RUN_RE.search(stripped) is not None:
         return False
-    if stripped.casefold() in _CHECK_PASS_EXACT:
-        return True
-    return _CHECK_PASS_RE.search(stripped) is not None
+    return stripped in _EMPTY_LIST_OUTPUTS
 
 
 def named_expression_listed_valid(text) -> bool:
@@ -511,8 +501,9 @@ def expression_check_positive(form_texts, named_listings) -> tuple[bool, str]:
     """(passed, reason). Passing needs positive evidence, not silence.
 
     Every named expression must list ``Valid : Yes``. With no named
-    expression, at least one check form must have run. Any invalid marker
-    fails.
+    expression, an invalid-input form must have returned ``()``. Any
+    invalid marker fails. ``form_texts`` is in ``EXPRESSION_CHECK_FORMS``
+    order.
     """
     texts = [text for text in form_texts if text is not None]
     texts += [text for text in named_listings.values() if text is not None]
@@ -523,8 +514,11 @@ def expression_check_positive(form_texts, named_listings) -> tuple[bool, str]:
         return False, "named expression(s) not listed as Valid : Yes: " + ", ".join(not_valid)
     if named_listings:
         return True, "every named expression is Valid : Yes"
-    if any(expression_check_ran(text) for text in form_texts):
-        return True, "a check form ran and reported nothing invalid"
+    if any(
+        expression_check_ran(text, form)
+        for form, text in zip(EXPRESSION_CHECK_FORMS, form_texts)
+    ):
+        return True, "an invalid-input form returned an empty list"
     return False, "no expression check could run"
 
 

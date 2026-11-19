@@ -392,7 +392,7 @@ def test_a_valid_expression_report_does_not_block_iterate():
 
     class Scheme:
         def exec(self, commands, wait=True, silent=False):
-            return "Valid            : Yes"
+            return "()"
 
     class Named:
         def get_object_names(self):
@@ -480,7 +480,8 @@ def test_incommensurate_oscillation_end_to_end_is_phase_sensitive_trend_is_not()
     assert trend_relative_change(wobble, 100) < 2e-5
 
 
-@pytest.mark.parametrize("output", ["", "   ", "None", "#f", "some text never seen before", "0"])
+@pytest.mark.parametrize("output", ["", "   ", "None", "#f", "#t", "nil", "No invalid inputs",
+                                    "some text never seen before", "0"])
 def test_expression_check_unrecognised_output_fails(output):
     solver = load_solver_code(f"expr_check_unrecognised_{abs(hash(output))}")
 
@@ -492,7 +493,7 @@ def test_expression_check_unrecognised_output_fails(output):
         solver.require_setup_expressions_valid(_session(Scheme()))
 
 
-@pytest.mark.parametrize("output", ["()", "#t", "No invalid inputs"])
+@pytest.mark.parametrize("output", ["()", "'()", " () "])
 def test_expression_check_recognised_pass_outputs(output):
     solver = load_solver_code(f"expr_check_recognised_{abs(hash(output))}")
 
@@ -529,7 +530,7 @@ def test_expression_check_raw_output_goes_to_solver_log(tmp_path):
 
     class Scheme:
         def exec(self, commands, wait=True, silent=False):
-            return "#t"
+            return "()"
 
     log = tmp_path / "solver_log_case.txt"
     log.write_text("earlier lines\n", encoding="utf-8")
@@ -616,3 +617,12 @@ def test_monitor_changes_default_window_is_500_and_extract_keeps_last100(tmp_pat
     assert default["monitor_window_status_last500_cp"] == "no samples"
     merged = extract_monitor_changes(tmp_path)
     assert "monitor_change_last100_lmh" in merged and "monitor_change_last500_lmh" in merged
+
+
+def test_empty_list_counts_only_from_the_invalid_input_forms():
+    from ro.monitor_change import EXPRESSION_CHECK_FORMS, expression_check_positive
+
+    only_expr_check = [None, None, "()", None, None]  # (expr-check) returned ()
+    assert expression_check_positive(only_expr_check, {}) == (False, "no expression check could run")
+    first = ["()"] + [None] * (len(EXPRESSION_CHECK_FORMS) - 1)
+    assert expression_check_positive(first, {})[0] is True

@@ -298,11 +298,14 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
 - Fail closed. `unknown_early_stop` (iterate returned below the cap with
   no stop marker) writes only `failed_attempt_*` and exits non-zero. The
   setup-expression check must pass positively: every named expression
-  lists `Valid : Yes`, or, with none, at least one check form returned a
-  recognised "nothing invalid" output (`()`, `'()`, `nil`, `#t`,
-  `No invalid inputs`, `Valid : Yes`). Empty, `None`, `#f`, errors and any
-  unrecognised text fail, as does a failure to enumerate the named
-  expressions; otherwise `Refusing to iterate`. The raw check output is
+  lists `Valid : Yes`, or, with none, `(get-invalid-inputs-formated)` or
+  `(get-invalid-inputs)` returned an empty list (`()` / `'()`). That is
+  the only recognised pass output: no Fluent 25.1 output is captured
+  here, so `#t`, `nil`, empty text, `None`, `#f`, errors and anything else
+  fail, as does a failure to enumerate the named expressions; otherwise
+  `Refusing to iterate`. Expect the `--no-cp-live` smoke (no named
+  expressions) to refuse until the logged output shows what these forms
+  print. The raw check output is
   appended to `solver_log_<case>.txt` (`EXPRESSION CHECK (raw output)`).
   `RO_EXPRESSION_CHECK=warn` lets a check that did not positively pass
   through with a logged `OVERRIDDEN` warning, for host diagnosis only
