@@ -845,6 +845,10 @@ def test_v2_cp_needs_negligible_dead_zone_evidence(tmp_path):
     assert dead["v2_cp"] is None and dead["cp_rel_change"] is None and dead["v2_cp_excess"] is None
     assert "dead zone not negligible" in dead["v2_cp_status"]
     assert dead["v2_cp_canon_minus_area_abs"] == pytest.approx(0.02)
+    root = tmp_path / "case_1.12"
+    summary = CAMPAIGN.compare_binding_summary(
+        CAMPAIGN.comparison_rows(root / "v2", root / "v3", mesh_ids))
+    assert "v2_cp_not_ok=1" in summary
     assert CAMPAIGN.v2_cp_status({"cp": 1.1, "cp_canon_window_avg": None})[0].startswith(
         "no cp_canon_window_avg")
 

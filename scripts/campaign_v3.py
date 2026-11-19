@@ -932,9 +932,11 @@ def compare_binding_summary(rows):
     bound = sum(1 for row in rows if row.get("v2_report_binding") == REPORT_BOUND)
     v3_bound = sum(1 for row in rows if row.get("v3_report_binding") == REPORT_BOUND)
     blank = len(rows) - unverified - bound
+    reported = [row for row in rows if row.get("v2_report_binding") in (REPORT_BOUND, REPORT_UNVERIFIED)]
+    cp_not_ok = sum(1 for row in reported if row.get("v2_cp_status") != V2_CP_OK)
     return (
-        f"v2 rows: bound={bound} unverified={unverified} blank={blank}; "
-        f"v3 rows bound={v3_bound}/{len(rows)}"
+        f"v2 rows: bound={bound} unverified={unverified} blank={blank} "
+        f"v2_cp_not_ok={cp_not_ok}; v3 rows bound={v3_bound}/{len(rows)}"
     )
 
 

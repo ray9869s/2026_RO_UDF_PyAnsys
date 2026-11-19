@@ -396,6 +396,33 @@ via `cpc_window_avg_area`. Expect the re-extract emitter to list the
 continued leaves as `STALE`. Run the S_a072 snapshot jobs to measure the
 mean-first change over 2000→2500.
 
+**Codex-review fixes (2026-11-19, pushed after `593c553`; not on the
+host).** Extract transaction and generation-bound gate, strict v2
+binding with dead-zone evidence, snapshot-over-final refusal and pair
+copies, fail-closed expression check, console meshing without a pipe,
+bounded watchdog with verified kills, snapshot isolation, clear
+process-scan errors, validated N=500 monitor windows, non-finite guard,
+docs. Additional host checks before any long queue:
+
+- Both 20-iteration smokes will most likely refuse at the expression
+  check: the only recognised pass outputs are `()`/`'()` from the
+  invalid-input forms and `Valid : Yes` listings, and no Fluent 25.1
+  output of them is in this repo. Read the `EXPRESSION CHECK (raw
+  output)` block in `solver_log_<case>.txt` and extend the recognised
+  set from it in a commit. `RO_EXPRESSION_CHECK=warn` is for that
+  diagnosis only.
+- Watch the attempt logs of any hang/timeout for `KILL_VERIFIED` /
+  `KILL_INCOMPLETE`; the Windows path (CIM `ParentProcessId`, taskkill)
+  is untested here.
+- The S_a072 snapshot jobs now write a snapshot sidecar and report
+  quality `UNAVAILABLE`; the run manifest must be byte-identical before
+  and after them.
+- `--compare` prints `v2_cp_not_ok=<n>`; the 1e-4 v2 dead-zone tolerance
+  is not measured on v2.
+- Console meshing (no pipe) only applies to `console: true` queue jobs,
+  which `campaign_v3` does not emit; in that mode `FLUENT_LAUNCH` PIDs
+  reach the HANG kill only if the meshing transcript prints them.
+
 **Benchmark CP decision (approved 2026-11-18).** Use
 `cp_meanfirst_live_window_avg` for campaign reporting, v3 comparisons,
 and CP excess. Area-average cm and local cp over the same live
