@@ -64,7 +64,7 @@ from ro.evaluation_window_table import (  # noqa: E402
     select_evaluation_window,
     window_lmh,
 )
-from ro.extract_skip import write_extract_source_record  # noqa: E402
+from ro.udm_layout import parse_ro_analytic_cwall_from_case  # noqa: E402
 from ro.atomic_reports import (  # noqa: E402
     begin_report_extract,
     clear_manifest_gate,
@@ -343,6 +343,52 @@ def _report_dirname(value):
     )
 
 
+SNAPSHOT_QUALITY_UNAVAILABLE = "UNAVAILABLE"
+
+
+def snapshot_quality_unavailable(quality_result, iteration):
+    """Quality for a snapshot extract: no residual evidence bound to it."""
+    reason = (
+        f"snapshot extract at iteration {iteration}: no residual evidence "
+        "bound to this pair"
+    )
+    result = dict(quality_result)
+    result.update(
+        convergence_quality=SNAPSHOT_QUALITY_UNAVAILABLE,
+        needs_longer_solve=False,
+        failures=[],
+        unavailable=[reason],
+        continuity_final=None,
+    )
+    return result
+
+
+def snapshot_sidecar_fields(iteration, case_file, data_file, case_provenance,
+                            data_provenance, run_manifest):
+    """Snapshot identity for its own sidecar. No final-pair fields."""
+    return {
+        "kind": "snapshot",
+        "snapshot_iteration": int(iteration),
+        "snapshot_case_file": str(case_file),
+        "snapshot_data_file": str(data_file),
+        "snapshot_case_file_provenance": case_provenance,
+        "snapshot_data_file_provenance": data_provenance,
+        "convergence_quality": SNAPSHOT_QUALITY_UNAVAILABLE,
+        # The leaf's canonical final at extract time, for provenance only.
+        "leaf_final_case_sha256": run_manifest.get(FINAL_CASE_SHA256_FIELD),
+        "leaf_final_data_sha256": run_manifest.get(FINAL_DATA_SHA256_FIELD),
+    }
+
+
+def require_analytic_cwall_without_writing(case_path):
+    value = parse_ro_analytic_cwall_from_case(Path(case_path))
+    if value != 1:
+        raise RuntimeError(
+            f"RO_ANALYTIC_CWALL must be 1 for CP metrics, got {value!r} from case UDF in {case_path}."
+        )
+    return value
+
+
 def require_snapshot_layout(cfg):
     """A ``_meanfirst`` directory needs ``report_snapshot_iteration`` and back."""
     dirname = _report_dirname(getattr(cfg, "report_dirname", None))
@@ -597,7 +643,11 @@ if __name__ == "__main__":
         bind_manifest=report_binds_manifest(cfg),
     ):
         print("Extract start:", _action)
-    sync_run_manifest_analytic_cwall(case_path)
+    if report_binds_manifest(cfg):
+        sync_run_manifest_analytic_cwall(case_path)
+    else:
+        # Snapshot extract: check the case UDF, never write the manifest.
+        require_analytic_cwall_without_writing(case_path)
     _run_manifest_for_window = read_run_manifest(case_path)
     if str(cfg.geo_name) != _run_manifest_for_window["geo_id"]:
         raise ValueError(
@@ -3174,6 +3224,12 @@ if __name__ == "__main__":
                 mass_balance_rel_abs_max=_gate.get("mass_balance_rel_abs_max"),
                 continuity_final_max=_gate.get("continuity_final_max"),
             )
+        if not report_binds_manifest(cfg):
+            # The leaf's residual history runs past the snapshot, so it is
+            # not this pair's evidence. Quality is unavailable.
+            quality_result = snapshot_quality_unavailable(
+                quality_result, cfg.report_snapshot_iteration
+            )
 
         # ----------------------------------------------------------
         # Save raw report values for debugging/reproducibility
@@ -3314,9 +3370,18 @@ if __name__ == "__main__":
             final=final_report_path,
             source_case_file=final_case_file,
             source_data_file=final_data_file,
-            sidecar_fields={
-                SOLVER_ATTEMPT_ID_FIELD: run_manifest.get(SOLVER_ATTEMPT_ID_FIELD),
-            },
+            sidecar_fields=(
+                {SOLVER_ATTEMPT_ID_FIELD: run_manifest.get(SOLVER_ATTEMPT_ID_FIELD)}
+                if report_binds_manifest(cfg)
+                else snapshot_sidecar_fields(
+                    cfg.report_snapshot_iteration,
+                    final_case_file,
+                    final_data_file,
+                    final_case_file_provenance,
+                    final_data_file_provenance,
+                    run_manifest,
+                )
+            ),
             gate_payload=manifest_quality_payload(quality_result),
             bind_manifest=report_binds_manifest(cfg),
         )

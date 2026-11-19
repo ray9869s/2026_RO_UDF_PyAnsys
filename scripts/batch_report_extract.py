@@ -523,6 +523,15 @@ def collect_extract_attempt_evidence(log_path):
         return ""
 
 
+def _is_snapshot_extract(env) -> bool:
+    """True when the worker overrides name ``report_snapshot_iteration``."""
+    try:
+        overrides = json.loads((env or {}).get("PYFLUENT_POST_OVERRIDES") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(overrides, dict) and overrides.get("report_snapshot_iteration") not in (None, "")
+
+
 def run_extract_attempts(
     *,
     cmd,
@@ -593,7 +602,11 @@ def run_extract_attempts(
                 f"killed_pids={hang['killed_pids']}",
                 flush=True,
             )
-            print(f"  {record_hang(run_directory, event, failed=not will_retry)}", flush=True)
+            if _is_snapshot_extract(env):
+                # A snapshot extract never writes the canonical run manifest.
+                print("  snapshot extract: hang not recorded on the run manifest.", flush=True)
+            else:
+                print(f"  {record_hang(run_directory, event, failed=not will_retry)}", flush=True)
             for line in terminate_recorded_fluent_pids(evidence, killer=killer):
                 print(f"  {line}", flush=True)
             if will_retry:

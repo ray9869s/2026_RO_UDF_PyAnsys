@@ -183,3 +183,92 @@ def test_launch_extract_requires_snapshot_iteration_for_custom_pair(tmp_path):
             tmp_path, tmp_path, {}, geo_id="g", mesh_id="m", run_id="r",
             final_case=tmp_path / "a.cas.h5", final_data=tmp_path / "a.dat.h5",
         )
+
+
+def _worker_functions(*names):
+    """Exec selected top-level functions of the extract worker (it cannot be imported)."""
+    import ast
+
+    from ro.solver_common import FINAL_CASE_SHA256_FIELD, FINAL_DATA_SHA256_FIELD
+
+    source = (SCRIPTS_DIR / "pyfluent_report_extract.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = [node for node in tree.body
+              if isinstance(node, (ast.FunctionDef, ast.Assign))
+              and (getattr(node, "name", None) in names
+                   or (isinstance(node, ast.Assign)
+                       and any(getattr(t, "id", None) == "SNAPSHOT_QUALITY_UNAVAILABLE" for t in node.targets)))]
+    namespace = {"FINAL_CASE_SHA256_FIELD": FINAL_CASE_SHA256_FIELD,
+                 "FINAL_DATA_SHA256_FIELD": FINAL_DATA_SHA256_FIELD}
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), "worker_subset", "exec"), namespace)
+    return namespace
+
+
+def test_snapshot_quality_is_unavailable_and_sidecar_names_the_snapshot():
+    ns = _worker_functions("snapshot_quality_unavailable", "snapshot_sidecar_fields")
+    quality = ns["snapshot_quality_unavailable"](
+        {"convergence_quality": "PASS", "failures": [], "continuity_final": 1e-5}, 2000)
+    assert quality["convergence_quality"] == "UNAVAILABLE"
+    assert quality["continuity_final"] is None
+    assert "iteration 2000" in quality["unavailable"][0]
+    fields = ns["snapshot_sidecar_fields"](
+        2000, "a_iter_002000.cas.h5", "a_iter_002000.dat.h5", "override", "override",
+        {"final_case_sha256": "c" * 64, "final_data_sha256": "d" * 64})
+    assert fields["kind"] == "snapshot" and fields["snapshot_iteration"] == 2000
+    assert fields["leaf_final_case_sha256"] == "c" * 64
+    assert "final_case_sha256" not in fields and "final_data_sha256" not in fields
+
+
+def test_snapshot_extract_never_writes_the_canonical_manifest_in_source():
+    source = (SCRIPTS_DIR / "pyfluent_report_extract.py").read_text(encoding="utf-8")
+    sync = source.index("sync_run_manifest_analytic_cwall(case_path)\n")
+    assert "if report_binds_manifest(cfg):" in source[sync - 80:sync]
+    assert "require_analytic_cwall_without_writing(case_path)" in source
+    assert "snapshot_quality_unavailable(" in source
+    assert "else snapshot_sidecar_fields(" in source
+    stamp = source.index("stamp_extraction_wall_time_on_run_manifest(\n                        case_path")
+    assert "report_binds_manifest(cfg)" in source[stamp - 300:stamp]
+
+
+def test_snapshot_publish_keeps_manifest_and_writes_snapshot_identity(monkeypatch, tmp_path):
+    from ro.atomic_reports import publish_extract, staging_report_path
+    from test_manifest import write_test_run
+
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    leaf = write_test_run()
+    manifest_before = (leaf / "manifest.json").read_bytes()
+    case, data = leaf / "x_iter_002000.cas.h5", leaf / "x_iter_002000.dat.h5"
+    case.write_bytes(b"c")
+    data.write_bytes(b"d")
+    final = leaf / "post" / "reports_iter2000_meanfirst"
+    staged = staging_report_path(final, "s1")
+    staged.mkdir(parents=True)
+    (staged / "summary_metrics_wide.csv").write_text("a\n1\n", encoding="utf-8")
+    publish_extract(case_path=leaf, staging=staged, final=final, source_case_file=case,
+                    source_data_file=data, sidecar_fields={"kind": "snapshot", "snapshot_iteration": 2000},
+                    gate_payload={"convergence_quality": "PASS"}, bind_manifest=False)
+    assert (leaf / "manifest.json").read_bytes() == manifest_before
+    sidecar = json.loads((final / "extract_source.json").read_text(encoding="utf-8"))
+    assert sidecar["snapshot_iteration"] == 2000 and sidecar["snapshot_case_sha256"]
+    assert sidecar["final_case_sha256"] is None  # never claims to be the final
+    assert report_binding_reason(leaf, "reports_iter2000_meanfirst") is not None
+
+
+def test_snapshot_extract_hang_is_not_recorded_on_the_manifest(tmp_path):
+    batch = load_module("batch_report_extract_snapshot_hang", SCRIPTS_DIR / "batch_report_extract.py")
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "manifest.json").write_text(json.dumps({"convergence_quality": None}), encoding="utf-8")
+    before = (leaf / "manifest.json").read_bytes()
+
+    def runner(cmd, env, log_path):
+        Path(log_path).write_text(
+            "HANG failure_class=hang stage=extract idle_s=1 killed_pids=\n", encoding="utf-8")
+        return type("R", (), {"returncode": 75})()
+
+    env = {"PYFLUENT_POST_OVERRIDES": json.dumps({"report_snapshot_iteration": 2000})}
+    assert batch._is_snapshot_extract(env) and not batch._is_snapshot_extract({})
+    batch.run_extract_attempts(cmd=["x"], env=env, run_directory=leaf, geo_id="g", mesh_id="m",
+                               run_id="r", runner=runner, sleeper=lambda s: None,
+                               killer=lambda pid: "", process_lister=lambda: [])
+    assert (leaf / "manifest.json").read_bytes() == before

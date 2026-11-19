@@ -95,7 +95,12 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   `--emit-queue <json> --snapshot S_a072_l3465:2000 --snapshot
   S_a072_l3465:2500` emits snapshot jobs instead: each extracts the saved
   `*_iter_<N>` pair into `post/reports_iter<N>_meanfirst/` and never
-  touches `post/reports` or the manifest gate.
+  touches `post/reports` or writes the run manifest (no gate, no
+  `analytic_cwall` sync, no hang record, no wall-time stamp). Its own
+  sidecar records `kind=snapshot`, `snapshot_iteration`, the snapshot
+  `snapshot_case_sha256`/`snapshot_data_sha256`, file provenance and the
+  leaf's final hashes at the time; its quality is `UNAVAILABLE` (the
+  leaf's residual history runs past the snapshot).
 
 Workers stay dated: `meshing_code_260616.py`, `solver_code_260616.py`.
 Paths go through `ro.paths`. A leaf is
