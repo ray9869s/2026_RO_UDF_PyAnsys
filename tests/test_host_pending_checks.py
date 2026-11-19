@@ -189,24 +189,24 @@ def test_step_failure_continues_and_summary_has_one_line_per_step(monkeypatch, t
     assert checks.run() == 2
     lines = checks.summary.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 7
-    assert "FAIL 1_cp_live_smoke" in lines[0]
+    assert "FAIL 1_smoke" in lines[0]
     assert "PASS 2_fs025" in lines[1]
     assert "FAIL 4_locate" in lines[5]
     assert "extract_wall_time_s" in lines[6]
     assert not (tmp_path / "queues" / "pending_checks.lock").exists()
     followups = (checks.attempt / "followup_commands.sh.txt").read_text(encoding="utf-8")
-    assert "--no-cp-live" in followups
+    assert "--no-cp-live" not in followups and "--cp-live" not in followups
 
 
 def test_followups_use_approved_representatives_and_selected_mesh_without_solving(tmp_path):
-    text = host.followup_commands(tmp_path, [0.025], False, "STAMP")
+    text = host.followup_commands(tmp_path, [0.025], "STAMP")
     assert "P_p100_h00" not in text and "M_c160" not in text
     for geo in host.REPRESENTATIVES:
         assert geo in text
     assert text.index("--velocity-smoke") < text.index("--run-id u0p1_p6M")
     assert text.index("--run-id u0p1_p6M") < text.index("--run-id u0p15_p6M")
     assert '"$CHOSEN_FACE_SIZE"' in text
-    assert "--no-cp-live" not in host.followup_commands(tmp_path, [0.025], True, "STAMP")
+    assert "--no-cp-live" not in text
 
 
 def test_emitted_finer_and_velocity_queues_keep_original_spec_provenance(tmp_path):

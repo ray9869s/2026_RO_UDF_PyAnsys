@@ -1481,26 +1481,32 @@ def test_fresh_smoke_keeps_campaign_v3_and_can_omit_cp_live(monkeypatch, tmp_pat
         "campaign_v3",
     ]
     assert driver.main([*common, "--case", "u0p2_p6M"]) == 0
-    live = seen["solver_overrides"]
-    assert live["max_iterations"] == 20
-    assert live["checkpoint_every"] == 10
-    assert live["qoi_stop_include_cp"] is True
-    assert live["run_id"] == "u0p2_p6M"
-    assert "enable_cp_live_monitor" not in live
+    default = seen["solver_overrides"]
+    assert default["max_iterations"] == 20
+    assert default["checkpoint_every"] == 10
+    assert default["qoi_stop_include_cp"] is False
+    assert default["run_id"] == "u0p2_p6M"
+    assert default["enable_cp_live_monitor"] is False
     run = (
         tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
     )
-    run.rename(tmp_path / "live_leaf")
+    run.rename(tmp_path / "default_leaf")
     assert driver.main([*common, "--case", "u0p2_p6M", "--no-cp-live"]) == 0
     assert seen["solver_overrides"]["enable_cp_live_monitor"] is False
+    assert seen["solver_overrides"]["qoi_stop_include_cp"] is False
+    run.rename(tmp_path / "no_cp_live_leaf")
+    assert driver.main([*common, "--case", "u0p2_p6M", "--cp-live"]) == 0
+    assert seen["solver_overrides"]["enable_cp_live_monitor"] is True
     assert seen["solver_overrides"]["qoi_stop_include_cp"] is True
+    with pytest.raises(SystemExit):
+        driver.main([*common, "--case", "u0p2_p6M", "--cp-live", "--no-cp-live"])
 
 
 def test_campaign_v3_profile_tightens_the_stop_and_keeps_the_cap():
     overrides = driver.convergence_profile_overrides("campaign_v3")
     assert overrides["qoi_stop_criterion"] == 1e-4
     assert overrides["qoi_previous_values_to_consider"] == 100
-    assert overrides["qoi_stop_include_cp"] is True
+    assert overrides["qoi_stop_include_cp"] is False
     assert overrides["qoi_window_after_ramp"] is True
     assert overrides["qoi_initial_values_to_ignore"] >= 150
     assert overrides["residual_target"] == 1e-7
@@ -1621,3 +1627,25 @@ def test_copy_case_data_removes_a_stale_temp_next_to_an_intact_pair(tmp_path):
     driver._copy_case_data(source, tmp_path / "src.dat.h5", dest)
     assert (tmp_path / "dest.dat.h5").read_bytes() == b"new-dat"
     assert not list(tmp_path.glob("*.copy_tmp*"))
+
+
+def test_continue_and_resume_inherit_the_leaf_stop_rule(tmp_path, capsys):
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    overrides = {"qoi_stop_include_cp": False}
+    assert driver.inherit_recorded_stop_rule(leaf, dict(overrides)) == overrides  # no manifest
+    (leaf / "manifest.json").write_text(json.dumps({
+        "qoi_stop_include_cp": True,
+        "qoi_stop_reports": ["lmh_udm_avg", "pressure_drop_spacer", "cp_window"],
+        "cp_monitor_name": "cp_window",
+    }), encoding="utf-8")
+    inherited = driver.inherit_recorded_stop_rule(leaf, dict(overrides))
+    assert inherited["qoi_stop_include_cp"] is True
+    assert "inherited" in capsys.readouterr().out
+    (leaf / "manifest.json").write_text(json.dumps({
+        "qoi_stop_include_cp": True,
+        "qoi_stop_reports": ["lmh_udm_avg", "pressure_drop_spacer", "cp_live"],
+        "cp_monitor_name": "cp_live",
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="cp_live"):
+        driver.inherit_recorded_stop_rule(leaf, dict(overrides))

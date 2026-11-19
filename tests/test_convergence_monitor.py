@@ -143,8 +143,15 @@ def test_campaign_v3_stop_bumps_the_ignore_prefix_past_the_ramp():
         max_iterations=2000,
     )
     assert overrides["qoi_initial_values_to_ignore"] == 150
-    assert overrides["qoi_stop_include_cp"] is True
+    # Residuals + LMH + dP; CP is a recorded diagnostic only.
+    assert overrides["qoi_stop_include_cp"] is False
     assert overrides["qoi_window_after_ramp"] is True
+    with_cp = campaign_v3_stop_overrides(
+        stop_criterion=1e-4, window=100, initial_values_to_ignore=100,
+        ramp_full_iteration=150, residual_target=1e-7, max_iterations=2000,
+        include_cp=True,
+    )
+    assert with_cp["qoi_stop_include_cp"] is True
     assert overrides["max_iterations"] == 2000
     fields = convergence_stop_manifest_fields(
         stop_criterion=overrides["qoi_stop_criterion"],

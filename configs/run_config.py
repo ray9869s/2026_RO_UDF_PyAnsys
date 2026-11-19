@@ -389,13 +389,19 @@ qoi_convergence_report_name = "lmh_udm_avg"
 qoi_stop_criterion = 1e-3
 qoi_previous_values_to_consider = 100
 qoi_initial_values_to_ignore = 200
-# Production stop is LMH and spacer dP only. campaign_v3 sets these True
-# and tightens qoi_stop_criterion via campaign_v3_stop_overrides.
+# Production stop is LMH and spacer dP only. campaign_v3 keeps CP out of
+# the stop too (residuals + LMH + dP, 2000-iteration cap), sets
+# qoi_window_after_ramp True and tightens qoi_stop_criterion via
+# campaign_v3_stop_overrides. --cp-live puts the live CP back in.
 qoi_stop_include_cp = False
 qoi_window_after_ramp = False
-# The live CP expression is evaluated every iteration once its report
-# file is active. False keeps the ffd53e1 stop on cp_window.
-enable_cp_live_monitor = True
+# Solve-time live CP (named expression cp_live_mean over {udm-6/7/9}).
+# Infeasible in Fluent 25.1: named expressions cannot read UDM fields, so
+# Fluent lists cp_live_mean as invalid and the cp_live report as "name
+# 'cp_live_mean' is not defined" (host smoke at 3ba17ec). Off by default;
+# the code path stays for a later Fluent. cp_window is still written as a
+# recorded diagnostic.
+enable_cp_live_monitor = False
 # campaign_v3 relative-change stop. The window is previous_values samples
 # and must start after ramp_full_iteration. max_iterations stays 2000.
 campaign_v3_qoi_stop_criterion = 1e-4

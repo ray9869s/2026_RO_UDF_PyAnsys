@@ -29,11 +29,6 @@ def require_window_after_ramp(
     """
     if not enabled:
         return
-    if not include_cp:
-        raise ValueError(
-            "qoi_window_after_ramp requires qoi_stop_include_cp=True "
-            "so LMH, pressure drop, and CP share the post-ramp window."
-        )
     ignore = int(initial_values_to_ignore)
     ramp = int(ramp_full_iteration)
     if ignore < ramp:
@@ -52,8 +47,14 @@ def campaign_v3_stop_overrides(
     ramp_full_iteration: int,
     residual_target: float,
     max_iterations: int,
+    include_cp: bool = False,
 ) -> dict[str, Any]:
-    """Solver overrides for the campaign_v3 stop. Window starts after the ramp."""
+    """Solver overrides for the campaign_v3 stop. Window starts after the ramp.
+
+    The stop is residuals plus LMH and spacer pressure drop over the post-ramp
+    window. ``include_cp`` adds the CP monitor (only with ``--cp-live``,
+    which Fluent 25.1 cannot evaluate).
+    """
     criterion = float(stop_criterion)
     samples = int(window)
     ramp = int(ramp_full_iteration)
@@ -76,14 +77,14 @@ def campaign_v3_stop_overrides(
         "qoi_stop_criterion": criterion,
         "qoi_previous_values_to_consider": samples,
         "qoi_initial_values_to_ignore": ignore,
-        "qoi_stop_include_cp": True,
+        "qoi_stop_include_cp": bool(include_cp),
         "qoi_window_after_ramp": True,
         "residual_target": residual,
         "max_iterations": iterations,
     }
     require_window_after_ramp(
         enabled=True,
-        include_cp=True,
+        include_cp=bool(include_cp),
         initial_values_to_ignore=ignore,
         ramp_full_iteration=ramp,
     )

@@ -157,7 +157,7 @@ def require_final(leaf, geo, case):
         raise ValueError(f"Expected a finished solution beyond the smoke cap: {leaf}")
 
 
-def validate_smoke(leaf, case="u0p2_p6M", *, cp_live=True, details=None):
+def validate_smoke(leaf, case="u0p2_p6M", *, cp_live=False, details=None):
     transcript, _status, detail = select_solve_transcript(leaf)
     rows = []
     if transcript is not None:
@@ -192,7 +192,6 @@ class Checks:
         self.logs = self.root / "queues" / "logs"
         self.summary = self.logs / "pending_checks_summary.txt"
         self.attempt = self.logs / f"pending_checks_{self.stamp}"
-        self.cp_live_passed = False
         self.passing_faces = []
         self.results = []
 
@@ -224,7 +223,7 @@ class Checks:
                     print(line, end="", flush=True)
                 return child.wait()
 
-    def smoke(self, details, *, case="u0p2_p6M", cp_live=True, name="1_cp_live_smoke"):
+    def smoke(self, details, *, case="u0p2_p6M", cp_live=False, name="1_smoke"):
         leaf = run_leaf(self.root, "REF_empty", case=case)
         mesh = mesh_leaf(self.root, "REF_empty", BASE_MESH)
         require_file(mesh / "manifest.json")
@@ -235,8 +234,8 @@ class Checks:
         command[command.index("--max-iterations") + 1] = "20"
         command[command.index("--checkpoint-every") + 1] = "10"
         command.append("--keep-checkpoints")
-        if not cp_live:
-            command.append("--no-cp-live")
+        if cp_live:
+            command.append("--cp-live")
         original = leaf.with_name(f"{leaf.name}.prev_{self.stamp}")
         smoke_archive = leaf.with_name(f"{leaf.name}.smoke.prev_{self.stamp}")
         had_original = leaf.exists()
@@ -399,14 +398,14 @@ class Checks:
         print(line, flush=True)
         self.results.append(status)
 
-    def run(self, *, velocity_smoke=False, no_cp_live=False):
+    def run(self, *, velocity_smoke=False, cp_live=False):
         self.logs.mkdir(parents=True, exist_ok=True)
         self.attempt.mkdir(exist_ok=False)
         lock = self.root / "queues" / "pending_checks.lock"
         actions = [("velocity_smoke", lambda details: self.smoke(
-            details, case="u0p05_p6M", cp_live=not no_cp_live, name="velocity_smoke"
+            details, case="u0p05_p6M", cp_live=cp_live, name="velocity_smoke"
         ))] if velocity_smoke else [
-            ("1_cp_live_smoke", self.smoke),
+            ("1_smoke", self.smoke),
             ("2_fs025", lambda details: self.mesh(details, "S_a193_l1733", face=0.025)),
             ("2_fs020", lambda details: self.mesh(details, "S_a193_l1733", face=0.020)),
             ("3_ar250_D1225_a30", lambda details: self.mesh(details, "D1225_a30", ar=250)),
@@ -422,11 +421,9 @@ class Checks:
             return 1
         try:
             for name, action in actions:
-                passed = self.step(name, action)
-                if name == "1_cp_live_smoke":
-                    self.cp_live_passed = passed
+                self.step(name, action)
             if not velocity_smoke:
-                text = followup_commands(self.root, self.passing_faces, self.cp_live_passed, self.stamp)
+                text = followup_commands(self.root, self.passing_faces, self.stamp)
                 print(text, flush=True)
                 (self.attempt / "followup_commands.sh.txt").write_text(text, encoding="utf-8")
         finally:
@@ -434,9 +431,9 @@ class Checks:
         return 2 if "FAIL" in self.results else 0
 
 
-def followup_commands(root, passing_faces, cp_live_passed, stamp):
+def followup_commands(root, passing_faces, stamp):
     queue_root = Path(root) / "queues"
-    cp = [] if cp_live_passed else ["--no-cp-live"]
+    cp = []  # live CP is off by default (infeasible in Fluent 25.1)
     lines = ["# Follow-ups only: none of these commands was executed.",
              "# Run sequentially after inspection. Never add --resume/--retry-failed."]
 
@@ -507,10 +504,13 @@ def main(argv=None):
     parser.add_argument("--run-id", action="append")
     parser.add_argument("--geo-id", action="append")
     parser.add_argument("--face-size", type=float, choices=(0.025, 0.020))
-    parser.add_argument("--no-cp-live", action="store_true")
+    parser.add_argument("--no-cp-live", action="store_true",
+                        help="Accepted for old commands; live CP is already off.")
+    parser.add_argument("--cp-live", action="store_true",
+                        help="Velocity smoke with --cp-live (infeasible in Fluent 25.1; expect a refusal).")
     args = parser.parse_args(argv)
-    if args.no_cp_live and not (args.velocity_smoke or args.emit_finer_queue or args.emit_velocity_queue):
-        parser.error("--no-cp-live is for follow-up emission/velocity smoke; check 1 always uses cp_live ON")
+    if args.cp_live and not args.velocity_smoke:
+        parser.error("--cp-live is only for --velocity-smoke")
     if args.emit_finer_queue or args.emit_velocity_queue:
         if args.face_size is None:
             parser.error("--emit-finer-queue requires --face-size")
@@ -523,9 +523,9 @@ def main(argv=None):
             emit_finer_queue(args.emit_finer_queue, args.face_size, args.no_cp_live)
         return 0
     if args.plan:
-        print("Checks: REF_empty cp_live smoke; fs025/fs020; two ar250 meshes; D2450_a30 locate; timed P_p80_h15 full re-extract.")
+        print("Checks: REF_empty smoke (live CP off); fs025/fs020; two ar250 meshes; D2450_a30 locate; timed P_p80_h15 full re-extract.")
         print("Conditional follow-up examples (candidate/CP success not yet established):")
-        print(followup_commands(ROOT, [0.025, 0.020], False, "AFTER_CHECKS"))
+        print(followup_commands(ROOT, [0.025, 0.020], "AFTER_CHECKS"))
         return 0
     if os.name != "nt":
         parser.error("Live checks require Git Bash and the Windows .venv; --plan is read-only anywhere.")
@@ -534,7 +534,7 @@ def main(argv=None):
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt("Interrupted; inspect the smoke recovery journal before another run.")
     signal.signal(signal.SIGTERM, interrupted)
-    return Checks().run(velocity_smoke=args.velocity_smoke, no_cp_live=args.no_cp_live)
+    return Checks().run(velocity_smoke=args.velocity_smoke, cp_live=args.cp_live)
 
 
 if __name__ == "__main__":

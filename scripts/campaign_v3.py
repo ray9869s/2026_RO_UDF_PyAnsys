@@ -36,11 +36,12 @@ The solve queue is u0p2, u0p1, u0p3, u0p05, u0p15, then u0p25. Every solve passe
 ``--reuse-mesh`` and ``--checkpoint-every 200``. After a PASS extract,
 that run drops its checkpoint pairs and setup case. ``--keep-checkpoints``
 leaves them in place. Solve jobs pass ``--convergence-profile campaign_v3``: residuals stay
-1e-7, and LMH, spacer pressure drop, and the CP monitor must each
-change by less than 1e-4 over 100 iterations that start after the
-flux ramp. The iteration cap defaults to 2000 for each family;
-``--max-iterations FAMILY=N`` overrides a family. ``--no-cp-live`` passes
-through to solves. Other campaigns keep the
+1e-7, and LMH and spacer pressure drop must each change by less than
+1e-4 over 100 iterations that start after the flux ramp. CP is not in
+the stop; cp_window is recorded as a diagnostic. The iteration cap
+defaults to 2000 for each family; ``--max-iterations FAMILY=N``
+overrides a family. ``--no-cp-live`` (the default behaviour) and
+``--cp-live`` (infeasible in Fluent 25.1) pass through to solves. Other campaigns keep the
 production 1e-3 LMH and pressure-drop stop.
 
 ``job_queue run`` is one Fluent at a time.
@@ -276,6 +277,7 @@ def _study_argv(
     max_iterations=2000,
     no_cp_live=False,
     max_aspect_ratio=None,
+    cp_live=False,
 ):
     argv = [
         "{python}",
@@ -327,7 +329,9 @@ def _study_argv(
         argv.extend(["--checkpoint-every", "200"])
         argv.extend(["--convergence-profile", "campaign_v3"])
         argv.extend(["--max-iterations", str(max_iterations)])
-        if no_cp_live:
+        if cp_live:
+            argv.append("--cp-live")
+        elif no_cp_live:
             argv.append("--no-cp-live")
         if keep_checkpoints:
             argv.append("--keep-checkpoints")
@@ -385,6 +389,7 @@ def solve_jobs(
     max_iterations_by_family=None,
     no_cp_live=False,
     max_aspect_ratio=None,
+    cp_live=False,
 ):
     """Solves in velocity order. Each reuses the mesh when it exists."""
     token = spec_argv_token(spec_path)
@@ -413,6 +418,7 @@ def solve_jobs(
                         keep_checkpoints=keep_checkpoints,
                         max_iterations=caps[family_for_geo_id(geo_id)],
                         no_cp_live=no_cp_live,
+                        cp_live=cp_live,
                         max_aspect_ratio=max_aspect_ratio,
                         membrane_face_size=geometry_membrane_face_size(
                             spec, geo_id
@@ -1051,7 +1057,11 @@ def build_parser():
     )
     parser.add_argument(
         "--no-cp-live", action="store_true",
-        help="Pass --no-cp-live to emitted solves (stop on cp_window).",
+        help="Pass --no-cp-live to emitted solves (the default behaviour; kept for old commands).",
+    )
+    parser.add_argument(
+        "--cp-live", action="store_true",
+        help="Pass --cp-live to emitted solves. Infeasible in Fluent 25.1.",
     )
     parser.add_argument(
         "--data-root",
@@ -1099,10 +1109,14 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    if (args.max_iterations or args.no_cp_live) and (
+    if (args.max_iterations or args.no_cp_live or args.cp_live) and (
         not args.emit_queue or args.mesh_only
     ):
-        raise ValueError("--max-iterations and --no-cp-live require a solve --emit-queue.")
+        raise ValueError(
+            "--max-iterations, --no-cp-live and --cp-live require a solve --emit-queue."
+        )
+    if args.cp_live and args.no_cp_live:
+        raise ValueError("--cp-live and --no-cp-live are exclusive.")
     caps = parse_family_iterations(args.max_iterations)
     if args.mesh_only and args.run_id:
         raise ValueError("--mesh-only does not take --run-id.")
@@ -1136,6 +1150,7 @@ def main(argv=None):
                 geo_ids=args.geo_id,
                 max_iterations_by_family=caps,
                 no_cp_live=args.no_cp_live,
+                cp_live=args.cp_live,
                 max_aspect_ratio=args.max_aspect_ratio,
             )
         )

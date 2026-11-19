@@ -1074,6 +1074,38 @@ def convergence_profile_overrides(profile):
     )
 
 
+def inherit_recorded_stop_rule(run_directory, solver_overrides):
+    """Keep an existing leaf on the stop rule it was solved with.
+
+    A continue or a checkpoint resume extends a leaf; switching CP in or out
+    of its QoI stop part-way would leave one leaf under two rules. The
+    leaf's recorded ``qoi_stop_include_cp`` wins and is printed. A leaf whose
+    recorded stop used ``cp_live`` (infeasible in Fluent 25.1) refuses.
+    """
+    manifest_path = Path(run_directory) / "manifest.json"
+    if not manifest_path.is_file():
+        return solver_overrides
+    manifest = _read_json(manifest_path)
+    reports = manifest.get("qoi_stop_reports") or []
+    if "cp_live" in reports or manifest.get("cp_monitor_name") == "cp_live":
+        raise ValueError(
+            f"{run_directory} was solved with cp_live in its stop; Fluent 25.1 "
+            "cannot evaluate cp_live. Refusing to extend it; inspect the leaf."
+        )
+    recorded = manifest.get("qoi_stop_include_cp")
+    if not isinstance(recorded, bool):
+        return solver_overrides
+    requested = bool(solver_overrides.get("qoi_stop_include_cp", False))
+    if recorded != requested:
+        print(
+            f"Stop rule inherited from {manifest_path}: qoi_stop_include_cp="
+            f"{recorded} (this command alone would use {requested}).",
+            flush=True,
+        )
+    solver_overrides["qoi_stop_include_cp"] = recorded
+    return solver_overrides
+
+
 def solver_overrides_for_study(solver_overrides, study_mesh_id):
     """Replace only ``mesh_id`` on the production solver overrides."""
     updated = dict(solver_overrides)
@@ -1352,12 +1384,22 @@ def build_parser():
             "stopping left off."
         ),
     )
-    parser.add_argument(
+    cp_live = parser.add_mutually_exclusive_group()
+    cp_live.add_argument(
         "--no-cp-live",
         action="store_true",
         help=(
-            "Do not create the cp_live report. The campaign_v3 stop "
-            "stays on cp_window, which is the ffd53e1 monitor."
+            "Accepted for old queue files; the default already has no live "
+            "CP report and keeps CP out of the campaign_v3 stop."
+        ),
+    )
+    cp_live.add_argument(
+        "--cp-live",
+        action="store_true",
+        help=(
+            "Create the solve-time cp_live report and put it in the campaign_v3 "
+            "stop. Infeasible in Fluent 25.1 (named expressions cannot read "
+            "UDM fields); the expression check refuses it."
         ),
     )
     parser.add_argument(
@@ -2089,8 +2131,11 @@ def _main(argv=None):
     if args.max_iterations is not None:
         _require_positive("max-iterations", args.max_iterations)
         solver_overrides["max_iterations"] = int(args.max_iterations)
-    if args.no_cp_live:
-        solver_overrides["enable_cp_live_monitor"] = False
+    solver_overrides["enable_cp_live_monitor"] = bool(args.cp_live)
+    if args.cp_live and args.convergence_profile is not None:
+        solver_overrides["qoi_stop_include_cp"] = True
+    if args.continue_iterations is not None or args.resume:
+        inherit_recorded_stop_rule(run_directory, solver_overrides)
     if args.continue_iterations is not None:
         return continue_finished_leaf(
             data_root=data_root,
