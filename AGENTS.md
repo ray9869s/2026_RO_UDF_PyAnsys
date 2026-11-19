@@ -136,7 +136,8 @@ staged sidecar with `report_generation=<id>`, swap the staged directory
 in (the replaced one is kept as `<dir>_prev_<UTC>`; a failed swap puts it
 back), and only then write the gate with
 `convergence_quality_report_generation=<id>`. Any later exception clears
-the gate again. A gate whose generation differs from the sidecar's, or
+the gate again, as do a watchdog hang kill and a failed mean-first
+validation in `campaign_v3_reextract.py`. A gate whose generation differs from the sidecar's, or
 a cleared gate next to reports that carry a generation, does not bind
 (the re-extract emitter then lists the leaf as `STALE`). `reextract_runs` invalidates the sidecar and the gate before
 it renames `post/reports`. A failed extract leaves its staging directory
@@ -205,7 +206,10 @@ never moved. v3 meshing uses `--geometry-suffix .pmdb` and
   when a chunk ends at the iteration it started from) records that exact
   snapshot pair as the source and the current final as its zero-iteration
   rewrite. Otherwise it refuses; inspect the leaf. Case/data copies are
-  staged as a pair (`*.copy_tmp`) and swapped in together or not at all.
+  staged as a pair (`*.copy_tmp_<UTC>_<pid>_<hex>`, previous files kept as
+  `*.copy_bak_<...>` until the swap ends) and swapped in together or not
+  at all. A copy that finds a leftover `*.copy_bak*` or only one file of
+  the destination pair refuses (`did not finish`); restore the pair by hand.
 
 Host shell, before any smoke or queue:
 
@@ -233,20 +237,30 @@ so the smoke writes that same leaf. Put the real leaf back when the
 smoke is done. A cap of 20 sits inside the flux ramp (full at iteration
 150, hold through 200): residual and QoI stopping stay off, and the
 solve must not refuse to start. Expect residual rows 1–20,
-`checkpoint_000010` and `checkpoint_000020`, and a non-zero window
-flux in `post/reports`. Zero residual lines means iterate never ran.
-Do not start the long queue on that code.
+`REF_empty_u0p2_p6M_checkpoint_000010` and `..._checkpoint_000020`
+(`.cas.h5`/`.dat.h5`; names are `<geo>_<run>_checkpoint_<6 digits>`), and
+a non-zero window flux in `post/reports`. The fresh smokes pass
+`--keep-checkpoints`: a PASS gate otherwise deletes the checkpoint pairs
+(`release_after_pass`) and the check above cannot be made. Zero residual
+lines means iterate never ran. Do not start the long queue on that code.
 
 Fresh smoke, `cp_live` on (the default after `294496e`):
 
 ```text
-python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 --geo-id REF_empty --case u0p2_p6M --m-max 0.035 --m-min 0.006 --m-cpg 5 --bl-layers 4 --membrane-bl-y1-um 2 --bulk-max-size 0.034 --peel-layers 2 --max-prism-aspect-ratio 250 --geometry-suffix .pmdb --geometry-root C:/ro_data_mfbo/geometries_pmdb --mesh-spec configs/mesh_spec_v3.json --reuse-mesh --checkpoint-every 10 --max-iterations 20 --convergence-profile campaign_v3
+python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 --geo-id REF_empty --case u0p2_p6M --m-max 0.035 --m-min 0.006 --m-cpg 5 --bl-layers 4 --membrane-bl-y1-um 2 --bulk-max-size 0.034 --peel-layers 2 --max-prism-aspect-ratio 250 --geometry-suffix .pmdb --geometry-root C:/ro_data_mfbo/geometries_pmdb --mesh-spec configs/mesh_spec_v3.json --reuse-mesh --checkpoint-every 10 --max-iterations 20 --convergence-profile campaign_v3 --keep-checkpoints
 ```
 
 Control, already passed on `ae98e7c`: the same command with
-`--no-cp-live`. Continue smoke, only on a final that is the real
-2000-iteration solution (D2450_a45 `u0p2_p6M`). Expect new residual
-rows through iteration 2020 and checkpoints `00002010` and `00002020`.
+`--no-cp-live` (keep `--keep-checkpoints`). Continue smoke, only on a
+final that is the real 2000-iteration solution (D2450_a45 `u0p2_p6M`).
+Expect new residual rows through iteration 2020, snapshots
+`D2450_a45_u0p2_p6M_iter_002010` and `..._iter_002020` (case and data),
+and `post/reports_iter2000`, `post/reports_iter2010`,
+`post/reports_iter2020` (unpadded). Each chunk reads a continue checkpoint
+copied from the final, `D2450_a45_u0p2_p6M_checkpoint_002000` then
+`..._checkpoint_002010`; a PASS gate deletes those unless
+`--keep-checkpoints` is passed. `--checkpoint-every 200` writes no
+in-chunk checkpoint at 2010 or 2020.
 
 ```text
 python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 --geo-id D2450_a45 --case u0p2_p6M --m-max 0.035 --m-min 0.006 --m-cpg 5 --bl-layers 4 --membrane-bl-y1-um 2 --bulk-max-size 0.034 --peel-layers 2 --max-prism-aspect-ratio 250 --geometry-suffix .pmdb --geometry-root C:/ro_data_mfbo/geometries_pmdb --mesh-spec configs/mesh_spec_v3.json --reuse-mesh --checkpoint-every 200 --convergence-profile campaign_v3 --continue-iterations 20 --continue-every 10
@@ -291,10 +305,16 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   stage past the 30 s drain), and the final copy of queued lines is
   bounded to 2 s. Every kill (watchdog or queue `JOB_TIMEOUT`) lists the
   process tree first and then logs `KILL_VERIFIED pids=...` or
-  `KILL_INCOMPLETE survivors=...` after up to 30 s; a survivor or a
-  failed process listing is never reported as verified. An extract hang
-  with `KILL_INCOMPLETE` is not retried (a survivor would overlap the
-  new session). Extract is retried once.
+  `KILL_INCOMPLETE survivors=...` after up to 30 s. `KILL_VERIFIED`
+  needs a successful pre-kill tree listing and every listed pid gone; a
+  survivor or a failed listing (before or after the kill,
+  `tree_listing_error=` / `verify_listing_error=`) is `KILL_INCOMPLETE`.
+  Each `taskkill /T /F` is bounded to 60 s (a timeout is logged, then the
+  tree is still verified), and the worker wait after `kill()` to 5 s. A
+  hang kill clears the manifest gate (`record_hang`), so a PASS published
+  just before the kill does not survive it. An extract hang is retried
+  once, and only when its attempt log has `KILL_VERIFIED` and no
+  `KILL_INCOMPLETE` (a survivor would overlap the new session).
   Solve is not. Campaign meshing writes `mesh_attempt<N>.log`. A hang is
   not a reason to `--resume`; after an extract hang `--resume` would only
   re-extract. A console queue job (`console: true`,
