@@ -96,3 +96,31 @@ def test_mesh_study_resolve_data_root_refuses_dotdot():
         driver.resolve_data_root("C:/ro_data_mfbo/../ro_data")
     with pytest.raises(ValueError, match="production"):
         driver.resolve_data_root("C:/ro_data.")
+
+
+def test_shared_write_points_refuse_production():
+    """RO_DATA_ROOT=C:\\ro_data on the host: every shared writer refuses it."""
+    from ro.atomic_reports import clear_manifest_gate
+    from ro.manifest import _atomic_write
+    from ro.mesh_common import write_mesh_run_record
+
+    for target in ("C:/ro_data/runs/diamond/D/m/u0p2_p6M", r"C:\ro_data\meshes\x", "/mnt/c/ro_data/runs/x"):
+        for call in (
+            lambda: _atomic_write(Path(target) / "manifest.json", {}),
+            lambda: write_mesh_run_record(Path(target) / "mesh_run_record.json", {}),
+            lambda: clear_manifest_gate(target),
+        ):
+            with pytest.raises(ValueError, match="production|must be absolute"):
+                call()
+
+
+def test_fluent_workers_refuse_a_production_leaf_at_start():
+    solver = (SCRIPTS_DIR / "solver_code_260616.py").read_text(encoding="utf-8")
+    start = solver.index('case_path = resolved_paths["run_directory"]')
+    assert "refuse_production_root(case_path)" in solver[start:start + 300]
+    meshing = (SCRIPTS_DIR / "meshing_code_260616.py").read_text(encoding="utf-8")
+    start = meshing.index('case_path = resolved_paths["mesh_directory"]')
+    assert "refuse_production_root(case_path)" in meshing[start:start + 300]
+    extract = (SCRIPTS_DIR / "pyfluent_report_extract.py").read_text(encoding="utf-8")
+    staging = extract.index("report_path = staging_report_path(final_report_path)")
+    assert staging < extract.index("post_path.mkdir(parents=True, exist_ok=True)")

@@ -53,7 +53,7 @@ from ro.prism_aspect import (
     format_aspect_split,
     split_is_usable,
 )
-from ro.paths import geometry_dir, mesh_dir, project_root
+from ro.paths import geometry_dir, mesh_dir, project_root, refuse_production_root
 
 
 def _sha256_file(path):
@@ -949,6 +949,8 @@ if __name__ == "__main__":
     resolved_paths = resolve_meshing_paths(cfg)
     geo_full_path = resolved_paths["geometry_file"]
     case_path = resolved_paths["mesh_directory"]
+    # The meshing worker writes the mesh leaf; never in C:/ro_data.
+    refuse_production_root(case_path)
     mesh_log_path = resolved_paths["mesh_log"]
     mesh_file_path = resolved_paths["mesh_file"]
     mesh_run_record_path = resolved_paths["mesh_run_record"]

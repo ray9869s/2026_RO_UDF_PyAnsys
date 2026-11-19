@@ -136,7 +136,14 @@ from ro.monitor_change import (
     extract_monitor_changes,
     molecular_weight_kg_per_mol,
 )
-from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
+from ro.paths import (
+    mesh_dir,
+    project_root,
+    refuse_production_root,
+    run_dir,
+    templates_dir,
+    udfs_dir,
+)
 from ro.udm_layout import (
     parse_ro_analytic_cwall_from_case,
     parse_ro_analytic_cwall_from_udf_path,
@@ -838,6 +845,9 @@ if __name__ == "__main__":
 
     resolved_paths = resolve_solver_paths(cfg)
     case_path = resolved_paths["run_directory"]
+    # The solver writes its whole run leaf; never in C:/ro_data, whatever
+    # RO_DATA_ROOT the shell carries.
+    refuse_production_root(case_path)
     mesh_case_path = resolved_paths["mesh_directory"]
     mesh_file_path = resolved_paths["mesh_file"]
 

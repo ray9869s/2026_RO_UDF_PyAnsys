@@ -1548,6 +1548,8 @@ def _changed_after_fill(
 
 
 def _atomic_write(path: Path, payload: Mapping[str, Any]) -> Path:
+    # Every manifest write ends here; none may land in C:/ro_data.
+    refuse_production_root(path)
     if not path.parent.is_dir():
         raise ManifestError(f"Manifest directory does not exist: {path.parent}.")
 

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ro.prism_aspect import aspect_ratio_exceeds, split_is_usable
+from ro.paths import refuse_production_root
 
 
 MESH_PARAMETER_NAMES = (
@@ -812,6 +813,7 @@ def build_mesh_ledger_record(
 def write_mesh_run_record(path, record):
     """Atomically write one per-case JSON record."""
     path = Path(path)
+    refuse_production_root(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(
@@ -859,6 +861,7 @@ def upsert_mesh_ledger_csv(path, records):
         existing[key]
         for key in sorted(existing)
     ]
+    refuse_production_root(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     with temp_path.open("w", newline="", encoding="utf-8-sig") as stream:
