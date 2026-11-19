@@ -91,7 +91,12 @@ from ro.mesh_spec import (  # noqa: E402
 from ro.paths import project_root  # noqa: E402
 from ro.aspect_ceiling import aspect_ceiling_from_mesh_id, aspect_ceiling_suffix  # noqa: E402
 from ro.solver_common import make_base_case_name  # noqa: E402
-from ro.report_binding import REPORT_BOUND, report_binding_reason  # noqa: E402
+from ro.report_binding import (  # noqa: E402
+    REPORT_BOUND,
+    REPORT_UNVERIFIED,
+    report_binding_reason,
+    report_binding_unverifiable,
+)
 
 DATA_ROOT = "C:/ro_data_mfbo/campaign_v3"
 GEOMETRY_ROOT = "C:/ro_data_mfbo/geometries_pmdb"
@@ -752,7 +757,7 @@ def _run_manifest(run_directory):
     return _read_json(path)
 
 
-def leaf_metrics(run_directory, *, cp_metric=None):
+def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
     """CP, excess, q999, dP/L, LMH, and the convergence gate for one leaf.
 
     dP/L is reported twice: ``dp_per_m`` is ``pressure_drop_spacer_per_m``
@@ -769,9 +774,17 @@ def leaf_metrics(run_directory, *, cp_metric=None):
     equal the manifest final hashes. Otherwise every metric is blank and
     ``report_binding`` says why (a continued leaf keeps its pre-continue
     reports next to a newer final and gate).
+
+    ``allow_unverified`` (v2 baseline only) reports a leaf whose binding
+    fails only for missing hash evidence, with ``report_binding`` set to
+    ``"unverified"``. A sidecar naming a different final stays blank.
     """
     binding = report_binding_reason(run_directory)
-    wide = _wide_row(run_directory) if binding is None else {}
+    status = REPORT_BOUND if binding is None else binding
+    if binding is not None and allow_unverified and report_binding_unverifiable(run_directory):
+        status = REPORT_UNVERIFIED
+    use_reports = status in (REPORT_BOUND, REPORT_UNVERIFIED)
+    wide = _wide_row(run_directory) if use_reports else {}
     manifest = _run_manifest(run_directory)
     cp = _optional_float(wide.get(cp_metric or BENCHMARK_CP_METRIC))
     gate = manifest.get("convergence_quality")
@@ -795,7 +808,7 @@ def leaf_metrics(run_directory, *, cp_metric=None):
         "lmh_exposed": _optional_float(wide.get("lmh_window_exposed")),
         "lmh_installed": _optional_float(wide.get("lmh_window_module")),
         "gate": gate,
-        "report_binding": REPORT_BOUND if binding is None else binding,
+        "report_binding": status,
         "mesh_spec_sha256": manifest.get("mesh_spec_sha256") or "",
         "git_head": manifest.get("git_head") or "",
     }
@@ -817,7 +830,9 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
             v2_mesh = production_mesh_id(geo_id)
             v3_mesh = v3_mesh_ids[geo_id]
             v2 = leaf_metrics(
-                run_leaf(v2_root, geo_id, v2_mesh, run_id), cp_metric=V2_CP_METRIC
+                run_leaf(v2_root, geo_id, v2_mesh, run_id),
+                cp_metric=V2_CP_METRIC,
+                allow_unverified=True,
             )
             v3 = leaf_metrics(run_leaf(v3_root, geo_id, v3_mesh, run_id))
             if v2["cp"] is None or v3["cp"] is None or v2["cp"] == 0.0:
@@ -859,6 +874,18 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids):
                 }
             )
     return rows
+
+
+def compare_binding_summary(rows):
+    """One line counting v2 rows by binding (``unverified`` = no hash evidence)."""
+    unverified = sum(1 for row in rows if row.get("v2_report_binding") == REPORT_UNVERIFIED)
+    bound = sum(1 for row in rows if row.get("v2_report_binding") == REPORT_BOUND)
+    v3_bound = sum(1 for row in rows if row.get("v3_report_binding") == REPORT_BOUND)
+    blank = len(rows) - unverified - bound
+    return (
+        f"v2 rows: bound={bound} unverified={unverified} blank={blank}; "
+        f"v3 rows bound={v3_bound}/{len(rows)}"
+    )
 
 
 def seminar_rows(data_root, mesh_ids):
@@ -1072,6 +1099,7 @@ def main(argv=None):
         rows = comparison_rows(args.v2_root, args.data_root, mesh_ids)
         path = write_csv(args.compare, COMPARE_COLUMNS, rows)
         print(f"Wrote {len(rows)} comparison rows to {path}")
+        print(compare_binding_summary(rows))
     if args.seminar_csv:
         rows = seminar_rows(args.data_root, mesh_ids)
         path = write_csv(args.seminar_csv, SEMINAR_CASES_COLUMNS, rows)

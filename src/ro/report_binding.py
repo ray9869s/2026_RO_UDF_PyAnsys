@@ -18,6 +18,8 @@ from ro.extract_skip import EXTRACT_SOURCE_FILENAME
 from ro.solver_common import FINAL_CASE_SHA256_FIELD, FINAL_DATA_SHA256_FIELD
 
 REPORT_BOUND = "bound"
+# v2 baseline only: reports that exist but carry no hash evidence either way.
+REPORT_UNVERIFIED = "unverified"
 # Written by scripts/host/pending_checks.py when a smoke restore fails.
 BROKEN_MARKER = "BROKEN"
 
@@ -75,3 +77,44 @@ def report_binding_status(run_directory, reports_dirname="reports"):
     """``"bound"`` or the reason string, for a CSV column."""
     reason = report_binding_reason(run_directory, reports_dirname)
     return REPORT_BOUND if reason is None else reason
+
+
+def report_binding_unverifiable(run_directory, reports_dirname="reports"):
+    """True when binding fails only for lack of hash evidence.
+
+    That is: the reports and a readable manifest exist, no BROKEN marker,
+    and either the manifest has no final hashes, the sidecar is missing,
+    or the sidecar omits a hash field. A sidecar hash that differs from the
+    manifest is evidence of a different final and is never unverifiable.
+    Only the frozen v2 baseline may be reported on this basis.
+    """
+    run_directory = Path(run_directory)
+    if report_binding_reason(run_directory, reports_dirname) is None:
+        return False
+    if (run_directory / BROKEN_MARKER).exists():
+        return False
+    reports = run_directory / "post" / reports_dirname
+    if not (reports / "summary_metrics_wide.csv").is_file():
+        return False
+    try:
+        manifest = _read_json(run_directory / "manifest.json")
+    except (OSError, ValueError):
+        return False
+    expected = {
+        FINAL_CASE_SHA256_FIELD: manifest.get(FINAL_CASE_SHA256_FIELD),
+        FINAL_DATA_SHA256_FIELD: manifest.get(FINAL_DATA_SHA256_FIELD),
+    }
+    if not all(expected.values()):
+        return True
+    sidecar = reports / EXTRACT_SOURCE_FILENAME
+    if not sidecar.is_file():
+        return True
+    try:
+        source = _read_json(sidecar)
+    except (OSError, ValueError):
+        return False
+    conflicts = [
+        field for field, value in expected.items()
+        if source.get(field) and source.get(field) != value
+    ]
+    return not conflicts

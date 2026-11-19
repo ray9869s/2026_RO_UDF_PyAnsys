@@ -105,7 +105,13 @@ Reporting binds a row to its final: `campaign_v3` `leaf_metrics`,
 `--compare` and `seminar_cases.csv` use `post/reports` only when its
 `extract_source.json` hashes equal the manifest final hashes
 (`ro.report_binding`); otherwise the metrics are blank and
-`report_binding` says why. Extracts write `post/<dir>.tmp_<id>`, clear
+`report_binding` says why. Exception, v2 baseline only: in `--compare`
+a v2 leaf whose binding fails only for missing hash evidence (manifest
+without final hashes, no sidecar, or a sidecar without the hash fields)
+is reported with `v2_report_binding=unverified`, and `--compare` prints
+the bound/unverified/blank counts. A v2 sidecar naming a different
+final, a `BROKEN` marker or missing reports stay blank. v3 and
+`seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`, clear
 the target sidecar and the manifest `convergence_quality` at start, and
 swap in only after every gate (the replaced directory is kept as
 `<dir>_prev_<UTC>`). A failed extract leaves its staging directory for
@@ -310,9 +316,10 @@ long queue, on the host:
    watchdog (`mesh_attempt1.log`), which no smoke with `--reuse-mesh`
    exercises.
 4. The v2 binding check: count `campaign_reextract_v2` `u0p2_p6M`
-   manifests with `final_data_sha256` and sidecars that match it. If v2
-   lacks them, `--compare` blanks every v2 row; decide how to treat v2
-   before relying on the comparison. Host
+   manifests with `final_data_sha256` and sidecars that match it. v2
+   rows without that evidence are reported as `unverified` (the
+   `--compare` summary line counts them); quote the count with any v2
+   comparison. Host
 evidence behind them (operator-reported): every continued leaf's
 `post/reports` is from iteration 2000 while the final is 2500/4020;
 D2450_a60 has no gate (main3 stopped mid-continue); `.out` files are

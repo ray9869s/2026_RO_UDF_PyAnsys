@@ -767,3 +767,58 @@ def test_benchmark_tables_report_both_dp_per_m_columns(tmp_path):
     assert compare["v2_dp_per_m_window"] == pytest.approx(873.0)
     assert compare["v3_dp_per_m_window"] == pytest.approx(970.0)
     assert {"v2_dp_per_m_window", "v3_dp_per_m_window"} <= set(CAMPAIGN.COMPARE_COLUMNS)
+
+
+def _v2_leaf(root, geo_id="D2450_a45", run_id="u0p2_p6M", cp=1.1):
+    _write_leaf(root, geo_id, CAMPAIGN.production_mesh_id(geo_id), run_id, cp=1.0, q999=1.3,
+                dp=900.0, exposed=24.0, installed=23.0, gate="PASS", bound=False, cpc_area=cp)
+    return CAMPAIGN.run_leaf(root, geo_id, CAMPAIGN.production_mesh_id(geo_id), run_id)
+
+
+def test_v2_leaf_without_hash_evidence_is_reported_unverified(tmp_path):
+    """v2 leaves that predate hash stamping are reported, labelled unverified."""
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+    leaf = _v2_leaf(tmp_path / "v2")  # manifest has no final hashes, no sidecar
+    _write_leaf(tmp_path / "v3", "D2450_a45", MESH_ID, "u0p2_p6M", cp=1.2, q999=1.3, dp=1000.0,
+                exposed=24.0, installed=23.0, gate="PASS")
+    compare = CAMPAIGN.comparison_rows(tmp_path / "v2", tmp_path / "v3", mesh_ids)
+    row = next(r for r in compare if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+    assert row["v2_report_binding"] == "unverified"
+    assert row["v2_cp"] == pytest.approx(1.1)
+    assert row["v3_report_binding"] == "bound"
+    assert row["cp_rel_change"] == pytest.approx(0.1 / 1.1)
+    summary = CAMPAIGN.compare_binding_summary(compare)
+    assert "unverified=1" in summary and "bound=0" in summary
+    assert f"blank={len(compare) - 1}" in summary
+    # Hashes on the manifest but no sidecar: still no evidence either way.
+    (leaf / "manifest.json").write_text(json.dumps(dict(_BOUND_HASHES, convergence_quality="PASS")),
+                                        encoding="utf-8")
+    assert CAMPAIGN.leaf_metrics(leaf, cp_metric=CAMPAIGN.V2_CP_METRIC,
+                                 allow_unverified=True)["report_binding"] == "unverified"
+
+
+def test_v2_sidecar_naming_another_final_stays_blank(tmp_path):
+    leaf = _v2_leaf(tmp_path / "v2")
+    _bind(leaf, {"convergence_quality": "PASS"},
+          sidecar_hashes={"final_case_sha256": "c" * 64, "final_data_sha256": "e" * 64})
+    metrics = CAMPAIGN.leaf_metrics(leaf, cp_metric=CAMPAIGN.V2_CP_METRIC, allow_unverified=True)
+    assert metrics["cp"] is None
+    assert "different final" in metrics["report_binding"]
+    (leaf / "post" / "reports" / "extract_source.json").unlink()
+    (leaf / "BROKEN").write_text("restore failed", encoding="utf-8")
+    metrics = CAMPAIGN.leaf_metrics(leaf, cp_metric=CAMPAIGN.V2_CP_METRIC, allow_unverified=True)
+    assert metrics["cp"] is None and "BROKEN" in metrics["report_binding"]
+
+
+def test_v3_stays_strict_without_hash_evidence(tmp_path):
+    mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
+    _write_leaf(tmp_path / "v3", "D2450_a45", MESH_ID, "u0p2_p6M", cp=1.2, q999=1.3, dp=1000.0,
+                exposed=24.0, installed=23.0, gate="PASS", bound=False)
+    leaf = CAMPAIGN.run_leaf(tmp_path / "v3", "D2450_a45", MESH_ID, "u0p2_p6M")
+    assert CAMPAIGN.leaf_metrics(leaf)["cp"] is None
+    compare = next(r for r in CAMPAIGN.comparison_rows(tmp_path / "v2", tmp_path / "v3", mesh_ids)
+                   if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+    assert compare["v3_cp"] is None and compare["v3_report_binding"] != "unverified"
+    seminar = next(r for r in CAMPAIGN.seminar_rows(tmp_path / "v3", mesh_ids)
+                   if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+    assert seminar["report_binding"] != "unverified"
