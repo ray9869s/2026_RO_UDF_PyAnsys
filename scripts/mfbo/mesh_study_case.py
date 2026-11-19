@@ -70,6 +70,7 @@ import importlib.util
 import json
 import math
 import os
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -1471,19 +1472,69 @@ def _final_paths(run_directory, geo_id, case_id):
     )
 
 
+_PAIR_COPY_TMP = ".copy_tmp"
+_PAIR_COPY_BAK = ".copy_bak"
+
+
+def _pair_copy_leftovers(dest):
+    """``*.copy_tmp*`` / ``*.copy_bak*`` files an earlier copy left next to ``dest``."""
+    dest = Path(dest)
+    if not dest.parent.is_dir():
+        return []
+    found = []
+    for marker in (_PAIR_COPY_TMP, _PAIR_COPY_BAK):
+        found.extend(dest.parent.glob(dest.name + marker + "*"))
+    return sorted(found)
+
+
+def require_pair_copy_clean(dest_case):
+    """Refuse a pair copy into ``dest_case`` that an earlier copy left unfinished.
+
+    An interrupted swap can leave the canonical pair absent or mismatched
+    (one file new, one old) with the previous file under ``*.copy_bak*``.
+    Exactly one of case/data present, or any leftover backup, refuses; the
+    leaf is inspected by hand rather than repaired here. A leftover
+    ``*.copy_tmp*`` with an intact pair is only a partial copy and is removed.
+    """
+    dest_case = Path(dest_case)
+    dest_data = checkpoint_data_path(dest_case)
+    leftovers = _pair_copy_leftovers(dest_case) + _pair_copy_leftovers(dest_data)
+    backups = [path for path in leftovers if _PAIR_COPY_BAK in path.name]
+    present = [path.exists() for path in (dest_case, dest_data)]
+    if backups or present[0] != present[1]:
+        state = (
+            "canonical pair complete" if all(present)
+            else f"{'case' if present[0] else 'data'} present, "
+                 f"{'data' if present[0] else 'case'} absent"
+            if any(present) else "canonical pair absent"
+        )
+        raise RuntimeError(
+            f"An earlier case/data copy into {dest_case} did not finish ({state}); "
+            f"the pair may be absent or mismatched. Leftovers: "
+            f"{[str(path) for path in leftovers] or 'none'}. Restore the pair from "
+            "the *.copy_bak* files or a snapshot by hand, then rerun."
+        )
+    for path in leftovers:
+        path.unlink()
+
+
 def _copy_case_data(source_case, source_data, dest_case):
     """Copy a case/data pair, both or neither. The data name matches the case stem.
 
-    Both files are copied to ``*.copy_tmp`` first. Existing destinations
-    are moved to ``*.copy_bak`` and the temporaries swapped in; a failure
-    at any step puts the previous pair back and removes the temporaries.
+    Both files are copied to ``*.copy_tmp_<id>`` first (``<id>`` is unique to
+    this call). Existing destinations are moved to ``*.copy_bak_<id>`` and
+    the temporaries swapped in; a failure at any step puts the previous pair
+    back and removes the temporaries. ``require_pair_copy_clean`` runs first,
+    so a copy interrupted between those moves is detected, not built on.
     """
     dest_case = Path(dest_case)
     if not str(dest_case).endswith(".cas.h5"):
         raise ValueError(f"destination case must end in .cas.h5, got {dest_case}.")
     dest_data = checkpoint_data_path(dest_case)
+    require_pair_copy_clean(dest_case)
+    token = f"{utc_stamp()}_{os.getpid()}_{secrets.token_hex(4)}"
     pairs = [(Path(source_case), dest_case), (Path(source_data), dest_data)]
-    temps = [dest.with_name(dest.name + ".copy_tmp") for _src, dest in pairs]
+    temps = [dest.with_name(f"{dest.name}{_PAIR_COPY_TMP}_{token}") for _src, dest in pairs]
     backups = []
     placed = []
     try:
@@ -1491,7 +1542,7 @@ def _copy_case_data(source_case, source_data, dest_case):
             shutil.copyfile(source, temp)
         for _source, dest in pairs:
             if dest.exists():
-                backup = dest.with_name(dest.name + ".copy_bak")
+                backup = dest.with_name(f"{dest.name}{_PAIR_COPY_BAK}_{token}")
                 os.replace(dest, backup)
                 backups.append((backup, dest))
         for (_source, dest), temp in zip(pairs, temps):

@@ -1566,7 +1566,7 @@ def test_copy_case_data_is_pair_or_nothing(monkeypatch, tmp_path, failing_call):
 
         def flaky(src, dst):
             # Fail on placing the data file (after the case was placed).
-            if str(src).endswith(".dat.h5.copy_tmp"):
+            if ".dat.h5.copy_tmp_" in str(src):
                 raise OSError("injected replace failure")
             return original(src, dst)
 
@@ -1576,4 +1576,48 @@ def test_copy_case_data_is_pair_or_nothing(monkeypatch, tmp_path, failing_call):
     monkeypatch.undo()
     assert dest.read_bytes() == b"old-cas"
     assert (tmp_path / "dest.dat.h5").read_bytes() == b"old-dat"
-    assert not list(tmp_path.glob("*.copy_tmp")) and not list(tmp_path.glob("*.copy_bak"))
+    assert not list(tmp_path.glob("*.copy_tmp*")) and not list(tmp_path.glob("*.copy_bak*"))
+
+
+def test_copy_case_data_uses_names_unique_to_the_call(monkeypatch, tmp_path):
+    source = _pair(tmp_path, "src", b"new-cas", b"new-dat")
+    dest = _pair(tmp_path, "dest", b"old-cas", b"old-dat")
+    names = []
+    original = driver.os.replace
+
+    def spy(src, dst):
+        names.append(Path(dst).name)
+        return original(src, dst)
+
+    monkeypatch.setattr(driver.os, "replace", spy)
+    driver._copy_case_data(source, tmp_path / "src.dat.h5", dest)
+    driver._copy_case_data(source, tmp_path / "src.dat.h5", dest)
+    backups = [name for name in names if ".copy_bak_" in name]
+    assert len(backups) == 4 and len(set(backups)) == 4
+    assert dest.read_bytes() == b"new-cas"
+
+
+@pytest.mark.parametrize("state", ["data_absent", "case_absent", "backup_left"])
+def test_copy_case_data_refuses_an_unfinished_earlier_copy(tmp_path, state):
+    source = _pair(tmp_path, "src", b"new-cas", b"new-dat")
+    dest = _pair(tmp_path, "dest", b"half-new-cas", b"old-dat")
+    data = tmp_path / "dest.dat.h5"
+    if state == "data_absent":
+        data.rename(tmp_path / "dest.dat.h5.copy_bak_20261119T000000Z_1_ab")
+    elif state == "case_absent":
+        dest.unlink()
+    else:
+        (tmp_path / "dest.cas.h5.copy_bak_20261119T000000Z_1_ab").write_bytes(b"old-cas")
+    before = sorted(path.name for path in tmp_path.iterdir())
+    with pytest.raises(RuntimeError, match="did not finish"):
+        driver._copy_case_data(source, tmp_path / "src.dat.h5", dest)
+    assert sorted(path.name for path in tmp_path.iterdir()) == before
+
+
+def test_copy_case_data_removes_a_stale_temp_next_to_an_intact_pair(tmp_path):
+    source = _pair(tmp_path, "src", b"new-cas", b"new-dat")
+    dest = _pair(tmp_path, "dest", b"old-cas", b"old-dat")
+    (tmp_path / "dest.dat.h5.copy_tmp_20261119T000000Z_1_ab").write_bytes(b"partial")
+    driver._copy_case_data(source, tmp_path / "src.dat.h5", dest)
+    assert (tmp_path / "dest.dat.h5").read_bytes() == b"new-dat"
+    assert not list(tmp_path.glob("*.copy_tmp*"))
