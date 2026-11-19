@@ -292,9 +292,11 @@ UDM-9가 저장하는 것은 이 식이 아니라 inlet 분모 L2:
 | 쓰지 말 것 | `c_bulk_center_*` (whole-domain `surface-areaavg`), Cell 7의
   unit-cell `surface-areaavg` salt. |
 
-주석은 이것을 mixing-cup이라고 부른다. 검증 가능한 사실은 요청 타입이
-`surface-massavg`이고, x-normal 같은 타입 평균과 0.5% 안에서 맞는다는
-것이다.
+이것은 x-normal mixing cup이 아니다(옛 주석의 mixing-cup 표현은
+정정됨). z-normal mid-plane의 `surface-massavg`는 면을 통과하는 질량
+유속 \(|\rho w|\)으로 가중한다. 검증 가능한 사실은 요청 타입이
+`surface-massavg`이고, x-normal 경계 cup 평균과 0.5% 안에서 맞는다는
+것이다(host 확인: cup보다 0.01–0.2 % 낮고 부호는 항상 같다).
 
 **알려진 문제 (2026-10-02, `src/ro/fluent_report_helpers.py` 243–248).**
 reduction이 예외를 내면 `resolve_channel_midplane_z_m`은 올리지 않고

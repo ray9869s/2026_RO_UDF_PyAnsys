@@ -72,7 +72,7 @@ def compute_c_b_by_cell(
     fluid_zone_names=None,
     plane_prefix: str = "pp_diag_zc",
 ) -> dict[int, float]:
-    """Mixing-cup c_b on measured mid-plane z=0.5*(z_min+z_max)."""
+    """Mid-plane bulk c_b (surface-massavg) on measured mid-plane z=0.5*(z_min+z_max)."""
     if setup is None:
         setup = solver.settings.setup
     names = list(fluid_zone_names) if fluid_zone_names else None
@@ -741,7 +741,7 @@ def diagnose_run(
         if missing_cb:
             print(
                 f"  c_b missing for cells {missing_cb}; "
-                "computing mid-plane mixing-cup c_b..."
+                "computing mid-plane bulk c_b..."
             )
             computed = compute_c_b_by_cell(
                 solver,

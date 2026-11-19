@@ -311,7 +311,7 @@ Renamed or copied into summary:
 
 - **`cp_inlet_avg`**: areaavg of UDM-9 on active membranes (L2 / inlet-\(c_0\) form). **Whole membrane**, not window-restricted.
 
-- **`c_b_window_mol_m3`**: mid-plane mixing-cup salt, x-clipped per cell, then  
+- **`c_b_window_mol_m3`**: mid-plane mass-weighted (`surface-massavg`) salt, not an x-normal mixing cup; x-clipped per cell, then  
   \(\sum (c_{b,N} A_N) / \sum A_N\) over evaluation cells.
 
 - **`c_bulk_center_mol_m3_avg`**: whole mid-plane areaavg (buffers included). **Not** the canonical denominator.

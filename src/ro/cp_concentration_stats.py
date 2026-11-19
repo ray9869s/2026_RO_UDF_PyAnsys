@@ -299,7 +299,7 @@ def live_canon_window(
     """Area-weighted local canon on faces below the exclusion threshold.
 
     Each live face uses its own permeate concentration
-    ``c_p = B c_m / (J_w + B)`` and the window mixing-cup ``c_b``:
+    ``c_p = B c_m / (J_w + B)`` and the window mid-plane bulk ``c_b``:
 
         M = (c_m - c_p) / (c_b - c_p)
 

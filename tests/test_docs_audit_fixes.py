@@ -40,3 +40,29 @@ def test_c_b_is_not_called_a_mixing_cup():
 def test_cp_metrics_docstrings_do_not_contradict_mean_first():
     assert "Wrong order" not in (cp_metrics.ratio_of_averages_cp_bae_approx.__doc__ or "")
     assert "Correct order" not in (cp_metrics.average_of_ratios_cp_bae_approx.__doc__ or "")
+
+
+def test_metrics_conventions_documents_mean_first_order_and_dead_zone():
+    text = (ROOT / "docs" / "metrics_conventions.md").read_text(encoding="utf-8")
+    assert "**Superseded for the benchmark (2026-11-18).**" in text
+    assert "cp_meanfirst_live_window_avg" in text
+    assert "This live\nmask is not the UDM-9 zeroing." in text
+    assert "filters only\n\\(J_w > 0\\)" in text
+    assert "There is no\n   \\(J_w > 0\\) mask." in text
+    dossier = (ROOT / "docs" / "PAPER_METHODS_DOSSIER.md").read_text(encoding="utf-8")
+    assert "This live mask is not the UDM-9 zeroing" in dossier
+    assert "excluded from the flux-weighted `c_p`" not in dossier
+
+
+def test_c_b_is_not_called_a_mixing_cup():
+    """Only the x-normal boundary cups (the guard) may be called mixing cups."""
+    import re
+
+    paths = [ROOT / "docs" / "POSTPROCESSING_MAP.md", ROOT / "docs" / "MESH_STUDY_RESULTS.md",
+             ROOT / "src" / "ro" / "cp_concentration_stats.py", ROOT / "src" / "ro" / "fluent_report_helpers.py",
+             ROOT / "scripts" / "diagnose_cp_quantile_spread.py", ROOT / "scripts" / "diagnose_cp_face_filters.py",
+             ROOT / "scripts" / "solver_code_260616.py", ROOT / "scripts" / "pyfluent_report_extract.py"]
+    bad = re.compile(r"mid-plane mixing[- ]cup|window mixing-cup|Mixing-cup c_b|Mixing-cup `c_b|"
+                     r"mixing-cup salt concentration per|Mixing-cup \(surface-massavg\)")
+    for path in paths:
+        assert not bad.search(path.read_text(encoding="utf-8")), path

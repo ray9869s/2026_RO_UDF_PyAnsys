@@ -3659,7 +3659,8 @@ def update_solve_time_cp_monitor(
     The numerator is both membrane walls clipped to the evaluation window.
     If that iso-clip cannot be created, the numerator is the full active
     membrane and the monitor is named ``cp_full_membrane``. The denominator
-    stays the window mid-plane mixing cup. Returns None when that bulk
+    stays the window mid-plane bulk c_b (not an x-normal mixing cup).
+    Returns None when that bulk
     report cannot be created.
     """
     if not membrane_wall_zones:

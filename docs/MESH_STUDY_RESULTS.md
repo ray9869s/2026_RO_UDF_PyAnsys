@@ -248,7 +248,7 @@ emitter counts were 6.3 M, 12 M, and 25 M; realised counts are below.
 | 0.026 | `_bms026` | 7.71 M | 0.0904 | 0.573 | 35119 | 23.778 |
 | 0.020 | `_bms020` | 14.69 M | 0.0825 | 0.880 | 35446 | 23.872 |
 
-Film correction 0.61–0.68%. Mixing-cup `c_b_window_mol_m3` 598.6–598.7.
+Film correction 0.61–0.68%. Mid-plane bulk `c_b_window_mol_m3` 598.6–598.7.
 No systematic trend with bulk size. Oscillatory uncertainty
 `U = 0.5 × (max − min)` on the three levels (`scripts/mfbo/mesh_convergence.py`,
 Celik et al. 2008 / Stern et al. 2001): CP excess 0.086 ± 0.004

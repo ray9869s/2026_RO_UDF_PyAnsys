@@ -746,7 +746,7 @@ def main():
         # 0.03508671) where there is no membrane and no species source, which
         # is impossible for a conserved bulk quantity. This step measures both
         # weightings side by side on identical planes to confirm that
-        # mass-weighted (mixing-cup) removes the artificial drift.
+        # mass-weighted (surface-massavg) removes the artificial drift.
         #
         # Note: Fluent's surface Mass-Weighted Average weights by rho*|v.dA|
         # (absolute value), so reverse flow through a plane still carries

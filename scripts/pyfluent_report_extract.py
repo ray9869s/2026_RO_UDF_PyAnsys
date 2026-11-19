@@ -2067,7 +2067,8 @@ if __name__ == "__main__":
         # ==========================================================
         # Cell 8.4. Mid-plane bulk c_b per evaluation cell (window only)
         # ==========================================================
-        # Canonical CP denominator. Mixing-cup (surface-massavg) on the
+        # Canonical CP denominator. Mass-weighted (surface-massavg, not an
+        # x-normal mixing cup) on the
         # channel mid-plane z = 0.5*(z_min+z_max) (origin-agnostic; z = 0 on
         # the campaign channel-centred mesh), clipped in x to each evaluation
         # cell. NOT interchangeable with cp_inlet_avg (L2 / UDM-9 inlet

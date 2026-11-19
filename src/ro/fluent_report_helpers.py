@@ -1945,7 +1945,7 @@ def evaluation_window_midplane_bulk_concentrations(
     molecular_weight_kg_per_mol,
     salt_is_mass_fraction=True,
 ):
-    """Mid-plane (z = 0.5*(z_min+z_max), channel centre) mixing-cup salt concentration per evaluation cell.
+    """Mid-plane (z = 0.5*(z_min+z_max), channel centre) mass-weighted salt concentration per evaluation cell (not an x-normal mixing cup).
 
     Uses x-range iso_clip on the mid-plane iso-surface plus surface-area and
     surface-massavg reports (no ``reduction.sum_if``). Mass-weighted average

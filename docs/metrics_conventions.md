@@ -168,6 +168,33 @@ average-of-ratios and ratio-of-averages coincide exactly for L1.
 UDM-9 already implements average-of-ratios at the UDF level (per-face CP,
 then area-weighted into cells). Post-processing preserves that order.
 
+**Superseded for the benchmark (2026-11-18).** The rule above still
+describes the per-face columns (`cp_canon_*`, UDM-9). The benchmark CP is
+the mean-first column `cp_meanfirst_live_window_avg`, which deliberately
+takes the ratio of area averages
+(`src/ro/cp_concentration_stats.py`, `meanfirst_cp_metrics`).
+Aggregation order, all on the evaluation-window membrane clip (both
+membranes):
+
+1. Per face: area \(A_f\), \(c_{m,f}\) (`udm-7`, analytic wall
+   reconstruction) and \(J_{w,f}\) (`udm-6`), read from the final data.
+2. Per face: \(c_{p,f} = B c_{m,f}/(J_{w,f}+B)\), computed in
+   post-processing. UDM-9 is not read.
+3. \(c_b\) = `c_b_window_mol_m3`: per evaluation cell, `surface-massavg`
+   salt on the x-clipped z-normal mid-plane, converted to mol/m³; cells
+   combined by mid-plane area. One value for the window.
+4. Live mask: face is live when \(c_{p,f} < \min(c_0, c_b)\). There is no
+   \(J_w > 0\) mask.
+5. Area means over live faces: \(\langle c_m\rangle_{\mathrm{live}}\) and
+   \(\langle c_p\rangle_{\mathrm{live}}\) (`cp_ref_area_live`).
+6. Divide once:
+   \(\mathrm{CP} = (\langle c_m\rangle_{\mathrm{live}} - \langle c_p\rangle_{\mathrm{live}})
+   / (c_b - \langle c_p\rangle_{\mathrm{live}})\).
+
+`cp_meanfirst_window_avg` repeats steps 5–6 over all window faces and
+equals `cpc_window_avg_area`. `cp_canon_live_window_avg` keeps the
+per-face order (ratio per live face, then area mean) and is preserved.
+
 ## Canonical scalar rescaling
 
 UDM-9 stores, per face, the L2 form with inlet denominator, area-weighted to
@@ -375,13 +402,20 @@ mid-plane bulk \(c_b\):
 M = (c_m - c_p) / (c_b - c_p)
 \]
 
-Faces with \(c_p \ge c_0\) (\(c_0 =\) `C_INLET_REF`, 597.8268309 mol/m³)
-are the dead zone. The UDF stores udm-9 as 0 on those faces
-(`udfs/260822_RO_UDF.c:390–393`) because the inlet denominator is not
-positive. `cp_canon_window_avg` still area-weights that 0.
-`cp_canon_live_window_avg` leaves those faces out of the average.
-`dead_zone_area_fraction_window` is their area over the window membrane
-area. Both columns are written by the same face read as
+The dead zone is the faces with \(c_p \ge \min(c_0, c_b)\)
+(\(c_0 =\) `C_INLET_REF`, 597.8268309 mol/m³), with \(c_p\) recomputed
+per face from `udm-6` and `udm-7` (`live_exclusion_threshold`). This live
+mask is not the UDM-9 zeroing. The UDF stores udm-9 as 0 only where
+\(c_p \ge c_0\) (`udfs/260822_RO_UDF.c:390–393`, the inlet denominator is
+not positive); when \(c_b < c_0\) the mask also drops faces with
+\(c_b \le c_p < c_0\), which keep a non-zero udm-9, because they make
+\(c_b - c_p\) non-positive. `cp_canon_window_avg` area-weights the udm-9
+zeros. `cp_canon_live_window_avg` leaves every masked face out of the
+average. `dead_zone_area_fraction_window` is the masked area over the
+window membrane area. The flux reference `cp_ref_flux` (used by
+`cpc_window_avg_flux` and `cp_q999_window_flux`) filters only
+\(J_w > 0\): it applies no dead-zone mask, so a masked face with a small
+positive \(J_w\) still enters it, with little weight. Both columns are written by the same face read as
 `cpc_window_avg_flux` (`src/ro/cp_concentration_stats.py`,
 `live_canon_window`). `cpc_window_avg_flux` stays in the extract and in
 the campaign figure CSV as a secondary column. The MFBO adapter still
