@@ -269,10 +269,18 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
 - Fail closed. `unknown_early_stop` (iterate returned below the cap with
   no stop marker) writes only `failed_attempt_*` and exits non-zero. The
   setup-expression check must pass positively: every named expression
-  lists `Valid : Yes`, or, with none, at least one check form ran without
-  an error; otherwise `Refusing to iterate`. If the host smoke refuses
-  with `no expression check could run`, read the printed check forms
-  before changing anything.
+  lists `Valid : Yes`, or, with none, at least one check form returned a
+  recognised "nothing invalid" output (`()`, `'()`, `nil`, `#t`,
+  `No invalid inputs`, `Valid : Yes`). Empty, `None`, `#f`, errors and any
+  unrecognised text fail, as does a failure to enumerate the named
+  expressions; otherwise `Refusing to iterate`. The raw check output is
+  appended to `solver_log_<case>.txt` (`EXPRESSION CHECK (raw output)`).
+  `RO_EXPRESSION_CHECK=warn` lets a check that did not positively pass
+  through with a logged `OVERRIDDEN` warning, for host diagnosis only
+  (never on a queue); an explicit invalid expression or an enumeration
+  failure still refuses. If the host smoke refuses, read the logged check
+  output and extend the recognised set from it; do not relax the check
+  blind.
 - Monitor-change columns. `monitor_change_last100_*` is now the
   end-to-end relative change (phase-sensitive on an oscillating monitor)
   and `monitor_trend_last100_*` the fitted slope over 100 iterations (the

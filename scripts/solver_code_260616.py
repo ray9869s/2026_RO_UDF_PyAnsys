@@ -2943,12 +2943,60 @@ def _scheme_exec_text(solver, command):
     return None
 
 
-def require_setup_expressions_valid(solver):
+EXPRESSION_CHECK_ENV = "RO_EXPRESSION_CHECK"
+
+
+def _named_expression_names(named_expressions):
+    """Names of the setup named expressions; raises when they cannot be listed."""
+    errors = []
+    try:
+        names = named_expressions.get_object_names()
+        if names is not None:
+            return [str(name) for name in names]
+        errors.append("get_object_names returned None")
+    except Exception as exc:
+        errors.append(f"get_object_names: {type(exc).__name__}: {exc}")
+    try:
+        state = named_expressions.get_state()
+        if isinstance(state, dict):
+            return sorted(str(key) for key in state.keys())
+        errors.append(f"get_state returned {type(state).__name__}")
+    except Exception as exc:
+        errors.append(f"get_state: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        "Could not enumerate setup named expressions ("
+        + "; ".join(errors)
+        + "). Refusing to iterate."
+    )
+
+
+def _append_expression_check_log(solver_log_path, report, verdict):
+    """Raw check output goes into solver_log_*.txt (print is not in the transcript)."""
+    if not solver_log_path:
+        return
+    try:
+        with open(solver_log_path, "a", encoding="utf-8", errors="replace") as handle:
+            handle.write("\n===== EXPRESSION CHECK (raw output) =====\n")
+            handle.write(report)
+            handle.write(f"\n===== EXPRESSION CHECK RESULT: {verdict} =====\n")
+    except OSError as exc:
+        print(f"Warning: could not append the expression check to {solver_log_path}: {exc}")
+
+
+def require_setup_expressions_valid(solver, solver_log_path=None):
     """Print Fluent's expression check and refuse to iterate when it fails.
 
     A report definition Fluent has accepted into the setup can still be
     invalid. ``iterate`` then prints ``Setup contains invalid expression``
     and returns without a residual line. The check runs first.
+
+    Failing closed: an invalid marker, a failure to enumerate the named
+    expressions, a named expression without ``Valid : Yes``, or check forms
+    that only return empty / ``None`` / ``#f`` / unrecognised text. The raw
+    output is appended to ``solver_log_path``. ``RO_EXPRESSION_CHECK=warn``
+    (host diagnosis only) lets a check that did not *positively* pass
+    through with a logged warning; an explicit invalid marker or an
+    enumeration failure still refuses.
     """
     chunks = []
     form_texts = []
@@ -2958,10 +3006,13 @@ def require_setup_expressions_valid(solver):
         print(f"Expression check {form}:")
         print(text)
         form_texts.append(text)
-        chunks.append("" if text is None else text)
-    names = _list_named_object_names_best_effort(
-        solver.setup.named_expressions
-    )
+        chunks.append(f"--- {form} ---\n" + ("<no scheme interface>" if text is None else text))
+    try:
+        names = _named_expression_names(solver.setup.named_expressions)
+    except Exception as exc:
+        chunks.append(f"--- named expressions ---\n{exc}")
+        _append_expression_check_log(solver_log_path, "\n".join(chunks), "FAIL (enumeration)")
+        raise
     rows = []
     for name in names:
         listed = _scheme_exec_text(
@@ -2975,7 +3026,7 @@ def require_setup_expressions_valid(solver):
         print(f"Named expression {name}:")
         print(listed)
         listings[name] = listed
-        chunks.append("" if listed is None else listed)
+        chunks.append(f"--- list-properties {name} ---\n" + ("" if listed is None else listed))
         error = "" if named_expression_listed_valid(listed) else "invalid"
         rows.append((name, error, "named expression"))
     if rows:
@@ -2984,17 +3035,32 @@ def require_setup_expressions_valid(solver):
         chunks.append(table)
     report = "\n".join(chunks)
     if fluent_expression_report_is_invalid(report):
+        _append_expression_check_log(solver_log_path, report, "FAIL (invalid expression)")
         raise RuntimeError(
             "Setup contains invalid expressions. Refusing to iterate.\n"
             + report
         )
     passed, reason = expression_check_positive(form_texts, listings)
-    print(f"Expression check result: {'PASS' if passed else 'FAIL'} ({reason})")
-    if not passed:
-        raise RuntimeError(
-            f"Expression check did not positively pass ({reason}). "
-            "Refusing to iterate.\n" + report
+    verdict = f"{'PASS' if passed else 'FAIL'} ({reason})"
+    print(f"Expression check result: {verdict}")
+    if passed:
+        _append_expression_check_log(solver_log_path, report, verdict)
+        return
+    mode = os.environ.get(EXPRESSION_CHECK_ENV, "").strip().lower()
+    if mode == "warn":
+        warning = (
+            f"WARNING: {EXPRESSION_CHECK_ENV}=warn: expression check did not positively "
+            f"pass ({reason}); iterating anyway for host diagnosis. Not for production."
         )
+        print(warning)
+        _append_expression_check_log(solver_log_path, report, f"{verdict} OVERRIDDEN: {warning}")
+        return
+    _append_expression_check_log(solver_log_path, report, verdict)
+    raise RuntimeError(
+        f"Expression check did not positively pass ({reason}). "
+        "Refusing to iterate. The raw output is in the solver log; "
+        f"{EXPRESSION_CHECK_ENV}=warn overrides for host diagnosis only.\n" + report
+    )
 
 
 def create_or_update_single_valued_expression_report(
@@ -6216,7 +6282,7 @@ if __name__ == "__main__":
                 )
                 monitor_cursor["n"] = outcome["end_iteration"]
 
-            require_setup_expressions_valid(solver)
+            require_setup_expressions_valid(solver, solver_log_path=solver_log_path)
 
             lf_stop_decision = None
             hf_stop_decision = None

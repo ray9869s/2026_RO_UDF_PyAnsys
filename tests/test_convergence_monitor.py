@@ -473,3 +473,86 @@ def test_incommensurate_oscillation_end_to_end_is_phase_sensitive_trend_is_not()
     change = end_to_end_relative_change(wobble, 100)
     assert change > 5e-5  # reads part of the amplitude, not drift
     assert trend_relative_change(wobble, 100) < 2e-5
+
+
+@pytest.mark.parametrize("output", ["", "   ", "None", "#f", "some text never seen before", "0"])
+def test_expression_check_unrecognised_output_fails(output):
+    solver = load_solver_code(f"expr_check_unrecognised_{abs(hash(output))}")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            return output
+
+    with pytest.raises(RuntimeError, match="did not positively pass"):
+        solver.require_setup_expressions_valid(_session(Scheme()))
+
+
+@pytest.mark.parametrize("output", ["()", "#t", "No invalid inputs"])
+def test_expression_check_recognised_pass_outputs(output):
+    solver = load_solver_code(f"expr_check_recognised_{abs(hash(output))}")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            return output
+
+    solver.require_setup_expressions_valid(_session(Scheme()))
+
+
+def test_expression_check_enumeration_failure_fails(tmp_path):
+    solver = load_solver_code("expr_check_enumeration")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            return "()"
+
+    class Broken:
+        def get_object_names(self):
+            raise RuntimeError("settings API unavailable")
+
+        def get_state(self):
+            raise RuntimeError("settings API unavailable")
+
+    session = SimpleNamespace(scheme=Scheme(), setup=SimpleNamespace(named_expressions=Broken()))
+    log = tmp_path / "solver_log_case.txt"
+    with pytest.raises(RuntimeError, match="Could not enumerate"):
+        solver.require_setup_expressions_valid(session, solver_log_path=log)
+    assert "FAIL (enumeration)" in log.read_text(encoding="utf-8")
+
+
+def test_expression_check_raw_output_goes_to_solver_log(tmp_path):
+    solver = load_solver_code("expr_check_log")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            return "#t"
+
+    log = tmp_path / "solver_log_case.txt"
+    log.write_text("earlier lines\n", encoding="utf-8")
+    solver.require_setup_expressions_valid(_session(Scheme()), solver_log_path=log)
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("earlier lines")
+    assert "EXPRESSION CHECK (raw output)" in text
+    assert "(get-invalid-inputs-formated)" in text
+    assert "RESULT: PASS" in text
+
+
+def test_expression_check_warn_override_is_explicit_and_logged(monkeypatch, tmp_path, capsys):
+    solver = load_solver_code("expr_check_warn")
+
+    class Scheme:
+        def exec(self, commands, wait=True, silent=False):
+            return "#f"
+
+    log = tmp_path / "solver_log_case.txt"
+    monkeypatch.setenv("RO_EXPRESSION_CHECK", "warn")
+    solver.require_setup_expressions_valid(_session(Scheme()), solver_log_path=log)
+    assert "RO_EXPRESSION_CHECK=warn" in capsys.readouterr().out
+    assert "OVERRIDDEN" in log.read_text(encoding="utf-8")
+
+    class Invalid:
+        def exec(self, commands, wait=True, silent=False):
+            return "Setup contains invalid expression"
+
+    # The override never lets an explicit invalid expression through.
+    with pytest.raises(RuntimeError, match="Setup contains invalid expressions"):
+        solver.require_setup_expressions_valid(_session(Invalid()), solver_log_path=log)

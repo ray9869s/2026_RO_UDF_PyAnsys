@@ -375,16 +375,32 @@ _CHECK_DID_NOT_RUN_RE = re.compile(
 )
 
 
-def expression_check_ran(text) -> bool:
-    """True when a check form returned output that is not an error.
+# Check-form outputs recognised as "ran and found nothing invalid". Anything
+# else (empty, "None", "#f", an error, or text not seen before) proves
+# nothing and fails closed.
+_CHECK_PASS_EXACT = frozenset({"()", "'()", "nil", "#t", "#true"})
+_CHECK_PASS_RE = re.compile(
+    r"\bno invalid (?:inputs?|expressions?)\b|\ball (?:named )?expressions are valid\b"
+    r"|valid\s*[:=]\s*yes\b",
+    re.IGNORECASE,
+)
 
-    ``None`` (no scheme interface), an exception text from the wrapper,
-    or Fluent's ``unbound variable`` / ``invalid function`` mean the form
-    did not run and prove nothing.
+
+def expression_check_ran(text) -> bool:
+    """True only for a recognised "nothing invalid" output.
+
+    ``None``, empty text, ``"None"``, ``"#f"``, an exception text from the
+    wrapper, Fluent's ``unbound variable`` / ``invalid function``, and any
+    unrecognised output prove nothing.
     """
     if text is None:
         return False
-    return _CHECK_DID_NOT_RUN_RE.search(str(text)) is None
+    stripped = str(text).strip()
+    if not stripped or _CHECK_DID_NOT_RUN_RE.search(stripped) is not None:
+        return False
+    if stripped.casefold() in _CHECK_PASS_EXACT:
+        return True
+    return _CHECK_PASS_RE.search(stripped) is not None
 
 
 def named_expression_listed_valid(text) -> bool:
