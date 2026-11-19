@@ -28,6 +28,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import mfbo._common as mfbo_common
+from ro.atomic_reports import clear_manifest_gate, invalidate_sidecar
 from ro.manifest import read_run_manifest
 from ro.paths import RUN_ID_RE, is_production_path
 
@@ -87,9 +88,10 @@ def parse_run_leaf(value):
 def archive_reports(run_leaf, *, now=None):
     """Rename ``post/reports`` to ``post/reports_prev_<UTC>``. Never deletes.
 
-    The run ``manifest.json`` is copied into the archive as
-    ``manifest.json`` so the gate that described those reports is kept
-    with them. Returns the archive path, or None when there is no
+    The sidecar is renamed aside and the manifest gate cleared *before*
+    the rename. The run ``manifest.json`` as it was before clearing is
+    written into the archive so the gate that described those reports is
+    kept with them. Returns the archive path, or None when there is no
     reports directory.
     """
     reports = Path(run_leaf) / "post" / "reports"
@@ -106,10 +108,17 @@ def archive_reports(run_leaf, *, now=None):
         raise FileExistsError(
             f"Refusing to replace existing report archive: {dest}"
         )
-    reports.rename(dest)
+    # Invalidate first: a crash after this point leaves no sidecar that
+    # binds these reports and no PASS on the manifest.
     manifest = Path(run_leaf) / "manifest.json"
-    if manifest.is_file():
-        shutil.copy2(manifest, dest / "manifest.json")
+    saved_manifest = manifest.read_bytes() if manifest.is_file() else None
+    invalidate_sidecar(reports, now=moment)
+    if saved_manifest is not None:
+        clear_manifest_gate(run_leaf)
+    reports.rename(dest)
+    if saved_manifest is not None:
+        # The gate that described these reports, as it was before clearing.
+        (dest / "manifest.json").write_bytes(saved_manifest)
     return dest
 
 

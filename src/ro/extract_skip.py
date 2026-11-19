@@ -47,6 +47,9 @@ def write_extract_source_record(
         FINAL_DATA_SHA256_FIELD: record.get(FINAL_DATA_SHA256_FIELD),
         SOLVER_ATTEMPT_ID_FIELD: record.get(SOLVER_ATTEMPT_ID_FIELD),
     }
+    # Additional provenance (report generation, snapshot identity) is kept.
+    for key, value in record.items():
+        payload.setdefault(str(key), value)
     reports_dir.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     try:

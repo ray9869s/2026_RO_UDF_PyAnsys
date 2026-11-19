@@ -67,7 +67,8 @@ from ro.evaluation_window_table import (  # noqa: E402
 from ro.extract_skip import write_extract_source_record  # noqa: E402
 from ro.atomic_reports import (  # noqa: E402
     begin_report_extract,
-    promote_staged_reports,
+    clear_manifest_gate,
+    publish_extract,
     staging_report_path,
 )
 from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
@@ -3293,50 +3294,48 @@ if __name__ == "__main__":
                 f"(report_snapshot_iteration={cfg.report_snapshot_iteration})."
             )
         else:
-            try:
-                update_run_manifest_fields(
-                    case_path,
-                    {
-                        **manifest_quality_payload(quality_result),
-                        **_evaluation_window_selection.manifest_fields(),
-                        **campaign_midplane_manifest_fields(_found_center_z),
-                        **y1_diagnostic,
-                        **monitor_changes,
-                    },
-                )
-                print(
-                    "Convergence quality    :",
-                    quality_result["convergence_quality"],
-                    (
-                        f"(failures={quality_result['failures']})"
-                        if quality_result["failures"]
-                        else ""
-                    ),
-                    (
-                        f"(warnings={quality_result['warnings']})"
-                        if quality_result["warnings"]
-                        else ""
-                    ),
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    "could not write convergence_quality to run manifest: "
-                    f"{type(exc).__name__}: {exc}"
-                ) from exc
+            # Everything except the gate. The gate is written by
+            # publish_extract only after the staged reports and their
+            # sidecar are in place (ro.atomic_reports).
+            update_run_manifest_fields(
+                case_path,
+                {
+                    **_evaluation_window_selection.manifest_fields(),
+                    **campaign_midplane_manifest_fields(_found_center_z),
+                    **y1_diagnostic,
+                    **monitor_changes,
+                },
+            )
 
-        write_extract_source_record(
-            report_path,
-            {
-                FINAL_CASE_SHA256_FIELD: sha256_file(final_case_file),
-                FINAL_DATA_SHA256_FIELD: sha256_file(final_data_file),
+        _staged_report_path = report_path
+        _replaced, _report_generation = publish_extract(
+            case_path=case_path,
+            staging=_staged_report_path,
+            final=final_report_path,
+            source_case_file=final_case_file,
+            source_data_file=final_data_file,
+            sidecar_fields={
                 SOLVER_ATTEMPT_ID_FIELD: run_manifest.get(SOLVER_ATTEMPT_ID_FIELD),
             },
+            gate_payload=manifest_quality_payload(quality_result),
+            bind_manifest=report_binds_manifest(cfg),
         )
-
-        # Every gate passed and the manifest is updated: swap the staged
-        # directory in. The replaced one is kept as <dir>_prev_<UTC>.
-        _staged_report_path = report_path
-        _replaced = promote_staged_reports(_staged_report_path, final_report_path)
+        print("Report generation      :", _report_generation)
+        if report_binds_manifest(cfg):
+            print(
+                "Convergence quality    :",
+                quality_result["convergence_quality"],
+                (
+                    f"(failures={quality_result['failures']})"
+                    if quality_result["failures"]
+                    else ""
+                ),
+                (
+                    f"(warnings={quality_result['warnings']})"
+                    if quality_result["warnings"]
+                    else ""
+                ),
+            )
         report_path = final_report_path
         summary_csv_path = report_path / summary_csv_path.name
         summary_wide_csv_path = report_path / summary_wide_csv_path.name
@@ -3384,6 +3383,11 @@ if __name__ == "__main__":
 
     except Exception as e:
         _abandon_active_extract_phase()
+        if report_binds_manifest(cfg):
+            try:
+                clear_manifest_gate(case_path)
+            except Exception as gate_error:
+                print(f"Warning: could not clear the manifest gate: {gate_error}")
         print("\n" + "=" * 72)
         print("ERROR: PyFluent post-processing report extraction failed.")
         print("=" * 72)

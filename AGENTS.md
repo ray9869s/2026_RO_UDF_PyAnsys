@@ -111,11 +111,18 @@ without final hashes, no sidecar, or a sidecar without the hash fields)
 is reported with `v2_report_binding=unverified`, and `--compare` prints
 the bound/unverified/blank counts. A v2 sidecar naming a different
 final, a `BROKEN` marker or missing reports stay blank. v3 and
-`seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`, clear
-the target sidecar and the manifest `convergence_quality` at start, and
-swap in only after every gate (the replaced directory is kept as
-`<dir>_prev_<UTC>`). A failed extract leaves its staging directory for
-inspection and no PASS.
+`seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`,
+move the target sidecar aside (`extract_source.invalidated_<UTC>.json`)
+and clear the manifest `convergence_quality` at start, and end in
+`ro.atomic_reports.publish_extract`: hash the final pair, write the
+staged sidecar with `report_generation=<id>`, swap the staged directory
+in (the replaced one is kept as `<dir>_prev_<UTC>`; a failed swap puts it
+back), and only then write the gate with
+`convergence_quality_report_generation=<id>`. Any later exception clears
+the gate again. A gate whose generation differs from the sidecar's does
+not bind. `reextract_runs` invalidates the sidecar and the gate before
+it renames `post/reports`. A failed extract leaves its staging directory
+for inspection and no PASS.
 
 ## Data roots
 

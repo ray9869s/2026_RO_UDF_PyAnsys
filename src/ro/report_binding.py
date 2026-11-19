@@ -17,6 +17,10 @@ from pathlib import Path
 from ro.extract_skip import EXTRACT_SOURCE_FILENAME
 from ro.solver_common import FINAL_CASE_SHA256_FIELD, FINAL_DATA_SHA256_FIELD
 
+# Sidecar / manifest fields written by ro.atomic_reports.publish_extract.
+REPORT_GENERATION_FIELD = "report_generation"
+GATE_GENERATION_FIELD = "convergence_quality_report_generation"
+
 REPORT_BOUND = "bound"
 # v2 baseline only: reports that exist but carry no hash evidence either way.
 REPORT_UNVERIFIED = "unverified"
@@ -70,6 +74,29 @@ def report_binding_reason(run_directory, reports_dirname="reports"):
                 f"post/{reports_dirname} is from a different final "
                 f"({field} {_short(source.get(field))} != manifest {_short(value)})"
             )
+    return gate_generation_reason(manifest, source)
+
+
+def gate_generation_reason(manifest, source):
+    """None when the manifest gate belongs to these reports.
+
+    Reports written by ``ro.atomic_reports.publish_extract`` carry a
+    ``report_generation``; the gate written with them carries the same id
+    in ``convergence_quality_report_generation``. Older reports have
+    neither and are not checked. A gate without an id next to reports
+    with one, or a different id, is from another extract.
+    """
+    reports_generation = source.get(REPORT_GENERATION_FIELD)
+    gate_generation = manifest.get(GATE_GENERATION_FIELD)
+    if reports_generation is None and gate_generation is None:
+        return None
+    if manifest.get("convergence_quality") in (None, "") and gate_generation is None:
+        return None  # no gate published (yet); the reports themselves are bound
+    if reports_generation != gate_generation:
+        return (
+            f"manifest gate is from report generation {gate_generation or 'missing'}, "
+            f"reports are generation {reports_generation or 'missing'}"
+        )
     return None
 
 
