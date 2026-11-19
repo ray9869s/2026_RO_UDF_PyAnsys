@@ -301,10 +301,16 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   failure still refuses. If the host smoke refuses, read the logged check
   output and extend the recognised set from it; do not relax the check
   blind.
-- Monitor-change columns. `monitor_change_last100_*` is now the
-  end-to-end relative change (phase-sensitive on an oscillating monitor)
-  and `monitor_trend_last100_*` the fitted slope over 100 iterations (the
-  drift measure). CP reads `cp_live` only, so `--no-cp-live` leaves (all
+- Monitor-change columns. `monitor_change_last<N>_*` is the end-to-end
+  relative change (phase-sensitive on an oscillating monitor),
+  `monitor_trend_last<N>_*` the fitted slope over N iterations (the
+  drift measure) and `monitor_amplitude_last<N>_*` the peak-to-peak
+  residual about that line (the oscillation). The default window is
+  N=500; extracts and solves write the N=100 set (kept) and the N=500
+  set. A window is used only when it lies in the last attempt segment
+  (strictly increasing iterations), all values are finite, it reaches
+  back to L−N and holds ≥ max(3, ⌈0.8 N⌉) samples; otherwise the values
+  are blank and `monitor_window_status_last<N>_*` says why. CP reads `cp_live` only, so `--no-cp-live` leaves (all
   of main3) have blank new CP columns. LMH/dP use the active-span
   monitors. The old maximum deviation is `*_legacy`. Recorded only; the
   2000-iteration cap and the gate are unchanged.

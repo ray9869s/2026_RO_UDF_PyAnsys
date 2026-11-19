@@ -121,9 +121,14 @@ def test_drift_is_seen_by_change_and_trend():
     assert trend_relative_change(drift, 100) == pytest.approx(0.1 / 10.05)
 
 
-def test_series_are_sorted_and_last_row_wins():
-    appended = [(1950, 5.0), (2000, 5.0), (1900, 4.0), (1950, 5.0), (2000, 5.5)]
-    assert end_to_end_relative_change(appended, 100) == pytest.approx(1.5 / 5.5)
+def test_window_spanning_two_attempt_segments_is_unavailable():
+    """Rows from a restart are not stitched into one window any more."""
+    from ro.monitor_change import window_status
+
+    appended = _tail(1800, 2000, lambda i: 5.0) + _tail(1950, 2000, lambda i: 5.5)
+    assert end_to_end_relative_change(appended, 100) is None
+    assert "attempt segment" in window_status(appended, 100)
+    assert trend_relative_change(appended, 100) is None
     assert end_to_end_relative_change([(5, 1.0)], 100) is None
     assert trend_relative_change([(1, 1.0), (2, 2.0)], 100) is None
 
@@ -556,3 +561,58 @@ def test_expression_check_warn_override_is_explicit_and_logged(monkeypatch, tmp_
     # The override never lets an explicit invalid expression through.
     with pytest.raises(RuntimeError, match="Setup contains invalid expressions"):
         solver.require_setup_expressions_valid(_session(Invalid()), solver_log_path=log)
+
+
+def test_monitor_window_requires_coverage_samples_and_finite_values():
+    from ro.monitor_change import oscillation_amplitude, validated_window, window_status
+
+    good = _tail(1500, 2000, lambda i: 10.0 + 1e-6 * i)
+    assert window_status(good, 500) == "ok"
+    assert end_to_end_relative_change(good, 500) == pytest.approx(5e-4 / (10.0 + 2e-3))
+    short = _tail(1600, 2000, lambda i: 10.0)
+    assert "not covered" in window_status(short, 500)
+    sparse = [(i, 10.0) for i in range(1500, 2001, 10)]
+    assert "samples in window" in window_status(sparse, 500)
+    nan = good[:-10] + [(1991, float("nan"))] + good[-9:]
+    assert window_status(nan, 500) == "non-finite value in window"
+    assert trend_relative_change(nan, 500) is None
+    assert oscillation_amplitude(nan, 500) is None
+    # A later segment that itself covers the window is fine (continue appended
+    # after a re-written checkpoint row).
+    resumed = _tail(1000, 2000, lambda i: 10.0) + _tail(2000, 2500, lambda i: 10.0)
+    points, reason = validated_window(resumed, 500)
+    assert reason is None and points[0][0] == 2000
+
+
+def test_amplitude_is_separate_from_trend():
+    import math
+
+    from ro.monitor_change import oscillation_amplitude
+
+    wobble = _tail(1500, 2000, lambda i: 2.0 * (1 + 1e-3 * math.sin(2 * math.pi * i / 37)))
+    assert oscillation_amplitude(wobble, 500) == pytest.approx(2e-3, rel=0.05)
+    assert trend_relative_change(wobble, 500) < 1e-4
+    drift = _tail(1500, 2000, lambda i: 2.0 + 1e-5 * i)
+    assert oscillation_amplitude(drift, 500) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_monitor_changes_default_window_is_500_and_extract_keeps_last100(tmp_path):
+    from ro.monitor_change import (
+        DP_REPORT_FILE,
+        LMH_REPORT_FILE,
+        MONITOR_DEFAULT_WINDOW,
+        extract_monitor_changes,
+        monitor_changes,
+    )
+
+    assert MONITOR_DEFAULT_WINDOW == 500
+    body = "\n".join(f"{i} {20.0 + 1e-6 * i:.12g}" for i in range(1, 2001))
+    (tmp_path / LMH_REPORT_FILE).write_text('"lmh"\n' + body + "\n", encoding="utf-8")
+    (tmp_path / DP_REPORT_FILE).write_text('"dp"\n' + body + "\n", encoding="utf-8")
+    default = monitor_changes(tmp_path)
+    assert default["monitor_window_status_last500_lmh"] == "ok"
+    assert default["monitor_trend_last500_lmh"] is not None
+    assert "monitor_amplitude_last500_lmh" in default
+    assert default["monitor_window_status_last500_cp"] == "no samples"
+    merged = extract_monitor_changes(tmp_path)
+    assert "monitor_change_last100_lmh" in merged and "monitor_change_last500_lmh" in merged

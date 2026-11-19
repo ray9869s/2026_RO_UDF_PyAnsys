@@ -26,16 +26,29 @@ Monitor-change columns (recorded only; they do not set PASS/FAIL):
   measure: a stationary oscillation fits a slope near 0.
 - ``monitor_change_last<N>_<q>_legacy``: the previous statistic, the
   UG 37.18 maximum deviation ``max|m(L)-m(k)|/|m(L)|`` over the window.
+- ``monitor_amplitude_last<N>_<q>``: peak-to-peak of the residuals about
+  that fitted line, relative to the mean: the oscillation, reported
+  separately from the drift.
+- ``monitor_window_status_last<N>_<q>``: ``ok`` or why the window is
+  unavailable. The change, trend and amplitude are blank unless the
+  window lies in the last attempt segment (iterations strictly
+  increasing), every value is finite, the segment reaches back to
+  ``L-N`` and the window holds at least ``max(3, ceil(0.8 N))`` samples.
+
+``N`` defaults to 500 (``MONITOR_DEFAULT_WINDOW``); the extract writes the
+N=100 set (kept) and the N=500 set. These are recorded only: the stop rule
+and the 2000-iteration cap are unchanged.
 
 ``q`` is ``lmh`` (``lmh_udm_avg.out``), ``dp`` (``pressure_drop_spacer.out``)
 and ``cp``. The new ``cp`` columns read the window-live ``cp_live.out``
 (dead-zone faces excluded) and are blank without it; ``cp_window``
-includes the dead zone and is only used for the legacy column. Series are
-sorted by iteration and the last value per iteration wins.
+includes the dead zone and is only used for the legacy column. The legacy
+column still sorts by iteration (last row per iteration wins).
 """
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -236,45 +249,120 @@ def clean_series(series) -> list[tuple[int, float]]:
     return sorted(by_iteration.items())
 
 
-def end_to_end_relative_change(series, n: int) -> float | None:
-    """``|m(L) - m(L-n)| / |m(L)|``; ``m(L-n)`` is the last sample <= L-n.
+# Default window for the monitor-change columns. last100 columns are kept.
+MONITOR_DEFAULT_WINDOW = 500
+# A window needs at least this fraction of n samples (and never fewer than 3).
+MONITOR_MIN_SAMPLE_FRACTION = 0.8
+MONITOR_WINDOW_OK = "ok"
 
-    None without a sample that old, or when ``m(L)`` is zero.
+
+def validated_window(series, n: int):
+    """``(points, None)`` or ``(None, reason)`` for the last ``n`` iterations.
+
+    ``series`` is in file order. The window must lie in the last attempt
+    segment (a row whose iteration is not above the previous row starts a
+    new segment: a restart or a re-written iteration), so its iterations
+    are strictly increasing. Every value in it must be finite, the segment
+    must reach back to ``L - n`` (full coverage), and the samples in
+    ``[L-n, L]`` must number at least ``max(3, ceil(0.8 n))``. ``points``
+    is the anchor (last sample at or before ``L-n``) followed by the
+    samples after it.
     """
     if isinstance(n, bool) or not isinstance(n, int) or n < 1:
         raise ValueError(f"iteration window must be an integer >= 1, got {n!r}.")
-    points = clean_series(series)
-    if len(points) < 2:
+    rows = [(int(iteration), float(value)) for iteration, value in series]
+    if not rows:
+        return None, "no samples"
+    start = 0
+    for index in range(1, len(rows)):
+        if rows[index][0] <= rows[index - 1][0]:
+            start = index
+    segment = rows[start:]
+    last_iteration = segment[-1][0]
+    first_needed = last_iteration - n
+    if segment[0][0] > first_needed:
+        if start > 0:
+            return None, (
+                f"window [{first_needed}, {last_iteration}] spans more than one attempt "
+                f"segment (last segment starts at {segment[0][0]})"
+            )
+        return None, f"window not covered: first sample {segment[0][0]} > {first_needed}"
+    anchor_index = max(i for i, (iteration, _v) in enumerate(segment) if iteration <= first_needed)
+    points = segment[anchor_index:]
+    if any(not math.isfinite(value) for _i, value in points):
+        return None, "non-finite value in window"
+    inside = sum(1 for iteration, _v in points if iteration >= first_needed)
+    required = max(3, math.ceil(MONITOR_MIN_SAMPLE_FRACTION * n))
+    if inside < required:
+        return None, f"{inside} samples in window, need {required}"
+    return points, None
+
+
+def end_to_end_relative_change(series, n: int) -> float | None:
+    """``|m(L) - m(L-n)| / |m(L)|``; ``m(L-n)`` is the last sample <= L-n.
+
+    None when ``validated_window`` rejects the series or ``m(L)`` is zero.
+    """
+    points, _reason = validated_window(series, n)
+    if points is None:
         return None
-    last_iteration, last_value = points[-1]
-    earlier = [value for iteration, value in points if iteration <= last_iteration - n]
-    if not earlier or last_value == 0.0:
+    last_value = points[-1][1]
+    if last_value == 0.0:
         return None
-    return abs(last_value - earlier[-1]) / abs(last_value)
+    return abs(last_value - points[0][1]) / abs(last_value)
+
+
+def _line_fit(window):
+    count = len(window)
+    mean_x = sum(i for i, _ in window) / count
+    mean_y = sum(v for _, v in window) / count
+    sxx = sum((i - mean_x) ** 2 for i, _ in window)
+    if sxx == 0.0:
+        return None
+    slope = sum((i - mean_x) * (v - mean_y) for i, v in window) / sxx
+    return slope, mean_x, mean_y
+
+
+def _fit_window(series, n):
+    points, _reason = validated_window(series, n)
+    if points is None:
+        return None, None
+    window = [(i, v) for i, v in points if i >= points[-1][0] - n]
+    fit = _line_fit(window)
+    if fit is None or fit[2] == 0.0:
+        return None, None
+    return window, fit
 
 
 def trend_relative_change(series, n: int) -> float | None:
     """``|slope| * n / |mean|`` of a least-squares line over ``[L-n, L]``.
 
-    None with fewer than three samples in the window or a zero mean.
+    None when ``validated_window`` rejects the series or the mean is zero.
     """
-    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
-        raise ValueError(f"iteration window must be an integer >= 1, got {n!r}.")
-    points = clean_series(series)
-    if not points:
+    window, fit = _fit_window(series, n)
+    if window is None:
         return None
-    last_iteration = points[-1][0]
-    window = [(i, v) for i, v in points if i >= last_iteration - n]
-    if len(window) < 3:
-        return None
-    count = len(window)
-    mean_x = sum(i for i, _ in window) / count
-    mean_y = sum(v for _, v in window) / count
-    sxx = sum((i - mean_x) ** 2 for i, _ in window)
-    if sxx == 0.0 or mean_y == 0.0:
-        return None
-    slope = sum((i - mean_x) * (v - mean_y) for i, v in window) / sxx
+    slope, _mean_x, mean_y = fit
     return abs(slope) * n / abs(mean_y)
+
+
+def oscillation_amplitude(series, n: int) -> float | None:
+    """Peak-to-peak of the residuals about the fitted line, over ``|mean|``.
+
+    The oscillation, separated from the drift that the trend measures.
+    """
+    window, fit = _fit_window(series, n)
+    if window is None:
+        return None
+    slope, mean_x, mean_y = fit
+    residuals = [v - (mean_y + slope * (i - mean_x)) for i, v in window]
+    return (max(residuals) - min(residuals)) / abs(mean_y)
+
+
+def window_status(series, n: int) -> str:
+    """``"ok"`` or why the window is unavailable."""
+    _points, reason = validated_window(series, n)
+    return MONITOR_WINDOW_OK if reason is None else reason
 
 
 def read_report_series(path) -> list[tuple[int, float]]:
@@ -306,33 +394,37 @@ def _change_at(case_dir, filename: str, n: int) -> float | None:
     )
 
 
-def monitor_changes(case_dir, n: int = 100) -> dict[str, float | None]:
-    """End-to-end change, trend, and legacy max deviation over ``n`` iterations.
+def monitor_changes(case_dir, n: int = MONITOR_DEFAULT_WINDOW) -> dict[str, float | None]:
+    """End-to-end change, trend, amplitude, status and legacy over ``n`` iterations.
 
-    See the module docstring. Missing report files leave that entry None.
-    The new CP columns read ``cp_live.out`` only. The legacy CP column
-    prefers ``cp_window.out`` and otherwise reads ``cp_full_membrane.out``.
+    See the module docstring. Missing report files leave that entry None
+    (status ``no samples``). The new CP columns read ``cp_live.out`` only.
+    The legacy CP column prefers ``cp_window.out`` and otherwise reads
+    ``cp_full_membrane.out``.
     """
     directory = Path(case_dir)
-    prefix = "monitor_change_last100" if int(n) == 100 else f"monitor_change_last{int(n)}"
-    trend = "monitor_trend_last100" if int(n) == 100 else f"monitor_trend_last{int(n)}"
+    n = int(n)
+    prefix = f"monitor_change_last{n}"
+    trend = f"monitor_trend_last{n}"
+    amplitude = f"monitor_amplitude_last{n}"
+    status = f"monitor_window_status_last{n}"
     lmh = read_report_series(directory / LMH_REPORT_FILE)
     dp = read_report_series(directory / DP_REPORT_FILE)
     live_path = directory / cp_report_file_name(CP_MONITOR_LIVE)
     live = read_report_series(live_path)
     cp_path = cp_report_path(directory)
     legacy_cp = [] if cp_path is None else read_report_series(cp_path)
-    changes = {
-        f"{prefix}_lmh": end_to_end_relative_change(lmh, n),
-        f"{prefix}_dp": end_to_end_relative_change(dp, n),
-        f"{prefix}_cp": end_to_end_relative_change(live, n),
-        f"{trend}_lmh": trend_relative_change(lmh, n),
-        f"{trend}_dp": trend_relative_change(dp, n),
-        f"{trend}_cp": trend_relative_change(live, n),
+    changes = {}
+    for label, series in (("lmh", lmh), ("dp", dp), ("cp", live)):
+        changes[f"{prefix}_{label}"] = end_to_end_relative_change(series, n)
+        changes[f"{trend}_{label}"] = trend_relative_change(series, n)
+        changes[f"{amplitude}_{label}"] = oscillation_amplitude(series, n)
+        changes[f"{status}_{label}"] = window_status(series, n)
+    changes.update({
         f"{prefix}_lmh_legacy": relative_change_last_iterations(lmh, n),
         f"{prefix}_dp_legacy": relative_change_last_iterations(dp, n),
         f"{prefix}_cp_legacy": relative_change_last_iterations(legacy_cp, n),
-    }
+    })
     if live_path.is_file():
         # Kept from earlier extracts: the legacy statistic on cp_live.
         changes[f"{prefix}_cp_live"] = relative_change_last_iterations(live, n)
@@ -342,6 +434,11 @@ def monitor_changes(case_dir, n: int = 100) -> dict[str, float | None]:
 def last100_monitor_changes(case_dir) -> dict[str, float | None]:
     """Monitor-change columns over 100 iterations. Does not change PASS/FAIL."""
     return monitor_changes(case_dir, 100)
+
+
+def extract_monitor_changes(case_dir) -> dict[str, float | None]:
+    """The extract's columns: the kept last100 set plus the default last500 set."""
+    return {**monitor_changes(case_dir, 100), **monitor_changes(case_dir, MONITOR_DEFAULT_WINDOW)}
 
 
 # Scheme forms that print or return Fluent's expression check. The first

@@ -39,7 +39,9 @@ from ro.monitor_change import (
     end_to_end_relative_change,
     read_report_series,
     relative_change_last_iterations,
+    oscillation_amplitude,
     trend_relative_change,
+    window_status,
 )
 from ro.residual_transcript import (
     _clock_and_remaining_from_right,
@@ -84,6 +86,11 @@ _COLUMNS = (
         f"monitor_change_last{n}_{label}_legacy"
         for label in ("lmh", "dp", "cp")
         for n in (20, 100)
+    ),
+    *(
+        f"{kind}_last500_{label}"
+        for label in ("lmh", "dp", "cp")
+        for kind in ("monitor_change", "monitor_trend", "monitor_amplitude", "monitor_window_status")
     ),
     "cp_live_source",
     "lmh_source",
@@ -298,6 +305,10 @@ def audit_leaf(case_dir: Path, manifest: dict) -> dict:
             record[f"monitor_change_last{n}_{label}_legacy"] = _fmt(
                 relative_change_last_iterations(legacy, n)
             )
+        record[f"monitor_change_last500_{label}"] = _fmt(end_to_end_relative_change(series, 500))
+        record[f"monitor_trend_last500_{label}"] = _fmt(trend_relative_change(series, 500))
+        record[f"monitor_amplitude_last500_{label}"] = _fmt(oscillation_amplitude(series, 500))
+        record[f"monitor_window_status_last500_{label}"] = window_status(series, 500)
     return record
 
 

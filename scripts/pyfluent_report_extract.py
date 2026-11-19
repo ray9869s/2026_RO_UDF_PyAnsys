@@ -34,7 +34,7 @@ except Exception:
 from ro.paths import project_root  # noqa: E402
 from ro.campaign_geometry import CAMPAIGN_H_M  # noqa: E402
 from ro.lmh_metrics import MS_TO_LMH, lmh_mass_balance_expression
-from ro.monitor_change import last100_monitor_changes
+from ro.monitor_change import extract_monitor_changes  # noqa: E402
 from ro.convergence_quality import (
     continuity_final_from_case_dir,
     evaluate_convergence_quality,
@@ -3193,7 +3193,7 @@ if __name__ == "__main__":
         # A snapshot extract reads a saved *_iter_<N> pair; the leaf's .out
         # histories end later, so their tail does not describe it.
         monitor_changes = (
-            last100_monitor_changes(case_path) if report_binds_manifest(cfg) else {}
+            extract_monitor_changes(case_path) if report_binds_manifest(cfg) else {}
         )
         for column, value in monitor_changes.items():
             summary_wide_df[column] = value

@@ -133,7 +133,7 @@ from ro.monitor_change import (
     fluent_expression_report_is_invalid,
     format_expression_error_table,
     named_expression_listed_valid,
-    last100_monitor_changes,
+    extract_monitor_changes,
     molecular_weight_kg_per_mol,
 )
 from ro.paths import mesh_dir, project_root, run_dir, templates_dir, udfs_dir
@@ -6688,7 +6688,7 @@ if __name__ == "__main__":
                 solver_stop_reason = None
 
         try:
-            update_run_manifest_fields(case_path, last100_monitor_changes(case_path))
+            update_run_manifest_fields(case_path, extract_monitor_changes(case_path))
         except Exception as exc:
             print(
                 "WARNING: could not record monitor_change_last100 on the "
