@@ -19,6 +19,7 @@ continuity floored at ~4e-7) can still PASS.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -68,6 +69,28 @@ def _as_float(value: Any) -> Optional[float]:
     except ValueError:
         return None
     return result if result == result else None
+
+
+def _is_non_finite(value: Any) -> bool:
+    """True for NaN/inf given as a number or as text ("nan", "inf", "-inf")."""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return not math.isfinite(float(value))
+    text = str(value).strip()
+    if not text:
+        return False
+    try:
+        return not math.isfinite(float(text))
+    except ValueError:
+        return False
+
+
+def _finite_limit(name: str, value: float) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0.0:
+        raise ValueError(f"{name} must be a finite positive number, got {value!r}.")
+    return number
 
 
 def relative_spread(values: list[float]) -> Optional[float]:
@@ -151,11 +174,24 @@ def evaluate_convergence_quality(
         if continuity_final_max is None
         else float(continuity_final_max)
     )
-    lmh_rel = _as_float(metrics.get("lmh_relative_difference"))
-    mb_rel = _as_float(metrics.get("mass_balance_relative_error"))
-    continuity = _as_float(continuity_final)
-    if continuity is None:
-        continuity = _as_float(metrics.get("continuity_final"))
+    lmh_limit = _finite_limit("lmh_rel_abs_max", lmh_limit)
+    mb_limit = _finite_limit("mass_balance_rel_abs_max", mb_limit)
+    continuity_limit = _finite_limit("continuity_final_max", continuity_limit)
+    raw_lmh = metrics.get("lmh_relative_difference")
+    raw_mb = metrics.get("mass_balance_relative_error")
+    raw_continuity = continuity_final
+    if _as_float(raw_continuity) is None and not _is_non_finite(raw_continuity):
+        raw_continuity = metrics.get("continuity_final")
+    lmh_rel = _as_float(raw_lmh)
+    mb_rel = _as_float(raw_mb)
+    continuity = _as_float(raw_continuity)
+    # NaN/inf is a failed solve or a broken report, never "unavailable" and
+    # never a pass (C1-01).
+    non_finite = {
+        "lmh_relative_difference": _is_non_finite(raw_lmh),
+        "mass_balance_relative_error": _is_non_finite(raw_mb),
+        "continuity_final": _is_non_finite(raw_continuity),
+    }
     dP_spread_4_7, dP_missing_4_7 = pressure_drop_rel_spread_cells_4_7(metrics)
     window_cells = list(evaluation_cell_numbers) if evaluation_cell_numbers else []
     if window_cells:
@@ -192,6 +228,9 @@ def evaluate_convergence_quality(
         },
     }
 
+    for name, flagged in non_finite.items():
+        if flagged:
+            checks[name].update(value=None, available=True, passed=False, non_finite=True)
     failures = [
         name for name, check in checks.items() if check["available"] and not check["passed"]
     ]

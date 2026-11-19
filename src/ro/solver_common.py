@@ -827,6 +827,10 @@ def fluent_report_relative_change(values: list[float]) -> float | None:
     """
     if len(values) < 2:
         return None
+    # A NaN anywhere would drop out of max() and could fake a converged
+    # window (C1-01). Any non-finite sample means "not evaluable".
+    if any(not math.isfinite(float(value)) for value in values):
+        return None
     current = float(values[-1])
     denom = abs(current)
     if denom == 0.0 or not math.isfinite(denom):

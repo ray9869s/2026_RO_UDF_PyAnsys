@@ -286,6 +286,12 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   `mesh_attempt<N>.log` holds only a header (and HANG lines), and progress
   is the growth of `mesh_log_<mesh_id>.txt` and its after-surface
   continuation.
+- Non-finite values (C1-01). NaN/inf in a gate input (LMH or mass-balance
+  relative error, final continuity; number or text) is a gate FAIL
+  flagged `non_finite`, never UNKNOWN or PASS; non-finite or non-positive
+  gate limits are refused. A NaN/inf anywhere in a QoI stop window makes
+  it not evaluable (no stop), and monitor-change windows with one are
+  blank.
 - Fail closed. `unknown_early_stop` (iterate returned below the cap with
   no stop marker) writes only `failed_attempt_*` and exits non-zero. The
   setup-expression check must pass positively: every named expression
