@@ -84,7 +84,7 @@ def test_smoke_restores_original_and_preserves_new_leaf_on_failure(monkeypatch, 
     marker.write_text("keep", encoding="utf-8")
     def operation(command, _name):
         assert not original.exists()
-        assert "--no-cp-live" not in command
+        assert "--no-cp-live" not in command and "--cp-live" not in command
         assert "--keep-checkpoints" in command
         assert command[command.index("--max-iterations") + 1] == "20"
         plant_smoke(original)
@@ -120,11 +120,14 @@ def test_failed_restore_still_archives_smoke_and_writes_broken_marker(monkeypatc
 
     monkeypatch.setattr(host, "move_absent", first_move_fails)
     details = {}
-    with pytest.raises(RuntimeError, match="Smoke restore failed"):
+    with pytest.raises(RuntimeError, match="original NOT restored") as caught:
         checks.restore_after_smoke(leaf, original, smoke, True, details)
-    # The smoke is still at the leaf path, the original is untouched, and
-    # reporting refuses the leaf.
+    assert str(original) in str(caught.value)
+    # The smoke is still at the leaf path, the original is untouched (never
+    # moved, so never nested inside the smoke leaf), and reporting refuses it.
     assert original.is_dir() and leaf.is_dir()
+    assert (original / "manifest.json").is_file()
+    assert not (leaf / original.name).exists()
     assert (leaf / host.BROKEN_MARKER).is_file()
     assert leaf.with_name(leaf.name + ".BROKEN.json").is_file()
     assert details["original_restored"] is False

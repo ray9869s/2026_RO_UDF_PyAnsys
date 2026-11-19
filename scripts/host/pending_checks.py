@@ -266,8 +266,12 @@ class Checks:
     def restore_after_smoke(self, leaf, original, smoke_archive, moved, details):
         """Archive the smoke, then put the original back; never delete.
 
-        Each rename is tried even when the other fails. A failed restore
-        leaves a BROKEN marker so no report reads the smoke as the leaf.
+        The original goes back only when the smoke leaf was archived and the
+        leaf path is empty. If archiving fails (Fluent still holding files,
+        say), the original stays at ``.prev_<UTC>`` and the smoke stays at
+        the leaf path: putting the original "into" an occupied path is how
+        an original ends up nested inside a smoke leaf. Both locations go in
+        the BROKEN markers and the error; restore by hand.
         """
         errors = []
         try:
@@ -277,8 +281,13 @@ class Checks:
                 details["smoke_archive"] = str(smoke_archive)
         except Exception as exc:  # noqa: BLE001 - recorded, then re-raised below
             errors.append(f"smoke archive: {type(exc).__name__}: {exc}")
-        finally:
-            if moved:
+        if moved:
+            if errors or leaf.exists() or leaf.is_symlink():
+                errors.append(
+                    f"original NOT restored: the smoke leaf is still at {leaf}; "
+                    f"the original is untouched at {original}"
+                )
+            else:
                 try:
                     move_absent(original, leaf)
                     details["original_restored"] = True
