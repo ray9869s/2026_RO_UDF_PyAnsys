@@ -1410,40 +1410,135 @@ def _final_paths(run_directory, geo_id, case_id):
 
 
 def _copy_case_data(source_case, source_data, dest_case):
-    """Copy a case/data pair. The data name matches the case stem."""
+    """Copy a case/data pair, both or neither. The data name matches the case stem.
+
+    Both files are copied to ``*.copy_tmp`` first. Existing destinations
+    are moved to ``*.copy_bak`` and the temporaries swapped in; a failure
+    at any step puts the previous pair back and removes the temporaries.
+    """
     dest_case = Path(dest_case)
     if not str(dest_case).endswith(".cas.h5"):
         raise ValueError(f"destination case must end in .cas.h5, got {dest_case}.")
     dest_data = checkpoint_data_path(dest_case)
-    shutil.copyfile(source_case, dest_case)
-    shutil.copyfile(source_data, dest_data)
+    pairs = [(Path(source_case), dest_case), (Path(source_data), dest_data)]
+    temps = [dest.with_name(dest.name + ".copy_tmp") for _src, dest in pairs]
+    backups = []
+    placed = []
+    try:
+        for (source, _dest), temp in zip(pairs, temps):
+            shutil.copyfile(source, temp)
+        for _source, dest in pairs:
+            if dest.exists():
+                backup = dest.with_name(dest.name + ".copy_bak")
+                os.replace(dest, backup)
+                backups.append((backup, dest))
+        for (_source, dest), temp in zip(pairs, temps):
+            os.replace(temp, dest)
+            placed.append(dest)
+    except BaseException:
+        for dest in placed:
+            if dest.exists() and not any(dest == original for _b, original in backups):
+                dest.unlink()
+        for backup, dest in backups:
+            os.replace(backup, dest)
+        raise
+    finally:
+        for temp in temps:
+            if temp.exists():
+                temp.unlink()
+    for backup, _dest in backups:
+        backup.unlink()
     return dest_case, dest_data
 
 
+def _pair_hashes(case_path):
+    case_path = Path(case_path)
+    return sha256_file(case_path), sha256_file(checkpoint_data_path(case_path))
+
+
 def _pair_matches(left_case, right_case):
-    left_data = checkpoint_data_path(left_case)
-    right_data = checkpoint_data_path(right_case)
-    return (
-        sha256_file(left_case) == sha256_file(right_case)
-        and sha256_file(left_data) == sha256_file(right_data)
-    )
+    return _pair_hashes(left_case) == _pair_hashes(right_case)
+
+
+# A chunk that ends at the iteration it started from may still rewrite the
+# final (Fluent writes it again). The driver records that rewrite here, with
+# the hashes of the pair the chunk read and of the pair it wrote. Only this
+# record allows a snapshot to be copied over a different final.
+REWRITE_IDENTITY_FILENAME = "continue_rewrite_identity.json"
+
+
+def record_zero_iteration_rewrite(run_directory, iteration, source_hashes, final_case):
+    """Write the zero-iteration rewrite identity; returns the record."""
+    rewritten = _pair_hashes(final_case)
+    record = {
+        "iteration": int(iteration),
+        "iterations_advanced": 0,
+        "source_case_sha256": source_hashes[0],
+        "source_data_sha256": source_hashes[1],
+        "rewritten_final_case_sha256": rewritten[0],
+        "rewritten_final_data_sha256": rewritten[1],
+        "recorded_at_utc": utc_stamp(),
+    }
+    path = Path(run_directory) / REWRITE_IDENTITY_FILENAME
+    refuse_production_root(path)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+    return record
+
+
+def zero_iteration_rewrite_proves(run_directory, iteration, snapshot_hashes, final_hashes):
+    """None when the record proves the final is a zero-iteration rewrite of
+    the snapshot at ``iteration``; otherwise the reason it does not."""
+    path = Path(run_directory) / REWRITE_IDENTITY_FILENAME
+    if not path.is_file():
+        return f"no {REWRITE_IDENTITY_FILENAME}"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"{REWRITE_IDENTITY_FILENAME} unreadable: {exc}"
+    expected = {
+        "iteration": int(iteration),
+        "iterations_advanced": 0,
+        "source_case_sha256": snapshot_hashes[0],
+        "source_data_sha256": snapshot_hashes[1],
+        "rewritten_final_case_sha256": final_hashes[0],
+        "rewritten_final_data_sha256": final_hashes[1],
+    }
+    wrong = [key for key, value in expected.items() if record.get(key) != value]
+    if wrong:
+        return f"{REWRITE_IDENTITY_FILENAME} does not match: " + ", ".join(wrong)
+    return None
 
 
 def _keep_or_restore_final(final_case, final_data, snapshot, iteration):
-    """Keep an existing iteration snapshot and put it back on the final.
+    """Keep an existing iteration snapshot; never overwrite a different final blind.
 
-    A zero-iteration continue writes the final again. The snapshot taken
-    before that write is the case to solve from, and it is not replaced.
+    A snapshot equal to the final is kept. A snapshot that differs is
+    copied over the final only when ``continue_rewrite_identity.json``
+    proves the final is a zero-iteration rewrite of exactly that snapshot.
+    Otherwise this refuses: the final may hold iterations the manifest
+    does not count, and copying would destroy them.
     """
     snapshot = Path(snapshot)
     if snapshot.is_file() and checkpoint_data_path(snapshot).is_file():
-        if _pair_matches(final_case, snapshot):
+        snapshot_hashes = _pair_hashes(snapshot)
+        final_hashes = _pair_hashes(final_case)
+        if snapshot_hashes == final_hashes:
             print(f"Continue snapshot at iteration {iteration} kept: {snapshot}")
             return
+        reason = zero_iteration_rewrite_proves(
+            Path(final_case).parent, iteration, snapshot_hashes, final_hashes
+        )
+        if reason is not None:
+            raise RuntimeError(
+                f"Refusing to copy the iteration {iteration} snapshot {snapshot} over "
+                f"the final {final_case}: the pair differs and {reason}. Inspect the "
+                "leaf: the final may hold iterations the manifest does not count."
+            )
         print(
             f"Restoring the final from the iteration {iteration} snapshot "
-            f"{snapshot}. The current final differs, so a zero-iteration "
-            "write is not used."
+            f"{snapshot}: the recorded zero-iteration rewrite matches both pairs."
         )
         _copy_case_data(snapshot, checkpoint_data_path(snapshot), final_case)
         return
@@ -1556,6 +1651,9 @@ def continue_finished_leaf(
         print(
             f"Continue checkpoint at iteration {current}: {checkpoint}"
         )
+        # The pair this chunk reads; a zero-iteration rewrite is recorded
+        # against it.
+        chunk_source_hashes = _pair_hashes(checkpoint)
         chunk_overrides = dict(solver_overrides)
         chunk_overrides["checkpoint_resume"] = True
         # Absolute end for this chunk, not the previous cap and not the
@@ -1588,14 +1686,42 @@ def continue_finished_leaf(
                 Path(run_directory)
                 / f"{geo_id}_{case_id}_iter_{current:06d}.cas.h5"
             )
-            if saved.is_file() and checkpoint_data_path(saved).is_file():
-                _copy_case_data(
-                    saved, checkpoint_data_path(saved), final_case
+            if new_iteration == current:
+                record = record_zero_iteration_rewrite(
+                    run_directory, current, chunk_source_hashes, final_case
                 )
                 print(
-                    f"Restored the final from {saved}. Continue stayed at "
-                    f"iteration {new_iteration} and must not leave a "
-                    "different final in place."
+                    f"Recorded zero-iteration rewrite at iteration {current} in "
+                    f"{REWRITE_IDENTITY_FILENAME}."
+                )
+                if saved.is_file() and checkpoint_data_path(saved).is_file():
+                    saved_hashes = _pair_hashes(saved)
+                    rewritten = (
+                        record["rewritten_final_case_sha256"],
+                        record["rewritten_final_data_sha256"],
+                    )
+                    if saved_hashes == rewritten:
+                        print(f"Final already equals {saved}.")
+                    elif zero_iteration_rewrite_proves(
+                        run_directory, current, saved_hashes, rewritten
+                    ) is None:
+                        _copy_case_data(
+                            saved, checkpoint_data_path(saved), final_case
+                        )
+                        print(
+                            f"Restored the final from {saved}. Continue stayed at "
+                            f"iteration {new_iteration} and must not leave a "
+                            "different final in place."
+                        )
+                    else:
+                        print(
+                            f"NOT restoring the final from {saved}: that snapshot "
+                            "is not the pair this chunk read. Final left as written."
+                        )
+            else:
+                print(
+                    f"NOT restoring the final: the manifest went back from "
+                    f"{current} to {new_iteration}. Final left as written."
                 )
             raise RuntimeError(
                 "Continue did not advance the iteration counter: "

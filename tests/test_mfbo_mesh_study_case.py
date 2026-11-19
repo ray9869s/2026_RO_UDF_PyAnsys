@@ -1153,6 +1153,9 @@ def test_continue_that_stays_at_2000_restores_the_final(monkeypatch, tmp_path):
     assert final_case.read_bytes() == b"good-cas"
     assert final_data.read_bytes() == b"good-dat"
     assert (run / "D2450_a45_u0p2_p6M_iter_002000.cas.h5").read_bytes() == b"good-cas"
+    record = json.loads((run / driver.REWRITE_IDENTITY_FILENAME).read_text(encoding="utf-8"))
+    assert record["iteration"] == 2000 and record["iterations_advanced"] == 0
+    assert record["source_case_sha256"] == driver.sha256_file(final_case)
 
 
 def test_continue_smoke_from_2000_uses_2010_then_2020(monkeypatch, tmp_path):
@@ -1505,3 +1508,72 @@ def test_campaign_v3_profile_tightens_the_stop_and_keeps_the_cap():
     assert driver.convergence_profile_overrides(None) == {}
     with pytest.raises(ValueError, match="Unknown convergence profile"):
         driver.convergence_profile_overrides("production")
+
+
+def _pair(directory, stem, case_bytes, data_bytes):
+    case = directory / f"{stem}.cas.h5"
+    case.write_bytes(case_bytes)
+    (directory / f"{stem}.dat.h5").write_bytes(data_bytes)
+    return case
+
+
+def test_differing_snapshot_is_never_copied_over_final_without_proof(tmp_path):
+    """B5-03: a snapshot that differs from the final is refused, not restored."""
+    final = _pair(tmp_path, "G_u_final", b"advanced-cas", b"advanced-dat")
+    snapshot = _pair(tmp_path, "G_u_iter_002000", b"old-cas", b"old-dat")
+    with pytest.raises(RuntimeError, match="Refusing to copy the iteration 2000 snapshot"):
+        driver._keep_or_restore_final(final, tmp_path / "G_u_final.dat.h5", snapshot, 2000)
+    assert final.read_bytes() == b"advanced-cas"
+    assert (tmp_path / "G_u_final.dat.h5").read_bytes() == b"advanced-dat"
+
+
+def test_recorded_zero_iteration_rewrite_allows_the_restore(tmp_path):
+    final = _pair(tmp_path, "G_u_final", b"rewritten-cas", b"rewritten-dat")
+    snapshot = _pair(tmp_path, "G_u_iter_002000", b"good-cas", b"good-dat")
+    driver.record_zero_iteration_rewrite(tmp_path, 2000, driver._pair_hashes(snapshot), final)
+    driver._keep_or_restore_final(final, tmp_path / "G_u_final.dat.h5", snapshot, 2000)
+    assert final.read_bytes() == b"good-cas"
+    assert (tmp_path / "G_u_final.dat.h5").read_bytes() == b"good-dat"
+
+
+def test_rewrite_record_for_another_final_does_not_prove(tmp_path):
+    final = _pair(tmp_path, "G_u_final", b"rewritten-cas", b"rewritten-dat")
+    snapshot = _pair(tmp_path, "G_u_iter_002000", b"good-cas", b"good-dat")
+    driver.record_zero_iteration_rewrite(tmp_path, 2000, driver._pair_hashes(snapshot), final)
+    final.write_bytes(b"advanced-later")  # the final moved on after the record
+    with pytest.raises(RuntimeError, match="does not match"):
+        driver._keep_or_restore_final(final, tmp_path / "G_u_final.dat.h5", snapshot, 2000)
+    assert final.read_bytes() == b"advanced-later"
+
+
+@pytest.mark.parametrize("failing_call", ["copyfile", "replace"])
+def test_copy_case_data_is_pair_or_nothing(monkeypatch, tmp_path, failing_call):
+    source = _pair(tmp_path, "src", b"new-cas", b"new-dat")
+    dest = _pair(tmp_path, "dest", b"old-cas", b"old-dat")
+    calls = {"n": 0}
+    if failing_call == "copyfile":
+        original = driver.shutil.copyfile
+
+        def flaky(src, dst, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("injected copy failure")
+            return original(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(driver.shutil, "copyfile", flaky)
+    else:
+        original = driver.os.replace
+
+        def flaky(src, dst):
+            # Fail on placing the data file (after the case was placed).
+            if str(src).endswith(".dat.h5.copy_tmp"):
+                raise OSError("injected replace failure")
+            return original(src, dst)
+
+        monkeypatch.setattr(driver.os, "replace", flaky)
+    with pytest.raises(OSError, match="injected"):
+        driver._copy_case_data(source, tmp_path / "src.dat.h5", dest)
+    monkeypatch.undo()
+    assert dest.read_bytes() == b"old-cas"
+    assert (tmp_path / "dest.dat.h5").read_bytes() == b"old-dat"
+    assert not list(tmp_path.glob("*.copy_tmp")) and not list(tmp_path.glob("*.copy_bak"))

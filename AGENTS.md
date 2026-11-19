@@ -176,6 +176,12 @@ never moved. v3 meshing uses `--geometry-suffix .pmdb` and
 - On a non-trivial code change, say what you will change and wait.
   Small commits, one concern each. Ambiguous leaves: stop and ask.
 - Do not overlap Fluent sessions.
+- A continue never copies a differing `*_iter_<N>` snapshot over the
+  final unless `continue_rewrite_identity.json` (written by the driver
+  when a chunk ends at the iteration it started from) records that exact
+  snapshot pair as the source and the current final as its zero-iteration
+  rewrite. Otherwise it refuses; inspect the leaf. Case/data copies are
+  staged as a pair (`*.copy_tmp`) and swapped in together or not at all.
 
 Host shell, before any smoke or queue:
 
