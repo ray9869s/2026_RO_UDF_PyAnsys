@@ -43,7 +43,7 @@ from ro.fluent_report_helpers import (
     list_named_object_names,
 )
 from ro.manifest import read_run_manifest
-from ro.paths import data_root, project_root
+from ro.paths import data_root, project_root, refuse_production_root
 from ro.solver_common import path_to_fluent_str
 
 # PyFluent is imported inside diagnose_run so --dry-run-paths works without
@@ -683,6 +683,7 @@ def run_probe_cp_reconstruction(
         "error": "",
     }
     diag_dir = case_dir / "post" / "diagnostics"
+    refuse_production_root(diag_dir)
     diag_dir.mkdir(parents=True, exist_ok=True)
     transcript_path = diag_dir / f"probe_cp_reconstruction_{run_id}.txt"
     out["transcript_path"] = str(transcript_path)
@@ -887,6 +888,8 @@ def diagnose_run(
     meshing = None
     solver = None
     try:
+        # Fluent writes into its cwd (the run leaf): copies only.
+        refuse_production_root(case_dir)
         meshing = pyfluent.launch_fluent(
             product_version=args.product_version,
             mode="meshing",
@@ -1207,8 +1210,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             inv = data_root() / "inventory" / "diagnostics"
         except ValueError:
             inv = project_root() / "_scratch" / "diagnostics"
+        refuse_production_root(inv)
         inv.mkdir(parents=True, exist_ok=True)
         out_path = str(inv / "yi_saturation_diagnostic.json")
+    refuse_production_root(out_path)  # pass --output-json outside C:/ro_data
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(
         json.dumps(report, indent=2, default=str), encoding="utf-8"

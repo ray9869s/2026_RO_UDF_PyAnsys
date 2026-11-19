@@ -163,6 +163,19 @@ never moved. v3 meshing uses `--geometry-suffix .pmdb` and
   refuse that root through `ro.paths.refuse_production_root` (realpath,
   `..`, trailing dots, `\\?\` prefixes, junctions/samefile). Do not relax
   the refusal so a copy will load.
+  The host shell sets `RO_DATA_ROOT=C:\ro_data`, so every default derived
+  from it is refused too: manifest writes, the mesh run record and
+  ledger, solver/meshing/extract worker start, the watchdog attempt log,
+  solver-sweep and solver-rerun leaf writes and Fluent working
+  directories, meshing scratch cleanup, the inventory/figure/diagnostic
+  default outputs (`case_inventory`, `residual_measurement_report`,
+  `make_summary_figures`, `batch_postprocess_all_cases`,
+  `batch_solver_rerun`, `diagnose_*`, `probe_cff_surface_areaavg`), the 2D
+  pilot root and pregenerated grid chunks. Pass an explicit
+  `--output-dir` / `--out-dir` / `--output-json` outside `C:/ro_data`, or run
+  diagnostics on a copy. The geometry probes now default to
+  `C:/ro_data_mfbo/geom_smoke/`. Pytest drops `RO_DATA_ROOT` and blocks
+  `launch_fluent` for every test (`tests/conftest.py`).
 - Never `git pull` on the host while a queue is running from
   `C:/pyfluent`. The running process is the tree it started with.
   Pull only after that queue exits. Do not ask the operator to pull

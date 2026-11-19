@@ -46,7 +46,7 @@ from ro.fluent_report_helpers import (
     list_named_object_names,
 )
 from ro.manifest import read_run_manifest
-from ro.paths import data_root
+from ro.paths import data_root, refuse_production_root
 from ro.solver_common import path_to_fluent_str
 from ro.udm_layout import FIELD_UDM_CM, FIELD_UDM_JW
 
@@ -355,6 +355,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     print(f"Launching Fluent for {args.geo_id}/{args.run_id} cell {cell} ...")
     meshing = None
     solver = None
+    # Fluent writes into its cwd (the run leaf): copies only.
+    refuse_production_root(case_dir)
     tmp_dir = Path(tempfile.mkdtemp(prefix="cff_probe_"))
     try:
         meshing = pyfluent.launch_fluent(

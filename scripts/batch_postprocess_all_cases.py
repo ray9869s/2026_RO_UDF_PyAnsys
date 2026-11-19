@@ -49,6 +49,7 @@ from ro.paths import (  # noqa: E402
     require_existing_run,
     runs_root,
     templates_dir,
+    refuse_production_root,
 )
 
 CFF_SOURCE_TEMPLATE = "template"
@@ -279,6 +280,7 @@ def has_windows_drive_component(path: Path) -> bool:
 
 
 def ensure_safe_write_root(path: Path) -> None:
+    refuse_production_root(path)
     if platform.system() != "Windows" and has_windows_drive_component(path):
         raise RuntimeError(f"Refusing to create Windows-style path on this OS: {path}")
 
@@ -1044,6 +1046,8 @@ def execute_case(
     case_name = row["case_name"]
     try:
         case_dir = resolve_run_directory(row)
+        # Contour/shear/report workers write <run>/post: never in C:/ro_data.
+        refuse_production_root(case_dir)
         layout_record, run_payload = layout_from_run_directory(case_dir)
         mesh_payload = read_mesh_manifest(
             mesh_dir(

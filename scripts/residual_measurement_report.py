@@ -26,6 +26,7 @@ from ro.paths import (
     record_matches_id_filters,
     require_existing_run,
     runs_root,
+    refuse_production_root,
 )
 from ro.residual_transcript import (
     PARSE_OK,
@@ -196,6 +197,7 @@ def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
             f"Runs root is not an existing directory: {args.results_root}"
         )
     args.output_dir = (args.output_dir or data_root() / "inventory").resolve()
+    refuse_production_root(args.output_dir)  # pass --output-dir outside C:/ro_data
     return args
 
 

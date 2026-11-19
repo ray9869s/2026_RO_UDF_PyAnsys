@@ -29,6 +29,7 @@ from ro.discovery_session import (  # noqa: E402
     discovery_stdio_kwargs,
 )
 from ro.geometry_registry import format_mfbo_pillar_geo_id  # noqa: E402
+from ro.paths import refuse_production_root  # noqa: E402
 from ro.mfbo_3d import (  # noqa: E402
     HF,
     LF,
@@ -107,6 +108,9 @@ def execute_chunk(batch_path: Path, *, command=None, attempts: int = _CHUNK_ATTE
     entries = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"chunk must be a non-empty JSON list: {path}")
+    # The chunk JSON is data; re-check every out_dir before deleting or writing.
+    for entry in entries:
+        refuse_production_root(entry["out_dir"])
     skipped = sum(1 for entry in entries if geometry_passed(entry))
     builder = default_batch_command if command is None else command
     started = 0

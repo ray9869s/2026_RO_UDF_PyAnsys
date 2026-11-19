@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
-from ro.paths import data_root
+from ro.paths import data_root, refuse_production_root
 
 
 # ----------------------------------------------------------
@@ -636,6 +636,7 @@ def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
     args.summary_csv = (args.summary_csv or inventory / "all_cases_post_summary.csv")
     args.status_csv = args.status_csv or inventory / "all_cases_post_status.csv"
     args.out_dir = args.out_dir or inventory / "post_summary_figures"
+    refuse_production_root(args.out_dir)  # pass --out-dir outside C:/ro_data
     return args
 
 

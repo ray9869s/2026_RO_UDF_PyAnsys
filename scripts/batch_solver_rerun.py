@@ -33,6 +33,7 @@ from ro.paths import (
     require_existing_run,
     run_dir,
     runs_root,
+    refuse_production_root,
 )
 from ro.solver_common import (
     assess_history,
@@ -345,6 +346,9 @@ def resolve_path_defaults(args: argparse.Namespace) -> argparse.Namespace:
     args.logs_dir = Path(
         args.logs_dir or args.results_root / "solver_rerun_logs"
     ).resolve()
+    # Outputs (plans are written even on --dry-run) never go to C:/ro_data.
+    refuse_production_root(args.output_dir)
+    refuse_production_root(args.logs_dir)
     return args
 
 
@@ -1390,6 +1394,7 @@ def create_backup(
     timestamp: str,
 ) -> Path:
     case_dir = case_dir.resolve()
+    refuse_production_root(case_dir)
     final_case_file = final_case_file.resolve()
     final_data_file = final_data_file.resolve()
     backup_dir = (case_dir / "post" / "solver_rerun" / "backups" / timestamp).resolve()
@@ -1413,6 +1418,7 @@ def promote_attempt_to_final(
         final_data_file=final_data_file,
         timestamp=timestamp,
     )
+    refuse_production_root(final_case_file)
     shutil.copy2(attempt_case_file.resolve(), final_case_file.resolve())
     shutil.copy2(attempt_data_file.resolve(), final_data_file.resolve())
     return backup_dir
@@ -5083,6 +5089,8 @@ def run_live_solver_rerun(
     attempt_data_file = attempt_data_file.resolve()
     log_path = log_path.resolve()
     launch_working_dir = case_dir
+    # In-process Fluent writes the attempt pair and its files in the leaf.
+    refuse_production_root(launch_working_dir)
     transcript_path = log_path.with_name(log_path.stem + "__fluent.trn").resolve()
 
     solver = None
@@ -5351,6 +5359,7 @@ def process_case(
         run_timestamp,
     )
     launch_working_dir = case_dir_resolved
+    refuse_production_root(launch_working_dir)
     log_path = Path(record["log_file"]).resolve()
     record["final_case_file"] = str(final_case_file_resolved)
     record["final_data_file"] = str(final_data_file_resolved)

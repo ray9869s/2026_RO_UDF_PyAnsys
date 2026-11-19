@@ -23,10 +23,10 @@ from collections.abc import Mapping
 import ansys.fluent.core as pyfluent
 
 from ro.fluent_launch import fluent_mpi_argument
-from ro.paths import project_root
+from ro.paths import project_root, refuse_production_root
 
 PMDB_PATH = "C:/ro_data/geom_smoke/smoke_box_ns.pmdb"
-WORK_DIR = "C:/ro_data/geom_smoke/probe_pmdb"
+WORK_DIR = "C:/ro_data_mfbo/geom_smoke/probe_pmdb"
 EXPECTED_LABELS = {
     "inlet",
     "outlet",
@@ -353,6 +353,7 @@ def main():
     changed_directory = False
     original_working_directory = os.getcwd()
     try:
+        refuse_production_root(WORK_DIR)
         os.makedirs(WORK_DIR, exist_ok=True)
         os.chdir(WORK_DIR)
         changed_directory = True

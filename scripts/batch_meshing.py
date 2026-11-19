@@ -37,7 +37,7 @@ from ro.mesh_common import (
     write_mesh_run_record,
 )
 from ro.manifest import ManifestError, read_mesh_manifest
-from ro.paths import data_root, mesh_dir, meshes_root, project_root
+from ro.paths import data_root, mesh_dir, meshes_root, project_root, refuse_production_root
 from ro.session_retry import (
     RETRY_KIND_SOCKET_RESET,
     is_session_socket_reset_failure,
@@ -583,6 +583,7 @@ def cleanup_fm_scratch_dirs(mesh_directory):
     Returns the list of removed directory paths.
     """
     mesh_directory = Path(mesh_directory)
+    refuse_production_root(mesh_directory)
     removed = []
     if not mesh_directory.is_dir():
         return removed

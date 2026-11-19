@@ -29,15 +29,15 @@ import ansys.fluent.core as pyfluent
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER, family_for_geo_id
 from ro.fluent_launch import fluent_mpi_argument
 from ro.discovery_session import attach_queued_discovery_log
-from ro.paths import geometry_dir, project_root
+from ro.paths import geometry_dir, project_root, refuse_production_root
 
 FAMILY = "pillar"
 GEO_ID = "P_p100_h30"
 DIAMOND_FAMILY = "diamond"
-DIAMOND_WORK_DIR = "C:/ro_data/geom_smoke/probe_diamond_reference"
+DIAMOND_WORK_DIR = "C:/ro_data_mfbo/geom_smoke/probe_diamond_reference"
 DIAMOND_SUMMARY_NAME = "diamond_reference_geometry.json"
 DEFAULT_D_H_MM = 0.30
-WORK_DIR = "C:/ro_data/geom_smoke/probe_ref_P_p100_h30"
+WORK_DIR = "C:/ro_data_mfbo/geom_smoke/probe_ref_P_p100_h30"
 SUMMARY_NAME = "reference_geometry.json"
 TRANSCRIPT_NAME = "probe_reference_geometry_transcript.txt"
 _MANUAL_CAD_ROOT = "c:/ro_data/geometries"
@@ -1019,7 +1019,7 @@ def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY, start_timeout=None):
     if not os.path.isfile(geometry_file):
         raise FileNotFoundError(f"Geometry file not found: {geometry_file}")
     work_dir = (
-        "C:/ro_data/geom_smoke/probe_diamond_one"
+        "C:/ro_data_mfbo/geom_smoke/probe_diamond_one"
         if args.work_dir is None
         else args.work_dir
     )
@@ -1028,6 +1028,7 @@ def _run_diamond_one(args, recorded_family=DIAMOND_FAMILY, start_timeout=None):
             f"work dir {work_dir} is under C:/ro_data/geometries. "
             "That tree is reserved for the manual CAD."
         )
+    refuse_production_root(work_dir)  # Fluent writes its files there
     reference = None
     if args.compare_to is not None:
         reference = _load_comparison_reference(args.compare_to)
@@ -1144,6 +1145,7 @@ def _run_diamond_batch(args):
             f"work dir {work_dir} is under C:/ro_data/geometries. "
             "That tree is reserved for the manual CAD."
         )
+    refuse_production_root(work_dir)  # Fluent writes its files there
     cases = production_diamond_cases()
     missing = [case["cad_path"] for case in cases if not os.path.isfile(case["cad_path"])]
     if missing:
@@ -1277,6 +1279,7 @@ def main(argv=None):
             f"work dir {work_dir} is under C:/ro_data/geometries. "
             "That tree is reserved for the manual CAD."
         )
+    refuse_production_root(work_dir)  # Fluent writes its files there
     reference = None
     if args.compare_to is not None:
         reference = _load_comparison_reference(args.compare_to)

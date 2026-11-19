@@ -16,7 +16,7 @@ import os
 import re
 from pathlib import Path
 
-from ro.paths import project_root
+from ro.paths import project_root, refuse_production_root
 from ro.solver_common import reject_windows_drive_paths_on_non_windows
 from ro_2d_pilot.config import RUN_LABELS
 
@@ -61,6 +61,8 @@ def assert_data_root_allowed(
         raise ValueError(
             f"{DATA_ROOT_ENV} must be absolute, got {str(root)!r}."
         )
+    # Anywhere under C:/ro_data, whether or not RO_DATA_ROOT is set.
+    refuse_production_root(root)
     project_path = project_root() if project is None else project
     resolved = root.resolve()
     project_resolved = project_path.resolve()

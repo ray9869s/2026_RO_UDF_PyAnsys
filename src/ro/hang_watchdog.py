@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from ro.child_output import subprocess_text_kwargs
+from ro.paths import refuse_production_root
 from ro.process_tree import (
     VERIFY_KILL_S,
     kill_verification_line,
@@ -221,6 +222,8 @@ def tee_until_hang(
     pipe on a daemon thread.
     """
     log_path = Path(log_path)
+    # The parent writes this log before the (guarded) worker starts.
+    refuse_production_root(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     popen = popen_factory or subprocess.Popen
     if not pipe_output:

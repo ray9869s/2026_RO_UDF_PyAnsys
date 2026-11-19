@@ -22,7 +22,7 @@ from ro.campaign_matrix import (
     filter_cases_by_outlet_gauge_pressure as filter_solver_cases_by_outlet_gauge_pressure,
 )
 from ro.manifest import ManifestError, read_run_manifest
-from ro.paths import mesh_dir, project_root, run_dir
+from ro.paths import mesh_dir, project_root, refuse_production_root, run_dir
 from ro.hang_watchdog import (
     parse_hang_line,
     record_hang,
@@ -162,6 +162,7 @@ def collect_solver_attempt_evidence(log_path, extra_paths=()):
 
 def preserve_solver_worker_logs(run_directory, case_name, attempt):
     """Rename canonical worker logs so the next attempt cannot overwrite them."""
+    refuse_production_root(run_directory)
     preserved = []
     for src in solver_worker_log_paths(run_directory, case_name):
         if not src.is_file():
@@ -180,6 +181,7 @@ def write_solver_retry_record(
     attempt_logs,
 ):
     directory = Path(run_directory)
+    refuse_production_root(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "solver_retry_record.json"
     payload = {
