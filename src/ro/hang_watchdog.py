@@ -21,6 +21,13 @@ import time
 from pathlib import Path
 
 from ro.child_output import subprocess_text_kwargs
+from ro.process_tree import (
+    VERIFY_KILL_S,
+    kill_verification_line,
+    list_processes,
+    snapshot_tree,
+    wait_gone,
+)
 
 from ro.session_retry import (
     _kill_recorded_fluent_pid,
@@ -134,6 +141,9 @@ _WALL_CONFIG = {
 }
 # After the worker exits, stop reading a pipe a grandchild still holds.
 DRAIN_AFTER_EXIT_S = 30.0
+# After the loop, copy at most this long / this many queued lines.
+FINAL_DRAIN_S = 2.0
+FINAL_DRAIN_MAX_LINES = 100_000
 _EOF = object()
 
 
@@ -189,6 +199,8 @@ def tee_until_hang(
     wall_s=None,
     drain_s=DRAIN_AFTER_EXIT_S,
     pipe_output=True,
+    process_lister=list_processes,
+    verify_kill_s=VERIFY_KILL_S,
 ):
     """Tee the child to ``log_path`` and stdout. Kill it when progress stops.
 
@@ -215,7 +227,7 @@ def tee_until_hang(
         return _wait_console_until_hang(
             cmd, env=env, cwd=cwd, log_path=log_path, stage=stage, idle_s=idle_s,
             extra_files=extra_files, popen=popen, killer=killer, poll_s=poll_s,
-            wall_s=wall_s,
+            wall_s=wall_s, process_lister=process_lister, verify_kill_s=verify_kill_s,
         )
     proc = popen(
         cmd,
@@ -249,15 +261,12 @@ def tee_until_hang(
         except OSError:
             evidence = ""
         pids = pids_to_stop(evidence, proc.pid)
-        messages = stop_job_pids(pids, killer=killer)
+        messages = _kill_and_verify(
+            pids, proc, killer=killer, lister=process_lister, verify_kill_s=verify_kill_s,
+        )
         line = format_hang_line(stage, idle_s, pids)
         state["messages"] = [line, *reason_lines, *messages]
         state["hung"] = True
-        if proc.poll() is None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
 
     def watch():
         last = progress_signature(
@@ -299,18 +308,8 @@ def tee_until_hang(
         with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
             exited_at = None
             while True:
-                try:
-                    item = lines.get(timeout=interval)
-                except queue.Empty:
-                    item = None
-                if item is _EOF:
-                    break
-                if item is not None:
-                    sys.stdout.write(item)
-                    sys.stdout.flush()
-                    log_file.write(item)
-                    log_file.flush()
-                    continue
+                # Checked before every line: a child that floods stdout
+                # cannot keep the loop from seeing a hang or its own exit.
                 if state["hung"]:
                     break
                 if proc.poll() is not None:
@@ -318,13 +317,27 @@ def tee_until_hang(
                     if time.monotonic() - exited_at >= float(drain_s):
                         pipe_held = True
                         break
-            while True:
+                try:
+                    item = lines.get(timeout=interval)
+                except queue.Empty:
+                    continue
+                if item is _EOF:
+                    break
+                sys.stdout.write(item)
+                sys.stdout.flush()
+                log_file.write(item)
+                log_file.flush()
+            # Bounded: whatever is already queued, for at most FINAL_DRAIN_S.
+            drain_deadline = time.monotonic() + FINAL_DRAIN_S
+            drained = 0
+            while time.monotonic() < drain_deadline and drained < FINAL_DRAIN_MAX_LINES:
                 try:
                     item = lines.get_nowait()
                 except queue.Empty:
                     break
                 if item is _EOF:
                     continue
+                drained += 1
                 sys.stdout.write(item)
                 log_file.write(item)
             if pipe_held:
@@ -361,6 +374,31 @@ def tee_until_hang(
     return subprocess.CompletedProcess(cmd, returncode)
 
 
+def _kill_and_verify(pids, proc, *, killer, lister, verify_kill_s):
+    """Kill the recorded PIDs and the worker; verify the whole tree is gone.
+
+    The tree (those PIDs and every descendant) is listed before the kill,
+    so a Fluent/MPI grandchild that survives ``taskkill /T`` is named in a
+    ``KILL_INCOMPLETE`` line instead of being assumed dead.
+    """
+    tree, snapshot_error = snapshot_tree([*pids, proc.pid], lister=lister)
+    messages = stop_job_pids(pids, killer=killer)
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=min(5.0, float(verify_kill_s)))
+    except subprocess.TimeoutExpired:
+        pass
+    survivors, verify_error = wait_gone(tree, lister=lister, timeout_s=verify_kill_s)
+    messages.append(kill_verification_line(
+        tree, survivors, snapshot_error=snapshot_error, verify_error=verify_error,
+    ))
+    return messages
+
+
 def _evidence_text(paths) -> str:
     chunks = []
     for path in paths:
@@ -373,6 +411,7 @@ def _evidence_text(paths) -> str:
 
 def _wait_console_until_hang(
     cmd, *, env, cwd, log_path, stage, idle_s, extra_files, popen, killer, poll_s, wall_s,
+    process_lister=list_processes, verify_kill_s=VERIFY_KILL_S,
 ):
     """``tee_until_hang`` without a pipe: the child keeps the console.
 
@@ -413,12 +452,9 @@ def _wait_console_until_hang(
         return subprocess.CompletedProcess(cmd, proc.wait())
     evidence = _evidence_text([log_path, *extra_files])
     pids = pids_to_stop(evidence, proc.pid)
-    messages = stop_job_pids(pids, killer=killer)
-    if proc.poll() is None:
-        try:
-            proc.kill()
-        except OSError:
-            pass
+    messages = _kill_and_verify(
+        pids, proc, killer=killer, lister=process_lister, verify_kill_s=verify_kill_s,
+    )
     with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
         for message in [format_hang_line(stage, idle_s, pids), *reason_lines, *messages]:
             log_file.write(message + "\n")

@@ -262,7 +262,13 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   (`HANG_REASON wall_cap`). A quiet attempt log, transcript, and `post/`
   tree kills the recorded PIDs, prints `HANG failure_class=hang`, and
   exits 75. stdout is read on its own thread, so a Fluent/MPI grandchild
-  holding the pipe no longer blocks the stage. Extract is retried once.
+  holding the pipe no longer blocks the stage. Hang and worker exit are
+  checked before every line (a flooding grandchild cannot hold the
+  stage past the 30 s drain), and the final copy of queued lines is
+  bounded to 2 s. Every kill (watchdog or queue `JOB_TIMEOUT`) lists the
+  process tree first and then logs `KILL_VERIFIED pids=...` or
+  `KILL_INCOMPLETE survivors=...` after up to 30 s; a survivor or a
+  failed process listing is never reported as verified. Extract is retried once.
   Solve is not. Campaign meshing writes `mesh_attempt<N>.log`. A hang is
   not a reason to `--resume`; after an extract hang `--resume` would only
   re-extract. A console queue job (`console: true`,

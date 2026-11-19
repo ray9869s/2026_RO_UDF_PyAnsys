@@ -32,14 +32,14 @@ def host_lock_path() -> Path:
 
 
 def windows_processes():
-    """``[{ProcessId, Name, CommandLine}, ...]`` from Win32_Process."""
+    """``[{ProcessId, ParentProcessId, Name, CommandLine}, ...]`` from Win32_Process."""
     if os.name != "nt":
         raise RuntimeError("Process listing requires the Windows host Python, not WSL.")
     result = subprocess.run(
         [
             "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
             "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | "
-            "Select-Object ProcessId,Name,CommandLine) | ConvertTo-Json -Compress",
+            "Select-Object ProcessId,ParentProcessId,Name,CommandLine) | ConvertTo-Json -Compress",
         ],
         capture_output=True,
         check=True,

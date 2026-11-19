@@ -47,6 +47,7 @@ def test_kill_returns_even_when_a_grandchild_holds_stdout(tmp_path):
             idle_s=0.8,
             poll_s=0.05,
             killer=lambda pid: f"killed {pid}",
+            verify_kill_s=0.3,
         )
         elapsed = time.monotonic() - started
         assert result.returncode == HANG_EXIT_CODE
@@ -96,6 +97,7 @@ def test_wall_cap_stops_a_worker_that_keeps_printing(tmp_path):
         poll_s=0.05,
         wall_s=0.8,
         killer=lambda pid: f"killed {pid}",
+        verify_kill_s=0.3,
     )
     assert result.returncode == HANG_EXIT_CODE
     assert time.monotonic() - started < 10
@@ -215,7 +217,7 @@ def test_console_mode_uses_log_growth_and_no_pipe(tmp_path):
     result = tee_until_hang(
         ["mesh"], env=None, log_path=tmp_path / "mesh_attempt1.log", stage="mesh",
         idle_s=0.5, poll_s=0.05, extra_files=(mesh_log,), popen_factory=factory,
-        killer=lambda pid: f"killed {pid}", pipe_output=False,
+        killer=lambda pid: f"killed {pid}", pipe_output=False, verify_kill_s=0.3,
     )
     assert result.returncode == HANG_EXIT_CODE
     assert time.monotonic() - started < 10
@@ -241,3 +243,124 @@ def test_console_mode_growth_resets_idle(tmp_path):
         extra_files=(mesh_log,), pipe_output=False,
     )
     assert result.returncode == 0
+
+
+FLOODER = """
+import subprocess, sys
+child = subprocess.Popen([sys.executable, "-c",
+    "import sys, time\\nwhile True:\\n    print('flood', flush=True)\\n    time.sleep(0.001)"])
+open(sys.argv[1], "w").write(str(child.pid))
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX inheritance fixture")
+def test_exit_is_seen_while_a_grandchild_floods_the_pipe(tmp_path):
+    """Exit/drain is checked before each line, so a flood cannot hold the stage."""
+    script = tmp_path / "flood.py"
+    script.write_text(FLOODER, encoding="utf-8")
+    pid_file = tmp_path / "flooder.pid"
+    started = time.monotonic()
+    try:
+        result = tee_until_hang(
+            [sys.executable, str(script), str(pid_file)], env=None,
+            log_path=tmp_path / "attempt.log", stage="extract", idle_s=60,
+            poll_s=0.05, drain_s=0.5,
+        )
+        assert result.returncode == 0
+        assert time.monotonic() - started < 15
+        assert "grandchild holds the pipe" in (tmp_path / "attempt.log").read_text(encoding="utf-8")
+    finally:
+        _reap(pid_file)
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc")
+def test_kill_verification_names_a_surviving_grandchild(tmp_path):
+    script = tmp_path / "worker.py"
+    script.write_text(GRANDCHILD.format(tail="time.sleep(30)"), encoding="utf-8")
+    pid_file = tmp_path / "grandchild.pid"
+    try:
+        result = tee_until_hang(
+            [sys.executable, str(script), str(pid_file)], env=None,
+            log_path=tmp_path / "attempt.log", stage="extract", idle_s=0.8, poll_s=0.05,
+            killer=lambda pid: f"pretend-killed {pid}",  # kills nothing; the worker is proc.kill()ed
+            verify_kill_s=0.5,
+        )
+        assert result.returncode == HANG_EXIT_CODE
+        text = (tmp_path / "attempt.log").read_text(encoding="utf-8")
+        grandchild = pid_file.read_text().strip()
+        assert "KILL_INCOMPLETE" in text and grandchild in text.split("KILL_INCOMPLETE")[1]
+    finally:
+        _reap(pid_file)
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="needs /proc")
+def test_kill_verification_confirms_a_killed_tree(tmp_path):
+    script = tmp_path / "worker.py"
+    script.write_text(GRANDCHILD.format(tail="time.sleep(30)"), encoding="utf-8")
+    pid_file = tmp_path / "grandchild.pid"
+
+    def kill_tree(pid):
+        _reap(pid_file)
+        os.kill(pid, signal.SIGKILL)
+        return f"killed {pid}"
+
+    try:
+        result = tee_until_hang(
+            [sys.executable, str(script), str(pid_file)], env=None,
+            log_path=tmp_path / "attempt.log", stage="extract", idle_s=0.8, poll_s=0.05,
+            killer=kill_tree, verify_kill_s=5,
+        )
+        assert result.returncode == HANG_EXIT_CODE
+        assert "KILL_VERIFIED" in (tmp_path / "attempt.log").read_text(encoding="utf-8")
+    finally:
+        _reap(pid_file)
+
+
+def test_process_tree_helpers():
+    from ro.process_tree import kill_verification_line, snapshot_tree, tree_pids, wait_gone
+
+    table = [
+        {"ProcessId": 10, "ParentProcessId": 1},
+        {"ProcessId": 11, "ParentProcessId": 10},
+        {"ProcessId": 12, "ParentProcessId": 11},
+        {"ProcessId": 20, "ParentProcessId": 1},
+    ]
+    assert tree_pids([10], table) == {10, 11, 12}
+    survivors, error = wait_gone({10, 11, 12}, lister=lambda: table[2:], timeout_s=0)
+    assert survivors == [12] and error is None
+    assert kill_verification_line({10, 11, 12}, survivors).startswith("KILL_INCOMPLETE survivors=12")
+    assert kill_verification_line({10}, []).startswith("KILL_VERIFIED pids=10")
+
+    def broken():
+        raise OSError("lister down")
+
+    pids, snap_error = snapshot_tree([10], lister=broken)
+    assert pids == {10} and "lister down" in snap_error
+    survivors, error = wait_gone({10}, lister=broken, timeout_s=0)
+    assert survivors == [10] and "lister down" in error
+    # A failed listing is never reported as verified.
+    assert kill_verification_line({10}, [], verify_error=error).startswith("KILL_INCOMPLETE")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX kill path")
+def test_queue_kill_process_tree_reports_verification(tmp_path):
+    job_queue = load_module("job_queue_kill_verify", SCRIPTS_DIR / "mfbo" / "job_queue.py")
+    import subprocess as sp
+
+    proc = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    message = job_queue.kill_process_tree(proc, verify_kill_s=5)
+    assert "KILL_VERIFIED" in message
+
+    class Ghost:
+        pid = 99999999
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    survivor = job_queue.kill_process_tree(
+        Ghost(), lister=lambda: [{"ProcessId": 99999999, "ParentProcessId": 1}], verify_kill_s=0
+    )
+    assert "KILL_INCOMPLETE survivors=99999999" in survivor

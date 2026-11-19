@@ -245,8 +245,24 @@ def _validate_timeout(value, label: str) -> float:
     return float(value)
 
 
-def kill_process_tree(proc) -> str:
-    """Kill ``proc`` and its children (Fluent, MPI). Windows uses taskkill /T."""
+def kill_process_tree(proc, *, lister=None, verify_kill_s=None) -> str:
+    """Kill ``proc`` and its children (Fluent, MPI); verify they are gone.
+
+    The tree is listed first (``ro.process_tree``). Windows uses
+    ``taskkill /T /F`` and reports a non-zero taskkill exit. The message
+    ends with ``KILL_VERIFIED`` or ``KILL_INCOMPLETE survivors=...``.
+    """
+    from ro.process_tree import (
+        VERIFY_KILL_S,
+        kill_verification_line,
+        list_processes,
+        snapshot_tree,
+        wait_gone,
+    )
+
+    lister = lister or list_processes
+    verify_kill_s = VERIFY_KILL_S if verify_kill_s is None else verify_kill_s
+    tree, snapshot_error = snapshot_tree([proc.pid], lister=lister)
     if os.name == "nt":
         result = subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
@@ -256,12 +272,23 @@ def kill_process_tree(proc) -> str:
             errors="replace",
             check=False,
         )
-        return (result.stdout or result.stderr or "").strip()
+        message = (result.stdout or result.stderr or "").strip()
+        if result.returncode:
+            message += f" (taskkill exit {result.returncode})"
+    else:
+        try:
+            proc.kill()
+            message = f"killed {proc.pid}"
+        except OSError as exc:
+            message = f"kill {proc.pid}: {exc}"
     try:
-        proc.kill()
-    except OSError as exc:
-        return f"kill {proc.pid}: {exc}"
-    return f"killed {proc.pid}"
+        proc.wait(timeout=min(5.0, float(verify_kill_s)))
+    except subprocess.TimeoutExpired:
+        pass
+    survivors, verify_error = wait_gone(tree, lister=lister, timeout_s=verify_kill_s)
+    return f"{message}; " + kill_verification_line(
+        tree, survivors, snapshot_error=snapshot_error, verify_error=verify_error
+    )
 
 
 def _run_with_timeout(argv, *, timeout_s, **kwargs):
