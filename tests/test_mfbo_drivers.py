@@ -112,7 +112,7 @@ def test_mesh_argv_passes_fidelity_settings_and_solve_does_not(tmp_path):
         run_dir=run_dir,
     )
     solve_argv = calls[2]["argv"]
-    assert solve_argv[1].endswith("scripts/mfbo/solve_mfbo_case.py")
+    assert Path(solve_argv[1]).as_posix().endswith("scripts/mfbo/solve_mfbo_case.py")
     assert solve_argv[solve_argv.index("--case") + 1] == RUN_ID
     assert "--m-max" not in solve_argv
     assert "--n-active" not in calls[0]["argv"]
@@ -128,7 +128,7 @@ def test_mesh_argv_passes_fidelity_settings_and_solve_does_not(tmp_path):
         run_dir=run_dir,
     )
     extract_argv = calls[3]["argv"]
-    assert extract_argv[1].endswith("scripts/mfbo/reextract_runs.py")
+    assert Path(extract_argv[1]).as_posix().endswith("scripts/mfbo/reextract_runs.py")
     assert extract_argv[-1] == str(run_dir)
     assert Path(calls[0]["argv"][1]).is_file()
 
