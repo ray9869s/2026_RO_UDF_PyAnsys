@@ -83,15 +83,16 @@ def gate_generation_reason(manifest, source):
     Reports written by ``ro.atomic_reports.publish_extract`` carry a
     ``report_generation``; the gate written with them carries the same id
     in ``convergence_quality_report_generation``. Older reports have
-    neither and are not checked. A gate without an id next to reports
-    with one, or a different id, is from another extract.
+    neither and are not checked. A missing or cleared gate id next to
+    reports with one, or a different id, is unbound.
     """
     reports_generation = source.get(REPORT_GENERATION_FIELD)
     gate_generation = manifest.get(GATE_GENERATION_FIELD)
     if reports_generation is None and gate_generation is None:
         return None
-    if manifest.get("convergence_quality") in (None, "") and gate_generation is None:
-        return None  # no gate published (yet); the reports themselves are bound
+    # Reports with a generation but no gate for it (a failed or killed gate
+    # write, or an exception after the swap) are unbound, so the re-extract
+    # emitter picks the leaf up instead of skipping it.
     if reports_generation != gate_generation:
         return (
             f"manifest gate is from report generation {gate_generation or 'missing'}, "

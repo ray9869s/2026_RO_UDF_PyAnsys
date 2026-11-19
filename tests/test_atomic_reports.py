@@ -178,6 +178,10 @@ def test_publish_extract_success_binds_gate_to_generation(monkeypatch, tmp_path)
     # A gate from another generation does not bind.
     update_run_manifest_fields(leaf, {"convergence_quality_report_generation": "g0"})
     assert "generation" in report_binding_reason(leaf)
+    # A cleared gate next to reports with a generation is unbound too, so the
+    # re-extract emitter does not SKIP it.
+    atomic_reports.clear_manifest_gate(leaf)
+    assert "generation" in report_binding_reason(leaf)
 
 
 def _fail(*_args, **_kwargs):

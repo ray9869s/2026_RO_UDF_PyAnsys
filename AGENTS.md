@@ -136,8 +136,9 @@ staged sidecar with `report_generation=<id>`, swap the staged directory
 in (the replaced one is kept as `<dir>_prev_<UTC>`; a failed swap puts it
 back), and only then write the gate with
 `convergence_quality_report_generation=<id>`. Any later exception clears
-the gate again. A gate whose generation differs from the sidecar's does
-not bind. `reextract_runs` invalidates the sidecar and the gate before
+the gate again. A gate whose generation differs from the sidecar's, or
+a cleared gate next to reports that carry a generation, does not bind
+(the re-extract emitter then lists the leaf as `STALE`). `reextract_runs` invalidates the sidecar and the gate before
 it renames `post/reports`. A failed extract leaves its staging directory
 for inspection and no PASS.
 
