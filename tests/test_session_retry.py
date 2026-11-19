@@ -214,3 +214,48 @@ def test_worker_cleanup_waits_for_a_clean_exit_then_kills_what_is_left(monkeypat
     assert killed == ["6161"]
     assert "KILL_VERIFIED pids=6161" in lines[-1]
     assert "FLUENT_EXIT" in capsys.readouterr().out
+
+
+def test_orphans_of_an_exited_launcher_are_found_and_unrelated_fluent_is_kept(monkeypatch):
+    """3ba17ec: 31240 had exited; fluent.exe / fl2510.exe still pointed at it."""
+    monkeypatch.setattr("ro.session_retry.os.name", "nt")
+    table = [
+        {"ProcessId": 900, "ParentProcessId": 31240, "Name": "fluent.exe"},
+        {"ProcessId": 901, "ParentProcessId": 900, "Name": "fl2510.exe"},
+        {"ProcessId": 902, "ParentProcessId": 901, "Name": "mpiexec.exe"},
+        {"ProcessId": 950, "ParentProcessId": 31240, "Name": "notepad.exe"},  # not adopted
+        {"ProcessId": 19328, "ParentProcessId": 4, "Name": "fluent.exe"},  # other session
+    ]
+    killed = []
+
+    def runner(argv, **kwargs):
+        killed.append(int(argv[2]))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    lines = terminate_recorded_fluent_pids(
+        "FLUENT_LAUNCH pid=31240 cortex_pid=unknown fluent_host_pid=unknown\n",
+        runner=runner,
+        lister=lambda: [row for row in table if row["ProcessId"] not in killed],
+        verify_kill_s=0,
+    )
+    assert sorted(killed) == [900, 901, 902]
+    assert "KILL_VERIFIED pids=900,901,902" in "\n".join(lines)
+
+
+def test_fluent_launcher_above_cortex_is_part_of_the_session(monkeypatch):
+    monkeypatch.setattr("ro.session_retry.os.name", "nt")
+    table = [
+        {"ProcessId": 10, "ParentProcessId": 1, "Name": "python.exe"},
+        {"ProcessId": 800, "ParentProcessId": 10, "Name": "fluent.exe"},
+        {"ProcessId": 5151, "ParentProcessId": 800, "Name": "cx2510.exe"},
+        {"ProcessId": 6161, "ParentProcessId": 5151, "Name": "fl2510.exe"},
+    ]
+    killed = []
+    lines = terminate_recorded_fluent_pids(
+        "FLUENT_LAUNCH pid=31240 cortex_pid=5151 fluent_host_pid=6161\n",
+        runner=lambda argv, **kw: killed.append(int(argv[2])) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        lister=lambda: [row for row in table if row["ProcessId"] not in killed],
+        verify_kill_s=0,
+    )
+    assert sorted(killed) == [800, 5151, 6161]  # python parent untouched
+    assert "KILL_VERIFIED" in "\n".join(lines)

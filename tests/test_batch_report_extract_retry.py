@@ -204,3 +204,31 @@ def test_does_not_retry_load_bearing(batch_extract, tmp_path: Path):
     assert attempts == 1
     assert kinds == []
     assert calls == [1]
+
+
+def test_crash_retry_is_skipped_when_the_fluent_cleanup_is_incomplete(
+    batch_extract, tmp_path: Path, capsys
+):
+    calls = []
+
+    def runner(cmd, env, log_path):
+        calls.append(log_path)
+        Path(log_path).write_text("FLUENT_LAUNCH pid=4242\n" + SCHEME_HEAP_ERROR, encoding="utf-8")
+        return type("R", (), {"returncode": 1})()
+
+    result, attempts, kinds, _logs = batch_extract.run_extract_attempts(
+        cmd=["python", "scripts/pyfluent_report_extract.py"],
+        env={},
+        run_directory=tmp_path,
+        geo_id="D2450_a45",
+        mesh_id="max085_min006_cpg5_bl4_peel2_y1h020",
+        run_id="u0p2_p6M",
+        max_retries=2,
+        settle_s=0.0,
+        sleeper=lambda _s: None,
+        runner=runner,
+        process_lister=lambda _name: ([], None),
+        killer=lambda pid: f"ORPHAN: KILL_INCOMPLETE survivors={pid} pids={pid}",
+    )
+    assert result.returncode == 1 and attempts == 1 and len(calls) == 1
+    assert "KILL_INCOMPLETE; not retrying" in capsys.readouterr().out

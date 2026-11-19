@@ -303,11 +303,19 @@ def run_solver_attempts(
             evidence, process_lister=process_lister
         ):
             print(line)
-        for line in terminate_recorded_fluent_pids(evidence, killer=killer):
+        cleanup = terminate_recorded_fluent_pids(evidence, killer=killer)
+        for line in cleanup:
             print(line)
         preserve_solver_worker_logs(run_directory, case_name, attempt)
 
         retry_kind = classify_retryable_session_crash(evidence)
+        if retry_kind is not None and any("KILL_INCOMPLETE" in line for line in cleanup):
+            # A surviving Fluent would overlap the retry's session.
+            print(
+                f"Solver: transient {retry_kind} on attempt {attempt}, but the "
+                "Fluent cleanup is KILL_INCOMPLETE; not retrying."
+            )
+            return result, attempt, retry_kinds, attempt_logs
         if retry_kind is not None and crash_retries < max_retries:
             crash_retries += 1
             retry_kinds.append(retry_kind)

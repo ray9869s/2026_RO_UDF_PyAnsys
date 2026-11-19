@@ -47,6 +47,11 @@ FLUENT_LAUNCH_FIELD_RE = re.compile(r"(?<![A-Za-z_])(?:pid|cortex_pid|fluent_hos
 # Image names a recorded root pid must have before it is killed (pid reuse
 # guard). Descendants of a matching root are killed whatever their name.
 FLUENT_ROOT_IMAGE_RE = re.compile(r"^(?:fluent|fl_mpi|cortex|cx\d|fl\d).*\.exe$", re.IGNORECASE)
+# A child of a recorded pid that has already exited (Windows keeps the dead
+# ParentProcessId) is adopted only with a Fluent or MPI image.
+FLUENT_TREE_IMAGE_RE = re.compile(
+    r"^(?:fluent|fl_mpi|cortex|cx\d|fl\d|mpiexec|hydra|pmi).*\.exe$", re.IGNORECASE
+)
 
 
 def _any_pattern(text: str, patterns) -> bool:
@@ -74,6 +79,13 @@ def classify_retryable_session_crash(text: str) -> Optional[str]:
     if _any_pattern(text, FLUENT_LAUNCH_SPAWN_PATTERNS):
         return RETRY_KIND_LAUNCH_SPAWN
     return None
+
+
+def _pid(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _positive_pid(value):
@@ -210,25 +222,44 @@ def stop_recorded_fluent_tree(pids, *, lister=None, runner=None, verify_kill_s=N
             f"({type(exc).__name__}: {exc}); KILL_INCOMPLETE survivors=unknown "
             f"pids={','.join(map(str, pids))} tree_listing_error={str(exc)!r}"
         ]
-    by_pid = {}
+    by_pid, children = {}, {}
     for process in table:
         try:
-            by_pid[int(process.get("ProcessId"))] = process
+            pid, parent = int(process.get("ProcessId")), int(process.get("ParentProcessId"))
         except (TypeError, ValueError):
             continue
-    roots, messages = [], []
+        by_pid[pid] = process
+        children.setdefault(parent, []).append(pid)
+
+    def name_of(pid):
+        return str(by_pid.get(pid, {}).get("Name") or "")
+
+    roots, messages = set(), []
+    dead = [pid for pid in pids if pid not in by_pid]
     for pid in pids:
-        process = by_pid.get(pid)
-        if process is None:
+        if pid in dead:
             continue
-        name = str(process.get("Name") or "")
+        name = name_of(pid)
         if name and FLUENT_ROOT_IMAGE_RE.match(name) is None:
             messages.append(f"{label}: recorded pid {pid} is now {name!r}, not Fluent; left alone.")
             continue
-        roots.append(pid)
+        roots.add(pid)
+        # A fluent.exe launcher above cortex is part of the same session.
+        parent = _pid(by_pid[pid].get("ParentProcessId"))
+        while parent in by_pid and parent not in roots and parent != os.getpid():
+            if FLUENT_ROOT_IMAGE_RE.match(name_of(parent)) is None:
+                break
+            roots.add(parent)
+            parent = _pid(by_pid[parent].get("ParentProcessId"))
+    # Orphans of a recorded pid that already exited (31240 at 3ba17ec).
+    for pid in dead:
+        for child in children.get(pid, []):
+            if FLUENT_TREE_IMAGE_RE.match(name_of(child)):
+                roots.add(child)
     if not roots:
-        messages.append(f"{label}: recorded Fluent pids {pids} are not running.")
+        messages.append(f"{label}: recorded Fluent pids {pids} are not running and left no Fluent children.")
         return messages
+    roots = sorted(roots)
     tree = tree_pids(roots, table)
     if grace_s and grace_s > 0:
         survivors, error = wait_gone(tree, lister=lister, timeout_s=grace_s)

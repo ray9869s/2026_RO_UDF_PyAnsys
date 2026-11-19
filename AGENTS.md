@@ -384,18 +384,22 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   is not in the stop (`qoi_stop_include_cp=False`); `--cp-live` puts the
   live CP back in. main3/main4 leaves were solved with CP (`cp_window`)
   in the stop: a `--continue-iterations` or checkpoint `--resume` on an
-  existing leaf inherits the leaf's recorded `qoi_stop_include_cp` and
+  existing leaf (not the fresh fallback of a resume with no checkpoint)
+  inherits the leaf's recorded `qoi_stop_include_cp` and
   prints `Stop rule inherited ...`, so one leaf never mixes rules; a leaf
   whose stop used `cp_live` refuses. Fresh solves use the new rule.
 - Orphan cleanup. `FLUENT_LAUNCH` records `pid` (PyFluent's launcher
   handle, which on Windows can exit at once), `cortex_pid` and
   `fluent_host_pid`. After a failed attempt the parent stops the trees
-  rooted at those pids (a reused pid whose image is not Fluent is left
-  alone and named) and logs `ORPHAN: ... KILL_VERIFIED` /
+  rooted at those pids, plus Fluent-image children of a recorded pid that
+  already exited (Windows keeps the dead parent id) and a `fluent.exe`
+  directly above cortex (a reused pid whose image is not Fluent is left
+  alone and named), and logs `ORPHAN: ... KILL_VERIFIED` /
   `KILL_INCOMPLETE` from a process-table check. The solver and extract
   workers do the same after `exit()` (`FLUENT_EXIT`, 30 s grace first).
   At `3ba17ec` only the launcher pid was recorded and `fluent.exe` /
-  `fl2510.exe` stayed alive.
+  `fl2510.exe` stayed alive. A session-crash retry is skipped when that
+  cleanup is `KILL_INCOMPLETE`.
 - Mesh spec on reuse. `--reuse-mesh` does not compare the whole-file
   `mesh_spec_sha256`: adding `geometries`, a velocity or a suffix rule to
   `configs/mesh_spec_v3.json` must not block every existing mesh. New

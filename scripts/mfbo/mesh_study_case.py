@@ -2134,9 +2134,8 @@ def _main(argv=None):
     solver_overrides["enable_cp_live_monitor"] = bool(args.cp_live)
     if args.cp_live and args.convergence_profile is not None:
         solver_overrides["qoi_stop_include_cp"] = True
-    if args.continue_iterations is not None or args.resume:
-        inherit_recorded_stop_rule(run_directory, solver_overrides)
     if args.continue_iterations is not None:
+        inherit_recorded_stop_rule(run_directory, solver_overrides)
         return continue_finished_leaf(
             data_root=data_root,
             run_directory=run_directory,
@@ -2207,6 +2206,9 @@ def _main(argv=None):
                 if checkpoint_every is not None:
                     solver_overrides["checkpoint_every"] = checkpoint_every
             solver_overrides["checkpoint_resume"] = True
+            # Only a resume that continues this leaf keeps its stop rule; the
+            # fresh fallback above uses the current one.
+            inherit_recorded_stop_rule(run_directory, solver_overrides)
             print(
                 f"Resuming {run_directory} from checkpoint iteration "
                 f"{found.iteration}."
