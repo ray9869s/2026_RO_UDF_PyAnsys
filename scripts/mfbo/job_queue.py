@@ -56,7 +56,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from ro.discovery_session import discovery_stdio_kwargs  # noqa: E402
-from ro.host_lock import host_lock_path, wait_for_no_fluent  # noqa: E402
+from ro.host_lock import ProcessScanError, host_lock_path, wait_for_no_fluent  # noqa: E402
 
 EXIT_OK = 0
 EXIT_PREFLIGHT = 1
@@ -372,7 +372,10 @@ def require_no_live_fluent(job_id: str) -> None:
     to exit. A process left after that is an orphan or a session started
     outside this runner; starting another would overlap Fluent sessions.
     """
-    found = wait_for_no_fluent()
+    try:
+        found = wait_for_no_fluent()
+    except ProcessScanError as exc:
+        raise QueueError(f"preflight for job {job_id}: {exc}") from exc
     if found:
         raise QueueError(
             f"live Fluent process(es) before job {job_id}; refusing to start: "

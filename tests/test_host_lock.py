@@ -119,3 +119,39 @@ def test_interrupted_wait_kills_the_job_tree(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         job_queue._run_with_timeout(["x"], timeout_s=None)
     assert killed == [5]
+
+
+def _broken_lister():
+    import subprocess
+
+    raise subprocess.CalledProcessError(1, ["powershell.exe"], stderr="Get-CimInstance : Access denied")
+
+
+def test_failing_process_lister_gives_a_clear_error(monkeypatch):
+    monkeypatch.delenv("RO_PROCESS_SCAN", raising=False)
+    with pytest.raises(host_lock.ProcessScanError) as excinfo:
+        host_lock.scan_processes(_broken_lister)
+    message = str(excinfo.value)
+    assert "Access denied" in message and "RO_PROCESS_SCAN=skip" in message
+
+
+def test_process_scan_skip_override_is_logged(monkeypatch, capsys):
+    monkeypatch.setenv("RO_PROCESS_SCAN", "skip")
+    assert host_lock.scan_processes(_broken_lister) == []
+    assert "RO_PROCESS_SCAN=skip" in capsys.readouterr().out
+
+
+def test_queue_preflight_turns_a_lister_failure_into_exit_1(tmp_path, monkeypatch):
+    monkeypatch.delenv("RO_PROCESS_SCAN", raising=False)
+    monkeypatch.setattr(job_queue, "wait_for_no_fluent",
+                        lambda: host_lock.scan_processes(_broken_lister))
+    with pytest.raises(job_queue.QueueError, match="preflight for job j1: Could not list"):
+        job_queue.require_no_live_fluent("j1")
+
+
+def test_pending_checks_lister_failure_is_clear(monkeypatch):
+    pending = load_module("pending_checks_scan", SCRIPTS_DIR / "host" / "pending_checks.py")
+    monkeypatch.delenv("RO_PROCESS_SCAN", raising=False)
+    monkeypatch.setattr(pending, "_cim_processes", _broken_lister)
+    with pytest.raises(host_lock.ProcessScanError, match="RO_PROCESS_SCAN=skip"):
+        pending.require_idle(Path("."))

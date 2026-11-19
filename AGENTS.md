@@ -65,7 +65,12 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (`ro.host_lock`, `RO_HOST_LOCK`, default `~/.pyfluent/fluent_host.lock`),
   so a second queue file refuses to start, and before each job a Fluent
   process still alive after a 120 s grace (`RO_ORPHAN_GRACE_S`) refuses
-  the start (exit 1, job stays pending). `succeeded` means exit 0 only;
+  the start (exit 1, job stays pending). If the process table cannot be
+  read (PowerShell/CIM error, timeout), the runner and `pending_checks`
+  stop with `Could not list Windows processes ...` (exit 1) instead of a
+  traceback. Override only after checking Task Manager by hand:
+  `RO_PROCESS_SCAN=skip` (prints a warning and skips the live-Fluent
+  check for that run). `succeeded` means exit 0 only;
   the state record and summary line (`gate=`) carry the leaf's
   `convergence_quality` from `RO_JOB_RESULT`. A job may set `timeout_s`;
   `run --job-timeout-hours H` sets the default. A timed-out job's process

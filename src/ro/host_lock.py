@@ -21,6 +21,7 @@ HOST_LOCK_ENV = "RO_HOST_LOCK"
 ORPHAN_GRACE_ENV = "RO_ORPHAN_GRACE_S"
 DEFAULT_ORPHAN_GRACE_S = 120.0
 ORPHAN_POLL_S = 10.0
+PROCESS_SCAN_ENV = "RO_PROCESS_SCAN"
 FLUENT_PROCESS_RE = re.compile(r"^(?:fluent|fl_mpi|cortex|fl\d).*\.exe$", re.IGNORECASE)
 
 
@@ -52,12 +53,48 @@ def windows_processes():
     return payload if isinstance(payload, list) else [payload]
 
 
+class ProcessScanError(RuntimeError):
+    """The Windows process table could not be read."""
+
+
+def scan_processes(lister=None):
+    """``windows_processes()`` with a clear error, or ``[]`` under the override.
+
+    A failing lister (PowerShell missing, CIM error, timeout, bad JSON) used
+    to surface as a raw traceback. It now raises ``ProcessScanError`` that
+    says what failed and how to override. ``RO_PROCESS_SCAN=skip`` returns
+    ``[]`` with a printed warning: only after checking by hand (Task
+    Manager) that no Fluent, cortex or fl_mpi process is running.
+    """
+    lister = windows_processes if lister is None else lister
+    try:
+        return lister()
+    except Exception as exc:  # noqa: BLE001 - re-raised with context below
+        detail = f"{type(exc).__name__}: {exc}"
+        stderr = getattr(exc, "stderr", None)
+        if stderr:
+            detail += f" stderr={str(stderr).strip()[:500]!r}"
+        if os.environ.get(PROCESS_SCAN_ENV, "").strip().lower() == "skip":
+            print(
+                f"WARNING: {PROCESS_SCAN_ENV}=skip: process listing failed ({detail}); "
+                "continuing WITHOUT the live-Fluent check.",
+                flush=True,
+            )
+            return []
+        raise ProcessScanError(
+            "Could not list Windows processes to check for a live Fluent session "
+            f"({detail}). Check that powershell.exe and Get-CimInstance Win32_Process "
+            "work in this shell. If they cannot, confirm by hand that no fluent/cortex/"
+            f"fl_mpi process is running and set {PROCESS_SCAN_ENV}=skip for this run."
+        ) from exc
+
+
 def fluent_processes(processes=None):
     """Live Fluent/MPI/Cortex processes. Off Windows nothing is listed."""
     if processes is None:
         if os.name != "nt":
             return []
-        processes = windows_processes()
+        processes = scan_processes()
     found = []
     for process in processes:
         name = str(process.get("Name") or "")

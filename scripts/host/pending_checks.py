@@ -28,7 +28,7 @@ import campaign_v3 as campaign
 import campaign_v3_reextract as reextract
 from mfbo import job_queue
 from ro.child_output import subprocess_text_kwargs
-from ro.host_lock import host_lock_path
+from ro.host_lock import host_lock_path, scan_processes
 from ro.mesh_common import load_mesh_run_record
 from ro.mesh_spec import default_spec_path, family_settings, load_mesh_spec
 from ro.paths import mesh_dir, project_root, refuse_production_root, run_dir, using_data_root
@@ -65,7 +65,7 @@ def mesh_leaf(root, geo, mesh):
         return mesh_dir(campaign.family_for_geo_id(geo), geo, mesh)
 
 
-def windows_processes():
+def _cim_processes():
     if os.name != "nt":
         raise RuntimeError("Live checks require the Windows host Python, not WSL.")
     result = subprocess.run([
@@ -75,6 +75,11 @@ def windows_processes():
     ], capture_output=True, check=True, timeout=30, **subprocess_text_kwargs())
     payload = json.loads(result.stdout.lstrip("\ufeff"))
     return payload if isinstance(payload, list) else [payload]
+
+
+def windows_processes():
+    """The process table, or a clear ``ProcessScanError`` (RO_PROCESS_SCAN=skip overrides)."""
+    return scan_processes(_cim_processes)
 
 
 def require_idle(root, *, processes=None):
