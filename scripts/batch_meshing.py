@@ -718,7 +718,8 @@ def guarded_meshing_runner(mesh_log_path):
 
     The attempt log is ``mesh_attempt<N>.log`` next to the mesh log;
     the Fluent meshing transcript (and its after-surface continuation)
-    count as progress. Idle and wall caps come from run_config.
+    count as progress. Idle and wall caps come from run_config. Under
+    ``RO_DISCOVERY_CONSOLE=1`` stdout is not piped.
     """
     from ro.hang_watchdog import idle_seconds, tee_until_hang, wall_cap_seconds
 
@@ -731,6 +732,12 @@ def guarded_meshing_runner(mesh_log_path):
     def run(cmd, env, cwd, check=False):
         del check
         counter["attempt"] += 1
+        # A console job (job_queue ``console: true``) must keep its handles:
+        # Discovery may not start under a redirected stdout. Progress is then
+        # the growth of the meshing transcripts only.
+        console = os.environ.get("RO_DISCOVERY_CONSOLE") == "1" or (
+            (env or {}).get("RO_DISCOVERY_CONSOLE") == "1"
+        )
         return tee_until_hang(
             cmd,
             env=env,
@@ -740,6 +747,7 @@ def guarded_meshing_runner(mesh_log_path):
             idle_s=idle_seconds("mesh"),
             wall_s=wall_cap_seconds("mesh"),
             extra_files=(mesh_log_path, continuation),
+            pipe_output=not console,
         )
 
     return run

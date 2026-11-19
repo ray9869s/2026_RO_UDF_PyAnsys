@@ -166,3 +166,78 @@ def test_queue_timeout_must_be_positive(tmp_path):
     queue.write_text(json.dumps([{"id": "a", "argv": ["x"], "timeout_s": 0}]), encoding="utf-8")
     with pytest.raises(job_queue.QueueError, match="timeout_s"):
         job_queue.load_queue(queue)
+
+
+def test_console_meshing_does_not_pipe_stdout(monkeypatch, tmp_path):
+    """job_queue console jobs keep their handles; progress is the mesh log."""
+    batch = load_module("batch_meshing_console", SCRIPTS_DIR / "batch_meshing.py")
+    import ro.hang_watchdog as watchdog
+
+    calls = []
+    monkeypatch.setattr(watchdog, "tee_until_hang", lambda cmd, **kw: calls.append(kw) or type("R", (), {"returncode": 0})())
+    run = batch.guarded_meshing_runner(tmp_path / "mesh_log_m1.txt")
+    monkeypatch.setenv("RO_DISCOVERY_CONSOLE", "1")
+    run(["x"], env={}, cwd=None, check=False)
+    monkeypatch.delenv("RO_DISCOVERY_CONSOLE")
+    run(["x"], env={}, cwd=None, check=False)
+    assert [call["pipe_output"] for call in calls] == [False, True]
+
+
+class _ConsoleProc:
+    """Popen stand-in that records its kwargs; never exits on its own."""
+
+    pid = 424242
+
+    def __init__(self, cmd, **kwargs):
+        self.kwargs = kwargs
+        self.killed = False
+
+    def poll(self):
+        return -9 if self.killed else None
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return -9
+
+
+def test_console_mode_uses_log_growth_and_no_pipe(tmp_path):
+    procs = []
+
+    def factory(cmd, **kwargs):
+        procs.append(_ConsoleProc(cmd, **kwargs))
+        return procs[-1]
+
+    mesh_log = tmp_path / "mesh_log.txt"
+    mesh_log.write_text("start\n", encoding="utf-8")
+    started = time.monotonic()
+    result = tee_until_hang(
+        ["mesh"], env=None, log_path=tmp_path / "mesh_attempt1.log", stage="mesh",
+        idle_s=0.5, poll_s=0.05, extra_files=(mesh_log,), popen_factory=factory,
+        killer=lambda pid: f"killed {pid}", pipe_output=False,
+    )
+    assert result.returncode == HANG_EXIT_CODE
+    assert time.monotonic() - started < 10
+    assert "stdout" not in procs[0].kwargs and "stderr" not in procs[0].kwargs
+    text = (tmp_path / "mesh_attempt1.log").read_text(encoding="utf-8")
+    assert "Console job (no stdout pipe)" in text
+    assert parse_hang_line(text)["stage"] == "mesh"
+
+
+def test_console_mode_growth_resets_idle(tmp_path):
+    script = tmp_path / "grow.py"
+    mesh_log = tmp_path / "mesh_log.txt"
+    script.write_text(
+        "import sys, time\n"
+        "for i in range(12):\n"
+        "    open(sys.argv[1], 'a').write('line\\n')\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    result = tee_until_hang(
+        [sys.executable, str(script), str(mesh_log)], env=None,
+        log_path=tmp_path / "mesh_attempt1.log", stage="mesh", idle_s=0.6, poll_s=0.05,
+        extra_files=(mesh_log,), pipe_output=False,
+    )
+    assert result.returncode == 0

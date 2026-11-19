@@ -188,8 +188,14 @@ def tee_until_hang(
     poll_s=None,
     wall_s=None,
     drain_s=DRAIN_AFTER_EXIT_S,
+    pipe_output=True,
 ):
     """Tee the child to ``log_path`` and stdout. Kill it when progress stops.
+
+    ``pipe_output=False`` (console jobs: the queue does not redirect their
+    handles because Discovery may not start) leaves the child's stdout on
+    the console. ``log_path`` then only gets a header, and progress is the
+    growth of ``extra_files`` (the meshing transcripts) and ``post/``.
 
     Progress is the attempt log, ``extra_files`` (Fluent transcripts), and
     any file under ``post/`` next to the log. ``wall_s`` caps the whole
@@ -205,6 +211,12 @@ def tee_until_hang(
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     popen = popen_factory or subprocess.Popen
+    if not pipe_output:
+        return _wait_console_until_hang(
+            cmd, env=env, cwd=cwd, log_path=log_path, stage=stage, idle_s=idle_s,
+            extra_files=extra_files, popen=popen, killer=killer, poll_s=poll_s,
+            wall_s=wall_s,
+        )
     proc = popen(
         cmd,
         env=env,
@@ -347,6 +359,75 @@ def tee_until_hang(
     if error is not None:
         raise error
     return subprocess.CompletedProcess(cmd, returncode)
+
+
+def _evidence_text(paths) -> str:
+    chunks = []
+    for path in paths:
+        try:
+            chunks.append(Path(path).read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
+def _wait_console_until_hang(
+    cmd, *, env, cwd, log_path, stage, idle_s, extra_files, popen, killer, poll_s, wall_s,
+):
+    """``tee_until_hang`` without a pipe: the child keeps the console.
+
+    Progress is file growth only (``extra_files`` and ``post/``); the
+    attempt log holds a header and, on a hang, the HANG lines.
+    """
+    log_path.write_text(
+        f"Console job (no stdout pipe). Progress is file growth of: "
+        f"{', '.join(str(path) for path in extra_files) or '(none)'}\n",
+        encoding="utf-8",
+    )
+    proc = popen(cmd, env=env, cwd=cwd)
+    post_dir = log_path.parent / "post"
+    interval = poll_s if poll_s is not None else min(5.0, max(0.05, float(idle_s) / 20.0))
+    print(
+        f"Hang watchdog: stage={stage} idle_s={float(idle_s):g}"
+        + ("" if wall_s is None else f" wall_s={float(wall_s):g}")
+        + " console=1 (progress from log files)",
+        flush=True,
+    )
+    started = time.monotonic()
+    last = progress_signature(progress_paths(log_path, extra_files, post_dir))
+    last_change = started
+    reason_lines = None
+    while proc.poll() is None:
+        time.sleep(interval)
+        now = time.monotonic()
+        if wall_s is not None and now - started >= float(wall_s):
+            reason_lines = [format_wall_cap_line(stage, wall_s)]
+            break
+        current = progress_signature(progress_paths(log_path, extra_files, post_dir))
+        if current != last:
+            last, last_change = current, now
+        elif now - last_change >= float(idle_s):
+            reason_lines = []
+            break
+    if reason_lines is None:
+        return subprocess.CompletedProcess(cmd, proc.wait())
+    evidence = _evidence_text([log_path, *extra_files])
+    pids = pids_to_stop(evidence, proc.pid)
+    messages = stop_job_pids(pids, killer=killer)
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
+        for message in [format_hang_line(stage, idle_s, pids), *reason_lines, *messages]:
+            log_file.write(message + "\n")
+            print(message, flush=True)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    return subprocess.CompletedProcess(cmd, HANG_EXIT_CODE)
 
 
 def record_hang(run_directory, event, *, failed: bool) -> str:

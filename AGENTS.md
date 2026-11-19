@@ -265,7 +265,11 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   holding the pipe no longer blocks the stage. Extract is retried once.
   Solve is not. Campaign meshing writes `mesh_attempt<N>.log`. A hang is
   not a reason to `--resume`; after an extract hang `--resume` would only
-  re-extract.
+  re-extract. A console queue job (`console: true`,
+  `RO_DISCOVERY_CONSOLE=1`) keeps its handles: meshing is then not piped,
+  `mesh_attempt<N>.log` holds only a header (and HANG lines), and progress
+  is the growth of `mesh_log_<mesh_id>.txt` and its after-surface
+  continuation.
 - Fail closed. `unknown_early_stop` (iterate returned below the cap with
   no stop marker) writes only `failed_attempt_*` and exits non-zero. The
   setup-expression check must pass positively: every named expression
