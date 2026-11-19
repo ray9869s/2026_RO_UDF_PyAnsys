@@ -133,12 +133,9 @@ def _kill_recorded_fluent_pid(pid: int, *, runner=None) -> str:
     if runner is None:
         runner = subprocess.run
     if os.name == "nt":
-        result = runner(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            **subprocess_text_kwargs(),
-        )
+        from ro.process_tree import run_taskkill
+
+        result = run_taskkill(pid, runner=runner)
         detail = ((result.stdout or "") + (result.stderr or "")).strip()
         suffix = f" {detail}" if detail else ""
         return f"ORPHAN: terminated Fluent pid {pid} with taskkill /T.{suffix}"

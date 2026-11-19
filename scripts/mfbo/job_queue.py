@@ -256,6 +256,7 @@ def kill_process_tree(proc, *, lister=None, verify_kill_s=None) -> str:
         VERIFY_KILL_S,
         kill_verification_line,
         list_processes,
+        run_taskkill,
         snapshot_tree,
         wait_gone,
     )
@@ -264,14 +265,7 @@ def kill_process_tree(proc, *, lister=None, verify_kill_s=None) -> str:
     verify_kill_s = VERIFY_KILL_S if verify_kill_s is None else verify_kill_s
     tree, snapshot_error = snapshot_tree([proc.pid], lister=lister)
     if os.name == "nt":
-        result = subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        result = run_taskkill(proc.pid)
         message = (result.stdout or result.stderr or "").strip()
         if result.returncode:
             message += f" (taskkill exit {result.returncode})"

@@ -11,11 +11,44 @@ fails is reported, never treated as "all gone".
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from pathlib import Path
 
 VERIFY_KILL_S = 30.0
 VERIFY_POLL_S = 0.5
+# taskkill /T walks the tree and can stall on a hung process or a busy
+# WMI; a kill path must never wait on it without limit.
+TASKKILL_TIMEOUT_S = 60.0
+TASKKILL_TIMEOUT_RETURNCODE = -9
+
+
+def run_taskkill(pid, *, runner=None, timeout_s=TASKKILL_TIMEOUT_S):
+    """``taskkill /PID <pid> /T /F`` bounded by ``timeout_s``.
+
+    Returns the completed process. On a timeout the result has return code
+    ``TASKKILL_TIMEOUT_RETURNCODE`` and says so in ``stderr``; it does not
+    raise. Callers still verify the tree with ``wait_gone``.
+    """
+    from ro.child_output import subprocess_text_kwargs
+
+    argv = ["taskkill", "/PID", str(pid), "/T", "/F"]
+    runner = subprocess.run if runner is None else runner
+    try:
+        return runner(
+            argv,
+            capture_output=True,
+            check=False,
+            timeout=float(timeout_s),
+            **subprocess_text_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            argv,
+            TASKKILL_TIMEOUT_RETURNCODE,
+            stdout="",
+            stderr=f"taskkill pid {pid} timed out after {float(timeout_s):g} s",
+        )
 
 
 def _posix_processes():

@@ -128,12 +128,9 @@ def terminate_pid(pid: int, runner=None, alive=None) -> None:
     if os.name == "nt" or runner is not None:
         if runner is None:
             runner = subprocess.run
-        completed = runner(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            **subprocess_text_kwargs(),
-        )
+        from ro.process_tree import run_taskkill
+
+        completed = run_taskkill(pid, runner=runner)
         output = _taskkill_text(completed)
         if completed.returncode == 0 or taskkill_already_gone(completed.returncode, output):
             return

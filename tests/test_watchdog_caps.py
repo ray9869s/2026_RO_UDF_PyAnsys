@@ -437,3 +437,25 @@ def test_extract_retries_a_hang_only_after_kill_verified(tmp_path, kill_line):
         cmd=["x"], env=env, run_directory=leaf, geo_id="g", mesh_id="m", run_id="r",
         runner=runner, sleeper=lambda s: None, killer=lambda pid: "", process_lister=lambda: [])
     assert len(calls) == 1 and attempts == 1
+
+
+def test_taskkill_is_bounded_and_a_timeout_is_reported_not_raised():
+    import subprocess as sp
+
+    from ro.process_tree import TASKKILL_TIMEOUT_RETURNCODE, TASKKILL_TIMEOUT_S, run_taskkill
+
+    seen = {}
+
+    def hangs(argv, **kwargs):
+        seen.update(kwargs)
+        raise sp.TimeoutExpired(argv, kwargs["timeout"])
+
+    result = run_taskkill(4242, runner=hangs)
+    assert seen["timeout"] == TASKKILL_TIMEOUT_S
+    assert result.returncode == TASKKILL_TIMEOUT_RETURNCODE
+    assert "timed out" in result.stderr
+
+    session_retry = __import__("ro.session_retry", fromlist=["_kill_recorded_fluent_pid"])
+    if os.name == "nt":
+        message = session_retry._kill_recorded_fluent_pid(4242, runner=hangs)
+        assert "timed out" in message

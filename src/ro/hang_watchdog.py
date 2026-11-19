@@ -375,7 +375,12 @@ def tee_until_hang(
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Never block the stage on a worker that ignores the
+                    # kill; the KILL_* line above already says what survived.
+                    print(f"WARNING: worker pid {proc.pid} did not exit after kill.", flush=True)
         return subprocess.CompletedProcess(cmd, HANG_EXIT_CODE)
     if error is not None:
         raise error

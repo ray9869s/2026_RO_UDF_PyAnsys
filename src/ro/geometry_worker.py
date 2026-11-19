@@ -18,7 +18,6 @@ import threading
 import time
 from pathlib import Path
 
-from ro.child_output import subprocess_text_kwargs
 from ro.discovery_session import (
     BACKEND_START_TIMEOUT_S,
     attach_discovery_log,
@@ -688,12 +687,9 @@ def _kill_pid(pid: int) -> None:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
         return
     if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            **subprocess_text_kwargs(),
-        )
+        from ro.process_tree import run_taskkill
+
+        run_taskkill(pid)
         return
     try:
         os.kill(pid, signal.SIGKILL)
@@ -706,12 +702,9 @@ def _kill_group(pid: int) -> None:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
         return
     if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            **subprocess_text_kwargs(),
-        )
+        from ro.process_tree import run_taskkill
+
+        run_taskkill(pid)
         return
     try:
         if pid == os.getpgrp():
