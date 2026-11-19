@@ -41,8 +41,9 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   geometry, mesh spec, `--reuse-mesh`, `--checkpoint-every 200`,
   `--convergence-profile campaign_v3`. `--mesh-only` does not solve.
   `--continue-iterations` / `--continue-every` extend a finished final.
-  `--max-iterations` overrides the cap. `--no-cp-live` skips the live CP
-  report and leaves the stop on `cp_window`. `--max-aspect-ratio 250`
+  `--max-iterations` overrides the cap. Live CP is off by default
+  (infeasible in Fluent 25.1, see pitfalls); `--cp-live` opts back in,
+  `--no-cp-live` is accepted as a no-op for old queues. `--max-aspect-ratio 250`
   selects a hard global ceiling and a distinct `_ar250` mesh leaf.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
@@ -53,7 +54,7 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   six speeds (186 jobs). Repeat `--geo-id` to restrict geometries.
   `--max-iterations FAMILY=N` is repeatable, defaults to 2000 for
   every family (`diamond`, `empty`, `ml`, `pillar`, `sin`), and applies
-  to solves. `--no-cp-live` passes through to solves.
+  to solves. `--no-cp-live` (no-op) and `--cp-live` pass through to solves.
   `--max-aspect-ratio 250` selects sensitivity meshes for emission,
   mesh tables, comparisons, and seminar CSVs. `--compare` reads
   `campaign_reextract_v2`. It does not launch Fluent on import.
@@ -234,7 +235,12 @@ uses the real campaign_v3 mesh, UDF, and profile.
 
 Move the real `u0p2_p6M` leaf aside first. `--case` is the base run id,
 so the smoke writes that same leaf. Put the real leaf back when the
-smoke is done. A cap of 20 sits inside the flux ramp (full at iteration
+smoke is done, and only after the smoke leaf has been renamed away: in
+Git Bash `mv A B` with an existing `B` moves `A` *into* `B` (how an
+original once ended up inside a smoke leaf). Check `[ ! -e u0p2_p6M ]`
+first or use `mv -T`. Confirm no `fluent.exe` / `fl2510.exe` is left
+(`tasklist | findstr /i "fluent fl2510 cx"`) before renaming: an
+orphaned Fluent holding files makes the rename fail. A cap of 20 sits inside the flux ramp (full at iteration
 150, hold through 200): residual and QoI stopping stay off, and the
 solve must not refuse to start. Expect residual rows 1–20,
 `REF_empty_u0p2_p6M_checkpoint_000010` and `..._checkpoint_000020`
@@ -244,14 +250,20 @@ a non-zero window flux in `post/reports`. The fresh smokes pass
 (`release_after_pass`) and the check above cannot be made. Zero residual
 lines means iterate never ran. Do not start the long queue on that code.
 
-Fresh smoke, `cp_live` on (the default after `294496e`):
+Fresh smoke (live CP off, the default after `430bf9b`). Expect also
+`Mesh spec: accepted on effective parameters`, `Expression check result:
+PASS` with the transcript window in `solver_log_<case>.txt`, and a
+`FLUENT_LAUNCH pid=... cortex_pid=... fluent_host_pid=...` line:
 
 ```text
 python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 --geo-id REF_empty --case u0p2_p6M --m-max 0.035 --m-min 0.006 --m-cpg 5 --bl-layers 4 --membrane-bl-y1-um 2 --bulk-max-size 0.034 --peel-layers 2 --max-prism-aspect-ratio 250 --geometry-suffix .pmdb --geometry-root C:/ro_data_mfbo/geometries_pmdb --mesh-spec configs/mesh_spec_v3.json --reuse-mesh --checkpoint-every 10 --max-iterations 20 --convergence-profile campaign_v3 --keep-checkpoints
 ```
 
-Control, already passed on `ae98e7c`: the same command with
-`--no-cp-live` (keep `--keep-checkpoints`). Continue smoke, only on a
+The `--no-cp-live` control is now the same run. A deliberate failure
+check is the same command with `--cp-live`: it must refuse before
+`iterate` quoting the `cp_live_mean` table from the window, then log
+`FLUENT_EXIT ... KILL_VERIFIED` (or the tree exited on its own) with no
+Fluent left. Continue smoke, only on a
 final that is the real 2000-iteration solution (D2450_a45 `u0p2_p6M`).
 Expect new residual rows through iteration 2020, snapshots
 `D2450_a45_u0p2_p6M_iter_002000` (the final saved at continue start),
@@ -273,12 +285,12 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
 - Fluent expressions. A bare `udm-7` is the subtraction `udm - 7`.
   Fluent then prints `Setup contains invalid expression` and `iterate`
   returns with no residual line. Memory fields in an expression are
-  `{udm-6}`, `{udm-7}`, `{udm-9}`. The live mean is the named expression
-  `cp_live_mean`. The `cp_live` report is that name divided by the
-  window bulk, same shape as `cp_window`. The area floor is
-  `1e-30*Area(clip)`, not a `[m^2]` literal. Before `iterate`, the
-  solver prints the Expression / Error / Used In table and raises
-  `Refusing to iterate` when the setup is invalid.
+  `{udm-6}`, `{udm-7}`, `{udm-9}`. Fluent 25.1 named expressions cannot
+  use UDM fields at all: at `3ba17ec` `cp_live_mean` listed `Valid : No`
+  and the `cp_live` report failed with `name 'cp_live_mean' is not
+  defined`. Solve-time live CP is therefore off by default (`--cp-live`
+  keeps the code path for a later Fluent); `cp_window` is still written
+  as a recorded diagnostic.
 - `check_convergence` on a converged case. A finished leaf is already
   under the residual target. Leaving the check on makes `iterate`
   return immediately (`2000 -> 2000`). A continue keeps the residual
@@ -331,23 +343,29 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   it not evaluable (no stop), and monitor-change windows with one are
   blank.
 - Fail closed. `unknown_early_stop` (iterate returned below the cap with
-  no stop marker) writes only `failed_attempt_*` and exits non-zero. The
-  setup-expression check must pass positively: every named expression
-  lists `Valid : Yes`, or, with none, `(get-invalid-inputs-formated)` or
-  `(get-invalid-inputs)` returned an empty list (`()` / `'()`). That is
-  the only recognised pass output: no Fluent 25.1 output is captured
-  here, so `#t`, `nil`, empty text, `None`, `#f`, errors and anything else
-  fail, as does a failure to enumerate the named expressions; otherwise
-  `Refusing to iterate`. Expect the `--no-cp-live` smoke (no named
-  expressions) to refuse until the logged output shows what these forms
-  print. The raw check output is
-  appended to `solver_log_<case>.txt` (`EXPRESSION CHECK (raw output)`).
-  `RO_EXPRESSION_CHECK=warn` lets a check that did not positively pass
-  through with a logged `OVERRIDDEN` warning, for host diagnosis only
-  (never on a queue); an explicit invalid expression or an enumeration
-  failure still refuses. If the host smoke refuses, read the logged check
-  output and extend the recognised set from it; do not relax the check
-  blind.
+  no stop marker) and `iteration_unknown` write only `failed_attempt_*`
+  and exit non-zero. The setup-expression check reads Fluent's own
+  output, because none of the scheme check forms exists in Fluent 25.1
+  (`get-invalid-inputs-formated`, `get-invalid-inputs`, `expr-check`,
+  `validate-named-expr-def`, `validate-expr-report-def`: all `eval:
+  unbound variable`). Fluent prints `Setup contains invalid expression`
+  plus an Expression / Error / UsedIn table after any settings change
+  while an expression is invalid, and nothing when all are valid. The
+  template case prints such tables for `lmh` (`name 'rho_avg' is not
+  defined`) after `replace_mesh`: the stale template `rho_avg` report is
+  deleted and `lmh` is redefined with a constant density in the
+  transport-report rebuild; later tables no longer list `lmh`. So the
+  solver writes `RO_EXPRESSION_WINDOW_BEGIN token=<id>` through scheme
+  right after that rebuild and `RO_EXPRESSION_WINDOW_END token=<id>` at
+  the check (after rewriting the expression reports unchanged to force
+  a fresh table), and reads only the transcript text between them (both
+  in the same `fluent-*.trn` or `solver_log_*.txt`, polled up to 60 s).
+  A table in that window, or a named expression listing `Valid : No`,
+  refuses (`Refusing to iterate`), also under `RO_EXPRESSION_CHECK=warn`.
+  No END sentinel within 60 s is `unverified` and refuses; only that may
+  be passed with `RO_EXPRESSION_CHECK=warn` (host diagnosis, never a
+  queue). The window and verdict are appended to `solver_log_<case>.txt`
+  (`EXPRESSION CHECK (raw output)`).
 - Monitor-change columns. `monitor_change_last<N>_*` is the end-to-end
   relative change (phase-sensitive on an oscillating monitor),
   `monitor_trend_last<N>_*` the fitted slope over N iterations (the
@@ -361,11 +379,23 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   of main3) have blank new CP columns. LMH/dP use the active-span
   monitors. The old maximum deviation is `*_legacy`. Recorded only; the
   2000-iteration cap and the gate are unchanged.
-- `cp_live` vs `--no-cp-live`. Default is `cp_live` on, and the v3 stop
-  watches it. `--no-cp-live` keeps the `ffd53e1` stop on `cp_window`.
-  main3 was started with `--no-cp-live` because the unbraced expression
-  was rejected. Do not flip that flag on a running queue. The next
-  solve uses `cp_live` only after the 20-iteration smoke above passes.
+- Stop rule. campaign_v3 stops on residuals plus LMH and spacer dP over
+  the post-ramp window (1e-4 over 100 samples), 2000-iteration cap. CP
+  is not in the stop (`qoi_stop_include_cp=False`); `--cp-live` puts the
+  live CP back in. main3/main4 leaves were solved with CP (`cp_window`)
+  in the stop: a `--continue-iterations` or checkpoint `--resume` on an
+  existing leaf inherits the leaf's recorded `qoi_stop_include_cp` and
+  prints `Stop rule inherited ...`, so one leaf never mixes rules; a leaf
+  whose stop used `cp_live` refuses. Fresh solves use the new rule.
+- Orphan cleanup. `FLUENT_LAUNCH` records `pid` (PyFluent's launcher
+  handle, which on Windows can exit at once), `cortex_pid` and
+  `fluent_host_pid`. After a failed attempt the parent stops the trees
+  rooted at those pids (a reused pid whose image is not Fluent is left
+  alone and named) and logs `ORPHAN: ... KILL_VERIFIED` /
+  `KILL_INCOMPLETE` from a process-table check. The solver and extract
+  workers do the same after `exit()` (`FLUENT_EXIT`, 30 s grace first).
+  At `3ba17ec` only the launcher pid was recorded and `fluent.exe` /
+  `fl2510.exe` stayed alive.
 - Mesh spec on reuse. `--reuse-mesh` does not compare the whole-file
   `mesh_spec_sha256`: adding `geometries`, a velocity or a suffix rule to
   `configs/mesh_spec_v3.json` must not block every existing mesh. New
@@ -401,6 +431,21 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   refuses manifest acceptance or reuse. An AR above 250 still fails
   before the worker writes the final mesh.
 
+## Current state (2026-11-19, after the `3ba17ec` host smoke)
+
+The fresh REF_empty smoke at `3ba17ec` (warn mode) reused the mesh on
+effective parameters, then refused before `iterate`: Fluent itself
+listed `cp_live_mean` `Valid : No` (named expressions cannot read UDM
+fields), and none of the scheme check forms exists. Fixed after it:
+live CP off and the v3 stop on residuals + LMH + dP (`430bf9b`), the
+transcript-window expression check (`c0a4080`), Fluent-pid tree cleanup
+(`8aa63f4`), and smoke restore only after a successful archive
+(`2997b41`). Host list for this revision: Windows pytest; the fresh
+smoke in "Smoke first" (live CP off) must pass end to end; the same
+smoke with `--cp-live` must refuse and leave no Fluent; the D2450_a45
+continue smoke (inherits CP in its stop). The older lists below predate
+this and mention the removed check forms.
+
 ## Current state (2026-11-18)
 
 **Audit fixes pushed after `8ca0706` (not on the host until main4
@@ -415,14 +460,8 @@ columns. These change solve, extract, meshing and queue code. Before any
 long queue, on the host:
 
 1. Windows pytest.
-2. The cp_live-ON fresh smoke in “Smoke first”, **and** the
-   `--no-cp-live` control again: the earlier pass on `ae98e7c` does not
-   cover the new fail-closed expression check. No Fluent 25.1 output of
-   the check forms or of `list-properties` (`Valid : Yes`) is captured
-   in this repo; the format comes from test fixtures. If either smoke
-   refuses with `did not positively pass` or `no expression check could
-   run`, save the printed check output and stop; do not relax the check
-   blind. `pending_checks` runs only the cp_live-ON smoke.
+2. Superseded by the 2026-11-19 list above (fresh smoke with live CP
+   off; `--cp-live` as a deliberate refusal).
 3. One mesh-only smoke on a `.pmdb` geometry into a fresh study leaf
    (e.g. under `C:/ro_data_mfbo/meshstudy`) before the pending mesh-only
    steps: campaign meshing now runs with a piped stdout under the
@@ -451,13 +490,8 @@ bounded watchdog with verified kills, snapshot isolation, clear
 process-scan errors, validated N=500 monitor windows, non-finite guard,
 docs. Additional host checks before any long queue:
 
-- Both 20-iteration smokes will most likely refuse at the expression
-  check: the only recognised pass outputs are `()`/`'()` from the
-  invalid-input forms and `Valid : Yes` listings, and no Fluent 25.1
-  output of them is in this repo. Read the `EXPRESSION CHECK (raw
-  output)` block in `solver_log_<case>.txt` and extend the recognised
-  set from it in a commit. `RO_EXPRESSION_CHECK=warn` is for that
-  diagnosis only.
+- (Done at `3ba17ec`; the scheme-form check is replaced by the
+  transcript window, see "Fail closed".)
 - Watch the attempt logs of any hang/timeout for `KILL_VERIFIED` /
   `KILL_INCOMPLETE`; the Windows path (CIM `ParentProcessId`, taskkill)
   is untested here.
@@ -518,12 +552,14 @@ elsewhere. Preview without launching Fluent:
 The launcher runs these checks in order, rechecking live Windows
 processes and queue locks before each one:
 
-- Fresh REF_empty `u0p2_p6M` cp_live-ON smoke: exactly residual
-  iterations 1–20, nonempty checkpoint pairs 10/20, positive window
-  LMH and a cp_live history. It requires a finished original beyond
+- Fresh REF_empty `u0p2_p6M` smoke (live CP off): exactly residual
+  iterations 1–20, nonempty checkpoint pairs 10/20 and positive window
+  LMH. It requires a finished original beyond
   20 iterations, renames it to `.prev_<UTC>` before launch, keeps
   checkpoints, preserves the smoke as `.smoke.prev_<UTC>`, and restores
-  the original in `finally`. A failed initial rename aborts the smoke
+  the original in `finally` only after the smoke leaf was archived (a
+  failed archive leaves the original at `.prev_<UTC>`, writes BROKEN
+  markers and fails the step). A failed initial rename aborts the smoke
   before Fluent. A recovery JSON records both paths. After a forced
   process/machine termination, inspect that journal before another run.
 - S_a193_l1733 mesh-only at 0.025 and 0.020 mm membrane face size,
@@ -556,8 +592,8 @@ be reused. AR250 solves remain standard sizing. Velocity follow-ups
 are: bounded REF_empty 0.05 m/s smoke first (require PASS), 0.10 m/s
 x31, then 0.05/0.15/0.25 m/s x five representatives: REF_empty,
 D2450_a45, M_c267, P_p80_h15, S_a144_l3465. P_p100_h00 and M_c160 are
-not the representatives. Printed solves use `--no-cp-live` unless
-the initial cp_live smoke passed. No long solve or queue is started.
+not the representatives. Printed solves carry no CP flag (live CP is
+off by default). No long solve or queue is started.
 
 Re-extract queue emission after the checks (final reports only):
 
@@ -594,8 +630,9 @@ python scripts/campaign_v3.py --emit-queue C:/ro_data_mfbo/campaign_v3/queues/ve
 
    Repeat `--max-iterations FAMILY=N` for measured family-specific
    caps; omitted families remain at 2000. These defaults are caps,
-   not evidence of convergence at a new velocity. Omitting
-   `--no-cp-live` selects live CP and requires its host smoke to pass.
+   not evidence of convergence at a new velocity. `--no-cp-live` is now
+   a no-op (live CP is off by default); `--cp-live` would select live
+   CP, which Fluent 25.1 cannot evaluate.
 3. AR sensitivity: D1225_a30 and S_a193_l1733 at the standard v3
    sizing and `u0p2_p6M`. The operator reported AR about 212 and 228;
    the new manifest must record what the new mesh actually measures.
