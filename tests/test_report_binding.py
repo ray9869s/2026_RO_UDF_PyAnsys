@@ -272,3 +272,29 @@ def test_snapshot_extract_hang_is_not_recorded_on_the_manifest(tmp_path):
                                run_id="r", runner=runner, sleeper=lambda s: None,
                                killer=lambda pid: "", process_lister=lambda: [])
     assert (leaf / "manifest.json").read_bytes() == before
+
+
+def test_failed_meanfirst_validation_after_publication_clears_the_pass(tmp_path, monkeypatch):
+    leaf = _leaf(tmp_path)
+    manifest_path = leaf / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["convergence_quality_report_generation"] = "gen-1"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(REEXTRACT, "require_reextract_final", lambda leaf, root: leaf)
+    monkeypatch.setattr(
+        REEXTRACT.reextract_runs, "reextract_leaf",
+        lambda leaf, profile: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        REEXTRACT.campaign.mesh_study, "resolve_data_root", lambda value: tmp_path
+    )
+
+    def invalid(leaf, dirname="reports"):
+        raise ValueError("Saved mean-first live CP does not match its saved inputs")
+
+    monkeypatch.setattr(REEXTRACT, "validate_meanfirst_summary", invalid)
+    with pytest.raises(ValueError, match="mean-first"):
+        REEXTRACT._main(["--data-root", str(tmp_path), "--run-leaf", str(leaf)])
+    after = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert after["convergence_quality"] is None
+    assert after["convergence_quality_report_generation"] is None

@@ -23,6 +23,7 @@ import os
 import sys
 from pathlib import Path
 
+from ro.atomic_reports import clear_manifest_gate
 from ro.report_binding import BROKEN_MARKER, report_binding_reason
 from ro.solver_common import (
     FINAL_CASE_SHA256_FIELD,
@@ -324,7 +325,14 @@ def _main(argv=None):
     result = reextract_runs.reextract_leaf(leaf, profile="full")
     if result.returncode:
         return result.returncode
-    validate_meanfirst_summary(leaf)
+    try:
+        validate_meanfirst_summary(leaf)
+    except Exception:
+        # The extract already published PASS; a report that fails this
+        # check must not keep it. Cleared before main() writes the result.
+        clear_manifest_gate(leaf)
+        print(f"Mean-first validation failed; cleared the gate on {leaf}.", flush=True)
+        raise
     return 0
 
 

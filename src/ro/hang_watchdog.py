@@ -479,9 +479,12 @@ def record_hang(run_directory, event, *, failed: bool) -> str:
 
     ``failure_class`` is ``hang`` only when this stage is giving up.
     A retry keeps the event and leaves ``failure_class`` unset. Final
-    case and data files are not touched.
+    case and data files are not touched. The gate (``convergence_quality``
+    and its report generation) is cleared on every call: a worker killed
+    after ``publish_extract`` wrote PASS must not leave that PASS behind.
     """
     from ro.manifest import ManifestError, read_run_manifest, write_run_manifest
+    from ro.report_binding import GATE_GENERATION_FIELD
 
     directory = Path(run_directory)
     try:
@@ -492,6 +495,8 @@ def record_hang(run_directory, event, *, failed: bool) -> str:
     if not isinstance(events, list):
         events = []
     payload["hang_events"] = [*events, dict(event)]
+    payload["convergence_quality"] = None
+    payload[GATE_GENERATION_FIELD] = None
     if failed:
         payload["failure_class"] = FAILURE_CLASS_HANG
     path = write_run_manifest(directory, payload)

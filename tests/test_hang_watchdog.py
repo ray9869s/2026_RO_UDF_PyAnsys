@@ -321,6 +321,22 @@ def test_reextract_archives_partial_reports_and_keeps_finals(monkeypatch, tmp_pa
     assert payload["hang_events"][0]["killed_pids"] == [4242, 90]
 
 
+def test_record_hang_clears_a_published_pass(monkeypatch, tmp_path):
+    monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
+    directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
+    directory.mkdir(parents=True)
+    payload = run_payload()
+    payload["convergence_quality"] = "PASS"
+    payload["convergence_quality_report_generation"] = "gen-1"
+    write_run_manifest(directory, payload)
+    event = {"stage": "extract", "attempt": 1, "idle_s": 1800, "killed_pids": [4242]}
+    record_hang(directory, event, failed=False)  # a retry still clears it
+    after = read_run_manifest(directory)
+    assert after["convergence_quality"] is None
+    assert after["convergence_quality_report_generation"] is None
+    assert "failure_class" not in after
+
+
 def test_manifest_rejects_a_bad_hang_event(monkeypatch, tmp_path):
     monkeypatch.setenv("RO_DATA_ROOT", str(tmp_path))
     directory = run_dir(FAMILY, GEO_ID, MESH_ID, RUN_ID)
