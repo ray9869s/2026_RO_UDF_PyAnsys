@@ -619,14 +619,7 @@ def _pid_alive(pid) -> bool:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return False
     if os.name == "nt":
-        import ctypes
-
-        kernel = ctypes.windll.kernel32
-        handle = kernel.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        kernel.CloseHandle(handle)
-        return True
+        return _windows_pid_running(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -634,6 +627,41 @@ def _pid_alive(pid) -> bool:
     except PermissionError:
         return True
     return True
+
+
+_STILL_ACTIVE = 259
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _windows_pid_running(pid: int) -> bool:
+    """True only while ``pid`` has not exited.
+
+    ``OpenProcess`` alone is not enough: a process object outlives the
+    process while any handle to it is open (a ``Popen`` in this interpreter
+    keeps one until it is collected), so an exited, killed process still
+    opens. ``GetExitCodeProcess`` returns ``STILL_ACTIVE`` only for a
+    running process.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # Access denied means it exists (another user's process).
+        return ctypes.get_last_error() == 5
+    try:
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == _STILL_ACTIVE
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _descendant_pids(pid: int) -> list[int]:

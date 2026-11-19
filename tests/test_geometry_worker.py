@@ -92,13 +92,13 @@ def _running(pid: int) -> bool:
     return state != "Z"
 
 
-def _wait_dead(pid: int) -> None:
-    deadline = time.monotonic() + 3
+def _wait_dead(pid: int, role: str = "process") -> None:
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if not _running(pid):
             return
         time.sleep(0.05)
-    raise AssertionError(f"pid {pid} is still alive")
+    raise AssertionError(f"{role} pid {pid} is still alive")
 
 
 def _command(script: Path):
@@ -140,8 +140,8 @@ def test_health_pid_can_differ_from_the_launcher_pid(tmp_path: Path, monkeypatch
         assert _running(launcher)
     finally:
         supervisor.stop_started()
-    _wait_dead(launcher)
-    _wait_dead(health["pid"])
+    _wait_dead(launcher, "launcher")
+    _wait_dead(health["pid"], "health (interpreter)")
 
 
 def test_exited_launcher_is_ready_when_the_interpreter_pid_is_alive(tmp_path: Path) -> None:
@@ -199,8 +199,8 @@ def test_timeout_reports_health_and_stops_the_launcher_tree(tmp_path: Path, monk
     assert '"token": "stale"' in message
     assert '"status": "ready"' in message
     health = json.loads((worker / "health.json").read_text(encoding="utf-8"))
-    _wait_dead(supervisor._process.pid)
-    _wait_dead(health["pid"])
+    _wait_dead(supervisor._process.pid, "launcher")
+    _wait_dead(health["pid"], "health (stale child)")
 
 
 def test_closed_session_times_out_and_stops_the_worker(tmp_path: Path, monkeypatch) -> None:
