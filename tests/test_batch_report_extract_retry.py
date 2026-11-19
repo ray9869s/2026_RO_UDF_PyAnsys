@@ -145,7 +145,8 @@ def test_failed_attempt_terminates_only_the_recorded_fluent_pid(
     assert killed == [4242]
     output = capsys.readouterr().out
     assert "terminated Fluent pid 4242" in output
-    assert "no -sifile token" in output
+    # Recorded launch pids are targeted, so no "leave cleanup manual" line.
+    assert "no -sifile token" not in output
     assert "99999" not in output
     assert "19328" not in output.split("terminated")[-1]
 

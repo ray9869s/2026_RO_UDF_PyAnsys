@@ -22,7 +22,7 @@ from ro.membrane_bl import (
     format_y1_request_flag,
     y1_diagnostic_fields,
 )
-from ro.session_retry import print_fluent_launch_identity
+from ro.session_retry import print_fluent_launch_identity, stop_launched_fluent
 from ro.solve_checkpoint import (
     checkpoint_case_path,
     checkpoint_data_path,
@@ -6857,6 +6857,9 @@ if __name__ == "__main__":
                 solver.exit()
             except Exception as cleanup_error:
                 print(f"Warning: could not exit solver session during cleanup: {cleanup_error}")
+
+        # fluent.exe / fl2510.exe outlived exit() at 3ba17ec: stop and verify.
+        stop_launched_fluent()
 
         try:
             os.chdir(original_working_directory)

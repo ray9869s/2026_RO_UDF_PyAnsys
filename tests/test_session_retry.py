@@ -102,39 +102,77 @@ def test_orphan_log_lists_only_sifile_matches():
     assert "do not kill other fluent.exe" in joined
 
 
-def test_launch_line_records_the_session_pid_only():
+def test_launch_line_records_the_launcher_and_fluent_own_pids():
     class _Process:
         pid = 4242
 
     class _Session:
         _process = _Process()
+        _fluent_connection = SimpleNamespace(
+            connection_properties=SimpleNamespace(cortex_pid=5151, fluent_host_pid=6161)
+        )
 
-    assert format_fluent_launch_line(_Session()) == "FLUENT_LAUNCH pid=4242"
-    assert format_fluent_launch_line(object()) == "FLUENT_LAUNCH pid=unknown"
+    line = format_fluent_launch_line(_Session())
+    assert line == "FLUENT_LAUNCH pid=4242 cortex_pid=5151 fluent_host_pid=6161"
+    assert format_fluent_launch_line(object()) == (
+        "FLUENT_LAUNCH pid=unknown cortex_pid=unknown fluent_host_pid=unknown"
+    )
     text = (
-        "FLUENT_LAUNCH pid=4242\n"
+        line + "\n"
+        "FLUENT_LAUNCH pid=unknown cortex_pid=5151 fluent_host_pid=7171\n"
         "fluent-20261019-114250-19328.trn\n"
         "-sifile=serverinfo-other.txt\n"
+        "ORPHAN noise pid=99999\n"
     )
-    assert parse_fluent_launch_pids(text) == [4242]
+    assert parse_fluent_launch_pids(text) == [4242, 5151, 6161, 7171]
+    assert parse_fluent_launch_pids("FLUENT_LAUNCH pid=4242\n") == [4242]  # old logs
 
 
-def test_recorded_pid_kill_does_not_use_the_transcript_pid(monkeypatch):
+def test_recorded_fluent_tree_is_killed_and_verified(monkeypatch):
     monkeypatch.setattr("ro.session_retry.os.name", "nt")
-    seen = {}
+    table = [
+        {"ProcessId": 31240, "ParentProcessId": 1, "Name": "python.exe"},  # reused pid
+        {"ProcessId": 5151, "ParentProcessId": 1, "Name": "fluent.exe"},
+        {"ProcessId": 6161, "ParentProcessId": 5151, "Name": "fl2510.exe"},
+        {"ProcessId": 7000, "ParentProcessId": 6161, "Name": "fl_mpi2510.exe"},
+        {"ProcessId": 19328, "ParentProcessId": 1, "Name": "fluent.exe"},  # another session
+    ]
+    killed = []
 
     def runner(argv, **kwargs):
-        del kwargs
-        seen["argv"] = argv
+        killed.append(int(argv[2]))
         return SimpleNamespace(returncode=0, stdout="SUCCESS", stderr="")
 
+    def lister():
+        return [row for row in table if row["ProcessId"] not in killed]
+
     lines = terminate_recorded_fluent_pids(
-        "FLUENT_LAUNCH pid=4242\nfluent-20261019-114250-19328.trn\n",
-        runner=runner,
+        "FLUENT_LAUNCH pid=31240 cortex_pid=5151 fluent_host_pid=6161\n"
+        "fluent-20261019-114250-19328.trn\n",
+        runner=runner, lister=lister, verify_kill_s=0,
     )
-    assert seen["argv"] == ["taskkill", "/PID", "4242", "/T", "/F"]
-    assert any("4242" in line for line in lines)
-    assert not any("19328" in line for line in lines)
+    assert sorted(killed) == [5151, 6161, 7000]
+    joined = "\n".join(lines)
+    assert "31240 is now 'python.exe'" in joined
+    assert "KILL_VERIFIED pids=5151,6161,7000" in joined
+    assert "19328" not in joined
+
+
+def test_recorded_fluent_tree_survivor_is_incomplete(monkeypatch):
+    monkeypatch.setattr("ro.session_retry.os.name", "nt")
+    table = [{"ProcessId": 6161, "ParentProcessId": 1, "Name": "fl2510.exe"}]
+    lines = terminate_recorded_fluent_pids(
+        "FLUENT_LAUNCH pid=unknown cortex_pid=unknown fluent_host_pid=6161\n",
+        runner=lambda argv, **kw: SimpleNamespace(returncode=1, stdout="", stderr="Access denied"),
+        lister=lambda: table, verify_kill_s=0,
+    )
+    assert "KILL_INCOMPLETE survivors=6161" in "\n".join(lines)
+
+    def broken():
+        raise OSError("CIM down")
+
+    lines = terminate_recorded_fluent_pids("FLUENT_LAUNCH pid=6161\n", lister=broken)
+    assert "KILL_INCOMPLETE" in lines[0] and "CIM down" in lines[0]
 
 
 def test_orphan_scan_failure_is_not_no_process():
@@ -145,3 +183,34 @@ def test_orphan_scan_failure_is_not_no_process():
     joined = "\n".join(lines)
     assert "could not be read" in joined
     assert "Not treating that as 'no process'" in joined
+
+
+def test_worker_cleanup_waits_for_a_clean_exit_then_kills_what_is_left(monkeypatch, capsys):
+    import ro.session_retry as retry
+
+    monkeypatch.setattr(retry.os, "name", "nt")
+    monkeypatch.setattr(retry, "_LAUNCHED_PIDS", [])
+
+    class _Session:
+        _process = SimpleNamespace(pid=31240)
+        _fluent_connection = SimpleNamespace(
+            connection_properties=SimpleNamespace(cortex_pid=5151, fluent_host_pid=6161)
+        )
+
+    retry.print_fluent_launch_identity(_Session())
+    retry.print_fluent_launch_identity(_Session())  # after switch_to_solver: same pids
+    assert retry._LAUNCHED_PIDS == [31240, 5151, 6161]
+    gone = retry.stop_launched_fluent(grace_s=0.01, lister=lambda: [])
+    assert "not running" in gone[0]
+    table = [{"ProcessId": 6161, "ParentProcessId": 1, "Name": "fl2510.exe"}]
+    killed = []
+
+    def runner(argv, **kwargs):
+        killed.append(argv[2])
+        table.clear()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    lines = retry.stop_launched_fluent(grace_s=0.01, lister=lambda: list(table), runner=runner)
+    assert killed == ["6161"]
+    assert "KILL_VERIFIED pids=6161" in lines[-1]
+    assert "FLUENT_EXIT" in capsys.readouterr().out

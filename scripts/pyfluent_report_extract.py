@@ -72,7 +72,7 @@ from ro.atomic_reports import (  # noqa: E402
     staging_report_path,
 )
 from ro.fluent_launch import fluent_mpi_argument  # noqa: E402
-from ro.session_retry import print_fluent_launch_identity  # noqa: E402
+from ro.session_retry import print_fluent_launch_identity, stop_launched_fluent  # noqa: E402
 from ro.solver_common import (  # noqa: E402
     FINAL_CASE_SHA256_FIELD,
     FINAL_DATA_SHA256_FIELD,
@@ -3500,6 +3500,8 @@ if __name__ == "__main__":
                 solver.exit()
             except Exception as cleanup_error:
                 print(f"Warning: could not exit solver session during cleanup: {cleanup_error}")
+
+        stop_launched_fluent()
 
         try:
             os.chdir(original_working_directory)

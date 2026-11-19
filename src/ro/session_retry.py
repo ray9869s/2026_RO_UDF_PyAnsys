@@ -42,7 +42,11 @@ FLUENT_LAUNCH_SPAWN_PATTERNS = (
 )
 
 SIFILE_RE = re.compile(r"-sifile(?:=|\s+)\"?([^\s\"]+)\"?", re.IGNORECASE)
-FLUENT_LAUNCH_PID_RE = re.compile(r"FLUENT_LAUNCH pid=(\d+)\b")
+FLUENT_LAUNCH_LINE_RE = re.compile(r"FLUENT_LAUNCH\b([^\n]*)")
+FLUENT_LAUNCH_FIELD_RE = re.compile(r"(?<![A-Za-z_])(?:pid|cortex_pid|fluent_host_pid)=(\d+)\b")
+# Image names a recorded root pid must have before it is killed (pid reuse
+# guard). Descendants of a matching root are killed whatever their name.
+FLUENT_ROOT_IMAGE_RE = re.compile(r"^(?:fluent|fl_mpi|cortex|cx\d|fl\d).*\.exe$", re.IGNORECASE)
 
 
 def _any_pattern(text: str, patterns) -> bool:
@@ -72,30 +76,99 @@ def classify_retryable_session_crash(text: str) -> Optional[str]:
     return None
 
 
-def format_fluent_launch_line(session) -> str:
-    """One line naming the Fluent process this session launched.
+def _positive_pid(value):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
-    The PID is the PyFluent process handle. A later retry terminates that
-    PID only. ``pid=unknown`` is printed when the handle has no PID.
+
+def session_process_ids(session) -> dict:
+    """``{pid, cortex_pid, fluent_host_pid}`` for one PyFluent session.
+
+    ``pid`` is the launcher handle PyFluent kept (on Windows it can exit at
+    once, which is why a kill of it alone left fluent.exe / fl2510.exe
+    running at 3ba17ec). ``cortex_pid`` and ``fluent_host_pid`` are Fluent's
+    own processes from the connection properties. Missing values are None.
     """
-    process = getattr(session, "_process", None)
-    pid = getattr(process, "pid", None) if process is not None else None
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return "FLUENT_LAUNCH pid=unknown"
-    return f"FLUENT_LAUNCH pid={pid}"
+    def attribute(obj, name):
+        try:
+            return getattr(obj, name, None)
+        except Exception:  # noqa: BLE001 - a retired session raises on access
+            return None
+
+    process = attribute(session, "_process")
+    connection = attribute(session, "_fluent_connection")
+    properties = attribute(connection, "connection_properties") if connection is not None else None
+    return {
+        "pid": _positive_pid(attribute(process, "pid") if process is not None else None),
+        "cortex_pid": _positive_pid(attribute(properties, "cortex_pid") if properties is not None else None),
+        "fluent_host_pid": _positive_pid(
+            attribute(properties, "fluent_host_pid") if properties is not None else None
+        ),
+    }
+
+
+def format_fluent_launch_line(session) -> str:
+    """One line naming the Fluent processes this session launched.
+
+    ``pid`` (launcher handle), ``cortex_pid`` and ``fluent_host_pid``; each
+    is ``unknown`` when PyFluent does not expose it. A failed attempt stops
+    the process trees rooted at these PIDs only.
+    """
+    ids = session_process_ids(session)
+    return "FLUENT_LAUNCH " + " ".join(
+        f"{key}={ids[key] if ids[key] is not None else 'unknown'}"
+        for key in ("pid", "cortex_pid", "fluent_host_pid")
+    )
+
+
+# Fluent PIDs launched by this worker process, for the cleanup after exit().
+_LAUNCHED_PIDS: list[int] = []
 
 
 def print_fluent_launch_identity(session) -> None:
-    """Write the launch line to stdout before any Scheme command."""
+    """Write the launch line to stdout before any Scheme command.
+
+    The PIDs are also kept for ``stop_launched_fluent`` in the worker's
+    cleanup.
+    """
     print(format_fluent_launch_line(session), flush=True)
+    for pid in session_process_ids(session).values():
+        if pid is not None and pid not in _LAUNCHED_PIDS:
+            _LAUNCHED_PIDS.append(pid)
+
+
+def stop_launched_fluent(*, grace_s=30.0, lister=None, runner=None) -> list[str]:
+    """After ``exit()``: give this worker's Fluent trees ``grace_s`` to go, then kill and verify.
+
+    Prints and returns the lines. Never raises: cleanup must not mask the
+    worker's own error.
+    """
+    if not _LAUNCHED_PIDS:
+        return []
+    try:
+        lines = stop_recorded_fluent_tree(
+            list(_LAUNCHED_PIDS), lister=lister, runner=runner, grace_s=grace_s,
+            label="FLUENT_EXIT",
+        )
+    except Exception as exc:  # noqa: BLE001
+        lines = [f"FLUENT_EXIT: cleanup check failed: {type(exc).__name__}: {exc}"]
+    for line in lines:
+        print(line, flush=True)
+    return lines
 
 
 def parse_fluent_launch_pids(text: str) -> list[int]:
     """PIDs from ``FLUENT_LAUNCH`` lines. Other numbers are ignored."""
     pids: list[int] = []
     seen: set[int] = set()
-    for match in FLUENT_LAUNCH_PID_RE.finditer(text or ""):
-        pid = int(match.group(1))
+    found = [
+        field.group(1)
+        for line in FLUENT_LAUNCH_LINE_RE.finditer(text or "")
+        for field in FLUENT_LAUNCH_FIELD_RE.finditer(line.group(1))
+    ]
+    for value in found:
+        pid = int(value)
         if pid <= 0 or pid == os.getpid() or pid in seen:
             continue
         seen.add(pid)
@@ -103,27 +176,114 @@ def parse_fluent_launch_pids(text: str) -> list[int]:
     return pids
 
 
+def stop_recorded_fluent_tree(pids, *, lister=None, runner=None, verify_kill_s=None,
+                              grace_s=0.0, label="ORPHAN") -> list[str]:
+    """Stop the process trees rooted at recorded Fluent PIDs; verify they are gone.
+
+    The process table is read once: a recorded PID that is not running is
+    skipped, and a running one whose image is not Fluent-like (PID reuse) is
+    left alone and named. Each remaining root's tree (every descendant) is
+    listed, given ``grace_s`` to exit on its own, then killed (``taskkill
+    /T /F`` per member on Windows, SIGKILL elsewhere) and checked with
+    ``ro.process_tree.wait_gone``. The last line is ``KILL_VERIFIED`` or
+    ``KILL_INCOMPLETE`` from that check, never taskkill's own text.
+    """
+    from ro.process_tree import (
+        VERIFY_KILL_S,
+        kill_verification_line,
+        list_processes,
+        run_taskkill,
+        tree_pids,
+        wait_gone,
+    )
+
+    lister = lister or list_processes
+    verify_kill_s = VERIFY_KILL_S if verify_kill_s is None else verify_kill_s
+    pids = [pid for pid in (_positive_pid(value) for value in pids) if pid and pid != os.getpid()]
+    if not pids:
+        return []
+    try:
+        table = lister()
+    except Exception as exc:  # noqa: BLE001
+        return [
+            f"{label}: recorded Fluent pids {pids}: process list failed "
+            f"({type(exc).__name__}: {exc}); KILL_INCOMPLETE survivors=unknown "
+            f"pids={','.join(map(str, pids))} tree_listing_error={str(exc)!r}"
+        ]
+    by_pid = {}
+    for process in table:
+        try:
+            by_pid[int(process.get("ProcessId"))] = process
+        except (TypeError, ValueError):
+            continue
+    roots, messages = [], []
+    for pid in pids:
+        process = by_pid.get(pid)
+        if process is None:
+            continue
+        name = str(process.get("Name") or "")
+        if name and FLUENT_ROOT_IMAGE_RE.match(name) is None:
+            messages.append(f"{label}: recorded pid {pid} is now {name!r}, not Fluent; left alone.")
+            continue
+        roots.append(pid)
+    if not roots:
+        messages.append(f"{label}: recorded Fluent pids {pids} are not running.")
+        return messages
+    tree = tree_pids(roots, table)
+    if grace_s and grace_s > 0:
+        survivors, error = wait_gone(tree, lister=lister, timeout_s=grace_s)
+        if not survivors and error is None:
+            messages.append(
+                f"{label}: recorded Fluent tree exited on its own; "
+                + kill_verification_line(tree, [])
+            )
+            return messages
+        tree = set(survivors) if error is None else tree
+    for pid in sorted(tree):
+        if os.name == "nt":
+            run_taskkill(pid, runner=runner)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    survivors, error = wait_gone(tree, lister=lister, timeout_s=verify_kill_s)
+    messages.append(
+        f"{label}: stopped recorded Fluent roots {roots} and their tree; "
+        + kill_verification_line(tree, survivors, verify_error=error)
+    )
+    return messages
+
+
 def terminate_recorded_fluent_pids(
     evidence: str,
     *,
     killer=None,
     runner=None,
+    lister=None,
+    verify_kill_s=None,
 ) -> list[str]:
     """Stop Fluent processes this attempt recorded at launch.
 
     PIDs that are not on a ``FLUENT_LAUNCH`` line are left alone, including
     other Fluent sessions and a PID that appears only in a transcript name.
+    Without ``killer`` this is ``stop_recorded_fluent_tree`` (tree kill plus
+    verification).
     """
     messages: list[str] = []
+    if killer is None:
+        return stop_recorded_fluent_tree(
+            parse_fluent_launch_pids(evidence),
+            lister=lister,
+            runner=runner,
+            verify_kill_s=verify_kill_s,
+        )
     for pid in parse_fluent_launch_pids(evidence):
-        if killer is None:
-            messages.append(_kill_recorded_fluent_pid(pid, runner=runner))
+        outcome = killer(pid)
+        if isinstance(outcome, str):
+            messages.append(outcome)
         else:
-            outcome = killer(pid)
-            if isinstance(outcome, str):
-                messages.append(outcome)
-            else:
-                messages.append(f"ORPHAN: terminated Fluent pid {pid}.")
+            messages.append(f"ORPHAN: terminated Fluent pid {pid}.")
     return messages
 
 
@@ -205,6 +365,8 @@ def describe_attempt_orphans(evidence: str, *, process_lister=None) -> list[str]
     """
     messages: list[str] = []
     names = parse_sifile_names(evidence)
+    if not names and parse_fluent_launch_pids(evidence):
+        return messages  # the recorded FLUENT_LAUNCH pids are stopped and verified
     if not names:
         messages.append(
             "ORPHAN: this attempt's Fluent may still be running, but the "
