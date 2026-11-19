@@ -441,17 +441,6 @@ def extract_monitor_changes(case_dir) -> dict[str, float | None]:
     return {**monitor_changes(case_dir, 100), **monitor_changes(case_dir, MONITOR_DEFAULT_WINDOW)}
 
 
-# Scheme forms that print or return Fluent's expression check. The first
-# one is the formatted invalid-input table (Expression / Error / Used In).
-EXPRESSION_CHECK_FORMS = (
-    "(get-invalid-inputs-formated)",
-    "(get-invalid-inputs)",
-    "(expr-check)",
-    "(validate-named-expr-def)",
-    "(validate-expr-report-def)",
-)
-
-
 def format_expression_error_table(rows) -> str:
     """The Expression / Error / Used In table Fluent prints for a bad setup."""
     lines = [
@@ -466,60 +455,11 @@ def format_expression_error_table(rows) -> str:
     return "\n".join(lines)
 
 
-_CHECK_DID_NOT_RUN_RE = re.compile(
-    r"unbound variable|invalid function|^\s*error\b|^[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-# The only check-form output recognised as "ran and found nothing invalid":
-# an empty list from the invalid-input forms. Everything else (empty text,
-# "None", "#f", "#t", errors, text not captured from Fluent 25.1 yet) proves
-# nothing and fails closed. Extend this only from logged host output.
-INVALID_INPUT_FORMS = ("(get-invalid-inputs-formated)", "(get-invalid-inputs)")
-_EMPTY_LIST_OUTPUTS = frozenset({"()", "'()"})
-
-
-def expression_check_ran(text, form=None) -> bool:
-    """True only for ``()`` / ``'()`` returned by an invalid-input form."""
-    if text is None or form not in INVALID_INPUT_FORMS:
-        return False
-    stripped = str(text).strip()
-    if not stripped or _CHECK_DID_NOT_RUN_RE.search(stripped) is not None:
-        return False
-    return stripped in _EMPTY_LIST_OUTPUTS
-
-
 def named_expression_listed_valid(text) -> bool:
     """True only when the listing positively says ``Valid : Yes``."""
     if not isinstance(text, str):
         return False
     return re.search(r"valid\s*[:=]\s*yes\b", text.casefold()) is not None
-
-
-def expression_check_positive(form_texts, named_listings) -> tuple[bool, str]:
-    """(passed, reason). Passing needs positive evidence, not silence.
-
-    Every named expression must list ``Valid : Yes``. With no named
-    expression, an invalid-input form must have returned ``()``. Any
-    invalid marker fails. ``form_texts`` is in ``EXPRESSION_CHECK_FORMS``
-    order.
-    """
-    texts = [text for text in form_texts if text is not None]
-    texts += [text for text in named_listings.values() if text is not None]
-    if any(fluent_expression_report_is_invalid(str(text)) for text in texts):
-        return False, "Fluent reported an invalid expression"
-    not_valid = [name for name, text in named_listings.items() if not named_expression_listed_valid(text)]
-    if not_valid:
-        return False, "named expression(s) not listed as Valid : Yes: " + ", ".join(not_valid)
-    if named_listings:
-        return True, "every named expression is Valid : Yes"
-    if any(
-        expression_check_ran(text, form)
-        for form, text in zip(EXPRESSION_CHECK_FORMS, form_texts)
-    ):
-        return True, "an invalid-input form returned an empty list"
-    return False, "no expression check could run"
 
 
 def fluent_expression_report_is_invalid(text: str) -> bool:

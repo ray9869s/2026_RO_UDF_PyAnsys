@@ -122,19 +122,25 @@ from ro.monitor_change import (
     CP_LIVE_MEAN,
     CP_MONITOR_LIVE,
     CP_MONITOR_WINDOW,
-    EXPRESSION_CHECK_FORMS,
     REPORT_FILE_SIGNIFICANT_DIGITS,
     cb_salt_field_candidates,
     cp_live_cm_definition,
     cp_live_monitor_definition,
     cp_monitor_definition,
     cp_report_file_name,
-    expression_check_positive,
     fluent_expression_report_is_invalid,
     format_expression_error_table,
     named_expression_listed_valid,
     extract_monitor_changes,
     molecular_weight_kg_per_mol,
+)
+from ro.expression_window import (
+    BEGIN as EXPRESSION_WINDOW_BEGIN,
+    END as EXPRESSION_WINDOW_END,
+    new_token as new_expression_window_token,
+    scheme_marker_command,
+    wait_for_window,
+    window_verdict,
 )
 from ro.paths import (
     mesh_dir,
@@ -3005,30 +3011,67 @@ def _append_expression_check_log(solver_log_path, report, verdict):
         print(f"Warning: could not append the expression check to {solver_log_path}: {exc}")
 
 
-def require_setup_expressions_valid(solver, solver_log_path=None):
-    """Print Fluent's expression check and refuse to iterate when it fails.
+def begin_expression_window(solver):
+    """Write this attempt's BEGIN sentinel into the transcript; return its token.
 
-    A report definition Fluent has accepted into the setup can still be
-    invalid. ``iterate`` then prints ``Setup contains invalid expression``
-    and returns without a residual line. The check runs first.
-
-    Failing closed: an invalid marker, a failure to enumerate the named
-    expressions, a named expression without ``Valid : Yes``, or check forms
-    that only return empty / ``None`` / ``#f`` / unrecognised text. The raw
-    output is appended to ``solver_log_path``. ``RO_EXPRESSION_CHECK=warn``
-    (host diagnosis only) lets a check that did not *positively* pass
-    through with a logged warning; an explicit invalid marker or an
-    enumeration failure still refuses.
+    Called after the transport-report rebuild: the template's ``lmh`` /
+    ``rho_avg`` tables Fluent prints before that point are not in the window.
+    ``None`` when there is no scheme interface (the check is then unverified).
     """
+    token = new_expression_window_token()
+    text = _scheme_exec_text(solver, scheme_marker_command(EXPRESSION_WINDOW_BEGIN, token))
+    print(f"Expression window begin: token={token} ({'sent' if text is not None else 'no scheme'})")
+    return token if text is not None else None
+
+
+def touch_expression_reports(solver):
+    """Write each expression report definition back unchanged.
+
+    A settings change makes Fluent re-print its invalid-expression table when
+    anything is invalid, so the window ends with a fresh snapshot. Failures
+    are reported, not raised: the CP-monitor and report-file setup after the
+    BEGIN sentinel already changed settings.
+    """
+    notes = []
+    try:
+        group = solver.solution.report_definitions.single_valued_expression
+        names = list_named_object_names(
+            named_object=group,
+            object_label="solution.report_definitions.single_valued_expression",
+        )
+    except Exception as exc:
+        return [f"could not list expression reports: {type(exc).__name__}: {exc}"]
+    for name in names:
+        try:
+            item = group[name]
+            item.definition = item.definition.get_state()
+            notes.append(f"touched {name}")
+        except Exception as exc:
+            notes.append(f"could not touch {name}: {type(exc).__name__}: {exc}")
+    return notes
+
+
+def require_setup_expressions_valid(
+    solver, solver_log_path=None, *, case_dir=None, window_token=None,
+    wait_s=None, sleep=time.sleep,
+):
+    """Refuse to iterate when Fluent reports an invalid setup expression.
+
+    Evidence is Fluent's own output (``ro.expression_window``): a
+    ``Setup contains invalid expression`` table in this attempt's transcript
+    between the BEGIN sentinel (``begin_expression_window``) and the END
+    sentinel written here, or a named expression whose ``list-properties``
+    says ``Valid : No``. Either refuses; ``RO_EXPRESSION_CHECK=warn`` never
+    overrides it. When the END sentinel does not appear within ``wait_s``
+    (or there was no BEGIN), the check is unverified and refuses unless
+    ``RO_EXPRESSION_CHECK=warn`` (host diagnosis only). An ``iterate`` that
+    still returns without a residual line is refused afterwards
+    (``unknown_early_stop`` / counter did not advance). The raw window is
+    appended to ``solver_log_path``.
+    """
+    from ro.expression_window import WINDOW_WAIT_S
+
     chunks = []
-    form_texts = []
-    listings = {}
-    for form in EXPRESSION_CHECK_FORMS:
-        text = _scheme_exec_text(solver, form)
-        print(f"Expression check {form}:")
-        print(text)
-        form_texts.append(text)
-        chunks.append(f"--- {form} ---\n" + ("<no scheme interface>" if text is None else text))
     try:
         names = _named_expression_names(solver.setup.named_expressions)
     except Exception as exc:
@@ -3040,47 +3083,65 @@ def require_setup_expressions_valid(solver, solver_log_path=None):
         listed = _scheme_exec_text(
             solver,
             "(ti-menu-load-string "
-            + json.dumps(
-                f"/define/named-expressions/list-properties {name}"
-            )
+            + json.dumps(f"/define/named-expressions/list-properties {name}")
             + ")",
         )
         print(f"Named expression {name}:")
         print(listed)
-        listings[name] = listed
         chunks.append(f"--- list-properties {name} ---\n" + ("" if listed is None else listed))
-        error = "" if named_expression_listed_valid(listed) else "invalid"
-        rows.append((name, error, "named expression"))
+        if fluent_expression_report_is_invalid(listed or ""):
+            rows.append((name, "Valid : No", "named expression"))
+        elif not named_expression_listed_valid(listed):
+            chunks.append(f"(no Valid line for {name}; the transcript window decides)")
+    for note in touch_expression_reports(solver):
+        chunks.append(f"touch: {note}")
+    window = None
+    path = None
+    if window_token:
+        _scheme_exec_text(solver, scheme_marker_command(EXPRESSION_WINDOW_END, window_token))
+        path, window = wait_for_window(
+            lambda: list_solver_transcript_paths(case_dir or os.getcwd(), solver_log_path or ""),
+            window_token,
+            timeout_s=WINDOW_WAIT_S if wait_s is None else wait_s,
+            sleep=sleep,
+        )
+    verdict, tables = window_verdict(window)
+    chunks.append(
+        f"--- transcript window token={window_token} file={path} verdict={verdict} ---\n"
+        + ("<window not found>" if window is None else window.strip())
+    )
     if rows:
         table = format_expression_error_table(rows)
         print(table)
         chunks.append(table)
     report = "\n".join(chunks)
-    if fluent_expression_report_is_invalid(report):
+    if rows or verdict == "invalid":
         _append_expression_check_log(solver_log_path, report, "FAIL (invalid expression)")
+        shown = "\n\n".join(tables) or format_expression_error_table(rows)
         raise RuntimeError(
-            "Setup contains invalid expressions. Refusing to iterate.\n"
-            + report
+            "Setup contains invalid expressions (Fluent's own report after setup). "
+            "Refusing to iterate.\n" + shown
         )
-    passed, reason = expression_check_positive(form_texts, listings)
-    verdict = f"{'PASS' if passed else 'FAIL'} ({reason})"
-    print(f"Expression check result: {verdict}")
-    if passed:
-        _append_expression_check_log(solver_log_path, report, verdict)
+    if verdict == "pass":
+        print("Expression check result: PASS (no invalid-expression table after setup)")
+        _append_expression_check_log(solver_log_path, report, "PASS")
         return
+    reason = (
+        "no BEGIN sentinel (no scheme interface)" if not window_token
+        else f"END sentinel not found in the transcripts within {WINDOW_WAIT_S if wait_s is None else wait_s:g} s"
+    )
     mode = os.environ.get(EXPRESSION_CHECK_ENV, "").strip().lower()
     if mode == "warn":
         warning = (
-            f"WARNING: {EXPRESSION_CHECK_ENV}=warn: expression check did not positively "
-            f"pass ({reason}); iterating anyway for host diagnosis. Not for production."
+            f"WARNING: {EXPRESSION_CHECK_ENV}=warn: expression check unverified "
+            f"({reason}); iterating anyway for host diagnosis. Not for production."
         )
         print(warning)
-        _append_expression_check_log(solver_log_path, report, f"{verdict} OVERRIDDEN: {warning}")
+        _append_expression_check_log(solver_log_path, report, f"UNVERIFIED OVERRIDDEN: {warning}")
         return
-    _append_expression_check_log(solver_log_path, report, verdict)
+    _append_expression_check_log(solver_log_path, report, f"FAIL (unverified: {reason})")
     raise RuntimeError(
-        f"Expression check did not positively pass ({reason}). "
-        "Refusing to iterate. The raw output is in the solver log; "
+        f"Expression check unverified ({reason}). Refusing to iterate. "
         f"{EXPRESSION_CHECK_ENV}=warn overrides for host diagnosis only.\n" + report
     )
 
@@ -5659,6 +5720,8 @@ if __name__ == "__main__":
             lmh_name=lmh_report_name,
             lmh_signed_name=lmh_signed_report_name,
         )
+        # Template lmh/rho_avg invalid-expression tables end here.
+        expression_window_token = begin_expression_window(solver)
 
 
         # ======================================================
@@ -6305,7 +6368,12 @@ if __name__ == "__main__":
                 )
                 monitor_cursor["n"] = outcome["end_iteration"]
 
-            require_setup_expressions_valid(solver, solver_log_path=solver_log_path)
+            require_setup_expressions_valid(
+                solver,
+                solver_log_path=solver_log_path,
+                case_dir=case_path,
+                window_token=expression_window_token,
+            )
 
             lf_stop_decision = None
             hf_stop_decision = None

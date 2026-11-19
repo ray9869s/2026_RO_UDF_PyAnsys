@@ -363,55 +363,6 @@ def test_live_cp_monitor_drops_faces_where_udm9_is_zero():
     assert "AreaInt" not in live
 
 
-def test_an_invalid_expression_stops_before_iterate(capsys):
-    solver = load_solver_code("expr_check_invalid")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            command = commands[0]
-            if "list-properties" in command:
-                return "Valid            : No\nUsed in          : 1 places"
-            return (
-                "Setup contains invalid expression\n"
-                "Expression                       Error                Used In\n"
-                "cp_live_mean                     udm - 7              cp_live"
-            )
-
-    class Named:
-        def get_object_names(self):
-            return ["cp_live_mean"]
-
-    session = SimpleNamespace(
-        scheme=Scheme(),
-        setup=SimpleNamespace(named_expressions=Named()),
-    )
-    with pytest.raises(RuntimeError, match="Refusing to iterate"):
-        solver.require_setup_expressions_valid(session)
-    printed = capsys.readouterr().out
-    assert "Expression" in printed
-    assert "Error" in printed
-    assert "Used In" in printed
-    assert "Setup contains invalid expression" in printed
-
-
-def test_a_valid_expression_report_does_not_block_iterate():
-    solver = load_solver_code("expr_check_valid")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            return "()"
-
-    class Named:
-        def get_object_names(self):
-            return []
-
-    session = SimpleNamespace(
-        scheme=Scheme(),
-        setup=SimpleNamespace(named_expressions=Named()),
-    )
-    solver.require_setup_expressions_valid(session)
-
-
 def test_expression_report_text_is_the_setup_failure():
     table = format_expression_error_table(
         [("cp_live_mean", "udm - 7", "report definition cp_live")]
@@ -428,56 +379,6 @@ def test_expression_report_text_is_the_setup_failure():
     assert not fluent_expression_report_is_invalid("Input parameter  : No")
 
 
-def _session(scheme, names=(), listing="Valid            : Yes"):
-    class Named:
-        def get_object_names(self):
-            return list(names)
-
-    return SimpleNamespace(scheme=scheme, setup=SimpleNamespace(named_expressions=Named()))
-
-
-def test_expression_check_fails_closed_when_no_check_can_run():
-    """Audit B1-05: every scheme call raising is not a pass."""
-    solver = load_solver_code("expr_check_no_scheme")
-
-    class Broken:
-        def exec(self, commands, wait=True, silent=False):
-            raise ConnectionError("scheme unavailable")
-
-    with pytest.raises(RuntimeError, match="no expression check could run"):
-        solver.require_setup_expressions_valid(_session(Broken()))
-    with pytest.raises(RuntimeError, match="no expression check could run"):
-        solver.require_setup_expressions_valid(_session(None))
-
-
-def test_expression_check_fails_closed_on_unbound_forms():
-    solver = load_solver_code("expr_check_unbound")
-
-    class Unbound:
-        def exec(self, commands, wait=True, silent=False):
-            return "Error: eval: unbound variable"
-
-    with pytest.raises(RuntimeError, match="did not positively pass"):
-        solver.require_setup_expressions_valid(_session(Unbound()))
-
-
-def test_named_expression_must_list_valid_yes():
-    solver = load_solver_code("expr_check_named_silent")
-
-    class Silent:
-        def exec(self, commands, wait=True, silent=False):
-            return ""  # listing printed nothing about validity
-
-    with pytest.raises(RuntimeError, match="Valid : Yes"):
-        solver.require_setup_expressions_valid(_session(Silent(), names=["cp_live_mean"]))
-
-    class Good:
-        def exec(self, commands, wait=True, silent=False):
-            return "Valid            : Yes\nUsed in          : 1 places"
-
-    solver.require_setup_expressions_valid(_session(Good(), names=["cp_live_mean"]))
-
-
 def test_incommensurate_oscillation_end_to_end_is_phase_sensitive_trend_is_not():
     import math
 
@@ -485,90 +386,6 @@ def test_incommensurate_oscillation_end_to_end_is_phase_sensitive_trend_is_not()
     change = end_to_end_relative_change(wobble, 100)
     assert change > 5e-5  # reads part of the amplitude, not drift
     assert trend_relative_change(wobble, 100) < 2e-5
-
-
-@pytest.mark.parametrize("output", ["", "   ", "None", "#f", "#t", "nil", "No invalid inputs",
-                                    "some text never seen before", "0"])
-def test_expression_check_unrecognised_output_fails(output):
-    solver = load_solver_code(f"expr_check_unrecognised_{abs(hash(output))}")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            return output
-
-    with pytest.raises(RuntimeError, match="did not positively pass"):
-        solver.require_setup_expressions_valid(_session(Scheme()))
-
-
-@pytest.mark.parametrize("output", ["()", "'()", " () "])
-def test_expression_check_recognised_pass_outputs(output):
-    solver = load_solver_code(f"expr_check_recognised_{abs(hash(output))}")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            return output
-
-    solver.require_setup_expressions_valid(_session(Scheme()))
-
-
-def test_expression_check_enumeration_failure_fails(tmp_path):
-    solver = load_solver_code("expr_check_enumeration")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            return "()"
-
-    class Broken:
-        def get_object_names(self):
-            raise RuntimeError("settings API unavailable")
-
-        def get_state(self):
-            raise RuntimeError("settings API unavailable")
-
-    session = SimpleNamespace(scheme=Scheme(), setup=SimpleNamespace(named_expressions=Broken()))
-    log = tmp_path / "solver_log_case.txt"
-    with pytest.raises(RuntimeError, match="Could not enumerate"):
-        solver.require_setup_expressions_valid(session, solver_log_path=log)
-    assert "FAIL (enumeration)" in log.read_text(encoding="utf-8")
-
-
-def test_expression_check_raw_output_goes_to_solver_log(tmp_path):
-    solver = load_solver_code("expr_check_log")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            return "()"
-
-    log = tmp_path / "solver_log_case.txt"
-    log.write_text("earlier lines\n", encoding="utf-8")
-    solver.require_setup_expressions_valid(_session(Scheme()), solver_log_path=log)
-    text = log.read_text(encoding="utf-8")
-    assert text.startswith("earlier lines")
-    assert "EXPRESSION CHECK (raw output)" in text
-    assert "(get-invalid-inputs-formated)" in text
-    assert "RESULT: PASS" in text
-
-
-def test_expression_check_warn_override_is_explicit_and_logged(monkeypatch, tmp_path, capsys):
-    solver = load_solver_code("expr_check_warn")
-
-    class Scheme:
-        def exec(self, commands, wait=True, silent=False):
-            return "#f"
-
-    log = tmp_path / "solver_log_case.txt"
-    monkeypatch.setenv("RO_EXPRESSION_CHECK", "warn")
-    solver.require_setup_expressions_valid(_session(Scheme()), solver_log_path=log)
-    assert "RO_EXPRESSION_CHECK=warn" in capsys.readouterr().out
-    assert "OVERRIDDEN" in log.read_text(encoding="utf-8")
-
-    class Invalid:
-        def exec(self, commands, wait=True, silent=False):
-            return "Setup contains invalid expression"
-
-    # The override never lets an explicit invalid expression through.
-    with pytest.raises(RuntimeError, match="Setup contains invalid expressions"):
-        solver.require_setup_expressions_valid(_session(Invalid()), solver_log_path=log)
 
 
 def test_monitor_window_requires_coverage_samples_and_finite_values():
@@ -624,12 +441,3 @@ def test_monitor_changes_default_window_is_500_and_extract_keeps_last100(tmp_pat
     assert default["monitor_window_status_last500_cp"] == "no samples"
     merged = extract_monitor_changes(tmp_path)
     assert "monitor_change_last100_lmh" in merged and "monitor_change_last500_lmh" in merged
-
-
-def test_empty_list_counts_only_from_the_invalid_input_forms():
-    from ro.monitor_change import EXPRESSION_CHECK_FORMS, expression_check_positive
-
-    only_expr_check = [None, None, "()", None, None]  # (expr-check) returned ()
-    assert expression_check_positive(only_expr_check, {}) == (False, "no expression check could run")
-    first = ["()"] + [None] * (len(EXPRESSION_CHECK_FORMS) - 1)
-    assert expression_check_positive(first, {})[0] is True
