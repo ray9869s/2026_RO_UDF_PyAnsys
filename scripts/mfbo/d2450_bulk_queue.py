@@ -129,6 +129,9 @@ def expected_cell_counts():
 
 def write_queue(path, jobs):
     destination = Path(path)
+    from ro.job_ids import require_job_ids
+
+    require_job_ids(jobs)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(jobs, indent=2) + "\n",

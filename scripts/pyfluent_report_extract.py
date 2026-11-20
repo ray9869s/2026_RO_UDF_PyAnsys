@@ -216,6 +216,59 @@ _active_extract_phase: str | None = None
 _active_extract_phase_start: float | None = None
 _failed_extract_phase: str | None = None
 _extract_timing_started_at: float | None = None
+# Staging report dir; report_extract_timing.json is rewritten there after
+# every phase, so a killed extract (wall cap, idle hang) leaves the phases
+# it finished, and the one it was in, in post/<dir>.tmp_<id>/.
+_extract_timing_progress_dir: Path | None = None
+
+
+def _timing_payload(*, in_progress: bool) -> dict:
+    total_seconds = None
+    if _extract_timing_started_at is not None:
+        total_seconds = time.monotonic() - _extract_timing_started_at
+    payload = {
+        "bucket_boundaries": REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES,
+        "phases_seconds": dict(_extract_phase_seconds),
+        "completed_phases": list(_completed_extract_phases),
+        "failed_phase": _failed_extract_phase,
+        "segmented_membrane_cp_subphases_seconds": dict(
+            _segmented_membrane_cp_subphase_seconds
+        ),
+        "total_seconds": total_seconds,
+        # Per-phase wall-clock order, for spotting the slow phase at a glance.
+        "phase_order": list(_extract_phase_seconds),
+        "slowest_phase": (
+            max(_extract_phase_seconds, key=_extract_phase_seconds.get)
+            if _extract_phase_seconds
+            else None
+        ),
+    }
+    if in_progress:
+        payload["in_progress"] = True
+        payload["active_phase"] = _active_extract_phase
+        if _active_extract_phase_start is not None:
+            payload["active_phase_elapsed_seconds"] = (
+                time.monotonic() - _active_extract_phase_start
+            )
+    if _extract_profile_name == PROFILE_MFBO:
+        payload["profile"] = PROFILE_MFBO
+    return payload
+
+
+def _write_timing_progress() -> None:
+    directory = _extract_timing_progress_dir
+    if directory is None or not directory.is_dir():
+        return
+    try:
+        path = directory / "report_extract_timing.json"
+        temporary = path.with_name(path.name + ".partial")
+        temporary.write_text(
+            json.dumps(_timing_payload(in_progress=True), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    except OSError as exc:  # diagnostics only; never fail the extract
+        print(f"Warning: could not write extract timing progress: {exc}")
 
 
 def _reset_extract_timing() -> None:
@@ -236,6 +289,13 @@ def _begin_extract_phase(name: str) -> None:
         _end_extract_phase()
     _active_extract_phase = name
     _active_extract_phase_start = time.monotonic()
+    elapsed = (
+        _active_extract_phase_start - _extract_timing_started_at
+        if _extract_timing_started_at is not None
+        else 0.0
+    )
+    print(f"EXTRACT_PHASE begin name={name} elapsed_s={elapsed:.1f}", flush=True)
+    _write_timing_progress()
 
 
 def _end_extract_phase(*, completed: bool = True) -> None:
@@ -251,6 +311,12 @@ def _end_extract_phase(*, completed: bool = True) -> None:
         _failed_extract_phase = name
     _active_extract_phase = None
     _active_extract_phase_start = None
+    print(
+        f"EXTRACT_PHASE end name={name} seconds={_extract_phase_seconds[name]:.1f} "
+        f"completed={completed}",
+        flush=True,
+    )
+    _write_timing_progress()
 
 
 def _abandon_active_extract_phase() -> None:
@@ -288,21 +354,10 @@ def _write_report_extract_timing(report_path: Path):
     if _active_extract_phase is not None and _failed_extract_phase is None:
         _end_extract_phase()
     timing_path = report_path / "report_extract_timing.json"
-    total_seconds = None
-    if _extract_timing_started_at is not None:
-        total_seconds = time.monotonic() - _extract_timing_started_at
-    payload = {
-        "bucket_boundaries": REPORT_EXTRACT_TIMING_BUCKET_BOUNDARIES,
-        "phases_seconds": dict(_extract_phase_seconds),
-        "completed_phases": list(_completed_extract_phases),
-        "failed_phase": _failed_extract_phase,
-        "segmented_membrane_cp_subphases_seconds": dict(
-            _segmented_membrane_cp_subphase_seconds
-        ),
-        "total_seconds": total_seconds,
-    }
-    if _extract_profile_name == PROFILE_MFBO:
-        payload["profile"] = PROFILE_MFBO
+    payload = _timing_payload(in_progress=False)
+    total_seconds = payload["total_seconds"]
+    for name in payload["phase_order"]:
+        print(f"EXTRACT_PHASE_TOTAL name={name} seconds={payload['phases_seconds'][name]:.1f}")
     with timing_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
@@ -604,6 +659,7 @@ if __name__ == "__main__":
 
     post_path.mkdir(parents=True, exist_ok=True)
     report_path.mkdir(parents=True, exist_ok=False)
+    _extract_timing_progress_dir = report_path  # module scope (__main__ block)
 
     summary_csv_path = report_path / "summary_metrics.csv"
     mass_balance_csv_path = report_path / "mass_balance.csv"

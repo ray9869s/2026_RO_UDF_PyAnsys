@@ -247,8 +247,12 @@ def _fmt_mm(value):
 
 
 def _job(job_id, argv):
+    """One queue entry. The id is checked here so no emitted queue holds an
+    id ``job_queue`` refuses."""
+    from ro.job_ids import require_job_id
+
     return {
-        "id": job_id,
+        "id": require_job_id(job_id),
         "argv": argv,
         "cwd": str(project_root()),
     }
@@ -1004,6 +1008,9 @@ def write_csv(path, columns, rows):
 
 def write_queue(path, jobs):
     destination = Path(path)
+    from ro.job_ids import require_job_ids
+
+    require_job_ids(jobs)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(jobs, indent=2) + "\n", encoding="utf-8")
     return destination

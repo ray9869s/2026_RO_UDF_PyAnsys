@@ -62,7 +62,7 @@ EXIT_OK = 0
 EXIT_PREFLIGHT = 1
 EXIT_JOB_FAILED = 2
 
-_JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+from ro.job_ids import JOB_ID_RE as _JOB_ID_RE  # noqa: E402
 _JOB_REQUIRED = ("id", "argv")
 _JOB_OPTIONAL = ("cwd", "env", "console", "timeout_s")
 _RECORD_FIELDS = (

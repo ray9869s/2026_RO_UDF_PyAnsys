@@ -107,6 +107,23 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   `snapshot_case_sha256`/`snapshot_data_sha256`, file provenance and the
   leaf's final hashes at the time; its quality is `UNAVAILABLE` (the
   leaf's residual history runs past the snapshot).
+  Job ids are short: `rx-<geo>` and `snap-<geo>-<N>` (a geometry with
+  two leaves gets `-m<8 hex of mesh id>`); every queue writer checks ids
+  against `job_queue`'s pattern (`ro.job_ids`, ≤ 80 chars) before
+  writing. `--geo GEO_ID` (repeatable) limits the full jobs to those
+  geometries and combines with `--snapshot` in one queue (without it,
+  every PASS final is emitted again). `--extract-wall-cap-hours H` sets the per-attempt extract cap
+  for the job (with `--emit-queue`, for every emitted job).
+- `scripts/repair_final_from_iter.py --run-leaf <leaf> [--apply]` — for a
+  leaf whose continue was stopped mid-chunk (manifest `RUNNING`, no
+  final hashes; D2450_a60). Dry run by default. Hashes the final pair,
+  finds the one saved `*_iter_<N>` pair with the same hashes (sizes
+  first), takes `stop_reason` from `continue.chunks[N]` (or
+  `--stop-reason`), and records the final hashes, `iterations_run=N`,
+  that stop reason and `final_provenance=repaired_from_iter_<N>`
+  (details in `final_repair`); the gate stays cleared, so the emitter
+  then lists the leaf as `STALE`. Refuses with no match, more than one
+  match, a `BROKEN` marker, or recorded hashes that differ from the files.
 
 Workers stay dated: `meshing_code_260616.py`, `solver_code_260616.py`.
 Paths go through `ro.paths`. A leaf is
@@ -142,7 +159,17 @@ validation in `campaign_v3_reextract.py`. A gate whose generation differs from t
 a cleared gate next to reports that carry a generation, does not bind
 (the re-extract emitter then lists the leaf as `STALE`). `reextract_runs` invalidates the sidecar and the gate before
 it renames `post/reports`. A failed extract leaves its staging directory
-for inspection and no PASS.
+for inspection and no PASS. Staging dirs (`post/<dir>.tmp_<id>`) are
+never read by reporting, the emitters, the binding check,
+`validate_load_bearing_summary_csvs.py` or the inventory log scan.
+`report_extract_timing.json` in a staging dir is rewritten after every
+phase (`in_progress`, `active_phase`, `slowest_phase`), so a killed
+extract shows where it was; the attempt log has `EXTRACT_PHASE` lines.
+Prune staging dirs after inspection, with no queue running on that leaf:
+`Get-ChildItem C:\ro_data_mfbo\campaign_v3\runs -Directory -Recurse -Filter "reports.tmp_*" | Select FullName, LastWriteTime`
+to list them, then `Remove-Item -Recurse -LiteralPath <dir>` for each
+one you have read (never by wildcard while an extract runs: the live
+attempt writes its own `reports.tmp_<UTC>_<pid>`).
 
 ## Data roots
 
@@ -310,8 +337,14 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   the flag and brings the abort back.
 - Hang watchdog. Solve idle 60 min, extract idle 30 min, mesh idle
   90 min (`*_hang_idle_minutes`), plus per-attempt wall caps of 48 h,
-  2 h and 12 h (`*_wall_cap_hours`) that fire even while output flows
-  (`HANG_REASON wall_cap`). A quiet attempt log, transcript, and `post/`
+  6 h and 12 h (`*_wall_cap_hours`) that fire even while output flows
+  (`HANG_REASON wall_cap`). Per job: env `RO_EXTRACT_WALL_CAP_HOURS`
+  (`RO_SOLVE_…`, `RO_MESH_…`) in the queue job's `env`, or
+  `campaign_v3_reextract.py --extract-wall-cap-hours`; the driver log
+  prints `WALL_CAP stage=extract hours=… source=…`. D0817_a30 full
+  extracts take 2.3–3.5 h (others 35–55 min). The hang is recorded on
+  the leaf's manifest against the leaf's own data root, whatever
+  `RO_DATA_ROOT` the driver has. A quiet attempt log, transcript, and `post/`
   tree kills the recorded PIDs, prints `HANG failure_class=hang`, and
   exits 75. stdout is read on its own thread, so a Fluent/MPI grandchild
   holding the pipe no longer blocks the stage. Hang and worker exit are
@@ -434,6 +467,16 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   and measured `AR_max`. A missing, inconsistent, or exceeded ceiling
   refuses manifest acceptance or reuse. An AR above 250 still fails
   before the worker writes the final mesh.
+
+## Current state (2026-11-20, re-extract queue at `ae887ed`)
+
+11/24 finals re-extracted PASS and bound. Fixed after it: short job ids
+(the S_a072_l3465 snapshot ids were over 80 chars and refused),
+`record_hang` against the leaf's own root (it failed with `Stale run
+manifest path` on D0817_a30), extract cap 6 h with a per-job override
+and per-phase timing, `repair_final_from_iter.py` for D2450_a60 (final ==
+`*_iter_002500` by size and time; to be proven by hash), staging dirs
+ignored. D0817_a30 has two `reports.tmp_*` dirs from the wall-cap kills.
 
 ## Current state (2026-11-19, after the `3ba17ec` host smoke)
 

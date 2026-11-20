@@ -750,6 +750,9 @@ def study_jobs(data_root=DATA_ROOT, top_n=DEFAULT_TOP):
 
 def write_queue(path, jobs):
     destination = Path(path)
+    from ro.job_ids import require_job_ids
+
+    require_job_ids(jobs)
     if under_production(destination):
         raise ValueError(f"Refusing to write a queue under C:/ro_data: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)

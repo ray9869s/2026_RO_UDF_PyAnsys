@@ -87,8 +87,8 @@ def test_emitter_includes_stale_non_pass_leaf_and_skips_bound_fail(tmp_path):
     jobs = REEXTRACT.pass_final_jobs(tmp_path, report=seen.append)
     ids = sorted(job["id"] for job in jobs)
     assert ids == [
-        f"reextract-D1225_a45-{MESH_ID}-u0p2_p6M",
-        f"reextract-D2450_a60-{MESH_ID}-u0p2_p6M",
+        "rx-D1225_a45",
+        "rx-D2450_a60",
     ]
     assert any(line.startswith("STALE") and "D2450_a60" in line for line in seen)
     assert any(line.startswith("SKIP") and "D0817_a30" in line for line in seen)

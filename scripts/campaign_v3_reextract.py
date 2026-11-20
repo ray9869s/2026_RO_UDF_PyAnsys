@@ -11,6 +11,11 @@ post/reports through the existing re-extract driver.
 re-extract the saved ``*_iter_<N>`` pair into
 ``post/reports_iter<N>_meanfirst/``. Those jobs never touch post/reports or
 the run manifest gate.
+
+``--geo GEO_ID`` (repeatable) limits the full re-extract jobs to those
+geometries and may be combined with ``--snapshot`` in one queue. Job ids
+are ``rx-<geo>`` and ``snap-<geo>-<N>``. ``--extract-wall-cap-hours``
+sets the per-attempt extract cap (on the worker, or on every emitted job).
 """
 
 from __future__ import annotations
@@ -163,15 +168,30 @@ def validate_meanfirst_summary(leaf, dirname="reports"):
     return values
 
 
-def pass_final_jobs(root, *, report=print):
+def pass_final_jobs(root, *, report=print, extract_wall_cap_hours=None, geo_ids=None):
     """PASS finals plus every final whose post/reports is stale.
 
     A leaf that is neither is skipped silently. A stale or PASS leaf whose
     final pair or hashes are incomplete is reported and skipped.
+    ``geo_ids`` limits the scan to those geometries, in that order, and
+    refuses when one of them yields no job.
     """
     root = campaign.mesh_study.resolve_data_root(str(root))
+    if geo_ids:
+        unknown = [geo for geo in geo_ids if geo not in CAMPAIGN_GEO_ID_ORDER]
+        if unknown:
+            raise ValueError(f"--geo is not a campaign geo id: {unknown}")
+        manifests = [
+            path
+            for geo in dict.fromkeys(geo_ids)
+            for path in sorted(
+                (root / "runs" / family_for_geo_id(geo) / geo).glob("*/u0p2_p6M/manifest.json")
+            )
+        ]
+    else:
+        manifests = sorted((root / "runs").glob("*/*/*/u0p2_p6M/manifest.json"))
     jobs = []
-    for manifest_path in sorted((root / "runs").glob("*/*/*/u0p2_p6M/manifest.json")):
+    for manifest_path in manifests:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         stale = report_binding_reason(manifest_path.parent)
         if payload.get("convergence_quality") != "PASS" and stale is None:
@@ -184,11 +204,46 @@ def pass_final_jobs(root, *, report=print):
         if stale is not None:
             report(f"STALE {leaf}: {stale}")
         family, geo, mesh, run = leaf.parts[-4:]
-        jobs.append(campaign._job(
-            f"reextract-{geo}-{mesh}-{run}",
+        jobs.append((geo, mesh, campaign._job(
+            f"rx-{geo}",
             ["{python}", "scripts/campaign_v3_reextract.py", "--data-root", str(root),
-             "--run-leaf", str(leaf)],
-        ))
+             "--run-leaf", str(leaf), *_wall_cap_argv(extract_wall_cap_hours)],
+        )))
+    if geo_ids:
+        missing = [geo for geo in dict.fromkeys(geo_ids) if geo not in {g for g, _m, _j in jobs}]
+        if missing:
+            raise ValueError(
+                f"--geo {missing}: no PASS or stale final with a complete final pair and "
+                "manifest hashes (see the SKIP lines above)."
+            )
+    return _disambiguate(jobs)
+
+
+def _wall_cap_argv(hours):
+    return [] if hours is None else ["--extract-wall-cap-hours", f"{float(hours):g}"]
+
+
+def _disambiguate(entries):
+    """Short ids stay short; a geometry with two leaves gets a mesh hash suffix.
+
+    The job argv names the leaf, so the id only has to be unique and valid.
+    """
+    import hashlib
+
+    from ro.job_ids import require_job_id
+
+    counts = {}
+    for _geo, _mesh, job in entries:
+        counts[job["id"]] = counts.get(job["id"], 0) + 1
+    jobs = []
+    for _geo, mesh, job in entries:
+        if counts[job["id"]] > 1:
+            digest = hashlib.sha256(mesh.encode("utf-8")).hexdigest()[:8]
+            job = {**job, "id": require_job_id(f"{job['id']}-m{digest}")}
+        jobs.append(job)
+    ids = [job["id"] for job in jobs]
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"Duplicate job ids after disambiguation: {ids}")
     return jobs
 
 
@@ -217,7 +272,7 @@ def require_snapshot_leaf(leaf, root, iteration):
     return leaf
 
 
-def snapshot_jobs(root, snapshots):
+def snapshot_jobs(root, snapshots, *, extract_wall_cap_hours=None):
     """One job per GEO_ID:N. Exactly one u0p2 leaf must hold that snapshot."""
     root = campaign.mesh_study.resolve_data_root(str(root))
     jobs = []
@@ -235,12 +290,13 @@ def snapshot_jobs(root, snapshots):
             )
         leaf = require_snapshot_leaf(candidates[0], root, iteration)
         mesh, run = leaf.parts[-2:]
-        jobs.append(campaign._job(
-            f"reextract-{geo}-{mesh}-{run}-iter{iteration}-meanfirst",
+        jobs.append((geo, mesh, campaign._job(
+            f"snap-{geo}-{iteration}",
             ["{python}", "scripts/campaign_v3_reextract.py", "--data-root", str(root),
-             "--run-leaf", str(leaf), "--snapshot-iteration", str(iteration)],
-        ))
-    return jobs
+             "--run-leaf", str(leaf), "--snapshot-iteration", str(iteration),
+             *_wall_cap_argv(extract_wall_cap_hours)],
+        )))
+    return _disambiguate(jobs)
 
 
 def reextract_snapshot(leaf, root, iteration):
@@ -293,22 +349,52 @@ def _main(argv=None):
         "--snapshot-iteration", type=int, default=None,
         help="With --run-leaf: extract *_iter_<N> into post/reports_iter<N>_meanfirst/.",
     )
+    parser.add_argument(
+        "--geo", action="append", default=[], metavar="GEO_ID",
+        help=(
+            "With --emit-queue: full re-extract jobs only for these geometries "
+            "(repeatable; may be combined with --snapshot in one queue)."
+        ),
+    )
+    parser.add_argument(
+        "--extract-wall-cap-hours", type=float, default=None,
+        help=(
+            "Per-attempt extract wall cap for this job (default: run_config "
+            "extract_wall_cap_hours). With --emit-queue it is added to every job."
+        ),
+    )
     args = parser.parse_args(argv)
     root = campaign.mesh_study.resolve_data_root(args.data_root)
-    if args.snapshot and not args.emit_queue:
-        raise ValueError("--snapshot goes with --emit-queue.")
+    if args.extract_wall_cap_hours is not None:
+        from ro.hang_watchdog import WALL_CAP_ENV
+
+        hours = float(args.extract_wall_cap_hours)
+        if not math.isfinite(hours) or hours <= 0:
+            raise ValueError(f"--extract-wall-cap-hours must be > 0, got {hours!r}.")
+        if not args.emit_queue:
+            # The extract driver this worker launches reads it from the env.
+            os.environ[WALL_CAP_ENV["extract"]] = f"{hours:g}"
+    if (args.snapshot or args.geo) and not args.emit_queue:
+        raise ValueError("--snapshot and --geo go with --emit-queue.")
     if args.snapshot_iteration is not None and not args.run_leaf:
         raise ValueError("--snapshot-iteration goes with --run-leaf.")
     if args.emit_queue:
         destination = Path(args.emit_queue)
         if destination.exists():
             raise FileExistsError(f"Refusing to replace queue: {destination}")
+        jobs, kinds = [], []
+        if args.geo or not args.snapshot:
+            jobs += pass_final_jobs(
+                root, extract_wall_cap_hours=args.extract_wall_cap_hours, geo_ids=args.geo
+            )
+            kinds.append("PASS/stale-final")
         if args.snapshot:
-            jobs = snapshot_jobs(root, [parse_snapshot(value) for value in args.snapshot])
-            kind = "snapshot"
-        else:
-            jobs = pass_final_jobs(root)
-            kind = "PASS/stale-final"
+            jobs += snapshot_jobs(
+                root, [parse_snapshot(value) for value in args.snapshot],
+                extract_wall_cap_hours=args.extract_wall_cap_hours,
+            )
+            kinds.append("snapshot")
+        kind = " + ".join(kinds)
         if not jobs:
             raise ValueError("No observed campaign u0p2 PASS or stale final leaves; no queue written.")
         campaign.write_queue(destination, jobs)

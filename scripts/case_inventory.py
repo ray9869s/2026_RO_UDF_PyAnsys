@@ -30,6 +30,7 @@ from ro.convergence_quality import (
     evaluate_convergence_quality,
     metrics_from_summary_row,
 )
+from ro.atomic_reports import is_staging_dirname
 from ro.domain_layout import layout_from_run_directory
 from ro.extract_skip import extract_skip_block_reason
 from ro.manifest import ManifestError, iter_run_manifests, read_run_manifest
@@ -721,7 +722,9 @@ def find_log_files(case_dir: Path) -> tuple[list[Path], list[Path], Optional[Pat
     for root, dirs, files in os.walk(case_dir):
         dirs[:] = [
             d for d in dirs
-            if d.lower() not in LOG_WALK_SKIP_DIRS and not d.startswith(".")
+            if d.lower() not in LOG_WALK_SKIP_DIRS
+            and not d.startswith(".")
+            and not is_staging_dirname(d)
         ]
         root_path = Path(root)
         for file_name in files:

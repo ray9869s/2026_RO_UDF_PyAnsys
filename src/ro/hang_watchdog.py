@@ -11,6 +11,8 @@ Extract is retried once by the driver. Solve is not.
 
 from __future__ import annotations
 
+import contextlib
+import math
 import os
 import queue
 import re
@@ -169,9 +171,41 @@ def idle_seconds(stage: str) -> float:
     return _run_config_value(stage, _IDLE_CONFIG) * 60.0
 
 
+# Per-job override of the per-attempt wall cap, in hours. A queue job sets
+# it in its ``env``; ``campaign_v3_reextract.py --extract-wall-cap-hours``
+# sets it for the extract it launches.
+WALL_CAP_ENV = {
+    "extract": "RO_EXTRACT_WALL_CAP_HOURS",
+    "solve": "RO_SOLVE_WALL_CAP_HOURS",
+    "mesh": "RO_MESH_WALL_CAP_HOURS",
+}
+
+
+def wall_cap_setting(stage: str) -> tuple[float, str]:
+    """``(hours, source)``: the env override when set, else run_config."""
+    if stage not in _WALL_CONFIG:
+        raise ValueError(f"unknown watchdog stage {stage!r}")
+    name = WALL_CAP_ENV[stage]
+    raw = os.environ.get(name)
+    if raw not in (None, ""):
+        try:
+            hours = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a number of hours, got {raw!r}.") from exc
+        if not math.isfinite(hours) or hours <= 0:
+            raise ValueError(f"{name} must be > 0 hours, got {raw!r}.")
+        return hours, f"env {name}"
+    return _run_config_value(stage, _WALL_CONFIG), f"run_config {_WALL_CONFIG[stage][0]}"
+
+
 def wall_cap_seconds(stage: str) -> float:
-    """Run-config per-attempt wall-clock cap for this stage, in seconds."""
-    return _run_config_value(stage, _WALL_CONFIG) * 3600.0
+    """Per-attempt wall-clock cap for this stage, in seconds."""
+    return wall_cap_setting(stage)[0] * 3600.0
+
+
+def format_wall_cap_setting_line(stage: str) -> str:
+    hours, source = wall_cap_setting(stage)
+    return f"WALL_CAP stage={stage} hours={hours:g} wall_s={hours * 3600.0:g} source={source}"
 
 
 def format_wall_cap_line(stage: str, wall_s: float) -> str:
@@ -488,10 +522,22 @@ def record_hang(run_directory, event, *, failed: bool) -> str:
     and its report generation) is cleared on every call: a worker killed
     after ``publish_extract`` wrote PASS must not leave that PASS behind.
     """
+    from ro.paths import leaf_data_root, using_data_root
+
+    directory = Path(run_directory)
+    # The manifest location check follows RO_DATA_ROOT, which in the
+    # driver may be another root (C:\\ro_data while the leaf is under
+    # C:\\ro_data_mfbo\\campaign_v3). Check against the leaf's own root.
+    root = leaf_data_root(directory)
+    scope = using_data_root(root) if root is not None else contextlib.nullcontext()
+    with scope:
+        return _record_hang_in_root(directory, event, failed=failed)
+
+
+def _record_hang_in_root(directory, event, *, failed: bool) -> str:
     from ro.manifest import ManifestError, read_run_manifest, write_run_manifest
     from ro.report_binding import GATE_GENERATION_FIELD
 
-    directory = Path(run_directory)
     try:
         payload = read_run_manifest(directory)
     except (ManifestError, OSError, ValueError) as exc:

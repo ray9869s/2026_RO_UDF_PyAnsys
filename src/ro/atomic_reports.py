@@ -62,6 +62,15 @@ def is_staging_dirname(name: str) -> bool:
     return STAGING_MARKER in str(name)
 
 
+def is_staging_path(path) -> bool:
+    """True for anything inside a ``post/<dir>.tmp_<id>`` staging dir.
+
+    A staging dir is an unpublished (possibly killed) extract. Reporting
+    and scans skip it; prune it by hand after inspection (AGENTS.md).
+    """
+    return any(is_staging_dirname(part) for part in Path(path).parts)
+
+
 def begin_report_extract(case_path, report_path, *, bind_manifest=True):
     """Invalidate the target's binding before any Fluent work.
 
@@ -110,6 +119,13 @@ def clear_manifest_gate(case_path):
         raise ValueError(f"run manifest is not a JSON object: {path}")
     payload["convergence_quality"] = None
     payload[GATE_GENERATION_FIELD] = None
+    write_manifest_json(path, payload)
+
+
+def write_manifest_json(path, payload) -> Path:
+    """Plain JSON rewrite of a manifest: temp file in the same dir + ``os.replace``."""
+    path = Path(path)
+    refuse_production_root(path)
     handle = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, prefix=".manifest.", suffix=".tmp", delete=False
     )
@@ -121,6 +137,7 @@ def clear_manifest_gate(case_path):
     finally:
         if os.path.exists(handle.name):
             os.unlink(handle.name)
+    return path
 
 
 def report_generation_id(staging) -> str:

@@ -755,9 +755,12 @@ solve_hang_idle_minutes = 60.0
 mesh_hang_idle_minutes = 90.0
 # Per-attempt wall-clock caps. Any output resets the idle timer, so a
 # worker that loops while printing is only stopped by these.
-# Full extracts took 30-39 min; 2 h stops a 3.5 h-class hang that keeps
-# printing. Raise it for a mesh that is known to extract slower.
-extract_wall_cap_hours = 2.0
+# Most full extracts take 35-55 min, but D0817_a30 took 2.3-3.5 h
+# (report_extract_timing.json total_seconds 8272-12730 s), so 6 h. A
+# queue job can override it with env RO_EXTRACT_WALL_CAP_HOURS, or
+# campaign_v3_reextract.py --extract-wall-cap-hours; the driver log
+# prints the cap and its source (WALL_CAP stage=extract ...).
+extract_wall_cap_hours = 6.0
 solve_wall_cap_hours = 48.0
 mesh_wall_cap_hours = 12.0
 

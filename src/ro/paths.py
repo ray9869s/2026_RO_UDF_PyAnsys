@@ -163,6 +163,21 @@ def using_data_root(root: str | Path) -> Iterator[Path]:
             os.environ[_DATA_ROOT_ENV] = previous
 
 
+def leaf_data_root(run_directory) -> Path | None:
+    """``<root>`` for ``<root>/runs/<family>/<geo>/<mesh>/<run>``, else None.
+
+    For code handed a leaf path that must validate it against that leaf's
+    own data root, not whatever ``RO_DATA_ROOT`` the caller inherited.
+    """
+    path = Path(run_directory)
+    if not path.is_absolute():
+        path = path.resolve()
+    parents = path.parents
+    if len(parents) < 5 or parents[3].name != "runs":
+        return None
+    return parents[4]
+
+
 def templates_dir() -> Path:
     return project_root() / "templates"
 

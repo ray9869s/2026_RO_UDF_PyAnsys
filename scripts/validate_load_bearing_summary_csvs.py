@@ -20,6 +20,7 @@ import csv
 import sys
 from pathlib import Path
 
+from ro.atomic_reports import is_staging_path
 from ro.fluent_report_helpers import (
     DIAGNOSTIC_FLUX_DECOMPOSITION_SUMMARY_METRICS,
     LOAD_BEARING_SUMMARY_METRICS,
@@ -59,7 +60,13 @@ def discover_default_csvs(data_root_path: Path) -> list[Path]:
     ]
     found: list[Path] = []
     for pattern in patterns:
-        found.extend(sorted(data_root_path.glob(pattern)))
+        found.extend(
+            sorted(
+                path
+                for path in data_root_path.glob(pattern)
+                if not is_staging_path(path.relative_to(data_root_path))
+            )
+        )
     seen: set[Path] = set()
     unique: list[Path] = []
     for path in found:
@@ -117,7 +124,13 @@ def main(argv: list[str] | None = None) -> int:
         for raw in args.paths:
             path = Path(raw)
             if path.is_dir():
-                csv_paths.extend(sorted(path.rglob("summary_metrics_wide.csv")))
+                csv_paths.extend(
+                    sorted(
+                        found
+                        for found in path.rglob("summary_metrics_wide.csv")
+                        if not is_staging_path(found.relative_to(path))
+                    )
+                )
             else:
                 csv_paths.append(path)
     else:
