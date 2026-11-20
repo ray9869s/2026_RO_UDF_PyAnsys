@@ -110,11 +110,17 @@ BENCHMARK_CP_METRIC = "cp_meanfirst_live_window_avg"
 # cp_meanfirst_window_avg) stands in for the live benchmark column.
 V2_CP_METRIC = "cpc_window_avg_area"
 # v2 has no mean-first live CP. cpc_window_avg_area (all window faces) is
-# its mean-first value only when the leaf has no dead zone to speak of:
-# the per-face live canon cp_canon_window_avg must agree with it within
-# this absolute CP tolerance. Host evidence: on leaves with no dead zone
-# (Pillar/ML/Empty) every CP definition agrees to 4 decimals.
-V2_DEAD_ZONE_CP_ABS_TOL = 1e-4
+# its mean-first value when no v2 face is saturated: a dead-zone face has
+# c_p >= c_0, i.e. CP at the Y=1 ceiling (about 28 at u0p2_p6M), so a
+# window q999 (cp_q999_window_flux) below V2_SATURATION_Q999_MAX rules
+# out a dead zone to speak of. Host evidence (2026-11-21): v2 u0p2 q999 is
+# 1.06-1.97 on every row. A recorded dead_zone_area_fraction_window above
+# zero is dead-zone evidence and also blanks the row.
+# |cp_canon_window_avg - cpc_window_avg_area| is informational only: the
+# canon is a different definition (per-face ratio, per-cell k_N) and
+# differs by 2e-4 to 2.3e-3 on unsaturated rows, so it is not a dead-zone
+# test (the earlier 1e-4 rule blanked 11 of 31 u0p2 rows for that).
+V2_SATURATION_Q999_MAX = 3.0
 V2_CP_OK = "ok"
 # Preserve the original queue order, then append the intermediate speeds.
 VELOCITY_ORDER = (0.2, 0.1, 0.3, 0.05, 0.15, 0.25)
@@ -844,33 +850,50 @@ def _number_cell(value):
     return format(float(value), ".12g")
 
 
+def v2_cp_accepted(status):
+    """True when ``v2_cp_status`` accepted ``cpc_window_avg_area``."""
+    return isinstance(status, str) and (status == V2_CP_OK or status.startswith(V2_CP_OK + ":"))
+
+
 def v2_cp_status(metrics):
     """``(status, |cp_canon_window_avg - cpc_window_avg_area|)`` for a v2 leaf.
 
-    ``"ok"`` only with per-leaf evidence that the dead zone is negligible.
+    Accepts ``cpc_window_avg_area`` as the mean-first CP when the window
+    has no saturated face (q999 below ``V2_SATURATION_Q999_MAX``) and no
+    recorded dead-zone area. The status names the rule and the values it
+    used. The canon difference is returned for information only.
     """
     area = metrics.get("cp")
     canon = metrics.get("cp_canon_window_avg")
+    diff = None
+    if area is not None and canon is not None and math.isfinite(abs(canon - area)):
+        diff = abs(canon - area)
     if area is None:
-        return "no cpc_window_avg_area", None
-    if canon is None:
-        return "no cp_canon_window_avg (no dead-zone evidence)", None
-    diff = abs(canon - area)
-    if not math.isfinite(diff):
-        return "non-finite CP", None
-    if diff > V2_DEAD_ZONE_CP_ABS_TOL:
+        return "no cpc_window_avg_area", diff
+    if not math.isfinite(area):
+        return "non-finite CP", diff
+    q999 = metrics.get("q999")
+    if q999 is None:
+        return "no cp_q999_window_flux (saturation unknown)", diff
+    if not math.isfinite(q999) or q999 >= V2_SATURATION_Q999_MAX:
         return (
-            f"dead zone not negligible: |cp_canon_window_avg - cpc_window_avg_area|"
-            f"={diff:.3g} > {V2_DEAD_ZONE_CP_ABS_TOL:g}"
+            f"saturated faces: q999={q999:.4g} >= {V2_SATURATION_Q999_MAX:g}"
         ), diff
-    return V2_CP_OK, diff
+    dead = metrics.get("dead_zone_area_fraction")
+    if dead is not None and (not math.isfinite(dead) or dead > 0.0):
+        return f"dead zone present: dead_zone_area_fraction={dead:.3g}", diff
+    dead_note = "not recorded" if dead is None else "0"
+    return (
+        f"{V2_CP_OK}: no saturated faces (q999={q999:.4g} < {V2_SATURATION_Q999_MAX:g}), "
+        f"dead_zone_area_fraction {dead_note}"
+    ), diff
 
 
 def comparison_rows(v2_root, v3_root, v3_mesh_ids, *, include_unverified=False):
     """One row per geometry and p6M speed. A missing leaf stays blank.
 
     ``cp_rel_change`` skips v2 rows that are only ``unverified`` unless
-    ``include_unverified``. v2 CP is blank unless ``v2_cp_status`` is ok.
+    ``include_unverified``. v2 CP is blank unless ``v2_cp_status`` accepts it.
     """
     rows = []
     for run_id in run_ids():
@@ -884,7 +907,7 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids, *, include_unverified=False):
             )
             v3 = leaf_metrics(run_leaf(v3_root, geo_id, v3_mesh, run_id))
             cp_status, dead_zone_diff = v2_cp_status(v2)
-            if cp_status != V2_CP_OK:
+            if not v2_cp_accepted(cp_status):
                 v2["cp"] = None
                 v2["cp_excess"] = None
             delta_ok = v2["report_binding"] == REPORT_BOUND or (
@@ -943,7 +966,7 @@ def compare_binding_summary(rows):
     v3_bound = sum(1 for row in rows if row.get("v3_report_binding") == REPORT_BOUND)
     blank = len(rows) - unverified - bound
     reported = [row for row in rows if row.get("v2_report_binding") in (REPORT_BOUND, REPORT_UNVERIFIED)]
-    cp_not_ok = sum(1 for row in reported if row.get("v2_cp_status") != V2_CP_OK)
+    cp_not_ok = sum(1 for row in reported if not v2_cp_accepted(row.get("v2_cp_status")))
     return (
         f"v2 rows: bound={bound} unverified={unverified} blank={blank} "
         f"v2_cp_not_ok={cp_not_ok}; v3 rows bound={v3_bound}/{len(rows)}"

@@ -145,11 +145,16 @@ differs is checked first and blanks the row; partial evidence (hashes on
 one side only), a `BROKEN` marker or missing reports also stay blank.
 Unverified rows get no `cp_rel_change` unless `--include-unverified-v2`
 (then `cp_rel_change_includes_unverified=True`). v2 CP
-(`cpc_window_avg_area`) is used only when
-|`cp_canon_window_avg` − `cpc_window_avg_area`| ≤ 1e-4
-(`V2_DEAD_ZONE_CP_ABS_TOL`, negligible dead zone); otherwise `v2_cp` is
-blank and `v2_cp_status` says why (`v2_cp_canon_minus_area_abs` holds
-the difference). v3 and `seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`,
+(`cpc_window_avg_area`) is the mean-first value when no v2 window face
+is saturated: `cp_q999_window_flux` < 3 (`V2_SATURATION_Q999_MAX`; a
+dead-zone face sits at the Y=1 ceiling, CP ≈ 28) and no recorded
+`dead_zone_area_fraction_window` above 0. `v2_cp_status` names the rule
+and values (`ok: no saturated faces (q999=… < 3), …`); otherwise `v2_cp`
+is blank and the status says why (no q999, saturated faces, dead zone
+present). `v2_cp_canon_minus_area_abs` is informational only: the canon
+(per-face ratio, per-cell k_N) differs from the area mean by 2e-4–2.3e-3
+on unsaturated rows, so the earlier 1e-4 canon rule (it blanked 11 of 31
+u0p2 rows) is gone. v3 and `seminar_cases.csv` stay strict. Extracts write `post/<dir>.tmp_<id>`,
 move the target sidecar aside (`extract_source.invalidated_<UTC>.json`)
 and clear the manifest `convergence_quality` at start, and end in
 `ro.atomic_reports.publish_extract`: hash the final pair, write the
@@ -522,7 +527,8 @@ long queue, on the host:
    rows with no hash evidence are reported as `unverified` (the
    `--compare` summary line counts them) and left out of
    `cp_rel_change`; quote the count with any v2 comparison. Also count
-   rows whose `v2_cp_status` is not `ok` (dead zone above 1e-4). Host
+   rows whose `v2_cp_status` does not start with `ok` (saturated faces
+   or a recorded dead zone). Host
 evidence behind them (operator-reported): every continued leaf's
 `post/reports` is from iteration 2000 while the final is 2500/4020;
 D2450_a60 has no gate (main3 stopped mid-continue); `.out` files are

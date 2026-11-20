@@ -824,33 +824,46 @@ def test_v2_any_conflicting_hash_is_blank_before_missing_evidence(tmp_path):
     assert metrics["report_binding"] != "unverified"
 
 
-def test_v2_cp_needs_negligible_dead_zone_evidence(tmp_path):
+def test_v2_cp_accepted_without_saturation_canon_difference_informational(tmp_path):
     mesh_ids = {geo_id: MESH_ID for geo_id in CAMPAIGN_GEO_ID_ORDER}
 
-    def compare_row(cp_canon):
-        root = tmp_path / f"case_{cp_canon}"
+    def compare_row(tag, *, cp_canon, q999=1.97, dead=0.0):
+        root = tmp_path / tag
         _write_leaf(root / "v2", "D2450_a45", CAMPAIGN.production_mesh_id("D2450_a45"), "u0p2_p6M",
-                    cp=1.0, q999=1.3, dp=900.0, exposed=24.0, installed=23.0, gate="PASS",
-                    cpc_area=1.1, cp_canon=cp_canon)
+                    cp=1.0, q999=q999, dp=900.0, exposed=24.0, installed=23.0, gate="PASS",
+                    cpc_area=1.1, cp_canon=cp_canon, dead=dead)
         _write_leaf(root / "v3", "D2450_a45", MESH_ID, "u0p2_p6M", cp=1.2, q999=1.3, dp=1000.0,
                     exposed=24.0, installed=23.0, gate="PASS")
-        return next(r for r in CAMPAIGN.comparison_rows(root / "v2", root / "v3", mesh_ids)
-                    if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
+        rows = CAMPAIGN.comparison_rows(root / "v2", root / "v3", mesh_ids)
+        return root, next(r for r in rows if r["geo_id"] == "D2450_a45" and r["run_id"] == "u0p2_p6M")
 
-    ok = compare_row(1.10005)
-    assert ok["v2_cp_status"] == "ok"
+    # Host case: canon differs by 2.3e-3 (definition, not dead zone), q999 1.97.
+    _, ok = compare_row("canon_differs", cp_canon=1.1023)
+    assert CAMPAIGN.v2_cp_accepted(ok["v2_cp_status"])
+    assert ok["v2_cp_status"].startswith("ok: no saturated faces (q999=1.97 < 3)")
     assert ok["v2_cp"] == pytest.approx(1.1)
     assert ok["cp_rel_change"] == pytest.approx(0.1 / 1.1)
-    dead = compare_row(1.12)
-    assert dead["v2_cp"] is None and dead["cp_rel_change"] is None and dead["v2_cp_excess"] is None
-    assert "dead zone not negligible" in dead["v2_cp_status"]
-    assert dead["v2_cp_canon_minus_area_abs"] == pytest.approx(0.02)
-    root = tmp_path / "case_1.12"
+    assert ok["v2_cp_canon_minus_area_abs"] == pytest.approx(0.0023)
+
+    root, saturated = compare_row("saturated", cp_canon=1.1, q999=27.9)
+    assert saturated["v2_cp"] is None and saturated["cp_rel_change"] is None
+    assert saturated["v2_cp_excess"] is None
+    assert saturated["v2_cp_status"].startswith("saturated faces: q999=27.9 >= 3")
     summary = CAMPAIGN.compare_binding_summary(
         CAMPAIGN.comparison_rows(root / "v2", root / "v3", mesh_ids))
     assert "v2_cp_not_ok=1" in summary
-    assert CAMPAIGN.v2_cp_status({"cp": 1.1, "cp_canon_window_avg": None})[0].startswith(
-        "no cp_canon_window_avg")
+
+    _, dead = compare_row("dead", cp_canon=1.1, dead=0.02)
+    assert dead["v2_cp"] is None and dead["v2_cp_status"].startswith("dead zone present")
+
+    status = CAMPAIGN.v2_cp_status
+    assert status({"cp": 1.1, "q999": None})[0].startswith("no cp_q999_window_flux")
+    assert status({"cp": 1.1, "q999": 3.0})[0].startswith("saturated faces")
+    assert status({"cp": None, "q999": 1.2})[0] == "no cpc_window_avg_area"
+    no_canon = status({"cp": 1.1, "q999": 1.06, "cp_canon_window_avg": None})
+    assert CAMPAIGN.v2_cp_accepted(no_canon[0]) and no_canon[1] is None
+    assert "dead_zone_area_fraction not recorded" in no_canon[0]
+    assert not CAMPAIGN.v2_cp_accepted("okay") and CAMPAIGN.v2_cp_accepted("ok")
 
 
 def test_v2_sidecar_naming_another_final_stays_blank(tmp_path):
