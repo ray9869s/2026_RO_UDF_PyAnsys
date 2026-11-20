@@ -124,6 +124,9 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (details in `final_repair`); the gate stays cleared, so the emitter
   then lists the leaf as `STALE`. Refuses with no match, more than one
   match, a `BROKEN` marker, or recorded hashes that differ from the files.
+  The re-extract of a repaired leaf takes `continuity_final` from
+  transcript row `N` (not the stopped chunk's tail; with no row `N` the
+  gate is UNKNOWN, never PASS) and leaves the monitor-change columns blank.
 
 Workers stay dated: `meshing_code_260616.py`, `solver_code_260616.py`.
 Paths go through `ro.paths`. A leaf is
@@ -166,7 +169,7 @@ never read by reporting, the emitters, the binding check,
 phase (`in_progress`, `active_phase`, `slowest_phase`), so a killed
 extract shows where it was; the attempt log has `EXTRACT_PHASE` lines.
 Prune staging dirs after inspection, with no queue running on that leaf:
-`Get-ChildItem C:\ro_data_mfbo\campaign_v3\runs -Directory -Recurse -Filter "reports.tmp_*" | Select FullName, LastWriteTime`
+`Get-ChildItem C:\ro_data_mfbo\campaign_v3\runs -Directory -Recurse -Filter "*.tmp_*" | Select FullName, LastWriteTime`
 to list them, then `Remove-Item -Recurse -LiteralPath <dir>` for each
 one you have read (never by wildcard while an extract runs: the live
 attempt writes its own `reports.tmp_<UTC>_<pid>`).

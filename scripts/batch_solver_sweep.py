@@ -101,8 +101,15 @@ def solver_skip_block_reason(
     )
     if artifact_failures:
         return artifact_failures[0]
+    import contextlib
+
+    from ro.paths import leaf_data_root, using_data_root
+
+    # Validate against the leaf's own data root, not the driver's env.
+    root = leaf_data_root(run_directory)
     try:
-        payload = read_run_manifest(run_directory)
+        with using_data_root(root) if root is not None else contextlib.nullcontext():
+            payload = read_run_manifest(run_directory)
     except (OSError, ManifestError) as exc:
         return f"run manifest not usable for skip: {exc}"
     stop_reason = payload.get("stop_reason")

@@ -268,8 +268,64 @@ def evaluate_convergence_quality(
     }
 
 
-def continuity_final_from_case_dir(case_dir: str | Path) -> Optional[float]:
-    """Parse final continuity residual from the case solve transcript."""
+REPAIRED_FINAL_PROVENANCE_RE = re.compile(r"^repaired_from_iter_([1-9][0-9]*)$")
+
+
+def repaired_final_iteration(run_manifest: Mapping[str, Any] | None) -> Optional[int]:
+    """``N`` for a manifest repaired by ``repair_final_from_iter.py``, else None.
+
+    Such a leaf's final is the saved ``*_iter_<N>`` pair, while its
+    transcripts and ``.out`` histories run on past ``N`` (the stopped
+    chunk), so tail-based evidence must stop at ``N``.
+    """
+    if not isinstance(run_manifest, Mapping):
+        return None
+    match = REPAIRED_FINAL_PROVENANCE_RE.fullmatch(str(run_manifest.get("final_provenance") or ""))
+    return int(match.group(1)) if match else None
+
+
+def continuity_at_iteration(case_dir: str | Path, iteration: int) -> Optional[float]:
+    """Continuity residual of row ``iteration`` exactly, or None.
+
+    Solver logs first, then other transcripts, newest first. No row
+    ``iteration`` in any transcript is None (the gate is then UNKNOWN, not PASS).
+    """
+    from ro.residual_transcript import (
+        list_transcript_candidates,
+        parse_residual_table,
+        read_text_replace,
+    )
+
+    def _mtime(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidates = sorted(
+        list_transcript_candidates(Path(case_dir)),
+        key=lambda p: (p.name.lower().startswith("solver_log_"), _mtime(p)),
+        reverse=True,
+    )
+    for path in candidates:
+        text, _err = read_text_replace(path)
+        if text is None:
+            continue
+        rows, _detail = parse_residual_table(text)
+        for row in rows:
+            if int(row["iter"]) == int(iteration):
+                return _as_float(row.get("continuity"))
+    return None
+
+
+def continuity_final_from_case_dir(
+    case_dir: str | Path, *, max_iteration: Optional[int] = None
+) -> Optional[float]:
+    """Parse final continuity residual from the case solve transcript.
+
+    ``max_iteration`` (a repaired final, see ``repaired_final_iteration``)
+    takes row ``max_iteration`` instead of the transcript's last row.
+    """
     from ro.residual_transcript import (  # local import keeps inventory light
         PARSE_OK,
         parse_residual_table,
@@ -277,6 +333,8 @@ def continuity_final_from_case_dir(case_dir: str | Path) -> Optional[float]:
         select_solve_transcript,
     )
 
+    if max_iteration is not None:
+        return continuity_at_iteration(case_dir, max_iteration)
     path, status, _detail = select_solve_transcript(Path(case_dir))
     if path is None or status != PARSE_OK:
         return None

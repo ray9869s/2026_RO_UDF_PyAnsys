@@ -408,3 +408,41 @@ def test_follow_up_queue_with_geo_and_snapshots(tmp_path, capsys):
         REEXTRACT.pass_final_jobs(tmp_path, geo_ids=["D2450_a45"], report=lambda line: None)
     with pytest.raises(ValueError, match="go with --emit-queue"):
         REEXTRACT._main(["--data-root", str(tmp_path), "--run-leaf", str(a60), "--geo", "D0817_a30"])
+
+
+# The repaired leaf's transcript runs past N (the stopped chunk) -------------
+
+_HEADER = ("iter  continuity  x-velocity  y-velocity  z-velocity  nacl  "
+           "lmh  m_out  m_in  area_mem  time/iter\n")
+
+
+def _rows(first, last, continuity):
+    return "".join(
+        f"{i}  {continuity:.4e}  1.0000e-03  2.0000e-03  3.0000e-03  4.0000e-03  "
+        f"1.0000e+02  -1.9090e-04  2.6629e-04  6.2423e-05  0:13:30  {9999 - i}\n"
+        for i in range(first, last + 1)
+    )
+
+
+def test_repaired_final_takes_continuity_at_its_iteration_not_the_tail(tmp_path):
+    from ro.convergence_quality import (
+        continuity_final_from_case_dir,
+        repaired_final_iteration,
+    )
+
+    log = tmp_path / "solver_log_u0p2_p6M.txt"
+    log.write_text(_HEADER + _rows(2490, 2500, 2.0e-5) + _HEADER + _rows(2501, 2620, 9.0e-3),
+                   encoding="utf-8")
+    assert continuity_final_from_case_dir(tmp_path) == pytest.approx(9.0e-3)  # the tail
+    assert continuity_final_from_case_dir(tmp_path, max_iteration=2500) == pytest.approx(2.0e-5)
+    assert continuity_final_from_case_dir(tmp_path, max_iteration=3000) is None  # gate UNKNOWN, not PASS
+    assert repaired_final_iteration({"final_provenance": "repaired_from_iter_2500"}) == 2500
+    assert repaired_final_iteration({"final_provenance": None}) is None
+    assert repaired_final_iteration({}) is None
+
+
+def test_extract_bounds_continuity_and_blanks_monitors_for_a_repaired_final():
+    source = (SCRIPTS_DIR / "pyfluent_report_extract.py").read_text(encoding="utf-8")
+    assert "_repaired_iteration = repaired_final_iteration(run_manifest)" in source
+    assert "max_iteration=_repaired_iteration" in source
+    assert "report_binds_manifest(cfg) and _repaired_iteration is None" in source

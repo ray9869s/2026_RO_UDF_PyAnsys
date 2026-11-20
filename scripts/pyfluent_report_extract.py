@@ -37,6 +37,7 @@ from ro.lmh_metrics import MS_TO_LMH, lmh_mass_balance_expression
 from ro.monitor_change import extract_monitor_changes  # noqa: E402
 from ro.convergence_quality import (
     continuity_final_from_case_dir,
+    repaired_final_iteration,
     evaluate_convergence_quality,
     manifest_quality_payload,
     pressure_drop_cells_in_layout,
@@ -3249,8 +3250,19 @@ if __name__ == "__main__":
         # Recorded only. Not part of the PASS/FAIL gate.
         # A snapshot extract reads a saved *_iter_<N> pair; the leaf's .out
         # histories end later, so their tail does not describe it.
+        # A repaired final (repair_final_from_iter.py) is the saved
+        # *_iter_<N> pair; the stopped chunk's .out rows past N are not its
+        # history either, so its monitor columns stay blank too.
+        _repaired_iteration = repaired_final_iteration(run_manifest)
+        if _repaired_iteration is not None:
+            print(
+                f"Repaired final (repaired_from_iter_{_repaired_iteration}): continuity "
+                f"from transcript row {_repaired_iteration}; monitor-change columns blank."
+            )
         monitor_changes = (
-            extract_monitor_changes(case_path) if report_binds_manifest(cfg) else {}
+            extract_monitor_changes(case_path)
+            if report_binds_manifest(cfg) and _repaired_iteration is None
+            else {}
         )
         for column, value in monitor_changes.items():
             summary_wide_df[column] = value
@@ -3260,8 +3272,15 @@ if __name__ == "__main__":
         summary_wide_df.to_csv(summary_wide_csv_path, index=False, encoding="utf-8-sig")
 
         # Post-hoc convergence quality (independent of stop_reason).
-        continuity_final = continuity_final_from_case_dir(case_path)
+        continuity_final = continuity_final_from_case_dir(
+            case_path, max_iteration=_repaired_iteration
+        )
         _gate = _fidelity_extract.get("convergence_gate") or {}
+        if _gate.get("mode") == "lf_monitor" and _repaired_iteration is not None:
+            raise RuntimeError(
+                "The lf_monitor gate reads .out tails that run past a repaired "
+                f"final (repaired_from_iter_{_repaired_iteration}); refusing."
+            )
         if _gate.get("mode") == "lf_monitor":
             quality_result = evaluate_lf_monitor_gate(
                 case_path,
