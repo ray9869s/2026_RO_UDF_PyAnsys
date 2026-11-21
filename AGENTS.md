@@ -551,7 +551,11 @@ FAIL leaf: the driver needs only a complete final pair and
 `iterations_run`, never the gate. Each chunk extracts into
 `post/reports_iter<N>` and rewrites the manifest gate; `post/reports`
 keeps the 2000 final, so the re-extract emitter lists the leaf as STALE
-(`--geo P_p100_h00`) whatever the last gate is; quote that gate. (2)
+(`--geo P_p100_h00`) whatever the last gate is; quote that gate.
+Caveat: a continue chunk keeps the residual check off and the LMH/dP
+QoI conditions on ("all conditions met"), so with monitors this flat a
+chunk can stop on `qoi_converged` within about 100 iterations and the
+continue ends there; it does not force 2000 more iterations. (2)
 `init-D2450_a30-u0p2`: D2450_a30 `u0p2_p6M` fails all three gates with
 flat monitors and imbalance spread over the channel. It is re-solved
 with `mesh_study_case --init-from <u0p1_p6M leaf>`: the source must be

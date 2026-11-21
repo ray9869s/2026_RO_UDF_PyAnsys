@@ -50,3 +50,12 @@ def test_dry_run_shows_leaf_states(tmp_path, capsys):
     assert "source u0p1_p6M: gate=PASS iterations_run=1400" in out
     assert "DRY RUN" in out and not list(tmp_path.glob("*.json"))
     assert FOLLOW.continue_timeout_hours(6.5) == 44.0  # ceil(13 + 30 + 1)
+    pillar = root / "runs" / "pillar" / "P_p100_h00" / STANDARD / "u0p2_p6M"
+    pillar.mkdir(parents=True)
+    (pillar / "manifest.json").write_text(json.dumps(
+        {"convergence_quality": "FAIL", "iterations_run": 2000,
+         "qoi_stop_reports": ["lmh", "dp"], "qoi_stop_include_cp": False}), encoding="utf-8")
+    assert FOLLOW.main(["--dry-run", "--data-root", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "leaf: gate=FAIL iterations_run=2000" in out
+    assert "stop rule: qoi_stop_reports=['lmh', 'dp'] qoi_stop_include_cp=False" in out

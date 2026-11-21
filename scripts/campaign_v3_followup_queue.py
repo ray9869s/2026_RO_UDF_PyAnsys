@@ -6,7 +6,10 @@
    only a complete final pair and ``iterations_run``; the gate is not a
    precondition. Every chunk re-extracts into ``post/reports_iter<N>`` and
    rewrites the manifest gate; ``post/reports`` keeps the 2000 final, so the
-   re-extract emitter lists the leaf as STALE afterwards.
+   re-extract emitter lists the leaf as STALE afterwards. A continue
+   keeps the residual check off and the QoI (LMH, dP) stop on, so with
+   flat monitors a chunk can end on ``qoi_converged`` long before 500
+   iterations, and the continue then stops.
 2. ``init-D2450_a30-u0p2``: fresh ``u0p2_p6M`` solve of D2450_a30
    (standard mesh, ``--require-mesh``) initialised from its ``u0p1_p6M``
    PASS final (``--init-from``). The failed leaf is moved aside by the
@@ -61,6 +64,21 @@ def _leaf_state(path):
             f"stop_reason={payload.get('stop_reason')}")
 
 
+def _stop_rule(path):
+    """The recorded stop rule a continue inherits (cp_live refuses)."""
+    manifest = Path(path) / "manifest.json"
+    if not manifest.is_file():
+        return "stop rule: (no manifest)"
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "stop rule: (unreadable manifest)"
+    return (f"stop rule: qoi_stop_reports={payload.get('qoi_stop_reports')} "
+            f"qoi_stop_include_cp={payload.get('qoi_stop_include_cp')} "
+            f"cp_monitor_name={payload.get('cp_monitor_name')}; a continue keeps the "
+            "residual check off, so the chunk stops when these QoI reports are flat")
+
+
 def plan(data_root, spec, spec_path):
     standard = campaign.mesh_ids_for_spec(spec)
     rows = []
@@ -77,7 +95,8 @@ def plan(data_root, spec, spec_path):
     solve_hours = campaign.estimate_solve_hours(cells)
     leaf = campaign.run_leaf(data_root, CONTINUE_GEO, mesh_id, CONTINUE_RUN)
     rows.append(_row(job, CONTINUE_GEO, CONTINUE_RUN, mesh_id, cells, solve_hours,
-                     continue_timeout_hours(solve_hours), f"leaf: {_leaf_state(leaf)}"))
+                     continue_timeout_hours(solve_hours),
+                     f"leaf: {_leaf_state(leaf)}\n    {_stop_rule(leaf)}"))
 
     job = main_queue._single_job(spec, spec_path, "solve", INIT_GEO, INIT_RUN, False)
     mesh_id = standard[INIT_GEO]
