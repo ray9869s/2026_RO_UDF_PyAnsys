@@ -45,10 +45,16 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (infeasible in Fluent 25.1, see pitfalls); `--cp-live` opts back in,
   `--no-cp-live` is accepted as a no-op for old queues. `--max-aspect-ratio 250`
   selects a hard global ceiling and a distinct `_ar250` mesh leaf.
+  `--require-mesh` never meshes (fails fast without the mesh leaf).
+  `--init-from <run leaf>` is a fresh solve initialised from that leaf's
+  PASS final on the same mesh (counter and UDF ramp restart).
 - `scripts/campaign_v3_main_queue.py` — the 52-job main queue
   (2026-11-22 order, `_ar250` for the four contact geometries,
   `--require-mesh` solves, per-job timeouts); `--dry-run` /
   `--emit-queue`. See the 2026-11-22 current state.
+- `scripts/campaign_v3_followup_queue.py` — the 2-job 0.2 m/s
+  follow-up queue (P_p100_h00 continue, D2450_a30 `--init-from` u0p1);
+  `--dry-run` / `--emit-queue`.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
   0.3 m/s, followed by 0.05, 0.15, 0.25 m/s. The additional run cases
@@ -289,6 +295,20 @@ a non-zero window flux in `post/reports`. The fresh smokes pass
 (`release_after_pass`) and the check above cannot be made. Zero residual
 lines means iterate never ran. Do not start the long queue on that code.
 
+`--init-from` smoke (after the main queue's `u0p1_p6M-D2450_a30` is
+PASS; writes the real D2450_a30 `u0p2_p6M` leaf, moving the failed one
+aside; the real follow-up job later moves the smoke leaf aside too).
+Expect `init_from: ... final hashes verified`, `init_from: existing run
+leaf moved aside to ...`, `init_from: staged source data (sha256
+verified)`, `init_from: residual history and iteration counter reset`,
+residual rows 1–20, `..._checkpoint_000010` / `..._checkpoint_000020`,
+`init_from: first residual row is iteration 1`, and `init_from` in the
+run manifest:
+
+```text
+python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 --geo-id D2450_a30 --case u0p2_p6M --m-max 0.035 --m-min 0.006 --m-cpg 5 --bl-layers 4 --membrane-bl-y1-um 2 --bulk-max-size 0.034 --peel-layers 2 --max-prism-aspect-ratio 250 --geometry-suffix .pmdb --geometry-root C:/ro_data_mfbo/geometries_pmdb --mesh-spec configs/mesh_spec_v3.json --require-mesh --checkpoint-every 10 --max-iterations 20 --convergence-profile campaign_v3 --keep-checkpoints --init-from C:/ro_data_mfbo/campaign_v3/runs/diamond/D2450_a30/max035_min006_cpg5_bl4_peel2_y1h020_bms034/u0p1_p6M
+```
+
 Fresh smoke (live CP off, the default after `430bf9b`). Expect also
 `Mesh spec: accepted on effective parameters`, `Expression check result:
 PASS` with the transcript window in `solver_log_<case>.txt`, and a
@@ -522,6 +542,34 @@ ok`, `mesh from step 1`, `MESH MISSING`, `RUN LEAF EXISTS`) and writes
 nothing; `--emit-queue PATH` refuses an existing path. A refused or
 failed job does not stop `job_queue run`; check the dry-run warnings
 first.
+
+**0.2 m/s follow-ups (queue `campaign_v3_followup_queue.py`, 2 jobs).**
+(1) `cont-P_p100_h00`: P_p100_h00 `u0p2_p6M` is FAIL only on
+continuity_final (1.2754e-4 > 1e-4; LMH and mass balance pass, monitors
+flat). `--continue-iterations 2000 --continue-every 500` is allowed on a
+FAIL leaf: the driver needs only a complete final pair and
+`iterations_run`, never the gate. Each chunk extracts into
+`post/reports_iter<N>` and rewrites the manifest gate; `post/reports`
+keeps the 2000 final, so the re-extract emitter lists the leaf as STALE
+(`--geo P_p100_h00`) whatever the last gate is; quote that gate. (2)
+`init-D2450_a30-u0p2`: D2450_a30 `u0p2_p6M` fails all three gates with
+flat monitors and imbalance spread over the channel. It is re-solved
+with `mesh_study_case --init-from <u0p1_p6M leaf>`: the source must be
+on the same data root, geometry and mesh id, PASS, finished, with final
+hashes equal to its manifest (`ro.init_from`); the existing leaf is moved
+aside (`u0p2_p6M.prev_<UTC>`) only after that check. The worker sets the
+run up exactly like a fresh solve (template, mesh, this run's velocity
+and UDF), stages a hash-verified copy of the source data in the leaf
+(`<geo>_<run>_init_from.dat.h5`, deleted after the final write), reads it
+instead of hybrid init + species patch, then calls
+`solution.monitor.residual.reset()` (Fluent 25.1: "delete the residual
+history and reset iteration counter to unity") so `N_ITER` and the UDF
+ramp restart. Fail-closed: the first checkpoint refuses if the counter
+is not at the planned iteration, and the final is refused unless the
+first residual row is iteration 1. The manifest records `init_from`
+(leaf, run id, mesh id, final hashes, iterations, gate). The reset and
+the read-data-onto-a-fresh-setup path have not run on the host yet: run
+the 20-iteration smoke below first.
 
 ## Current state (2026-11-20, re-extract queue at `ae887ed`)
 

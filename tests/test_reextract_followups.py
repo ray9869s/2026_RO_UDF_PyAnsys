@@ -446,3 +446,25 @@ def test_extract_bounds_continuity_and_blanks_monitors_for_a_repaired_final():
     assert "_repaired_iteration = repaired_final_iteration(run_manifest)" in source
     assert "max_iteration=_repaired_iteration" in source
     assert "report_binds_manifest(cfg) and _repaired_iteration is None" in source
+
+
+def test_failed_leaf_continued_to_pass_is_emitted_as_stale(tmp_path):
+    """P_p100_h00: FAIL at 2000 (continuity only). Before the continue the
+    emitter skips it; after a continue that ends PASS, post/reports still
+    names the 2000 final, so the leaf is STALE and gets an rx- job."""
+    old = {"final_case_sha256": hashlib.sha256(b"case-2000").hexdigest(),
+           "final_data_sha256": hashlib.sha256(b"data-2000").hexdigest()}
+    leaf = _leaf(tmp_path, "P_p100_h00", "pillar", gate="FAIL", sidecar=old)
+    manifest = json.loads((leaf / "manifest.json").read_text(encoding="utf-8"))
+    manifest.update(old)
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert REEXTRACT.pass_final_jobs(tmp_path, report=lambda line: None) == []
+    # After the continue: new final (CAS/DAT), manifest hashes and PASS gate.
+    manifest.update(convergence_quality="PASS",
+                    final_case_sha256=hashlib.sha256(CAS).hexdigest(),
+                    final_data_sha256=hashlib.sha256(DAT).hexdigest())
+    (leaf / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    seen = []
+    jobs = REEXTRACT.pass_final_jobs(tmp_path, report=seen.append, geo_ids=["P_p100_h00"])
+    assert [job["id"] for job in jobs] == ["rx-P_p100_h00"]
+    assert any(line.startswith("STALE") for line in seen)

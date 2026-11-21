@@ -63,6 +63,13 @@ from ro.hf_monitor_stop import (
     run_hf_monitor_iterations,
 )
 from ro.convergence_quality import continuity_final_from_case_dir
+from ro.init_from import (
+    INIT_FROM_FIELD,
+    manifest_record as init_from_manifest_record,
+    require_counter_restarted,
+    require_init_from_record,
+    stage_init_data,
+)
 from ro.solver_common import normalize_path, path_to_fluent_str as as_fluent_path
 from ro.solver_common import (
     SOLVER_EXIT_ARTIFACT_FAILURE,
@@ -491,6 +498,9 @@ def write_worker_run_manifest(
         mesh_manifest,
         created_utc=created_utc,
     )
+    init_from_record = getattr(cfg, "init_from", None)
+    if init_from_record is not None:
+        payload[INIT_FROM_FIELD] = init_from_manifest_record(init_from_record)
     require_viscous_model(payload)
     require_campaign_membrane_blocked_area_frac(payload, kind="Run")
     require_mesh_run_blocked_frac_agree(mesh_manifest, payload)
@@ -906,6 +916,14 @@ if __name__ == "__main__":
         if has_restart_case_file
         else "mesh_initialization"
     )
+    init_from = getattr(cfg, "init_from", None)
+    if init_from is not None:
+        init_from = require_init_from_record(init_from)
+        if input_mode != "mesh_initialization":
+            raise ValueError(
+                f"init_from is a fresh solve from the mesh; input mode is {input_mode}."
+            )
+    staged_init_data_file = None
 
     # Inlet velocity setting
     inlet_velocity_value = cfg.inlet_velocity_value
@@ -5100,6 +5118,15 @@ if __name__ == "__main__":
         if not os.path.isfile(template_case_path):
             raise FileNotFoundError(f"Template case file not found: {template_case_path}")
 
+        if init_from is not None:
+            staged_init_data_file = str(
+                stage_init_data(init_from, case_path, geo_name, case_name)
+            )
+            print(
+                "init_from: staged source data (sha256 verified) "
+                f"{init_from['final_data_file']} -> {staged_init_data_file}"
+            )
+
     if not os.path.isfile(udf_master_path):
         raise FileNotFoundError(f"UDF source file not found: {udf_master_path}")
 
@@ -5967,7 +5994,25 @@ if __name__ == "__main__":
         # ##### [14] Initialization and Species Patch #####
         # ======================================================
 
-        if input_mode in ("restart_continuation", "checkpoint_resume"):
+        if init_from is not None:
+            print(
+                "init_from: reading the source final data instead of hybrid "
+                f"initialization: {staged_init_data_file} (from {init_from['leaf']}, "
+                f"iteration {init_from['iterations_run']})",
+                flush=True,
+            )
+            solver.settings.file.read_data(
+                file_name=as_fluent_path(staged_init_data_file)
+            )
+            # Delete the residual history and reset the iteration counter to
+            # unity, so N_ITER (the UDF ramp) and the stop window start again.
+            solution.monitor.residual.reset()
+            print(
+                "init_from: residual history and iteration counter reset; the "
+                "UDF ramp restarts as a new solve."
+            )
+            print(solution.initialization.get_state())
+        elif input_mode in ("restart_continuation", "checkpoint_resume"):
             print(
                 f"{input_mode}: skipping hybrid initialization and species patch "
                 "so the loaded data remains the initial solution and the "
@@ -6791,6 +6836,9 @@ if __name__ == "__main__":
                 continue_from_iteration,
                 iterations_run_from_case(case_path),
             )
+        if init_from is not None:
+            first_row = require_counter_restarted(iteration_bounds_from_case(case_path))
+            print(f"init_from: first residual row is iteration {first_row}.")
 
         publish_stop_reason_and_finals(
             solver,
@@ -6815,6 +6863,8 @@ if __name__ == "__main__":
                 staged_restart_case_file,
                 staged_restart_data_file,
             )
+        if staged_init_data_file is not None:
+            remove_staged_restart_copies(staged_init_data_file)
 
 
     except Exception as e:

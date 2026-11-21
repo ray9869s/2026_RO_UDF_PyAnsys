@@ -1675,3 +1675,69 @@ def test_require_mesh_reuses_an_existing_mesh(monkeypatch, tmp_path):
                         "u0p2_p6M", "--m-min", "0.003", "--require-mesh"]) == 0
     assert seen.get("meshed") is None
     assert seen["solver_overrides"]["run_id"] == "u0p2_p6M"
+
+
+def _plant_init_source(tmp_path, mesh_id, run="u0p1_p6M", gate="PASS"):
+    import hashlib
+
+    leaf = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / run
+    leaf.mkdir(parents=True)
+    hashes = {}
+    for ext in ("cas", "dat"):
+        path = leaf / f"D2450_a45_{run}_final.{ext}.h5"
+        path.write_bytes(f"{ext}-{run}".encode())
+        hashes[f"final_{'case' if ext == 'cas' else 'data'}_sha256"] = hashlib.sha256(
+            path.read_bytes()).hexdigest()
+    (leaf / "manifest.json").write_text(json.dumps(
+        {"run_id": run, "convergence_quality": gate, "stop_reason": "max_iter_reached",
+         "iterations_run": 2000, **hashes}), encoding="utf-8")
+    return leaf
+
+
+def test_init_from_moves_the_failed_leaf_aside_and_passes_the_record(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    source = _plant_init_source(tmp_path, mesh_id)
+    failed = tmp_path / "runs" / "diamond" / "D2450_a45" / mesh_id / "u0p2_p6M"
+    failed.mkdir(parents=True)
+    (failed / "manifest.json").write_text(json.dumps({"convergence_quality": "FAIL"}),
+                                          encoding="utf-8")
+    argv = ["--data-root", str(tmp_path), "--geo-id", "D2450_a45", "--case", "u0p2_p6M",
+            "--m-min", "0.003", "--init-from", str(source)]
+    assert driver.main(argv) == 0
+    assert seen.get("meshed") is None
+    record = seen["solver_overrides"]["init_from"]
+    assert record["leaf"] == str(source.resolve()) and record["run_id"] == "u0p1_p6M"
+    assert seen["solver_overrides"]["run_id"] == "u0p2_p6M"
+    moved = list(failed.parent.glob("u0p2_p6M.prev_*"))
+    assert len(moved) == 1
+    assert json.loads((moved[0] / "manifest.json").read_text())["convergence_quality"] == "FAIL"
+
+
+def test_init_from_refusals_leave_the_leaf_in_place(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    common = ["--data-root", str(tmp_path), "--geo-id", "D2450_a45", "--case", "u0p2_p6M",
+              "--m-min", "0.003"]
+    source = _plant_init_source(tmp_path, mesh_id, gate="FAIL")
+    with pytest.raises(FileNotFoundError, match="--init-from: mesh leaf is missing"):
+        driver.main([*common, "--init-from", str(source)])
+    for extra in (["--resume"], ["--mesh-only"], ["--continue-iterations", "10"]):
+        with pytest.raises(ValueError, match="--init-from is a fresh solve"):
+            driver.main([*common, "--init-from", str(source), *extra])
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    failed = source.parent / "u0p2_p6M"
+    failed.mkdir()
+    with pytest.raises(ValueError, match="not PASS"):
+        driver.main([*common, "--init-from", str(source)])
+    assert failed.is_dir() and not list(source.parent.glob("u0p2_p6M.prev_*"))
+    assert seen.get("solved") is None and "solver_overrides" not in seen

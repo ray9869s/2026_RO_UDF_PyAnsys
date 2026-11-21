@@ -43,6 +43,14 @@ match the request. An empty ``wall_spacer_labels`` request also requires
 requires that field to be absent. The run leaf is still refused when it
 exists.
 
+``--init-from RUN_LEAF`` is a fresh solve on an existing mesh whose initial
+field is that leaf's PASS final (same geometry and mesh id, final hashes
+verified against its manifest). This run's settings and inlet velocity
+apply; the solver reads a staged copy of the source data instead of
+hybrid initialisation and resets the iteration counter, so the UDF ramp
+restarts. An existing leaf for this run is moved aside
+(``<run>.prev_<UTC>``) first; the manifest records ``init_from``.
+
 ``--require-mesh`` implies ``--reuse-mesh`` and fails before any Fluent
 launch when the mesh leaf does not exist, so a solve never meshes.
 
@@ -106,6 +114,7 @@ from ro.membrane_bl import (
     specs_match,
 )
 from ro.convergence_quality import continuity_final_from_case_dir
+from ro.init_from import resolve_init_from_leaf
 from ro.convergence_stop import (
     CAMPAIGN_V3_PROFILE,
     campaign_v3_stop_overrides,
@@ -1334,6 +1343,17 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--init-from",
+        default=None,
+        metavar="RUN_LEAF",
+        help=(
+            "Fresh solve initialised from this run leaf's PASS final (same data "
+            "root, geometry and mesh id; final hashes verified). This run's "
+            "settings and inlet velocity apply; the iteration counter and UDF "
+            "ramp restart. An existing leaf for this run is moved aside first."
+        ),
+    )
+    parser.add_argument(
         "--require-mesh",
         action="store_true",
         help=(
@@ -2018,6 +2038,13 @@ def _main(argv=None):
         raise ValueError("--resume does not combine with --mesh-only.")
     if args.require_mesh and args.mesh_only:
         raise ValueError("--require-mesh does not combine with --mesh-only.")
+    if args.init_from is not None and (
+        args.mesh_only or args.resume or args.continue_iterations is not None
+    ):
+        raise ValueError(
+            "--init-from is a fresh solve; it does not combine with --mesh-only, "
+            "--resume or --continue-iterations."
+        )
     if args.continue_iterations is not None and args.resume:
         raise ValueError(
             "--continue-iterations does not combine with --resume."
@@ -2084,13 +2111,16 @@ def _main(argv=None):
         )
     if args.continue_iterations is not None and not leaf.is_dir():
         raise FileNotFoundError(f"Continue requires the mesh leaf: {leaf}.")
-    if args.require_mesh and not leaf.is_dir():
+    if (args.require_mesh or args.init_from is not None) and not leaf.is_dir():
+        flag = "--require-mesh" if args.require_mesh else "--init-from"
         raise FileNotFoundError(
-            f"--require-mesh: mesh leaf is missing (this job never meshes): {leaf}."
+            f"{flag}: mesh leaf is missing (this job never meshes): {leaf}."
         )
+    reused_manifest = None
     reuse_mesh = (
         args.reuse_mesh
         or args.require_mesh
+        or args.init_from is not None
         or args.resume
         or args.continue_iterations is not None
     )
@@ -2169,6 +2199,24 @@ def _main(argv=None):
             every=args.continue_every,
             keep_checkpoints=args.keep_checkpoints,
         )
+    if args.init_from is not None:
+        init_record = resolve_init_from_leaf(
+            args.init_from,
+            data_root=data_root,
+            family=family,
+            geo_id=args.geo_id,
+            mesh_id=study_id,
+            case_id=case_id,
+            mesh_sha256=(reused_manifest or {}).get("mesh_sha256"),
+        )
+        print(
+            f"init_from: {init_record['leaf']} (iteration "
+            f"{init_record['iterations_run']}, gate PASS, final hashes verified)."
+        )
+        if run_directory.exists():
+            aside = move_leaf_aside(run_directory)
+            print(f"init_from: existing run leaf moved aside to {aside}")
+        solver_overrides["init_from"] = init_record
     if args.resume and run_directory.is_dir() and final_pair_ready(
         run_directory, args.geo_id, case_id
     ):

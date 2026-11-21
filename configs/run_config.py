@@ -422,6 +422,11 @@ checkpoint_every = None
 # False starts from the mesh. True reads the latest checkpoint in the
 # run directory and continues that data file's iteration counter.
 checkpoint_resume = False
+# None for a solve from the mesh. A dict from ro.init_from (mesh_study_case
+# --init-from <run leaf>) makes a fresh solve read that leaf's PASS final
+# data (same mesh) instead of hybrid initialisation, then reset the
+# residual history and iteration counter so the UDF ramp restarts.
+init_from = None
 # "fresh" when --resume found no run leaf or no checkpoint pair and the
 # solve started from the mesh. Absent on a checkpoint resume.
 resume_fallback = None
@@ -1246,6 +1251,17 @@ def validate_for_solver():
         raise ValueError(
             "checkpoint_resume does not combine with restart_from_case_file."
         )
+    if globals().get("init_from") is not None:
+        from ro.init_from import require_init_from_record
+
+        require_init_from_record(globals().get("init_from"))
+        if resume_flag or globals().get("restart_from_case_file") or globals().get(
+            "continue_from_iteration"
+        ) is not None:
+            raise ValueError(
+                "init_from is a fresh solve; it does not combine with "
+                "checkpoint_resume, restart_from_case_file or a continue."
+            )
     if resume_flag and (
         lf_monitor_stop is not None
         or hf_monitor_stop is not None
