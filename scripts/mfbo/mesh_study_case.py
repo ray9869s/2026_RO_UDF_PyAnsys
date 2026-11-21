@@ -43,6 +43,9 @@ match the request. An empty ``wall_spacer_labels`` request also requires
 requires that field to be absent. The run leaf is still refused when it
 exists.
 
+``--require-mesh`` implies ``--reuse-mesh`` and fails before any Fluent
+launch when the mesh leaf does not exist, so a solve never meshes.
+
 ``--checkpoint-every N`` writes case and data every N iterations during
 the solve and keeps the latest two pairs. It is off when omitted.
 After the extract succeeds and the run manifest gate is PASS, those
@@ -1331,6 +1334,15 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--require-mesh",
+        action="store_true",
+        help=(
+            "Fail before any Fluent launch when the mesh leaf does not exist "
+            "(implies --reuse-mesh; never meshes). Campaign main-queue solves "
+            "pass it."
+        ),
+    )
+    parser.add_argument(
         "--checkpoint-every",
         type=int,
         default=None,
@@ -2004,6 +2016,8 @@ def _main(argv=None):
         raise ValueError("--max-aspect-ratio cannot combine with --max-prism-aspect-ratio.")
     if args.resume and args.mesh_only:
         raise ValueError("--resume does not combine with --mesh-only.")
+    if args.require_mesh and args.mesh_only:
+        raise ValueError("--require-mesh does not combine with --mesh-only.")
     if args.continue_iterations is not None and args.resume:
         raise ValueError(
             "--continue-iterations does not combine with --resume."
@@ -2070,8 +2084,13 @@ def _main(argv=None):
         )
     if args.continue_iterations is not None and not leaf.is_dir():
         raise FileNotFoundError(f"Continue requires the mesh leaf: {leaf}.")
+    if args.require_mesh and not leaf.is_dir():
+        raise FileNotFoundError(
+            f"--require-mesh: mesh leaf is missing (this job never meshes): {leaf}."
+        )
     reuse_mesh = (
         args.reuse_mesh
+        or args.require_mesh
         or args.resume
         or args.continue_iterations is not None
     )

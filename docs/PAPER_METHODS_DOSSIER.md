@@ -420,6 +420,26 @@ Mesh-independence reduction (Richardson, GCI, safety factor 1.25) is implemented
 
 ---
 
+### 5.3 Campaign v3 mesh exception: `_ar250` for the contact geometries
+
+Campaign v3 uses `max035_min006_cpg5_bl4_peel2_y1h020_bms034` for 27
+geometries. D1225_a30, S_a072_l1733, S_a144_l1733 and S_a193_l1733 use
+`max035_min006_cpg5_bl4_peel2_y1h020_bms034_ar250` for every velocity:
+the same sizing with a hard global aspect-ratio ceiling of 250 instead
+of 150 (no prism-only override; orthogonal quality ≥ 0.05, skewness and
+skewed-face fraction keep their limits; the manifest records
+`aspect_ratio_gate: "hard"` and the measured `AR_max`).
+
+Evidence (operator-reported host meshes, 2026-11-22): a finer membrane
+surface does not remove the high-AR cells. S_a193_l1733 max AR is 228.5
+at 0.035 mm, 205.9 at 0.025 mm (`_fs025`) and 223.7 at 0.020 mm
+(`_fs020`), with minimum orthogonal quality about 0.050 in all three.
+The worst cells sit in the closing filament-membrane wedge at the
+contact line, whose shape the surface size does not change. The `_ar250`
+meshes pass: D1225_a30 3,727,299 cells, AR 212.0, orthogonal quality
+0.106; S_a193_l1733 8,115,516 cells, AR 228.5, orthogonal quality 0.050.
+The `_fsNNN` meshes are evidence only, not campaign meshes.
+
 ## 6. Post-processing definitions
 
 ### 6.1 Evaluation window
@@ -580,5 +600,13 @@ Monitor-change columns (recorded, not gating; `src/ro/monitor_change.py`): `moni
 | Mass-balance relative error (boundary permeate vs `abs(volint total mass source)`) | 1e-3 | — | FAIL | `src/ro/convergence_quality.py:31`; definition `scripts/pyfluent_report_extract.py:2221–2227` |
 | Final continuity residual | 1e-4 | — | FAIL | `src/ro/convergence_quality.py:32` |
 | Pressure-drop relative spread over the evaluation window | none | — | WARNING only | `src/ro/convergence_quality.py:7–14` |
+
+**Steady-state-limited cases.** D2450_a30 and P_p100_h00 are classified
+steady-state-limited (operator decision, 2026-11-22; a transient check
+is planned). On D2450_a30 `locate_mass_imbalance` puts 73 % of the cell
+mass imbalance in the channel bulk, 12 % near the membrane, 9 % near the
+contact and 6 % in the buffers; the top 1 % of cells hold 23 %, and the
+imbalance grows downstream. They stay in the campaign queues; their gate
+result is reported with this classification.
 
 Water sink used in the balance is `volint(total) - volint(salt)` (`scripts/pyfluent_report_extract.py:2206–2213`). Continuity is read from the solve transcript, not from a Fluent report. The pressure-drop warning has no numeric limit (**OPEN** as a threshold).

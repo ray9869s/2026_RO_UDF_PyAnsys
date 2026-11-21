@@ -1649,3 +1649,29 @@ def test_continue_and_resume_inherit_the_leaf_stop_rule(tmp_path, capsys):
     }), encoding="utf-8")
     with pytest.raises(ValueError, match="cp_live"):
         driver.inherit_recorded_stop_rule(leaf, dict(overrides))
+
+
+def test_require_mesh_fails_fast_without_meshing(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    argv = ["--data-root", str(tmp_path), "--geo-id", "D2450_a45", "--case", "u0p2_p6M",
+            "--m-min", "0.003", "--require-mesh"]
+    with pytest.raises(FileNotFoundError, match="--require-mesh: mesh leaf is missing"):
+        driver.main(argv)
+    assert seen.get("meshed") is None and seen.get("solved") is None
+    with pytest.raises(ValueError, match="--require-mesh does not combine with --mesh-only"):
+        driver.main([*argv, "--mesh-only"])
+
+
+def test_require_mesh_reuses_an_existing_mesh(monkeypatch, tmp_path):
+    seen = {}
+    _patch_study_main(monkeypatch, tmp_path, seen)
+    mesh_id = "max085_min003_cpg5_bl4_peel2"
+    digest = driver.sha256_file(
+        tmp_path / "prod" / "geometries" / "diamond" / "D2450_a45" / "D2450_a45.dsco"
+    )
+    _plant_successful_mesh(tmp_path, mesh_id, _matching_manifest(digest))
+    assert driver.main(["--data-root", str(tmp_path), "--geo-id", "D2450_a45", "--case",
+                        "u0p2_p6M", "--m-min", "0.003", "--require-mesh"]) == 0
+    assert seen.get("meshed") is None
+    assert seen["solver_overrides"]["run_id"] == "u0p2_p6M"

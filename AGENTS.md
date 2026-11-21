@@ -45,6 +45,10 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (infeasible in Fluent 25.1, see pitfalls); `--cp-live` opts back in,
   `--no-cp-live` is accepted as a no-op for old queues. `--max-aspect-ratio 250`
   selects a hard global ceiling and a distinct `_ar250` mesh leaf.
+- `scripts/campaign_v3_main_queue.py` — the 52-job main queue
+  (2026-11-22 order, `_ar250` for the four contact geometries,
+  `--require-mesh` solves, per-job timeouts); `--dry-run` /
+  `--emit-queue`. See the 2026-11-22 current state.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
   0.3 m/s, followed by 0.05, 0.15, 0.25 m/s. The additional run cases
@@ -475,6 +479,49 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   and measured `AR_max`. A missing, inconsistent, or exceeded ceiling
   refuses manifest acceptance or reuse. An AR above 250 still fails
   before the worker writes the final mesh.
+
+## Current state (2026-11-22, host results at `4e0dfc2`)
+
+**`_ar250` exception (decided).** D1225_a30, S_a072_l1733, S_a144_l1733
+and S_a193_l1733 use the `_ar250` mesh
+(`max035_min006_cpg5_bl4_peel2_y1h020_bms034_ar250`, hard global AR
+ceiling 250) for every velocity; the other 27 geometries use the
+standard v3 mesh. Evidence: finer membrane faces do not fix the contact
+meshes. S_a193_l1733 max AR is 228.5 at 0.035 mm, 205.9 at 0.025 mm
+(`_fs025`) and 223.7 at 0.020 mm (`_fs020`), ortho min about 0.050 in
+all three; the worst cells come from the closing filament-membrane
+wedge, not the surface size. The `_ar250` meshes PASS: D1225_a30
+3,727,299 cells, AR 212.0, ortho 0.106; S_a193_l1733 8,115,516 cells,
+AR 228.5, ortho 0.050. S_a072_l1733 and S_a144_l1733 `_ar250` meshes are
+step 1 of the main queue. Do not use the `_fs025` / `_fs020` meshes for
+campaign solves.
+
+**Steady-state-limited (classification).** D2450_a30 and P_p100_h00.
+`locate_mass_imbalance` on D2450_a30: imbalance spread over the channel
+(73 %), near membrane 12 %, near contact 9 %, buffer 6 %; the top 1 % of
+cells hold 23 %; it grows downstream. A transient check comes later.
+They stay in the queues; read their gate with this in mind.
+
+**Main queue.** `scripts/campaign_v3_main_queue.py` emits ONE queue
+(52 jobs) in this order: (1) mesh-only `_ar250` for S_a072_l1733 and
+S_a144_l1733; (2) `u0p05_p6M` P_p80_h15 (low-velocity convergence
+check); (3) `u0p2_p6M` of the four `_ar250` geometries; (4) `u0p05`,
+`u0p15`, `u0p25` of REF_empty, D2450_a45, M_c267, P_p80_h15 (its u0p05
+is step 2), S_a144_l3465, velocity by velocity; (5) `u0p1_p6M` of all 31
+(`_ar250` for the four). Solves: cap 2000 for every family, live CP off,
+`--require-mesh` (new `mesh_study_case` flag: implies `--reuse-mesh`,
+fails before any Fluent launch when the mesh leaf is missing, never
+meshes). Every job has `timeout_s`: mesh-only 13 h (mesh wall cap + 1);
+a solve `ceil(2 × estimate + 6 h extract cap + 1)`, clamped to 12–55 h,
+55 h when the cell count is unknown. Estimates are linear in cells from
+the D2450_a45 calibration (4.34 M cells, 6.5 h) plus 1.5 h extract; a
+mesh-only job is 1.5 h; an `_ar250` mesh not made yet is estimated from
+the standard mesh. These are planning numbers. `--dry-run` prints id,
+geometry, run id, mesh id, cells, estimate, timeout and state (`mesh
+ok`, `mesh from step 1`, `MESH MISSING`, `RUN LEAF EXISTS`) and writes
+nothing; `--emit-queue PATH` refuses an existing path. A refused or
+failed job does not stop `job_queue run`; check the dry-run warnings
+first.
 
 ## Current state (2026-11-20, re-extract queue at `ae887ed`)
 
