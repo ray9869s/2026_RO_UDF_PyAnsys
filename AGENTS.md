@@ -52,9 +52,9 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (2026-11-22 order, `_ar250` for the four contact geometries,
   `--require-mesh` solves, per-job timeouts); `--dry-run` /
   `--emit-queue`. See the 2026-11-22 current state.
-- `scripts/campaign_v3_followup_queue.py` — the 2-job 0.2 m/s
-  follow-up queue (P_p100_h00 continue, D2450_a30 `--init-from` u0p1);
-  `--dry-run` / `--emit-queue`.
+- `scripts/campaign_v3_followup_queue.py` — the 1-job follow-up queue
+  (D2450_a30 `u0p2_p6M` `--init-from` its `u0p1_p6M`); `--dry-run` /
+  `--emit-queue`.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
   0.3 m/s, followed by 0.05, 0.15, 0.25 m/s. The additional run cases
@@ -520,7 +520,9 @@ campaign solves.
 `locate_mass_imbalance` on D2450_a30: imbalance spread over the channel
 (73 %), near membrane 12 %, near contact 9 %, buffer 6 %; the top 1 % of
 cells hold 23 %; it grows downstream. A transient check comes later.
-They stay in the queues; read their gate with this in mind.
+They stay in the queues; read their gate with this in mind. P_p100_h00 `u0p2_p6M` is
+reported as `continuity_boundary` (below); D2450_a30 `u0p2_p6M` is
+re-solved with `--init-from`.
 
 **Main queue.** `scripts/campaign_v3_main_queue.py` emits ONE queue
 (52 jobs) in this order: (1) mesh-only `_ar250` for S_a072_l1733 and
@@ -543,19 +545,25 @@ nothing; `--emit-queue PATH` refuses an existing path. A refused or
 failed job does not stop `job_queue run`; check the dry-run warnings
 first.
 
-**0.2 m/s follow-ups (queue `campaign_v3_followup_queue.py`, 2 jobs).**
-(1) `cont-P_p100_h00`: P_p100_h00 `u0p2_p6M` is FAIL only on
-continuity_final (1.2754e-4 > 1e-4; LMH and mass balance pass, monitors
-flat). `--continue-iterations 2000 --continue-every 500` is allowed on a
-FAIL leaf: the driver needs only a complete final pair and
-`iterations_run`, never the gate. Each chunk extracts into
-`post/reports_iter<N>` and rewrites the manifest gate; `post/reports`
-keeps the 2000 final, so the re-extract emitter lists the leaf as STALE
-(`--geo P_p100_h00`) whatever the last gate is; quote that gate.
-Caveat: a continue chunk keeps the residual check off and the LMH/dP
-QoI conditions on ("all conditions met"), so with monitors this flat a
-chunk can stop on `qoi_converged` within about 100 iterations and the
-continue ends there; it does not force 2000 more iterations. (2)
+**P_p100_h00 `u0p2_p6M`: `continuity_boundary` (decided, not continued).**
+FAIL only on continuity_final (1.2754e-4 > 1e-4); lmh_relative_difference
+−2.7e-4 and mass balance −3.9e-4 pass; LMH/dP/cp_window flat over the
+last 1000 iterations; continuity plateaued at 1.25–2.7e-4 over the last
+200, so more iterations are not expected to cross 1e-4 (a continue would
+also stop early on the flat QoI stop). It is reported, not re-solved:
+`ro.convergence_quality.convergence_class` labels a FAIL
+`continuity_boundary` when continuity_final is the only failure, flux
+consistency and mass balance pass, 1e-4 ≤ continuity_final < 3e-4
+(`CONTINUITY_BOUNDARY_MAX`) and |`monitor_trend_last500_lmh`|,
+|`monitor_trend_last500_dp`| ≤ 1e-4 (both recorded). Classes: `pass`,
+`continuity_boundary`, `fail`, `unknown`. The gate itself is unchanged.
+`campaign_v3.py --compare` writes `v2_convergence_class` /
+`v3_convergence_class` and counts `continuity_boundary=` in its summary
+line; `--seminar-csv` writes `convergence_class`. A `continuity_boundary`
+row keeps its gate, class and binding but its values are blank unless
+`--include-continuity-boundary`. Other FAIL rows are unchanged.
+
+**D2450_a30 follow-up (queue `campaign_v3_followup_queue.py`, 1 job).**
 `init-D2450_a30-u0p2`: D2450_a30 `u0p2_p6M` fails all three gates with
 flat monitors and imbalance spread over the channel. It is re-solved
 with `mesh_study_case --init-from <u0p1_p6M leaf>`: the source must be

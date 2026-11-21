@@ -404,3 +404,48 @@ def manifest_quality_payload(result: Mapping[str, Any]) -> dict[str, Any]:
             if key in result:
                 payload[key] = result[key]
     return payload
+
+
+# Reporting class (does not change the gate). ``continuity_boundary`` is a
+# FAIL whose only failure is continuity_final, sitting on a plateau just
+# above the limit: flux consistency and mass balance pass, continuity_final
+# is below CONTINUITY_BOUNDARY_MAX, and the LMH and dP monitors do not drift
+# (|monitor_trend_last500| <= MONITOR_FLAT_TREND_MAX, both recorded).
+# Host case (2026-11-22): P_p100_h00 u0p2_p6M, continuity_final 1.28e-4
+# with a 1.25-2.7e-4 plateau over the last 200 iterations; more
+# iterations are not expected to cross 1e-4. Tables include such leaves
+# only on request (campaign_v3 --include-continuity-boundary).
+CONVERGENCE_CLASS_PASS = "pass"
+CONVERGENCE_CLASS_CONTINUITY_BOUNDARY = "continuity_boundary"
+CONVERGENCE_CLASS_FAIL = "fail"
+CONVERGENCE_CLASS_UNKNOWN = "unknown"
+CONTINUITY_BOUNDARY_MAX = 3e-4
+MONITOR_FLAT_TREND_MAX = 1e-4
+_FLAT_TREND_FIELDS = ("monitor_trend_last500_lmh", "monitor_trend_last500_dp")
+
+
+def convergence_class(manifest: Mapping[str, Any]) -> str:
+    """``pass``, ``continuity_boundary``, ``fail`` or ``unknown`` for a run manifest."""
+    gate = manifest.get("convergence_quality")
+    if gate == QUALITY_PASS:
+        return CONVERGENCE_CLASS_PASS
+    if gate != QUALITY_FAIL:
+        return CONVERGENCE_CLASS_UNKNOWN
+    if list(manifest.get("convergence_quality_failures") or []) != ["continuity_final"]:
+        return CONVERGENCE_CLASS_FAIL
+    lmh = _as_float(manifest.get("lmh_relative_difference"))
+    mass = _as_float(manifest.get("mass_balance_relative_error"))
+    continuity = _as_float(manifest.get("continuity_final"))
+    if lmh is None or mass is None or continuity is None:
+        return CONVERGENCE_CLASS_FAIL
+    if not (math.isfinite(lmh) and math.isfinite(mass) and math.isfinite(continuity)):
+        return CONVERGENCE_CLASS_FAIL
+    if abs(lmh) >= LMH_REL_ABS_MAX or abs(mass) >= MASS_BALANCE_REL_ABS_MAX:
+        return CONVERGENCE_CLASS_FAIL
+    if not CONTINUITY_FINAL_MAX <= continuity < CONTINUITY_BOUNDARY_MAX:
+        return CONVERGENCE_CLASS_FAIL
+    for field in _FLAT_TREND_FIELDS:
+        trend = _as_float(manifest.get(field))
+        if trend is None or not math.isfinite(trend) or abs(trend) > MONITOR_FLAT_TREND_MAX:
+            return CONVERGENCE_CLASS_FAIL
+    return CONVERGENCE_CLASS_CONTINUITY_BOUNDARY

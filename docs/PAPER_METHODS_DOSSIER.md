@@ -601,6 +601,21 @@ Monitor-change columns (recorded, not gating; `src/ro/monitor_change.py`): `moni
 | Final continuity residual | 1e-4 | — | FAIL | `src/ro/convergence_quality.py:32` |
 | Pressure-drop relative spread over the evaluation window | none | — | WARNING only | `src/ro/convergence_quality.py:7–14` |
 
+**Continuity-boundary class.** A reporting label, not a gate change
+(`ro.convergence_quality.convergence_class`). A FAIL is
+`continuity_boundary` when continuity_final is its only failure, the
+flux-consistency and mass-balance checks pass, 1e-4 ≤ continuity_final <
+3e-4, and the LMH and spacer-dP monitors do not drift
+(|least-squares trend over the last 500 iterations| ≤ 1e-4 for both).
+P_p100_h00 `u0p2_p6M` is the case (operator decision, 2026-11-22):
+continuity_final 1.28e-4 on a 1.25–2.7e-4 plateau over the last 200
+iterations, `lmh_relative_difference` −2.7e-4, mass balance −3.9e-4,
+monitors flat over the last 1000 iterations, so more iterations are not
+expected to cross 1e-4. Tables (`--compare`, `seminar_cases.csv`) carry
+the class; a boundary row's values are blank unless
+`--include-continuity-boundary`, and any figure or table that includes it
+must say so.
+
 **Steady-state-limited cases.** D2450_a30 and P_p100_h00 are classified
 steady-state-limited (operator decision, 2026-11-22; a transient check
 is planned). On D2450_a30 `locate_mass_imbalance` puts 73 % of the cell

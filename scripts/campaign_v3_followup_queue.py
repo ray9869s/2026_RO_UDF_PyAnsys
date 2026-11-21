@@ -1,22 +1,16 @@
-"""Follow-up queue for the two non-converged 0.2 m/s leaves (2026-11-22).
+"""Follow-up queue for D2450_a30 ``u0p2_p6M`` (2026-11-22): one job.
 
-1. ``cont-P_p100_h00``: ``--continue-iterations 2000 --continue-every 500``
-   on P_p100_h00 ``u0p2_p6M`` (standard v3 mesh). Its gate is FAIL only on
-   continuity_final (1.2754e-4 > 1e-4) with flat monitors. A continue needs
-   only a complete final pair and ``iterations_run``; the gate is not a
-   precondition. Every chunk re-extracts into ``post/reports_iter<N>`` and
-   rewrites the manifest gate; ``post/reports`` keeps the 2000 final, so the
-   re-extract emitter lists the leaf as STALE afterwards. A continue
-   keeps the residual check off and the QoI (LMH, dP) stop on, so with
-   flat monitors a chunk can end on ``qoi_converged`` long before 500
-   iterations, and the continue then stops.
-2. ``init-D2450_a30-u0p2``: fresh ``u0p2_p6M`` solve of D2450_a30
-   (standard mesh, ``--require-mesh``) initialised from its ``u0p1_p6M``
-   PASS final (``--init-from``). The failed leaf is moved aside by the
-   driver. Run it only after the main queue's ``u0p1_p6M-D2450_a30`` job
-   finished PASS; otherwise the job refuses before touching anything.
+``init-D2450_a30-u0p2``: fresh ``u0p2_p6M`` solve of D2450_a30 (standard
+mesh, ``--require-mesh``) initialised from its ``u0p1_p6M`` PASS final
+(``--init-from``). The failed leaf is moved aside by the driver. Run it
+only after the main queue's ``u0p1_p6M-D2450_a30`` job finished PASS;
+otherwise the job refuses before touching anything.
 
-``--dry-run`` prints both jobs and the state of their leaves.
+P_p100_h00 ``u0p2_p6M`` is not continued: its continuity plateaued at
+1.25-2.7e-4 with flat monitors. It is reported as
+``convergence_class=continuity_boundary`` (``ro.convergence_quality``).
+
+``--dry-run`` prints the job and the state of its leaves.
 ``--emit-queue PATH`` refuses an existing path. Does not launch Fluent.
 """
 
@@ -24,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -36,19 +29,7 @@ import campaign_v3_main_queue as main_queue  # noqa: E402
 from ro.job_ids import require_job_ids  # noqa: E402
 
 campaign = main_queue.campaign
-CONTINUE_GEO, CONTINUE_RUN = "P_p100_h00", "u0p2_p6M"
-CONTINUE_ITERATIONS, CONTINUE_EVERY = 2000, 500
 INIT_GEO, INIT_RUN, INIT_SOURCE_RUN = "D2450_a30", "u0p2_p6M", "u0p1_p6M"
-
-
-def continue_timeout_hours(solve_hours):
-    """2 x estimate + one extract cap per chunk extract (start + chunks) + 1."""
-    extracts = 1 + math.ceil(CONTINUE_ITERATIONS / CONTINUE_EVERY)
-    extract_hours = extracts * main_queue.EXTRACT_WALL_CAP_HOURS
-    if solve_hours is None:
-        return main_queue.SOLVE_WALL_CAP_HOURS + extract_hours + 1.0
-    return float(max(main_queue.SOLVE_TIMEOUT_MIN_HOURS,
-                     math.ceil(2.0 * solve_hours + extract_hours + 1.0)))
 
 
 def _leaf_state(path):
@@ -64,39 +45,9 @@ def _leaf_state(path):
             f"stop_reason={payload.get('stop_reason')}")
 
 
-def _stop_rule(path):
-    """The recorded stop rule a continue inherits (cp_live refuses)."""
-    manifest = Path(path) / "manifest.json"
-    if not manifest.is_file():
-        return "stop rule: (no manifest)"
-    try:
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "stop rule: (unreadable manifest)"
-    return (f"stop rule: qoi_stop_reports={payload.get('qoi_stop_reports')} "
-            f"qoi_stop_include_cp={payload.get('qoi_stop_include_cp')} "
-            f"cp_monitor_name={payload.get('cp_monitor_name')}; a continue keeps the "
-            "residual check off, so the chunk stops when these QoI reports are flat")
-
-
 def plan(data_root, spec, spec_path):
     standard = campaign.mesh_ids_for_spec(spec)
     rows = []
-
-    job = main_queue._single_job(spec, spec_path, "solve", CONTINUE_GEO, CONTINUE_RUN, False)
-    argv = job["argv"]
-    del argv[argv.index("--max-iterations"):argv.index("--max-iterations") + 2]
-    argv[argv.index("--require-mesh")] = "--reuse-mesh"
-    argv.extend(["--continue-iterations", str(CONTINUE_ITERATIONS),
-                 "--continue-every", str(CONTINUE_EVERY)])
-    job["id"] = f"cont-{CONTINUE_GEO}"
-    mesh_id = standard[CONTINUE_GEO]
-    cells = main_queue._cell_count(data_root, CONTINUE_GEO, mesh_id)
-    solve_hours = campaign.estimate_solve_hours(cells)
-    leaf = campaign.run_leaf(data_root, CONTINUE_GEO, mesh_id, CONTINUE_RUN)
-    rows.append(_row(job, CONTINUE_GEO, CONTINUE_RUN, mesh_id, cells, solve_hours,
-                     continue_timeout_hours(solve_hours),
-                     f"leaf: {_leaf_state(leaf)}\n    {_stop_rule(leaf)}"))
 
     job = main_queue._single_job(spec, spec_path, "solve", INIT_GEO, INIT_RUN, False)
     mesh_id = standard[INIT_GEO]

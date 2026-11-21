@@ -93,6 +93,10 @@ from ro.mesh_spec import (  # noqa: E402
 from ro.paths import project_root  # noqa: E402
 from ro.aspect_ceiling import aspect_ceiling_from_mesh_id, aspect_ceiling_suffix  # noqa: E402
 from ro.solver_common import make_base_case_name  # noqa: E402
+from ro.convergence_quality import (  # noqa: E402
+    CONVERGENCE_CLASS_CONTINUITY_BOUNDARY,
+    convergence_class,
+)
 from ro.report_binding import (  # noqa: E402
     REPORT_BOUND,
     REPORT_UNVERIFIED,
@@ -158,6 +162,7 @@ SEMINAR_CASES_COLUMNS = (
     "lmh_window_exposed",
     "lmh_window_module",
     "convergence_quality",
+    "convergence_class",
     "report_binding",
     "pp_pressure_drop_periodic_per_m",
     "mesh_spec_sha256",
@@ -189,6 +194,8 @@ COMPARE_COLUMNS = (
     "v3_lmh_installed",
     "v2_gate",
     "v3_gate",
+    "v2_convergence_class",
+    "v3_convergence_class",
     "v2_cp_metric",
     "v2_report_binding",
     "v3_report_binding",
@@ -818,6 +825,7 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
     if not isinstance(gate, str) or not gate.strip():
         gate = "MISSING"
     return {
+        "convergence_class": convergence_class(manifest),
         "cp": cp,
         "cp_canon_live_window_avg": _optional_float(wide.get("cp_canon_live_window_avg")),
         "cp_canon_window_avg": _optional_float(wide.get("cp_canon_window_avg")),
@@ -848,6 +856,29 @@ def _number_cell(value):
     if isinstance(value, str):
         return value
     return format(float(value), ".12g")
+
+
+# Numeric leaf_metrics keys blanked for a leaf left out of a table.
+_METRIC_VALUE_KEYS = (
+    "cp", "cp_canon_live_window_avg", "cp_canon_window_avg", "cp_meanfirst_window_avg",
+    "cp_ref_area_live", "cpc", "dead_zone_area_fraction", "cp_excess", "q999", "dp_per_m",
+    "dp_per_m_window", "lmh_exposed", "lmh_installed",
+)
+
+
+def apply_convergence_class_filter(metrics, *, include_continuity_boundary=False):
+    """Blank a ``continuity_boundary`` leaf's values unless it is requested.
+
+    The gate, class and binding columns stay, so the row says why it is blank.
+    Other classes are unchanged.
+    """
+    if (
+        metrics.get("convergence_class") == CONVERGENCE_CLASS_CONTINUITY_BOUNDARY
+        and not include_continuity_boundary
+    ):
+        for key in _METRIC_VALUE_KEYS:
+            metrics[key] = None
+    return metrics
 
 
 def v2_cp_accepted(status):
@@ -889,7 +920,9 @@ def v2_cp_status(metrics):
     ), diff
 
 
-def comparison_rows(v2_root, v3_root, v3_mesh_ids, *, include_unverified=False):
+def comparison_rows(
+    v2_root, v3_root, v3_mesh_ids, *, include_unverified=False, include_continuity_boundary=False
+):
     """One row per geometry and p6M speed. A missing leaf stays blank.
 
     ``cp_rel_change`` skips v2 rows that are only ``unverified`` unless
@@ -906,6 +939,10 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids, *, include_unverified=False):
                 allow_unverified=True,
             )
             v3 = leaf_metrics(run_leaf(v3_root, geo_id, v3_mesh, run_id))
+            for side in (v2, v3):
+                apply_convergence_class_filter(
+                    side, include_continuity_boundary=include_continuity_boundary
+                )
             cp_status, dead_zone_diff = v2_cp_status(v2)
             if not v2_cp_accepted(cp_status):
                 v2["cp"] = None
@@ -947,6 +984,8 @@ def comparison_rows(v2_root, v3_root, v3_mesh_ids, *, include_unverified=False):
                     "v3_lmh_installed": v3["lmh_installed"],
                     "v2_gate": v2["gate"],
                     "v3_gate": v3["gate"],
+                    "v2_convergence_class": v2["convergence_class"],
+                    "v3_convergence_class": v3["convergence_class"],
                     "v2_report_binding": v2["report_binding"],
                     "v3_report_binding": v3["report_binding"],
                     "v2_cp_status": cp_status,
@@ -967,19 +1006,30 @@ def compare_binding_summary(rows):
     blank = len(rows) - unverified - bound
     reported = [row for row in rows if row.get("v2_report_binding") in (REPORT_BOUND, REPORT_UNVERIFIED)]
     cp_not_ok = sum(1 for row in reported if not v2_cp_accepted(row.get("v2_cp_status")))
+    boundary = sum(
+        1 for row in rows
+        if row.get("v3_convergence_class") == CONVERGENCE_CLASS_CONTINUITY_BOUNDARY
+    )
     return (
         f"v2 rows: bound={bound} unverified={unverified} blank={blank} "
-        f"v2_cp_not_ok={cp_not_ok}; v3 rows bound={v3_bound}/{len(rows)}"
+        f"v2_cp_not_ok={cp_not_ok}; v3 rows bound={v3_bound}/{len(rows)} "
+        f"continuity_boundary={boundary}"
     )
 
 
-def seminar_rows(data_root, mesh_ids):
-    """Benchmark figure table. Missing mean-first CP stays blank; no fallback."""
+def seminar_rows(data_root, mesh_ids, *, include_continuity_boundary=False):
+    """Benchmark figure table. Missing mean-first CP stays blank; no fallback.
+
+    A ``continuity_boundary`` leaf is blank unless ``include_continuity_boundary``.
+    """
     rows = []
     for run_id in run_ids():
         for geo_id in CAMPAIGN_GEO_ID_ORDER:
             mesh_id = mesh_ids[geo_id]
-            metrics = leaf_metrics(run_leaf(data_root, geo_id, mesh_id, run_id))
+            metrics = apply_convergence_class_filter(
+                leaf_metrics(run_leaf(data_root, geo_id, mesh_id, run_id)),
+                include_continuity_boundary=include_continuity_boundary,
+            )
             mesh_path = mesh_manifest_path(data_root, geo_id, mesh_id)
             mesh_manifest = _read_json(mesh_path) if mesh_path.is_file() else {}
             spec_hash = metrics["mesh_spec_sha256"] or mesh_manifest.get(
@@ -1008,6 +1058,7 @@ def seminar_rows(data_root, mesh_ids):
                     "lmh_window_exposed": metrics["lmh_exposed"],
                     "lmh_window_module": metrics["lmh_installed"],
                     "convergence_quality": metrics["gate"],
+                    "convergence_class": metrics["convergence_class"],
                     "report_binding": metrics["report_binding"],
                     "mesh_spec_sha256": spec_hash or "",
                     "git_head": git_head or "",
@@ -1112,6 +1163,15 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--include-continuity-boundary",
+        action="store_true",
+        help=(
+            "With --compare / --seminar-csv: fill rows whose convergence_class is "
+            "continuity_boundary (FAIL on continuity only, at a plateau below 3e-4, "
+            "flux and mass balance passing, monitors flat). Blank by default."
+        ),
+    )
+    parser.add_argument(
         "--v2-root",
         default=V2_ROOT,
         help=f"Production reextract root (default {V2_ROOT}).",
@@ -1152,6 +1212,8 @@ def main(argv=None):
         raise ValueError("--mesh-only does not take --run-id.")
     if args.mesh_only and args.keep_checkpoints:
         raise ValueError("--mesh-only does not take --keep-checkpoints.")
+    if args.include_continuity_boundary and not (args.compare or args.seminar_csv):
+        raise ValueError("--include-continuity-boundary requires --compare or --seminar-csv.")
     if args.geo_id and not args.emit_queue:
         raise ValueError("--geo-id requires --emit-queue.")
     if not any((args.emit_queue, args.mesh_table, args.compare, args.seminar_csv)):
@@ -1204,12 +1266,16 @@ def main(argv=None):
         rows = comparison_rows(
             args.v2_root, args.data_root, mesh_ids,
             include_unverified=args.include_unverified_v2,
+            include_continuity_boundary=args.include_continuity_boundary,
         )
         path = write_csv(args.compare, COMPARE_COLUMNS, rows)
         print(f"Wrote {len(rows)} comparison rows to {path}")
         print(compare_binding_summary(rows))
     if args.seminar_csv:
-        rows = seminar_rows(args.data_root, mesh_ids)
+        rows = seminar_rows(
+            args.data_root, mesh_ids,
+            include_continuity_boundary=args.include_continuity_boundary,
+        )
         path = write_csv(args.seminar_csv, SEMINAR_CASES_COLUMNS, rows)
         print(f"Wrote {len(rows)} seminar rows to {path}")
     return 0
