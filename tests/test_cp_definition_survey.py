@@ -145,3 +145,20 @@ def test_survey_keeps_pass_leaves_and_flags_the_gap(tmp_path):
         "D2450_a45",
         "max085_min006_cpg5_bl4_peel2",
     ) not in by_geo
+
+
+def test_survey_meanfirst_is_cup_based_with_midplane_beside(tmp_path):
+    from helpers import cup_columns
+
+    summary = tmp_path / "summary_metrics_wide.csv"
+    row = cup_columns(1.20, cup=606.0)
+    with summary.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+    out = SURVEY.survey_row("campaign_pass", "pillar", "P_p80_h15", "m", "u0p2_p6M",
+                            summary, tmp_path / "manifest.json")
+    assert out["cp_meanfirst_live_window_avg_midplane"] == pytest.approx(1.20)
+    assert out["cp_meanfirst_live_window_avg"] == pytest.approx(1.20 * 590.0 / 596.0)
+    assert out["cp_cup_status"].startswith("ok: recomputed")
+    assert set(out) == set(SURVEY.COLUMNS)

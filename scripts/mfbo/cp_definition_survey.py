@@ -28,6 +28,8 @@ for _path in (_SRC, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from ro import bulk_cup  # noqa: E402
+
 FLAG_ABS = 0.005
 Y1_TOKEN = "y1h020"
 Y1_GEO_IDS = ("D2450_a45", "P_p80_h15", "M_c160", "S_a144_l3465")
@@ -44,6 +46,8 @@ COLUMNS = (
     "cm_max",
     "cp_canon_live_window_avg",
     "cp_meanfirst_live_window_avg",
+    "cp_meanfirst_live_window_avg_midplane",
+    "cp_cup_status",
     "dead_zone_area_fraction_window",
     "abs_cpc_minus_canon",
     "flag",
@@ -111,6 +115,11 @@ def survey_row(group, family, geo_id, mesh_id, run_id, summary_path, manifest_pa
     """One comparison row. Missing CP columns stay blank and are not flagged."""
     wide = _read_wide(summary_path)
     manifest = _read_manifest(manifest_path)
+    # Benchmark is cup-based (ro.bulk_cup); old leaves are rebuilt from columns.
+    meanfirst = bulk_cup.recompute_meanfirst_cup(
+        wide, cm_key="cm_area_mean_window_live", cp_ref_key="cp_ref_area_live",
+        saved_cp_key="cp_meanfirst_live_window_avg", live=True,
+    ) if wide else {"cp_cup": None, "cp_midplane": None, "status": "no summary"}
     cpc = _finite(wide.get("cpc_window_avg_flux"))
     canon = _finite(wide.get("cp_canon_window_avg"))
     difference = None if cpc is None or canon is None else abs(cpc - canon)
@@ -129,7 +138,9 @@ def survey_row(group, family, geo_id, mesh_id, run_id, summary_path, manifest_pa
         "cp_L2_window_avg": _finite(wide.get("cp_L2_window_avg")),
         "cm_max": _finite(wide.get("cm_max")),
         "cp_canon_live_window_avg": _finite(wide.get("cp_canon_live_window_avg")),
-        "cp_meanfirst_live_window_avg": _finite(wide.get("cp_meanfirst_live_window_avg")),
+        "cp_meanfirst_live_window_avg": meanfirst["cp_cup"],
+        "cp_meanfirst_live_window_avg_midplane": meanfirst["cp_midplane"],
+        "cp_cup_status": meanfirst["status"],
         "dead_zone_area_fraction_window": _finite(
             wide.get("dead_zone_area_fraction_window")
         ),
