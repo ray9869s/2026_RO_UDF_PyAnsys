@@ -1,16 +1,20 @@
-"""Follow-up queue for D2450_a30 ``u0p2_p6M`` (2026-11-22): one job.
+"""Follow-up queue for the diverged 0.2 m/s leaves (2026-11-22): two jobs.
 
-``init-D2450_a30-u0p2``: fresh ``u0p2_p6M`` solve of D2450_a30 (standard
-mesh, ``--require-mesh``) initialised from its ``u0p1_p6M`` PASS final
-(``--init-from``). The failed leaf is moved aside by the driver. Run it
-only after the main queue's ``u0p1_p6M-D2450_a30`` job finished PASS;
-otherwise the job refuses before touching anything.
+Each job is a fresh ``u0p2_p6M`` solve (``--require-mesh``) initialised
+from the same geometry's ``u0p1_p6M`` PASS final on the same mesh
+(``--init-from``). The driver moves the failed leaf aside. A job whose
+source is not PASS yet refuses before touching anything, so run the queue
+only after the main queue has finished both ``u0p1_p6M`` solves.
+
+* ``init-D2450_a30-u0p2``: standard mesh (steady-state-limited at 0.2 m/s).
+* ``init-D1225_a30-u0p2``: ``_ar250`` mesh (its ``u0p2_p6M`` diverged:
+  continuity 0.308, lmh_rel_diff 0.868, mass balance 6.58).
 
 P_p100_h00 ``u0p2_p6M`` is not continued: its continuity plateaued at
 1.25-2.7e-4 with flat monitors. It is reported as
 ``convergence_class=continuity_boundary`` (``ro.convergence_quality``).
 
-``--dry-run`` prints the job and the state of its leaves.
+``--dry-run`` prints the jobs and the state of their leaves.
 ``--emit-queue PATH`` refuses an existing path. Does not launch Fluent.
 """
 
@@ -29,7 +33,9 @@ import campaign_v3_main_queue as main_queue  # noqa: E402
 from ro.job_ids import require_job_ids  # noqa: E402
 
 campaign = main_queue.campaign
-INIT_GEO, INIT_RUN, INIT_SOURCE_RUN = "D2450_a30", "u0p2_p6M", "u0p1_p6M"
+INIT_RUN, INIT_SOURCE_RUN = "u0p2_p6M", "u0p1_p6M"
+# (geo_id, uses the _ar250 mesh) in queue order.
+INIT_TARGETS = (("D2450_a30", False), ("D1225_a30", True))
 
 
 def _leaf_state(path):
@@ -47,24 +53,28 @@ def _leaf_state(path):
 
 def plan(data_root, spec, spec_path):
     standard = campaign.mesh_ids_for_spec(spec)
+    ar250 = campaign.mesh_ids_for_spec(spec, max_aspect_ratio=main_queue.AR250)
     rows = []
-
-    job = main_queue._single_job(spec, spec_path, "solve", INIT_GEO, INIT_RUN, False)
-    mesh_id = standard[INIT_GEO]
-    source = campaign.run_leaf(data_root, INIT_GEO, mesh_id, INIT_SOURCE_RUN)
-    # The driver requires the source under the job's own --data-root.
-    job_root = job["argv"][job["argv"].index("--data-root") + 1]
-    job["argv"].extend([
-        "--init-from",
-        Path(campaign.run_leaf(job_root, INIT_GEO, mesh_id, INIT_SOURCE_RUN)).as_posix(),
-    ])
-    job["id"] = f"init-{INIT_GEO}-u0p2"
-    cells = main_queue._cell_count(data_root, INIT_GEO, mesh_id)
-    solve_hours = campaign.estimate_solve_hours(cells)
-    target = campaign.run_leaf(data_root, INIT_GEO, mesh_id, INIT_RUN)
-    state = f"source {INIT_SOURCE_RUN}: {_leaf_state(source)}; target: {_leaf_state(target)}"
-    rows.append(_row(job, INIT_GEO, INIT_RUN, mesh_id, cells, solve_hours,
-                     main_queue.solve_timeout_hours(solve_hours), state))
+    for geo_id, uses_ar250 in INIT_TARGETS:
+        if uses_ar250 != (geo_id in main_queue.AR250_GEO_IDS):
+            raise ValueError(f"{geo_id}: _ar250 choice disagrees with the main queue.")
+        mesh_id = (ar250 if uses_ar250 else standard)[geo_id]
+        job = main_queue._single_job(spec, spec_path, "solve", geo_id, INIT_RUN, uses_ar250)
+        source = campaign.run_leaf(data_root, geo_id, mesh_id, INIT_SOURCE_RUN)
+        # The driver requires the source under the job's own --data-root.
+        job_root = job["argv"][job["argv"].index("--data-root") + 1]
+        job["argv"].extend([
+            "--init-from",
+            Path(campaign.run_leaf(job_root, geo_id, mesh_id, INIT_SOURCE_RUN)).as_posix(),
+        ])
+        job["id"] = f"init-{geo_id}-u0p2"
+        cells = main_queue._cell_count(data_root, geo_id, mesh_id)
+        solve_hours = campaign.estimate_solve_hours(cells)
+        target = campaign.run_leaf(data_root, geo_id, mesh_id, INIT_RUN)
+        state = (f"source {INIT_SOURCE_RUN}: {_leaf_state(source)}; "
+                 f"target: {_leaf_state(target)}")
+        rows.append(_row(job, geo_id, INIT_RUN, mesh_id, cells, solve_hours,
+                         main_queue.solve_timeout_hours(solve_hours), state))
     require_job_ids([row["job"] for row in rows])
     return rows
 

@@ -314,6 +314,8 @@ Renamed or copied into summary:
 - **`c_b_window_mol_m3`**: mid-plane mass-weighted (`surface-massavg`) salt, not an x-normal mixing cup; x-clipped per cell, then  
   \(\sum (c_{b,N} A_N) / \sum A_N\) over evaluation cells.
 
+- **`c_b_cup_window_mol_m3`** (2026-11-22): benchmark bulk for the mean-first CP. Per cell, the mean of the x-normal boundary `surface-massavg` cups N-1 and N; window weighted by mid-plane area (`src/ro/bulk_cup.py`).
+
 - **`c_bulk_center_mol_m3_avg`**: whole mid-plane areaavg (buffers included). **Not** the canonical denominator.
 
 - **Per-cell canonical CP** (`pp_cp_canon_cell_N`):  

@@ -168,3 +168,31 @@ def populate_valid_solver_config(cfg: ModuleType) -> None:
     cfg.udm_count = 13
     cfg.residual_target = 1e-7
     cfg.max_iterations = 1000
+
+
+def cup_columns(cp_live=None, cp_all=None, *, cup=600.0, midplane=600.0, cell=7, c_0=597.8):
+    """Old-extract (mid-plane) summary columns from which ``ro.bulk_cup``
+    rebuilds the cup-based mean-first CP. ``cup == midplane`` gives a cup CP
+    equal to the saved one. One evaluation cell (``cell``)."""
+    cp_ref = 10.0
+    row = {
+        "c_b_window_mol_m3": midplane,
+        f"pp_c_b_midplane_cell_{cell}_mol_m3": midplane,
+        f"pp_salt_molar_concentration_unit_cell_boundary_{cell - 1}_massavg_mol_m3": cup,
+        f"pp_salt_molar_concentration_unit_cell_boundary_{cell}_massavg_mol_m3": cup,
+        "c_inlet_ref_mol_m3": c_0,
+    }
+    if cp_live not in (None, ""):
+        row.update({
+            "cp_meanfirst_live_window_avg": cp_live,
+            "cp_ref_area_live": cp_ref,
+            "cm_area_mean_window_live": cp_ref + float(cp_live) * (midplane - cp_ref),
+        })
+    if cp_all not in (None, ""):
+        row.update({
+            "cpc_window_avg_area": cp_all,
+            "cp_meanfirst_window_avg": cp_all,
+            "cp_ref_area": cp_ref,
+            "cm_area_mean_window": cp_ref + float(cp_all) * (midplane - cp_ref),
+        })
+    return row

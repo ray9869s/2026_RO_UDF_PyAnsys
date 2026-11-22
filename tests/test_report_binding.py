@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from helpers import SCRIPTS_DIR, cup_columns, load_module
 from ro.report_binding import REPORT_BOUND, report_binding_reason, report_binding_status
 
 REEXTRACT = load_module("campaign_v3_reextract_under_test", SCRIPTS_DIR / "campaign_v3_reextract.py")
@@ -27,8 +27,10 @@ def _leaf(root, geo="D2450_a60", family="diamond", *, gate="PASS", sidecar=HASHE
     reports = leaf / "post" / "reports"
     reports.mkdir(parents=True)
     if csv:
+        columns = cup_columns(1.2)
         (reports / "summary_metrics_wide.csv").write_text(
-            "cp_meanfirst_live_window_avg\n1.2\n", encoding="utf-8"
+            ",".join(columns) + "\n" + ",".join(str(v) for v in columns.values()) + "\n",
+            encoding="utf-8",
         )
     if sidecar is not None:
         (reports / "extract_source.json").write_text(json.dumps(sidecar), encoding="utf-8")

@@ -45,8 +45,9 @@ possible; see `docs/metrics_conventions.md`.
 
 **CP modulus (canonical):** \(M = (c_m - c_p)/(c_b - c_p)\) with the
 mid-plane bulk \(c_b\) (`surface-massavg` on a z-normal mid-plane clip, not
-an x-normal mixing cup; host check: 0.01–0.2 % below the cups, same sign)
-on the evaluation window. See
+an x-normal mixing cup; host check: 0.01–0.2 % below the cups at u0p2,
+0.6 % at u0p05) on the evaluation window. The mean-first benchmark CP
+divides by the x-normal window cup instead (2026-11-22, `src/ro/bulk_cup.py`). See
 `docs/metrics_conventions.md` (coordinate origin, metric reliability,
 `compute_cp_spread` default). The 2026-10-08 meeting adopts the
 concentration-statistics average and `CP_q999` for comparison. The

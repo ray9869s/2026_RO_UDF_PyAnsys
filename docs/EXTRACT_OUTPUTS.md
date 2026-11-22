@@ -285,9 +285,10 @@ UDM-9가 저장하는 것은 이 식이 아니라 inlet 분모 L2:
   없다. Astra B-01은 코드만으로 닫히지 않는다. |
 | 교차검증 | evaluation cell의 mid-plane `c_b`를, 같은 cell을 끼는 두
   **x-normal** unit-cell `surface-massavg`의 산술 평균과
-  `rel_tol=0.005`로 비교 (`assert_midplane_c_b_matches_boundary_mixing_cup`).
-  벽면으로 올라간 평면은 여기서 죽는다. x-normal cup 역시 같은
-  `surface-massavg` API다. |
+  비교한다. 2026-11-22부터 extract를 중단하지 않고 `c_b_cup_midplane_status`
+  (`warn:` > 0.5 %)와 `c_b_midplane_minus_cup_rel`에 기록한다. 벤치마크
+  mean-first CP의 `c_b`는 이제 x-normal cup (`c_b_cup_window_mol_m3`,
+  `ro.bulk_cup`). x-normal cup 역시 같은 `surface-massavg` API다. |
 | window 열 | `c_b_window_mol_m3`: cell `c_b`를 **mid-plane 면적**으로 가중. |
 | 쓰지 말 것 | `c_bulk_center_*` (whole-domain `surface-areaavg`), Cell 7의
   unit-cell `surface-areaavg` salt. |

@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from helpers import SCRIPTS_DIR, load_module
+from helpers import SCRIPTS_DIR, cup_columns, load_module
 from ro.campaign_geo_ids import CAMPAIGN_GEO_ID_ORDER
 from ro.convergence_quality import convergence_class
 
@@ -56,9 +56,10 @@ def _leaf(root, geo, family, manifest, cp=1.2):
     leaf = root / "runs" / family / geo / MESH / "u0p2_p6M"
     (leaf / "post" / "reports").mkdir(parents=True)
     with (leaf / "post" / "reports" / "summary_metrics_wide.csv").open("w", newline="") as h:
-        writer = csv.DictWriter(h, fieldnames=["cp_meanfirst_live_window_avg", "lmh_window_exposed"])
+        row = {**cup_columns(cp), "lmh_window_exposed": 24.0}
+        writer = csv.DictWriter(h, fieldnames=list(row))
         writer.writeheader()
-        writer.writerow({"cp_meanfirst_live_window_avg": cp, "lmh_window_exposed": 24.0})
+        writer.writerow(row)
     hashes = {"final_case_sha256": "c" * 64, "final_data_sha256": "d" * 64}
     (leaf / "post" / "reports" / "extract_source.json").write_text(json.dumps(hashes))
     (leaf / "manifest.json").write_text(json.dumps({**manifest, **hashes}))

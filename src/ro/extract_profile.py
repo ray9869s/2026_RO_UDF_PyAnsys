@@ -216,6 +216,17 @@ _MFBO_SUMMARY_METRICS = frozenset(
         "segmented_cp_diagnostic_error",
         "segmented_cp_diagnostic_error_type",
         "segmented_cp_diagnostic_error_message",
+        # Window mixing-cup c_b for the mean-first benchmark (ro.bulk_cup).
+        "c_b_cup_window_mol_m3",
+        "c_b_midplane_window_mol_m3",
+        "c_b_midplane_minus_cup_rel",
+        "c_b_midplane_cup_max_cell_abs_rel",
+        "c_b_cup_midplane_status",
+        "c_b_benchmark_definition",
+        "cp_meanfirst_live_exclusion_threshold_mol_m3",
+        "cm_area_mean_window_live_meanfirst",
+        "cp_meanfirst_live_window_avg_midplane",
+        "cp_meanfirst_window_avg_midplane",
     }
 )
 
@@ -229,6 +240,8 @@ _CELL_METRIC = re.compile(
     r"|pp_salt_mass_fraction_unit_cell_boundary_\d+_massavg"
     r"|pp_salt_molar_concentration_unit_cell_boundary_\d+_massavg_mol_m3"
     r"|pp_c_b_midplane_cell_\d+_mol_m3"
+    r"|pp_c_b_cup_cell_\d+_mol_m3"
+    r"|pp_midplane_area_cell_\d+_m2"
     r"|pp_membrane_area_cell_\d+_m2"
     r"|pp_cm_mol_m3_cell_\d+"
     r"|pp_jw_m_per_s_cell_\d+"

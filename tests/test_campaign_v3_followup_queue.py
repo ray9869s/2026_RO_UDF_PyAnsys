@@ -1,4 +1,4 @@
-"""Follow-up queue: the D2450_a30 init-from solve only."""
+"""Follow-up queue: D2450_a30 (standard) and D1225_a30 (_ar250) init-from solves."""
 
 from __future__ import annotations
 
@@ -11,21 +11,29 @@ from helpers import SCRIPTS_DIR, load_module
 FOLLOW = load_module("campaign_v3_followup_queue_test", SCRIPTS_DIR / "campaign_v3_followup_queue.py")
 QUEUE = load_module("job_queue_followup_queue", SCRIPTS_DIR / "mfbo" / "job_queue.py")
 STANDARD = "max035_min006_cpg5_bl4_peel2_y1h020_bms034"
+AR250 = STANDARD + "_ar250"
 
 
 def _arg(argv, flag):
     return argv[argv.index(flag) + 1]
 
 
-def test_emit_one_init_job_that_loads_and_refuses_overwrite(tmp_path):
+def test_emit_two_init_jobs_that_load_and_refuse_overwrite(tmp_path):
     path = tmp_path / "followup.json"
     assert FOLLOW.main(["--emit-queue", str(path), "--data-root", str(tmp_path / "root")]) == 0
     jobs = QUEUE.load_queue(path)
-    assert [job["id"] for job in jobs] == ["init-D2450_a30-u0p2"]
+    assert [job["id"] for job in jobs] == ["init-D2450_a30-u0p2", "init-D1225_a30-u0p2"]
+    d1225 = jobs[1]["argv"]
+    assert _arg(d1225, "--geo-id") == "D1225_a30" and _arg(d1225, "--case") == "u0p2_p6M"
+    assert _arg(d1225, "--max-aspect-ratio") == "250" and "--require-mesh" in d1225
+    assert _arg(d1225, "--init-from") == (
+        f"{_arg(d1225, '--data-root')}/runs/diamond/D1225_a30/{AR250}/u0p1_p6M")
+    assert jobs[1]["timeout_s"] > 0
     init = jobs[0]["argv"]
     assert not any("P_p100_h00" in token for token in init)
     assert _arg(init, "--geo-id") == "D2450_a30" and _arg(init, "--case") == "u0p2_p6M"
     assert "--require-mesh" in init and _arg(init, "--max-iterations") == "2000"
+    assert "--max-aspect-ratio" not in init
     assert "--continue-iterations" not in init and "--cp-live" not in init
     root = _arg(init, "--data-root")
     assert _arg(init, "--init-from") == f"{root}/runs/diamond/D2450_a30/{STANDARD}/u0p1_p6M"

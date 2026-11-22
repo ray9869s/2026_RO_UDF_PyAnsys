@@ -28,6 +28,7 @@ import os
 import sys
 from pathlib import Path
 
+from ro import bulk_cup
 from ro.atomic_reports import clear_manifest_gate
 from ro.report_binding import BROKEN_MARKER, report_binding_reason
 from ro.solver_common import (
@@ -140,29 +141,62 @@ def require_pass_final(leaf, root):
     return leaf
 
 
+def _wide_number(wide, key):
+    try:
+        number = float(wide[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Missing/non-numeric mean-first input {key}") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"Non-finite mean-first input {key}")
+    return number
+
+
+def _mean_first(cm, cp_ref, c_b, label):
+    if c_b <= cp_ref:
+        raise ValueError(f"Non-positive mean-first {label} denominator")
+    return (cm - cp_ref) / (c_b - cp_ref)
+
+
 def validate_meanfirst_summary(leaf, dirname="reports"):
+    """The saved mean-first CP equals the formula on its saved inputs.
+
+    A cup-based extract (``c_b_cup_window_mol_m3``, 2026-11-22) is checked
+    against the window mixing cup, with the live mean cm and threshold the
+    mean-first computation saved. An earlier extract is checked against the
+    mid-plane ``c_b_window_mol_m3``.
+    """
     wide = read_wide(leaf, dirname)
     values = {}
     for key in (*NEW_CP_COLUMNS, "c_b_window_mol_m3", "cm_area_mean_window_live",
                 "live_membrane_area_window_m2", "live_exclusion_threshold_mol_m3",
                 "cpc_window_avg_area"):
-        try:
-            number = float(wide[key])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"Missing/non-numeric mean-first input {key}") from exc
-        if not math.isfinite(number):
-            raise ValueError(f"Non-finite mean-first input {key}")
-        values[key] = number
+        values[key] = _wide_number(wide, key)
     if values["live_membrane_area_window_m2"] <= 0:
         raise ValueError("Non-positive live membrane area")
-    if values["c_b_window_mol_m3"] <= values["cp_ref_area_live"]:
-        raise ValueError("Non-positive mean-first live denominator")
-    expected = ((values["cm_area_mean_window_live"] - values["cp_ref_area_live"])
-                / (values["c_b_window_mol_m3"] - values["cp_ref_area_live"]))
+    cup_based = str(wide.get(bulk_cup.C_B_CUP_WINDOW) or "").strip() != ""
+    if cup_based:
+        for key in (bulk_cup.C_B_CUP_WINDOW, bulk_cup.MEANFIRST_LIVE_CM,
+                    bulk_cup.MEANFIRST_LIVE_THRESHOLD, "cm_area_mean_window", "cp_ref_area",
+                    "c_inlet_ref_mol_m3"):
+            values[key] = _wide_number(wide, key)
+        c_b = values[bulk_cup.C_B_CUP_WINDOW]
+        live_cm = values[bulk_cup.MEANFIRST_LIVE_CM]
+        expected_threshold = min(values["c_inlet_ref_mol_m3"], c_b)
+        if not math.isclose(values[bulk_cup.MEANFIRST_LIVE_THRESHOLD], expected_threshold,
+                            rel_tol=1e-12):
+            raise ValueError("Mean-first live threshold is not min(c_0, cup c_b)")
+        expected_all = _mean_first(values["cm_area_mean_window"], values["cp_ref_area"], c_b,
+                                   "all-faces")
+        if not math.isclose(values[NEW_CP_COLUMNS[1]], expected_all, rel_tol=1e-9):
+            raise ValueError("All-faces mean-first CP does not match its saved inputs and cup c_b")
+    else:
+        c_b = values["c_b_window_mol_m3"]
+        live_cm = values["cm_area_mean_window_live"]
+        if not math.isclose(values[NEW_CP_COLUMNS[1]], values["cpc_window_avg_area"], rel_tol=1e-9):
+            raise ValueError("All-faces mean-first CP differs from cpc_window_avg_area")
+    expected = _mean_first(live_cm, values["cp_ref_area_live"], c_b, "live")
     if not math.isclose(values[NEW_CP_COLUMNS[0]], expected, rel_tol=1e-9, abs_tol=1e-12):
         raise ValueError("Saved mean-first live CP does not match its saved inputs")
-    if not math.isclose(values[NEW_CP_COLUMNS[1]], values["cpc_window_avg_area"], rel_tol=1e-9):
-        raise ValueError("All-faces mean-first CP differs from cpc_window_avg_area")
     if wide.get("live_exclusion_rule") != "c_p >= min(c_0, c_b)":
         raise ValueError("Missing or unexpected live exclusion rule")
     return values

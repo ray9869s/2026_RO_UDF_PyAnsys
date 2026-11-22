@@ -461,6 +461,8 @@ def meanfirst_cp_metrics(
         "live_membrane_area_window_m2": live_area,
         "live_exclusion_rule": LIVE_EXCLUSION_RULE,
         "live_exclusion_threshold_mol_m3": threshold,
+        "cp_meanfirst_live_exclusion_threshold_mol_m3": threshold,
+        "cm_area_mean_window_live_meanfirst": live_cm_sum / live_area,
     }
 
 
@@ -472,6 +474,7 @@ def concentration_cp_report(
     *,
     b_perm=B_PERM_M_PER_S,
     c_inlet_ref=C_INLET_REF_MOL_PER_M3,
+    c_b_meanfirst=None,
 ):
     """Window metrics plus per-cell diagnostics.
 
@@ -479,10 +482,31 @@ def concentration_cp_report(
     quantiles are stored separately and are not averaged into the window
     value. Window ratios use the window mid-plane ``c_b``. Each cell uses
     that cell's mid-plane ``c_b``.
+
+    ``c_b_meanfirst`` (the window mixing cup, ``ro.bulk_cup``) is the bulk
+    for the mean-first benchmark only, live mask included. The mid-plane
+    mean-first values are then kept as ``*_midplane`` diagnostics (None when
+    they cannot be formed). Without it, mean-first uses ``c_b_window``.
     """
+    c_b_mf = c_b_window if c_b_meanfirst is None else c_b_meanfirst
     meanfirst = meanfirst_cp_metrics(
-        window_faces, c_b_window, b_perm=b_perm, c_inlet_ref=c_inlet_ref
+        window_faces, c_b_mf, b_perm=b_perm, c_inlet_ref=c_inlet_ref
     )
+    meanfirst["c_b_meanfirst_mol_m3"] = float(c_b_mf)
+    if c_b_meanfirst is not None:
+        try:
+            midplane = meanfirst_cp_metrics(
+                window_faces, c_b_window, b_perm=b_perm, c_inlet_ref=c_inlet_ref
+            )
+            meanfirst["cp_meanfirst_live_window_avg_midplane"] = midplane[
+                "cp_meanfirst_live_window_avg"
+            ]
+            meanfirst["cp_meanfirst_window_avg_midplane"] = midplane[
+                "cp_meanfirst_window_avg"
+            ]
+        except ValueError:
+            meanfirst["cp_meanfirst_live_window_avg_midplane"] = None
+            meanfirst["cp_meanfirst_window_avg_midplane"] = None
     window = distribution_cp_metrics(window_faces, c_b_window, b_perm=b_perm)
     live = live_canon_window(
         window_faces,
@@ -542,8 +566,33 @@ def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
     rows.extend([
         _row("cp_meanfirst_live_window_avg", report.get("cp_meanfirst_live_window_avg"), "-"),
         _row("cp_meanfirst_window_avg", report.get("cp_meanfirst_window_avg"), "-"),
+    ])
+    if "cp_meanfirst_live_window_avg_midplane" in report:
+        rows.extend([
+            _row(
+                "cp_meanfirst_live_window_avg_midplane",
+                report["cp_meanfirst_live_window_avg_midplane"],
+                "-",
+            ),
+            _row(
+                "cp_meanfirst_window_avg_midplane",
+                report["cp_meanfirst_window_avg_midplane"],
+                "-",
+            ),
+        ])
+    rows.extend([
         _row("cp_ref_area_live", report.get("cp_ref_area_live"), "mol/m3"),
         _row("live_membrane_area_window_m2", report.get("live_membrane_area_window_m2"), "m2"),
+        _row(
+            "cm_area_mean_window_live_meanfirst",
+            report.get("cm_area_mean_window_live_meanfirst"),
+            "mol/m3",
+        ),
+        _row(
+            "cp_meanfirst_live_exclusion_threshold_mol_m3",
+            report.get("cp_meanfirst_live_exclusion_threshold_mol_m3"),
+            "mol/m3",
+        ),
         _row("cm_q999_window", window["cm_q999"], "mol/m3"),
         _row("cm_q99_window", window["cm_q99"], "mol/m3"),
         _row("cp_ref_area", window["cp_ref_area"], "mol/m3"),

@@ -12,8 +12,13 @@ token stays 4.
 
 CP in the comparison and in ``seminar_cases.csv`` is
 ``cp_meanfirst_live_window_avg`` (area-average cm and cp over live faces,
-then divide once against the existing window bulk). CP excess is that value minus 1. ``cp_rel_change`` uses
-that CP. ``cpc_window_avg_flux`` and ``dead_zone_area_fraction_window``
+then divide once against the window bulk). Since 2026-11-22 the bulk is
+the window mixing cup from the x-normal unit-cell boundaries
+(``ro.bulk_cup``); a leaf extracted before that is recomputed from its
+saved columns, and the mid-plane-based value is reported beside it
+(``*_midplane``; blank with the reason in ``cp_cup_status`` when an input
+is missing). CP excess is the cup value minus 1. ``cp_rel_change`` uses
+that CP; ``cp_rel_change_midplane`` the mid-plane one. ``cpc_window_avg_flux`` and ``dead_zone_area_fraction_window``
 are written beside it. A leaf that has not been re-extracted leaves
 the live column blank.
 
@@ -97,6 +102,7 @@ from ro.convergence_quality import (  # noqa: E402
     CONVERGENCE_CLASS_CONTINUITY_BOUNDARY,
     convergence_class,
 )
+from ro import bulk_cup  # noqa: E402
 from ro.report_binding import (  # noqa: E402
     REPORT_BOUND,
     REPORT_UNVERIFIED,
@@ -152,7 +158,13 @@ SEMINAR_CASES_COLUMNS = (
     "run_id",
     "cp_canon_live_window_avg",
     "cp_meanfirst_live_window_avg",
+    "cp_meanfirst_live_window_avg_midplane",
     "cp_meanfirst_window_avg",
+    "cp_meanfirst_window_avg_midplane",
+    "c_b_cup_window_mol_m3",
+    "c_b_midplane_window_mol_m3",
+    "c_b_midplane_minus_cup_rel",
+    "cp_cup_status",
     "cp_ref_area_live",
     "cp_excess",
     "cpc_window_avg_flux",
@@ -178,6 +190,15 @@ COMPARE_COLUMNS = (
     "v2_cp",
     "v3_cp",
     "cp_rel_change",
+    "v2_cp_midplane",
+    "v3_cp_midplane",
+    "cp_rel_change_midplane",
+    "v2_c_b_cup",
+    "v3_c_b_cup",
+    "v2_c_b_midplane",
+    "v3_c_b_midplane",
+    "v2_cp_cup_status",
+    "v3_cp_cup_status",
     "v2_cp_excess",
     "v3_cp_excess",
     "v2_cpc",
@@ -791,7 +812,7 @@ def _run_manifest(run_directory):
     return _read_json(path)
 
 
-def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
+def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False, evaluation_cells=None):
     """CP, excess, q999, dP/L, LMH, and the convergence gate for one leaf.
 
     dP/L is reported twice: ``dp_per_m`` is ``pressure_drop_spacer_per_m``
@@ -809,6 +830,11 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
     ``report_binding`` says why (a continued leaf keeps its pre-continue
     reports next to a newer final and gate).
 
+    ``evaluation_cells`` is used when the leaf's own mesh manifest gives
+    none (the v2 baseline borrows the v3 geometry's window; the lead/trail
+    counts are geometry parameters). The cup recompute still refuses unless
+    those cells reproduce the saved mid-plane window ``c_b``.
+
     ``allow_unverified`` (v2 baseline only) reports a leaf whose binding
     fails only for missing hash evidence, with ``report_binding`` set to
     ``"unverified"``. A sidecar naming a different final stays blank.
@@ -820,7 +846,11 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
     use_reports = status in (REPORT_BOUND, REPORT_UNVERIFIED)
     wide = _wide_row(run_directory) if use_reports else {}
     manifest = _run_manifest(run_directory)
-    cp = _optional_float(wide.get(cp_metric or BENCHMARK_CP_METRIC))
+    metric = cp_metric or BENCHMARK_CP_METRIC
+    cells = _evaluation_cells(run_directory) or evaluation_cells
+    cup = _cup_cp(wide, metric, cells)
+    cp = cup["cp_cup"]
+    all_faces = _cup_cp(wide, "cp_meanfirst_window_avg", cells)
     gate = manifest.get("convergence_quality")
     if not isinstance(gate, str) or not gate.strip():
         gate = "MISSING"
@@ -829,7 +859,12 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
         "cp": cp,
         "cp_canon_live_window_avg": _optional_float(wide.get("cp_canon_live_window_avg")),
         "cp_canon_window_avg": _optional_float(wide.get("cp_canon_window_avg")),
-        "cp_meanfirst_window_avg": _optional_float(wide.get("cp_meanfirst_window_avg")),
+        "cp_midplane": cup["cp_midplane"],
+        "c_b_cup": cup["c_b_cup"],
+        "c_b_midplane": cup["c_b_midplane"],
+        "cp_cup_status": cup["status"] if use_reports else "",
+        "cp_meanfirst_window_avg": all_faces["cp_cup"],
+        "cp_meanfirst_window_avg_midplane": all_faces["cp_midplane"],
         "cp_ref_area_live": _optional_float(wide.get("cp_ref_area_live")),
         "cpc": _optional_float(wide.get("cpc_window_avg_flux")),
         "dead_zone_area_fraction": _optional_float(
@@ -850,6 +885,48 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False):
     }
 
 
+# Inputs to rebuild a mean-first CP with the window mixing-cup c_b
+# (ro.bulk_cup): (area-mean cm, area-mean c_p, live face set).
+_CUP_INPUTS = {
+    "cp_meanfirst_live_window_avg": ("cm_area_mean_window_live", "cp_ref_area_live", True),
+    "cp_meanfirst_window_avg": ("cm_area_mean_window", "cp_ref_area", False),
+    "cpc_window_avg_area": ("cm_area_mean_window", "cp_ref_area", False),
+}
+
+
+def _evaluation_cells(run_directory):
+    """Evaluation cells from the leaf's mesh manifest, or None."""
+    leaf = Path(run_directory)
+    try:
+        root, family, geo_id, mesh_id = leaf.parents[4], leaf.parents[2].name, \
+            leaf.parents[1].name, leaf.parents[0].name
+    except IndexError:
+        return None
+    path = root / "meshes" / family / geo_id / mesh_id / "manifest.json"
+    if not path.is_file():
+        return None
+    try:
+        return bulk_cup.evaluation_cells_from_mesh_manifest(_read_json(path))
+    except ValueError:
+        return None
+
+
+def _cup_cp(wide, metric, cells):
+    """Cup- and mid-plane-based CP for ``metric`` (blank with a reason)."""
+    if not wide:
+        return {"cp_cup": None, "cp_midplane": None, "c_b_cup": None,
+                "c_b_midplane": None, "status": "no bound reports"}
+    if metric not in _CUP_INPUTS:
+        value = _optional_float(wide.get(metric))
+        return {"cp_cup": value, "cp_midplane": value, "c_b_cup": None,
+                "c_b_midplane": None, "status": f"{metric}: no cup recompute"}
+    cm_key, cp_ref_key, live = _CUP_INPUTS[metric]
+    return bulk_cup.recompute_meanfirst_cup(
+        wide, cm_key=cm_key, cp_ref_key=cp_ref_key, saved_cp_key=metric,
+        live=live, evaluation_cells=cells,
+    )
+
+
 def _number_cell(value):
     if value is None or value == "":
         return ""
@@ -860,7 +937,8 @@ def _number_cell(value):
 
 # Numeric leaf_metrics keys blanked for a leaf left out of a table.
 _METRIC_VALUE_KEYS = (
-    "cp", "cp_canon_live_window_avg", "cp_canon_window_avg", "cp_meanfirst_window_avg",
+    "cp", "cp_midplane", "c_b_cup", "c_b_midplane", "cp_meanfirst_window_avg_midplane",
+    "cp_canon_live_window_avg", "cp_canon_window_avg", "cp_meanfirst_window_avg",
     "cp_ref_area_live", "cpc", "dead_zone_area_fraction", "cp_excess", "q999", "dp_per_m",
     "dp_per_m_window", "lmh_exposed", "lmh_installed",
 )
@@ -894,7 +972,7 @@ def v2_cp_status(metrics):
     recorded dead-zone area. The status names the rule and the values it
     used. The canon difference is returned for information only.
     """
-    area = metrics.get("cp")
+    area = metrics.get("cp_midplane", metrics.get("cp"))
     canon = metrics.get("cp_canon_window_avg")
     diff = None
     if area is not None and canon is not None and math.isfinite(abs(canon - area)):
@@ -933,12 +1011,14 @@ def comparison_rows(
         for geo_id in CAMPAIGN_GEO_ID_ORDER:
             v2_mesh = production_mesh_id(geo_id)
             v3_mesh = v3_mesh_ids[geo_id]
+            v3_leaf = run_leaf(v3_root, geo_id, v3_mesh, run_id)
             v2 = leaf_metrics(
                 run_leaf(v2_root, geo_id, v2_mesh, run_id),
                 cp_metric=V2_CP_METRIC,
                 allow_unverified=True,
+                evaluation_cells=_evaluation_cells(v3_leaf),
             )
-            v3 = leaf_metrics(run_leaf(v3_root, geo_id, v3_mesh, run_id))
+            v3 = leaf_metrics(v3_leaf)
             for side in (v2, v3):
                 apply_convergence_class_filter(
                     side, include_continuity_boundary=include_continuity_boundary
@@ -946,14 +1026,18 @@ def comparison_rows(
             cp_status, dead_zone_diff = v2_cp_status(v2)
             if not v2_cp_accepted(cp_status):
                 v2["cp"] = None
+                v2["cp_midplane"] = None
                 v2["cp_excess"] = None
             delta_ok = v2["report_binding"] == REPORT_BOUND or (
                 include_unverified and v2["report_binding"] == REPORT_UNVERIFIED
             )
-            if not delta_ok or v2["cp"] is None or v3["cp"] is None or v2["cp"] == 0.0:
-                step = None
-            else:
-                step = (v3["cp"] - v2["cp"]) / v2["cp"]
+
+            def _step(old, new):
+                if not delta_ok or old is None or new is None or old == 0.0:
+                    return None
+                return (new - old) / old
+
+            step = _step(v2["cp"], v3["cp"])
             rows.append(
                 {
                     "family": family_for_geo_id(geo_id),
@@ -966,6 +1050,15 @@ def comparison_rows(
                     "v2_cp": v2["cp"],
                     "v3_cp": v3["cp"],
                     "cp_rel_change": step,
+                    "v2_cp_midplane": v2["cp_midplane"],
+                    "v3_cp_midplane": v3["cp_midplane"],
+                    "cp_rel_change_midplane": _step(v2["cp_midplane"], v3["cp_midplane"]),
+                    "v2_c_b_cup": v2["c_b_cup"],
+                    "v3_c_b_cup": v3["c_b_cup"],
+                    "v2_c_b_midplane": v2["c_b_midplane"],
+                    "v3_c_b_midplane": v3["c_b_midplane"],
+                    "v2_cp_cup_status": v2["cp_cup_status"],
+                    "v3_cp_cup_status": v3["cp_cup_status"],
                     "v2_cp_excess": v2["cp_excess"],
                     "v3_cp_excess": v3["cp_excess"],
                     "v2_cpc": v2["cpc"],
@@ -1010,10 +1103,15 @@ def compare_binding_summary(rows):
         1 for row in rows
         if row.get("v3_convergence_class") == CONVERGENCE_CLASS_CONTINUITY_BOUNDARY
     )
+    cup_blank = sum(
+        1 for row in rows
+        if row.get("v3_report_binding") == REPORT_BOUND
+        and str(row.get("v3_cp_cup_status") or "").startswith("blank")
+    )
     return (
         f"v2 rows: bound={bound} unverified={unverified} blank={blank} "
         f"v2_cp_not_ok={cp_not_ok}; v3 rows bound={v3_bound}/{len(rows)} "
-        f"continuity_boundary={boundary}"
+        f"continuity_boundary={boundary} v3_cup_cp_blank={cup_blank}"
     )
 
 
@@ -1045,7 +1143,18 @@ def seminar_rows(data_root, mesh_ids, *, include_continuity_boundary=False):
                     "cp_canon_live_window_avg": metrics["cp_canon_live_window_avg"],
                     "benchmark_cp_metric": BENCHMARK_CP_METRIC,
                     "cp_meanfirst_live_window_avg": metrics["cp"],
+                    "cp_meanfirst_live_window_avg_midplane": metrics["cp_midplane"],
                     "cp_meanfirst_window_avg": metrics["cp_meanfirst_window_avg"],
+                    "cp_meanfirst_window_avg_midplane": metrics[
+                        "cp_meanfirst_window_avg_midplane"
+                    ],
+                    "c_b_cup_window_mol_m3": metrics["c_b_cup"],
+                    "c_b_midplane_window_mol_m3": metrics["c_b_midplane"],
+                    "c_b_midplane_minus_cup_rel": (
+                        None if metrics["c_b_cup"] is None or metrics["c_b_midplane"] is None
+                        else (metrics["c_b_midplane"] - metrics["c_b_cup"]) / metrics["c_b_cup"]
+                    ),
+                    "cp_cup_status": metrics["cp_cup_status"],
                     "cp_ref_area_live": metrics["cp_ref_area_live"],
                     "cp_excess": metrics["cp_excess"],
                     "cpc_window_avg_flux": metrics["cpc"],

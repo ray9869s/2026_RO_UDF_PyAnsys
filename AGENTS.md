@@ -52,9 +52,12 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (2026-11-22 order, `_ar250` for the four contact geometries,
   `--require-mesh` solves, per-job timeouts); `--dry-run` /
   `--emit-queue`. See the 2026-11-22 current state.
-- `scripts/campaign_v3_followup_queue.py` — the 1-job follow-up queue
-  (D2450_a30 `u0p2_p6M` `--init-from` its `u0p1_p6M`); `--dry-run` /
-  `--emit-queue`.
+- `scripts/campaign_v3_followup_queue.py` — the 2-job follow-up queue
+  (`u0p2_p6M` `--init-from` the same mesh's `u0p1_p6M`: D2450_a30 on the
+  standard mesh, D1225_a30 on `_ar250`); `--dry-run` / `--emit-queue`.
+- `src/ro/bulk_cup.py` — benchmark `c_b` = window mixing cup from the
+  x-normal boundary massavg (2026-11-22); recompute of old leaves from
+  saved columns for `--compare` / `--seminar-csv`.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
   0.3 m/s, followed by 0.05, 0.15, 0.25 m/s. The additional run cases
@@ -500,6 +503,59 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   refuses manifest acceptance or reuse. An AR above 250 still fails
   before the worker writes the final mesh.
 
+## Current state (2026-11-22, c_b = mixing cup, after `6bf273d`)
+
+**Benchmark `c_b` is the window mixing cup (decided).** u0p05_p6M
+P_p80_h15 solved (residual_converged at 301) but its extract aborted on
+the mid-plane c_b guard: cells 7/8 mid-plane 598.163/598.407 vs x-normal
+cup 601.537/602.203 mol/m3 (0.56 %/0.63 % > 0.5 %). The z-normal
+mid-plane massavg is the centre-line value (close to inlet 597.8), not a
+cup; at low velocity the concentrated near-membrane layers make the cup
+higher. Now (`ro.bulk_cup`, dossier §6.2):
+- `cp_meanfirst_live_window_avg` and `cp_meanfirst_window_avg` divide by
+  `c_b_cup_window_mol_m3`. Per cell, it is the mean of the two boundary
+  `..._massavg_mol_m3` cups. The window uses the mid-plane cell-area
+  weighting. The live mask is `min(c_0, c_b_cup)`.
+- The mid-plane value stays as a diagnostic. `c_b_window_mol_m3` keeps its
+  name and definition (canon, cpc, q999, contour exports and the
+  monitor check still use it), copied as `c_b_midplane_window_mol_m3`.
+  The extract also writes `c_b_midplane_minus_cup_rel`,
+  `c_b_midplane_cup_max_cell_abs_rel`, `c_b_cup_midplane_status`
+  (`warn:` above 0.5 %), the `*_midplane` mean-first CPs,
+  `cm_area_mean_window_live_meanfirst`,
+  `cp_meanfirst_live_exclusion_threshold_mol_m3`, and per cell
+  `pp_c_b_cup_cell_N_mol_m3` and `pp_midplane_area_cell_N_m2`.
+- The guard no longer fails the extract. A missing boundary cup still
+  does.
+- `--compare` and `--seminar-csv` are cup-based for every leaf. An old
+  leaf's cup CP is rebuilt from saved columns without Fluent:
+  - v3 uses `cm_area_mean_window_live` and `cp_ref_area_live`.
+  - v2 uses `cm_area_mean_window`, `cp_ref_area` and the boundary
+    columns.
+  - Cells come from the mesh manifest; v2 borrows v3's.
+  - Cells are weighted equally, but only if that reproduces the saved
+    `c_b_window_mol_m3` within 1e-6.
+  - The saved CP must reproduce within 1e-6, and `min(c_0, c_b)` must be
+    unchanged.
+  - Otherwise the value is blank and `cp_cup_status` /
+    `v*_cp_cup_status` says why.
+- The mid-plane values sit beside them: `v*_cp_midplane`,
+  `cp_rel_change_midplane`, and `cp_meanfirst_*_midplane` in the seminar
+  CSV. The summary line counts `v3_cup_cp_blank=`.
+- `campaign_v3_reextract.validate_meanfirst_summary` checks a cup-based
+  extract against the cup.
+
+Smoke for this change, which is also the real result: re-extract the
+P_p80_h15 `u0p05_p6M` final with its main-queue argv plus `--resume`.
+`mesh_study_case --resume` with a hash-matching final pair runs the
+extract only.
+
+**D1225_a30 `_ar250` `u0p2_p6M` diverged** (continuity 0.308,
+lmh_rel_diff 0.868, mass balance 6.58). It is the second job of the
+follow-up queue: `init-D1225_a30-u0p2`, `--init-from` its `u0p1_p6M` on
+the same `_ar250` mesh (main-queue step 5). The job refuses until that
+source is PASS.
+
 ## Current state (2026-11-22, host results at `4e0dfc2`)
 
 **`_ar250` exception (decided).** D1225_a30, S_a072_l1733, S_a144_l1733
@@ -563,7 +619,7 @@ line; `--seminar-csv` writes `convergence_class`. A `continuity_boundary`
 row keeps its gate, class and binding but its values are blank unless
 `--include-continuity-boundary`. Other FAIL rows are unchanged.
 
-**D2450_a30 follow-up (queue `campaign_v3_followup_queue.py`, 1 job).**
+**D2450_a30 follow-up (queue `campaign_v3_followup_queue.py`; now 2 jobs, with D1225_a30 above).**
 `init-D2450_a30-u0p2`: D2450_a30 `u0p2_p6M` fails all three gates with
 flat monitors and imbalance spread over the channel. It is re-solved
 with `mesh_study_case --init-from <u0p1_p6M leaf>`: the source must be

@@ -35,6 +35,8 @@ from ro.paths import project_root  # noqa: E402
 from ro.campaign_geometry import CAMPAIGN_H_M  # noqa: E402
 from ro.lmh_metrics import MS_TO_LMH, lmh_mass_balance_expression
 from ro.monitor_change import extract_monitor_changes  # noqa: E402
+from ro import bulk_cup  # noqa: E402
+from ro.cp_metrics import window_area_weighted_average  # noqa: E402
 from ro.convergence_quality import (
     continuity_final_from_case_dir,
     repaired_final_iteration,
@@ -87,8 +89,6 @@ CONFIG_PATH = Path(os.environ.get("PYFLUENT_POST_CONFIG", str(DEFAULT_CONFIG_PAT
 from ro.fluent_report_helpers import (  # noqa: E402
     concentration_range_diagnostics,
     concentration_metric_unit,
-    MIDPLANE_CB_MIXING_CUP_REL_TOL,
-    assert_midplane_c_b_matches_boundary_mixing_cup,
     apply_surface_report_definition,
     campaign_midplane_manifest_fields,
     create_channel_midplane_plane,
@@ -2267,9 +2267,11 @@ if __name__ == "__main__":
         print(f"  per-cell c_b: {c_b_by_cell_mol_per_m3}")
         print(f"  salt field: {_midplane_salt_field!r} (surface-massavg)")
 
-        # Guard: mid-plane c_b must agree with independent x-normal mixing-cup
-        # molar concentrations on the flanking unit-cell boundaries. A wall-
-        # placed plane fails this check (historically ~3.5% high on D2450_a45).
+        # Benchmark c_b (2026-11-22): the window mixing cup from the x-normal
+        # unit-cell boundary massavg concentrations (ro.bulk_cup). Per cell:
+        # mean of its two boundary cups; window: the mid-plane cell weighting.
+        # The z-normal mid-plane massavg is the centre-line value, not a cup;
+        # it stays as a diagnostic and a difference above 0.5% is a warning.
         _mixing_cup_mol_by_boundary = {}
         for _b_idx in range(n_unit_cells + 1):
             _mf = computed_values.get(
@@ -2282,15 +2284,36 @@ if __name__ == "__main__":
                 rho,
                 salt_molecular_weight_kg_per_mol,
             )
-        assert_midplane_c_b_matches_boundary_mixing_cup(
+        try:
+            c_b_cup_by_cell_mol_per_m3 = bulk_cup.cup_by_cell(
+                _mixing_cup_mol_by_boundary, list(evaluation_cells)
+            )
+            c_b_cup_window_mol_per_m3 = window_area_weighted_average(
+                c_b_cup_by_cell_mol_per_m3,
+                midplane_area_by_cell_m2,
+                evaluation_cells,
+            )
+        except (bulk_cup.CupError, ValueError) as _e_cup:
+            raise RuntimeError(
+                "Benchmark CP cannot be computed: x-normal boundary-cup c_b from "
+                f"the x-normal boundary massavg reports failed ({_e_cup})."
+            ) from _e_cup
+        c_b_cup_diagnostic = bulk_cup.cup_midplane_diagnostic(
             c_b_by_cell_mol_per_m3,
-            _mixing_cup_mol_by_boundary,
-            evaluation_cells,
+            c_b_cup_by_cell_mol_per_m3,
+            list(evaluation_cells),
+            c_b_midplane_window=c_b_window_mol_per_m3,
+            c_b_cup_window=c_b_cup_window_mol_per_m3,
         )
         print(
-            "  mid-plane c_b cross-check vs boundary mixing-cup: OK "
-            f"(rel_tol={MIDPLANE_CB_MIXING_CUP_REL_TOL:.3%})"
+            f"  x-normal boundary-cup c_b (benchmark): {c_b_cup_window_mol_per_m3} "
+            f"mol/m3; per-cell: {c_b_cup_by_cell_mol_per_m3}"
         )
+        _cup_status = c_b_cup_diagnostic[bulk_cup.C_B_CUP_STATUS]
+        if _cup_status.startswith("warn"):
+            print(f"WARNING: c_b mid-plane vs mixing cup: {_cup_status}")
+        else:
+            print(f"  c_b mid-plane vs mixing cup: {_cup_status}")
 
         # ==========================================================
         # Cell 8.4b. Legacy whole-domain mid-plane average (NOT c_b)
@@ -2463,6 +2486,7 @@ if __name__ == "__main__":
             c_b_window_mol_per_m3,
             c_b_by_cell_mol_per_m3,
             b_perm=B_PERM_M_PER_S,
+            c_b_meanfirst=c_b_cup_window_mol_per_m3,
         )
         print(
             "Concentration-statistics CP: "
@@ -3041,6 +3065,14 @@ if __name__ == "__main__":
 
             {"metric": "c_b_window_mol_m3", "value": c_b_window_mol_per_m3, "unit": "mol/m3"},
             {"metric": "c_b_window_salt_field", "value": _midplane_salt_field or "", "unit": "-"},
+            *(
+                {
+                    "metric": _name,
+                    "value": _value,
+                    "unit": "mol/m3" if _name.endswith("_mol_m3") else "-",
+                }
+                for _name, _value in c_b_cup_diagnostic.items()
+            ),
             {
                 "metric": "c_b_window_is_mass_fraction_field",
                 "value": _midplane_salt_is_mass_fraction,
@@ -3082,6 +3114,13 @@ if __name__ == "__main__":
             {"metric": "segmented_cp_diagnostic_error_message", "value": segmented_cp_diagnostic_error_message, "unit": "-"},
         ]
         summary_rows.extend(unit_cell_summary_rows)
+        summary_rows.extend(
+            bulk_cup.per_cell_rows(
+                c_b_cup_by_cell_mol_per_m3,
+                midplane_area_by_cell_m2,
+                list(evaluation_cells),
+            )
+        )
         if turbulence_metrics is not None:
             summary_rows.extend(turbulence_summary_rows(turbulence_metrics))
         summary_rows.extend(

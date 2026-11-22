@@ -123,9 +123,11 @@ area-weighted.
 - \(c_0\): inlet reference concentration (`c_inlet_ref`, 597.8268309 mol/m³).
   This is not an x-normal mixing cup: on a z-normal plane the
   `surface-massavg` weight is the through-plane mass flux \(|\rho w|\), and
-  cells are then aggregated by mid-plane area. The extract guard compares
-  each cell's value with the mean of the x-normal boundary cups (tolerance
-  0.5 %); host checks on campaign_v3 `u0p2_p6M` found the mid-plane value
+  cells are then aggregated by mid-plane area. The extract compares
+  each cell's value with the mean of the x-normal boundary cups and, since
+  2026-11-22, records the difference instead of aborting above 0.5 %; the
+  mean-first benchmark divides by that cup (`c_b_cup_window_mol_m3`,
+  `src/ro/bulk_cup.py`); host checks on campaign_v3 `u0p2_p6M` found the mid-plane value
   0.01–0.2 % below the cups, always the same sign. The definition is kept
   and reported as the mid-plane bulk concentration
   (`docs/PAPER_METHODS_DOSSIER.md` §6.2).

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from helpers import (
+    cup_columns,
     SCRIPTS_DIR,
     load_module,
     load_run_config,
@@ -86,41 +87,24 @@ def _write_leaf(root, geo_id, mesh_id, run_id, *, cp, q999, dp, exposed, install
     leaf = root / "runs" / family / geo_id / mesh_id / run_id
     reports = leaf / "post" / "reports"
     reports.mkdir(parents=True)
+    row = {
+        "cp_canon_live_window_avg": cp,
+        "cp_canon_window_avg": (
+            cp_canon if cp_canon is not None else (cp if cpc_area is None else cpc_area)
+        ),
+        "cpc_window_avg_flux": cp if cpc is None else cpc,
+        "dead_zone_area_fraction_window": dead,
+        "cp_q999_window_flux": q999,
+        "pressure_drop_spacer_per_m": dp,
+        "pp_pressure_drop_periodic_per_m": None if dp is None else dp * 0.97,
+        "lmh_window_exposed": exposed,
+        "lmh_window_module": installed,
+        **cup_columns(cp, cp if cpc_area is None else cpc_area),
+    }
     with (reports / "summary_metrics_wide.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "cp_meanfirst_live_window_avg",
-                "cp_canon_live_window_avg",
-                "cp_canon_window_avg",
-                "cpc_window_avg_flux",
-                "cpc_window_avg_area",
-                "dead_zone_area_fraction_window",
-                "cp_q999_window_flux",
-                "pressure_drop_spacer_per_m",
-                "pp_pressure_drop_periodic_per_m",
-                "lmh_window_exposed",
-                "lmh_window_module",
-            ],
-        )
+        writer = csv.DictWriter(handle, fieldnames=list(row))
         writer.writeheader()
-        writer.writerow(
-            {
-                "cp_meanfirst_live_window_avg": cp,
-                "cp_canon_live_window_avg": cp,
-                "cp_canon_window_avg": (
-                    cp_canon if cp_canon is not None else (cp if cpc_area is None else cpc_area)
-                ),
-                "cpc_window_avg_flux": cp if cpc is None else cpc,
-                "cpc_window_avg_area": cp if cpc_area is None else cpc_area,
-                "dead_zone_area_fraction_window": dead,
-                "cp_q999_window_flux": q999,
-                "pressure_drop_spacer_per_m": dp,
-                "pp_pressure_drop_periodic_per_m": None if dp is None else dp * 0.97,
-                "lmh_window_exposed": exposed,
-                "lmh_window_module": installed,
-            }
-        )
+        writer.writerow(row)
     payload = {"convergence_quality": gate}
     if spec_hash:
         payload["mesh_spec_sha256"] = spec_hash
@@ -138,10 +122,13 @@ def test_benchmark_uses_meanfirst_and_never_falls_back_to_old_canon(tmp_path):
     reports = leaf / "post" / "reports"
     reports.mkdir(parents=True)
     summary = reports / "summary_metrics_wide.csv"
-    summary.write_text("cp_canon_live_window_avg,cp_meanfirst_live_window_avg\n9,1.1\n", encoding="utf-8")
+    columns = {"cp_canon_live_window_avg": 9, **cup_columns(1.1)}
+    summary.write_text(",".join(columns) + "\n" + ",".join(str(v) for v in columns.values()) + "\n",
+                       encoding="utf-8")
     _bind(leaf)
     metrics = CAMPAIGN.leaf_metrics(leaf)
     assert metrics["cp"] == pytest.approx(1.1)
+    assert metrics["cp_midplane"] == pytest.approx(1.1)
     assert metrics["cp_excess"] == pytest.approx(0.1)
     assert metrics["cp_canon_live_window_avg"] == 9
     summary.write_text("cp_canon_live_window_avg\n9\n", encoding="utf-8")

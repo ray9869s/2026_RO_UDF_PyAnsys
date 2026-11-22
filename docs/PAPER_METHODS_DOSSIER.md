@@ -27,14 +27,17 @@ c_{p,f}=\frac{B c_{m,f}}{J_{w,f}+B}.
 \]
 
 Both averages use face area on both evaluation-window membrane walls, with
-the same live mask `c_p < min(c_0, c_b_window_mol_m3)`. There is no extra
-positive-flux mask. `c_b_window_mol_m3` keeps its existing definition:
-mid-plane `surface-massavg` per evaluation unit cell, then mid-plane-area
-weighting across the window. It is not replaced by a combined-window
-mass-average report. Face samples normally use adjacent-cell UDM-7/UDM-6.
+the same live mask `c_p < min(c_0, c_{b,W})`. There is no extra
+positive-flux mask. **Since 2026-11-22 `c_{b,W}` is the window mixing cup
+`c_b_cup_window_mol_m3`** (§6.2): per evaluation cell the mean of the
+x-normal mixing cups on its two boundaries, then mid-plane-area weighting
+across the window. The earlier mid-plane value `c_b_window_mol_m3` is kept
+as a diagnostic, and the mid-plane-based CPs as `*_midplane` columns. Face
+samples normally use adjacent-cell UDM-7/UDM-6.
 
-The all-faces companion `cp_meanfirst_window_avg` includes dead-zone faces
-and equals existing `cpc_window_avg_area`. New `cp_ref_area_live` records
+The all-faces companion `cp_meanfirst_window_avg` includes dead-zone faces;
+it equals `cpc_window_avg_area` with the cup in place of the mid-plane
+`c_b` (`cpc_window_avg_area` itself stays mid-plane based). New `cp_ref_area_live` records
 the live area-mean permeate concentration in mol/m3; the extraction also
 records live area, exclusion rule, and exclusion threshold. Non-positive
 live area or denominator fails explicitly. Existing CP columns retain
@@ -471,11 +474,28 @@ Until 2026-10-09, `src/ro/domain_layout.py` treated lead = 3 as a D2450 cell-cou
 
 ### 6.2 Bulk concentration `c_b`
 
-Channel mid-plane `z = 0.5 * (z_min + z_max)` from the fluid bounds (`src/ro/fluent_report_helpers.py:196–201`). Per evaluation cell, an x-range clip of that plane, surface-massavg of salt (`src/ro/fluent_report_helpers.py:1632–1648`), times `rho / M_NaCl`. The window value `c_b_window_mol_m3` aggregates the per-cell values by mid-plane area. Each cell’s ratios use that cell’s `c_b`; the window ratios use the window `c_b` (`src/ro/cp_concentration_stats.py:248–251`).
+**Benchmark `c_b` (2026-11-22): window mixing cup from the x-normal unit-cell boundaries** (`src/ro/bulk_cup.py`). For boundary `k` the extract reads Fluent’s `surface-massavg` of the salt mass fraction on the x-normal plane at that boundary (`pp_salt_mass_fraction_unit_cell_boundary_k_massavg`) and converts it with the extract’s `rho / M_NaCl` (`pp_salt_molar_concentration_unit_cell_boundary_k_massavg_mol_m3`). Per evaluation cell `n`, `cup_n = (C_{n-1} + C_n)/2` (`pp_c_b_cup_cell_n_mol_m3`). The window value `c_b_cup_window_mol_m3` weights the cells by their mid-plane area (`pp_midplane_area_cell_n_m2`), the weighting the mid-plane value used. This `c_b` is the bulk for the mean-first benchmark `cp_meanfirst_live_window_avg` and the all-face `cp_meanfirst_window_avg`, live mask included (`cp_meanfirst_live_exclusion_threshold_mol_m3 = min(c_0, c_b_cup)`; the live mean `c_m` it used is `cm_area_mean_window_live_meanfirst`).
 
-**It is a mid-plane bulk concentration, not an x-normal mixing cup.** On a z-normal plane Fluent’s `surface-massavg` weights by the through-plane mass flux `|rho w|`; a mixing cup weights an x-normal cross-section by the streamwise flux `rho u`. The paper reports it as the evaluation-window mid-plane bulk concentration. The definition is kept unchanged (decision 2026-11-18).
+Fluent’s mass-weighted surface average is `∫ φ ρ|v·n| dA / ∫ ρ|v·n| dA`. On an x-normal cross-section of the channel that is the flux-weighted mixing cup when no backflow crosses the plane. The unit-cell boundaries sit between filaments, where the streamwise velocity stays positive; where a recirculation does cross the plane, its reverse flux is counted with positive weight.
 
-A guard compares each cell’s mid-plane `c_b` with the mean of the x-normal mixing cups on the two flanking cell boundaries. Relative tolerance 0.005; a larger difference aborts the extract (`src/ro/fluent_report_helpers.py:392`, `:395–445`).
+**Why not the mid-plane value.** Until 2026-11-22 `c_b` was the surface-massavg on the z-normal channel mid-plane `z = 0.5 * (z_min + z_max)`, clipped in x to each cell, times `rho / M_NaCl`, window-weighted by mid-plane area. On a z-normal plane the weight is the through-plane flux `|rho w|`, so it samples the channel centre: it is close to the centre-line concentration, not a cup. Salt piles up in the near-membrane layers, so the true cup is higher than the centre value. The gap grows as velocity falls. At u0p2 the mid-plane value was 0.01–0.2 % below the cup (below). At u0p05_p6M P_p80_h15 it was 0.56 % and 0.63 % below in cells 7 and 8 (598.163 vs 601.537 mol/m3, and 598.407 vs 602.203). The mid-plane value was close to the inlet 597.8, as if the channel had not concentrated. A low `c_b` raises CP (the sensitivity is given below), so a mid-plane `c_b` biases CP upward, more at low velocity.
+
+The mid-plane value stays as a diagnostic: `c_b_window_mol_m3` (unchanged name and definition, read by the canonical CP, the contour exports and the monitor-change check) and its copy `c_b_midplane_window_mol_m3`. Also recorded: `c_b_midplane_minus_cup_rel` (window, signed), `c_b_midplane_cup_max_cell_abs_rel`, and `c_b_cup_midplane_status`. The status starts with `warn:` when a cell differs by more than 0.5 %. **The extract no longer aborts on that difference**: it warns and records. A missing or non-positive boundary cup still aborts, because the benchmark `c_b` is then undefined. The per-cell canonical CP (`cp_canon_*`), `cpc_*`, `CP_q999` and the monitor-style columns still use the mid-plane `c_b`.
+
+**Leaves extracted before 2026-11-22** are not re-extracted for this change. `campaign_v3.py --compare` and `--seminar-csv` rebuild the cup-based value from saved columns, with no Fluent call:
+
+```
+CP_cup = (cm - cp_ref) / (c_b_cup - cp_ref)
+```
+
+- v3 live: `cm_area_mean_window_live` and `cp_ref_area_live`.
+- v2 all-face: `cm_area_mean_window` and `cp_ref_area`.
+- `c_b_cup` is built from the saved boundary columns over the evaluation cells of the mesh manifest. v2 borrows the v3 geometry's window, because the lead and trail counts are geometry parameters.
+- Old leaves did not save mid-plane areas, so their cells are weighted equally. That is accepted only if an equal-weight mean of the saved `pp_c_b_midplane_cell_n_mol_m3` reproduces the saved `c_b_window_mol_m3` within 1e-6 relative.
+- The saved inputs must also reproduce the saved mid-plane CP within 1e-6.
+- The live value additionally needs `min(c_0, c_b)` to be the same for both `c_b`. Otherwise the live face set would change and the leaf must be re-extracted.
+
+Any failure blanks the cup value, with the reason in `cp_cup_status` / `v*_cp_cup_status`. The mid-plane value is reported beside it (`*_cp_midplane`, `cp_rel_change_midplane`).
 
 **Error-table method.** For each leaf and evaluation cell `n`, read from `post/reports/summary_metrics_wide.csv`:
 
@@ -484,7 +504,7 @@ cup_n   = 0.5 * (Y_{n-1} + Y_n) * rho / M_NaCl          (Y_k = pp_salt_mass_frac
 err_n   = (pp_c_b_midplane_cell_n_mol_m3 - cup_n) / cup_n
 ```
 
-with `rho = 998.2 kg/m3` and `M_NaCl = 0.05844 kg/mol`. Tabulate `min`, `max` and the sign of `err_n` per leaf, and the window-level `(c_b_window_mol_m3 - mean_n cup_n) / mean_n cup_n`. Host result on campaign_v3 `u0p2_p6M` (operator-reported read-only check, 2026-11-18): every `err_n` lies between −0.01 % and −0.2 %, always negative. A relative `c_b` error `ε` changes the CP excess `CP − 1` by about `−CP · ε · c_b/(c_b − c_p) / (CP − 1)`: with `ε = −0.2 %`, `c_p ≪ c_b` and CP = 1.2 that is +1.2 % of the excess (a low `c_b` raises CP). The guard bounds `|ε|` at 0.5 %.
+with `rho = 998.2 kg/m3` and `M_NaCl = 0.05844 kg/mol`. Tabulate `min`, `max` and the sign of `err_n` per leaf, and the window-level `(c_b_window_mol_m3 - mean_n cup_n) / mean_n cup_n` (now recorded directly as `c_b_midplane_minus_cup_rel`). Host result on campaign_v3 `u0p2_p6M` (operator-reported read-only check, 2026-11-18): every `err_n` lies between −0.01 % and −0.2 %, always negative. At u0p05 it reached −0.63 % (above). A relative `c_b` error `ε` changes the CP excess `CP − 1` by about `−CP · ε · c_b/(c_b − c_p) / (CP − 1)`: with `ε = −0.2 %`, `c_p ≪ c_b` and CP = 1.2 that is +1.2 % of the excess (a low `c_b` raises CP). The former guard bounded `|ε|` at 0.5 %; with the cup as `c_b` this bias is gone from the benchmark.
 
 ### 6.3 LMH, both bases
 
