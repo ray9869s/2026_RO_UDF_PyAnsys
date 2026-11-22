@@ -56,8 +56,12 @@ CLI scripts need the host or WSL venv (`pip install -e .`). Pytest uses
   (`u0p2_p6M` `--init-from` the same mesh's `u0p1_p6M`: D2450_a30 on the
   standard mesh, D1225_a30 on `_ar250`); `--dry-run` / `--emit-queue`.
 - `src/ro/bulk_cup.py` — benchmark `c_b` = window mixing cup from the
-  x-normal boundary massavg (2026-11-22); recompute of old leaves from
-  saved columns for `--compare` / `--seminar-csv`.
+  x-normal boundary massavg (2026-11-22); net-flux cup and inlet-reference
+  CP; recompute of old leaves from saved columns for `--compare` /
+  `--seminar-csv`.
+- `scripts/mfbo/diagnose_c_b_definitions.py` — one-off, by hand, not
+  queued: massavg vs net-flux cup on every boundary plane plus a mid-cell
+  plane per cell, on a copy of one leaf.
 - `scripts/campaign_v3.py` — 31 geometries, p6M, on
   `C:/ro_data_mfbo/campaign_v3`. Velocity order is 0.2, then 0.1, then
   0.3 m/s, followed by 0.05, 0.15, 0.25 m/s. The additional run cases
@@ -502,6 +506,29 @@ python scripts/mfbo/mesh_study_case.py --data-root C:/ro_data_mfbo/campaign_v3 -
   and measured `AR_max`. A missing, inconsistent, or exceeded ceiling
   refuses manifest acceptance or reuse. An AR above 250 still fails
   before the worker writes the final mesh.
+
+## Current state (2026-11-22, every c_b definition stored; pulled at the ~11/29 pause)
+
+Four c_b definitions are stored so the paper can choose (dossier §6.2
+table). The benchmark column is unchanged (`cup_massavg`).
+- `cup_net`: net-flux cup at the same boundary planes, salt Flow Rate
+  over Mass Flow Rate. Optional reports: a failure blanks the `cup_net`
+  columns with a reason and never aborts the extract.
+- `midplane`.
+- `inlet_c0`: the inlet-reference mean-first CP, live and all faces.
+
+`--compare` writes `v*_cp_cup_net`, `v*_cp_inlet` (with statuses) and
+`cp_*_definition` label columns. The seminar CSV writes
+`cp_meanfirst_*_cupnet` and `cp_meanfirst_*_inlet`, plus labels. Old
+leaves get `inlet_c0` from saved columns. `cup_net` stays blank until a
+leaf is extracted with this code.
+
+The report type strings `surface-flowrate` and `surface-massflowrate` are
+not confirmed on the host. At the pause, run
+`scripts/mfbo/diagnose_c_b_definitions.py --source <leaf>` on one leaf
+first. It is copy-based, read-only, takes the host lock, and has no queue
+option. It prints Fluent's allowed report types and adds a reduction
+cross-check and mid-cell planes. Then run it on the other 3–4 leaves.
 
 ## Current state (2026-11-22, c_b = mixing cup, after `6bf273d`)
 

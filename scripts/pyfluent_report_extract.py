@@ -136,6 +136,7 @@ from ro.fluent_report_helpers import (  # noqa: E402
 )
 from ro.cp_concentration_stats import (  # noqa: E402
     B_PERM_M_PER_S,
+    C_INLET_REF_MOL_PER_M3,
     LMH_PER_METRE_PER_SECOND,
     cell_x_bounds,
     concentration_cp_report,
@@ -1840,6 +1841,38 @@ if __name__ == "__main__":
                         [plane_name],
                     )
                 )
+                # Net-flux cup (ro.bulk_cup): optional. A failure leaves the
+                # net-flux columns blank with a reason; it never aborts.
+                for _net_name, _net_type, _net_field in (
+                    (
+                        bulk_cup.salt_flowrate_report_name(boundary_index),
+                        bulk_cup.SURFACE_FLOW_RATE,
+                        FIELD_SALT_MASS_FRACTION,
+                    ),
+                    (
+                        bulk_cup.massflowrate_report_name(boundary_index),
+                        bulk_cup.SURFACE_MASS_FLOW_RATE,
+                        None,
+                    ),
+                ):
+                    try:
+                        report_names.append(
+                            create_or_update_surface_report(
+                                solution,
+                                _net_name,
+                                _net_type,
+                                _net_field,
+                                [plane_name],
+                            )
+                        )
+                    except Exception as _e_net:
+                        print(
+                            f"WARNING: optional net-flux report {_net_name} "
+                            f"({_net_type}) not defined: {_e_net}"
+                        )
+                        failed_report_specs.append(
+                            (_net_name, _net_type, _net_field, str(_e_net))
+                        )
             if report_profile != PROFILE_MFBO:
                 report_names.append(
                     create_or_update_surface_report(
@@ -2309,6 +2342,26 @@ if __name__ == "__main__":
             f"  x-normal boundary-cup c_b (benchmark): {c_b_cup_window_mol_per_m3} "
             f"mol/m3; per-cell: {c_b_cup_by_cell_mol_per_m3}"
         )
+        c_b_cupnet_diagnostic, c_b_cupnet_rows = bulk_cup.cupnet_window(
+            {
+                _k: (
+                    computed_values.get(bulk_cup.salt_flowrate_report_name(_k)),
+                    computed_values.get(bulk_cup.massflowrate_report_name(_k)),
+                )
+                for _k in range(n_unit_cells + 1)
+            },
+            list(evaluation_cells),
+            midplane_area_by_cell_m2,
+            density_kg_per_m3=rho,
+            molecular_weight_kg_per_mol=salt_molecular_weight_kg_per_mol,
+            cups_massavg_by_cell=c_b_cup_by_cell_mol_per_m3,
+            c_b_cup_window=c_b_cup_window_mol_per_m3,
+        )
+        print(
+            "  net-flux cup c_b: "
+            f"{c_b_cupnet_diagnostic[bulk_cup.C_B_CUPNET_WINDOW]} mol/m3 "
+            f"({c_b_cupnet_diagnostic[bulk_cup.C_B_CUPNET_STATUS]})"
+        )
         _cup_status = c_b_cup_diagnostic[bulk_cup.C_B_CUP_STATUS]
         if _cup_status.startswith("warn"):
             print(f"WARNING: c_b mid-plane vs mixing cup: {_cup_status}")
@@ -2487,6 +2540,10 @@ if __name__ == "__main__":
             c_b_by_cell_mol_per_m3,
             b_perm=B_PERM_M_PER_S,
             c_b_meanfirst=c_b_cup_window_mol_per_m3,
+            extra_meanfirst_bulks={
+                "cupnet": c_b_cupnet_diagnostic[bulk_cup.C_B_CUPNET_WINDOW],
+                "inlet": C_INLET_REF_MOL_PER_M3,
+            },
         )
         print(
             "Concentration-statistics CP: "
@@ -3073,6 +3130,14 @@ if __name__ == "__main__":
                 }
                 for _name, _value in c_b_cup_diagnostic.items()
             ),
+            *(
+                {
+                    "metric": _name,
+                    "value": _value,
+                    "unit": "mol/m3" if _name.endswith("_mol_m3") else "-",
+                }
+                for _name, _value in c_b_cupnet_diagnostic.items()
+            ),
             {
                 "metric": "c_b_window_is_mass_fraction_field",
                 "value": _midplane_salt_is_mass_fraction,
@@ -3114,6 +3179,7 @@ if __name__ == "__main__":
             {"metric": "segmented_cp_diagnostic_error_message", "value": segmented_cp_diagnostic_error_message, "unit": "-"},
         ]
         summary_rows.extend(unit_cell_summary_rows)
+        summary_rows.extend(c_b_cupnet_rows)
         summary_rows.extend(
             bulk_cup.per_cell_rows(
                 c_b_cup_by_cell_mol_per_m3,

@@ -103,6 +103,7 @@ from ro.convergence_quality import (  # noqa: E402
     convergence_class,
 )
 from ro import bulk_cup  # noqa: E402
+from ro.cp_concentration_stats import C_INLET_REF_MOL_PER_M3  # noqa: E402
 from ro.report_binding import (  # noqa: E402
     REPORT_BOUND,
     REPORT_UNVERIFIED,
@@ -131,6 +132,20 @@ V2_CP_METRIC = "cpc_window_avg_area"
 # differs by 2e-4 to 2.3e-3 on unsaturated rows, so it is not a dead-zone
 # test (the earlier 1e-4 rule blanked 11 of 31 u0p2 rows for that).
 V2_SATURATION_Q999_MAX = 3.0
+# Which c_b each CP column divides by (dossier section 6.2). The benchmark
+# column (v*_cp, cp_meanfirst_live_window_avg) stays the massavg cup.
+COMPARE_DEFINITION_LABELS = {
+    "cp_definition": bulk_cup.DEFINITION_CUP_MASSAVG,
+    "cp_midplane_definition": bulk_cup.DEFINITION_MIDPLANE,
+    "cp_cup_net_definition": bulk_cup.DEFINITION_CUP_NET,
+    "cp_inlet_definition": bulk_cup.DEFINITION_INLET,
+}
+SEMINAR_DEFINITION_LABELS = {
+    "cp_definition": bulk_cup.DEFINITION_CUP_MASSAVG,
+    "cp_midplane_definition": bulk_cup.DEFINITION_MIDPLANE,
+    "cp_cupnet_definition": bulk_cup.DEFINITION_CUP_NET,
+    "cp_inlet_definition": bulk_cup.DEFINITION_INLET,
+}
 V2_CP_OK = "ok"
 # Preserve the original queue order, then append the intermediate speeds.
 VELOCITY_ORDER = (0.2, 0.1, 0.3, 0.05, 0.15, 0.25)
@@ -165,6 +180,19 @@ SEMINAR_CASES_COLUMNS = (
     "c_b_midplane_window_mol_m3",
     "c_b_midplane_minus_cup_rel",
     "cp_cup_status",
+    "cp_meanfirst_live_window_avg_cupnet",
+    "cp_meanfirst_window_avg_cupnet",
+    "c_b_cupnet_window_mol_m3",
+    "c_b_cupnet_minus_cup_rel",
+    "cp_cupnet_status",
+    "cp_meanfirst_live_window_avg_inlet",
+    "cp_meanfirst_window_avg_inlet",
+    "c_inlet_ref_mol_m3",
+    "cp_inlet_status",
+    "cp_definition",
+    "cp_midplane_definition",
+    "cp_cupnet_definition",
+    "cp_inlet_definition",
     "cp_ref_area_live",
     "cp_excess",
     "cpc_window_avg_flux",
@@ -199,6 +227,18 @@ COMPARE_COLUMNS = (
     "v3_c_b_midplane",
     "v2_cp_cup_status",
     "v3_cp_cup_status",
+    "v2_cp_cup_net",
+    "v3_cp_cup_net",
+    "v2_cp_cup_net_status",
+    "v3_cp_cup_net_status",
+    "v2_cp_inlet",
+    "v3_cp_inlet",
+    "v2_cp_inlet_status",
+    "v3_cp_inlet_status",
+    "cp_definition",
+    "cp_midplane_definition",
+    "cp_cup_net_definition",
+    "cp_inlet_definition",
     "v2_cp_excess",
     "v3_cp_excess",
     "v2_cpc",
@@ -851,6 +891,8 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False, evalu
     cup = _cup_cp(wide, metric, cells)
     cp = cup["cp_cup"]
     all_faces = _cup_cp(wide, "cp_meanfirst_window_avg", cells)
+    live = _CUP_INPUTS.get(metric, (None, None, True))[2]
+    others = _other_definitions(wide, live)
     gate = manifest.get("convergence_quality")
     if not isinstance(gate, str) or not gate.strip():
         gate = "MISSING"
@@ -865,6 +907,7 @@ def leaf_metrics(run_directory, *, cp_metric=None, allow_unverified=False, evalu
         "cp_cup_status": cup["status"] if use_reports else "",
         "cp_meanfirst_window_avg": all_faces["cp_cup"],
         "cp_meanfirst_window_avg_midplane": all_faces["cp_midplane"],
+        **others,
         "cp_ref_area_live": _optional_float(wide.get("cp_ref_area_live")),
         "cpc": _optional_float(wide.get("cpc_window_avg_flux")),
         "dead_zone_area_fraction": _optional_float(
@@ -927,6 +970,37 @@ def _cup_cp(wide, metric, cells):
     )
 
 
+def _other_definitions(wide, live):
+    """Net-flux cup and inlet-reference CP for one leaf (``ro.bulk_cup``).
+
+    ``live`` picks the face set of ``cp_cup_net`` / ``cp_inlet`` (v3 live,
+    v2 all faces); the ``*_all`` values are always all faces.
+    """
+    if not wide:
+        blank = "no bound reports"
+        return {
+            "cp_cup_net": None, "cp_cup_net_status": blank,
+            "cp_inlet": None, "cp_inlet_status": blank,
+            "cp_cup_net_all": None, "cp_inlet_all": None,
+            "c_b_cupnet": None, "c_b_cupnet_minus_cup_rel": None, "c_inlet_ref": None,
+        }
+    net, net_status = bulk_cup.cupnet_cp_from_columns(wide, live=live)
+    inlet, inlet_status = bulk_cup.inlet_cp_from_columns(
+        wide, live=live, default_c_0=C_INLET_REF_MOL_PER_M3)
+    return {
+        "cp_cup_net": net,
+        "cp_cup_net_status": net_status,
+        "cp_inlet": inlet,
+        "cp_inlet_status": inlet_status,
+        "cp_cup_net_all": bulk_cup.cupnet_cp_from_columns(wide, live=False)[0],
+        "cp_inlet_all": bulk_cup.inlet_cp_from_columns(
+            wide, live=False, default_c_0=C_INLET_REF_MOL_PER_M3)[0],
+        "c_b_cupnet": _optional_float(wide.get(bulk_cup.C_B_CUPNET_WINDOW)),
+        "c_b_cupnet_minus_cup_rel": _optional_float(wide.get(bulk_cup.C_B_CUPNET_REL_DIFF)),
+        "c_inlet_ref": _optional_float(wide.get("c_inlet_ref_mol_m3")),
+    }
+
+
 def _number_cell(value):
     if value is None or value == "":
         return ""
@@ -938,6 +1012,8 @@ def _number_cell(value):
 # Numeric leaf_metrics keys blanked for a leaf left out of a table.
 _METRIC_VALUE_KEYS = (
     "cp", "cp_midplane", "c_b_cup", "c_b_midplane", "cp_meanfirst_window_avg_midplane",
+    "cp_cup_net", "cp_inlet", "cp_cup_net_all", "cp_inlet_all", "c_b_cupnet",
+    "c_b_cupnet_minus_cup_rel",
     "cp_canon_live_window_avg", "cp_canon_window_avg", "cp_meanfirst_window_avg",
     "cp_ref_area_live", "cpc", "dead_zone_area_fraction", "cp_excess", "q999", "dp_per_m",
     "dp_per_m_window", "lmh_exposed", "lmh_installed",
@@ -1027,6 +1103,8 @@ def comparison_rows(
             if not v2_cp_accepted(cp_status):
                 v2["cp"] = None
                 v2["cp_midplane"] = None
+                v2["cp_cup_net"] = None
+                v2["cp_inlet"] = None
                 v2["cp_excess"] = None
             delta_ok = v2["report_binding"] == REPORT_BOUND or (
                 include_unverified and v2["report_binding"] == REPORT_UNVERIFIED
@@ -1059,6 +1137,15 @@ def comparison_rows(
                     "v3_c_b_midplane": v3["c_b_midplane"],
                     "v2_cp_cup_status": v2["cp_cup_status"],
                     "v3_cp_cup_status": v3["cp_cup_status"],
+                    "v2_cp_cup_net": v2["cp_cup_net"],
+                    "v3_cp_cup_net": v3["cp_cup_net"],
+                    "v2_cp_cup_net_status": v2["cp_cup_net_status"],
+                    "v3_cp_cup_net_status": v3["cp_cup_net_status"],
+                    "v2_cp_inlet": v2["cp_inlet"],
+                    "v3_cp_inlet": v3["cp_inlet"],
+                    "v2_cp_inlet_status": v2["cp_inlet_status"],
+                    "v3_cp_inlet_status": v3["cp_inlet_status"],
+                    **COMPARE_DEFINITION_LABELS,
                     "v2_cp_excess": v2["cp_excess"],
                     "v3_cp_excess": v3["cp_excess"],
                     "v2_cpc": v2["cpc"],
@@ -1155,6 +1242,16 @@ def seminar_rows(data_root, mesh_ids, *, include_continuity_boundary=False):
                         else (metrics["c_b_midplane"] - metrics["c_b_cup"]) / metrics["c_b_cup"]
                     ),
                     "cp_cup_status": metrics["cp_cup_status"],
+                    "cp_meanfirst_live_window_avg_cupnet": metrics["cp_cup_net"],
+                    "cp_meanfirst_window_avg_cupnet": metrics["cp_cup_net_all"],
+                    "c_b_cupnet_window_mol_m3": metrics["c_b_cupnet"],
+                    "c_b_cupnet_minus_cup_rel": metrics["c_b_cupnet_minus_cup_rel"],
+                    "cp_cupnet_status": metrics["cp_cup_net_status"],
+                    "cp_meanfirst_live_window_avg_inlet": metrics["cp_inlet"],
+                    "cp_meanfirst_window_avg_inlet": metrics["cp_inlet_all"],
+                    "c_inlet_ref_mol_m3": metrics["c_inlet_ref"],
+                    "cp_inlet_status": metrics["cp_inlet_status"],
+                    **SEMINAR_DEFINITION_LABELS,
                     "cp_ref_area_live": metrics["cp_ref_area_live"],
                     "cp_excess": metrics["cp_excess"],
                     "cpc_window_avg_flux": metrics["cpc"],

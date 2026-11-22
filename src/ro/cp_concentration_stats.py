@@ -466,6 +466,35 @@ def meanfirst_cp_metrics(
     }
 
 
+def extra_meanfirst_metrics(
+    faces, c_b, label, *, b_perm=B_PERM_M_PER_S, c_inlet_ref=C_INLET_REF_MOL_PER_M3,
+):
+    """Mean-first CP against another bulk (``ro.bulk_cup`` definitions).
+
+    Keys end in ``_<label>``. ``c_b`` None, or a value the ratio cannot use,
+    gives None values, never an exception: these are stored alternatives,
+    not the benchmark. The live mask is ``c_p < min(c_0, c_b)``.
+    """
+    keys = (
+        f"cp_meanfirst_live_window_avg_{label}",
+        f"cp_meanfirst_window_avg_{label}",
+        f"cp_meanfirst_live_exclusion_threshold_{label}_mol_m3",
+        f"cm_area_mean_window_live_meanfirst_{label}",
+    )
+    out = dict.fromkeys(keys)
+    if c_b is None:
+        return out
+    try:
+        metrics = meanfirst_cp_metrics(faces, c_b, b_perm=b_perm, c_inlet_ref=c_inlet_ref)
+    except ValueError:
+        return out
+    out[keys[0]] = metrics["cp_meanfirst_live_window_avg"]
+    out[keys[1]] = metrics["cp_meanfirst_window_avg"]
+    out[keys[2]] = metrics["cp_meanfirst_live_exclusion_threshold_mol_m3"]
+    out[keys[3]] = metrics["cm_area_mean_window_live_meanfirst"]
+    return out
+
+
 def concentration_cp_report(
     window_faces,
     cell_faces,
@@ -475,6 +504,7 @@ def concentration_cp_report(
     b_perm=B_PERM_M_PER_S,
     c_inlet_ref=C_INLET_REF_MOL_PER_M3,
     c_b_meanfirst=None,
+    extra_meanfirst_bulks=None,
 ):
     """Window metrics plus per-cell diagnostics.
 
@@ -507,6 +537,14 @@ def concentration_cp_report(
         except ValueError:
             meanfirst["cp_meanfirst_live_window_avg_midplane"] = None
             meanfirst["cp_meanfirst_window_avg_midplane"] = None
+    meanfirst["extra_meanfirst_labels"] = []
+    for label, bulk in (extra_meanfirst_bulks or {}).items():
+        meanfirst.update(
+            extra_meanfirst_metrics(
+                window_faces, bulk, label, b_perm=b_perm, c_inlet_ref=c_inlet_ref
+            )
+        )
+        meanfirst["extra_meanfirst_labels"].append(label)
     window = distribution_cp_metrics(window_faces, c_b_window, b_perm=b_perm)
     live = live_canon_window(
         window_faces,
@@ -567,6 +605,17 @@ def concentration_cp_summary_rows(report, *, c1_area_mean_window=None):
         _row("cp_meanfirst_live_window_avg", report.get("cp_meanfirst_live_window_avg"), "-"),
         _row("cp_meanfirst_window_avg", report.get("cp_meanfirst_window_avg"), "-"),
     ])
+    for label in report.get("extra_meanfirst_labels", ()):
+        rows.extend([
+            _row(f"cp_meanfirst_live_window_avg_{label}",
+                 report.get(f"cp_meanfirst_live_window_avg_{label}"), "-"),
+            _row(f"cp_meanfirst_window_avg_{label}",
+                 report.get(f"cp_meanfirst_window_avg_{label}"), "-"),
+            _row(f"cp_meanfirst_live_exclusion_threshold_{label}_mol_m3",
+                 report.get(f"cp_meanfirst_live_exclusion_threshold_{label}_mol_m3"), "mol/m3"),
+            _row(f"cm_area_mean_window_live_meanfirst_{label}",
+                 report.get(f"cm_area_mean_window_live_meanfirst_{label}"), "mol/m3"),
+        ])
     if "cp_meanfirst_live_window_avg_midplane" in report:
         rows.extend([
             _row(

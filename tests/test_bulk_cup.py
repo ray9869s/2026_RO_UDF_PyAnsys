@@ -289,3 +289,125 @@ def test_reextract_validation_old_extract_still_uses_midplane(tmp_path):
     row = {**cup_columns(1.2, 1.21), "live_membrane_area_window_m2": 1e-6,
            "live_exclusion_threshold_mol_m3": 597.8, "live_exclusion_rule": "c_p >= min(c_0, c_b)"}
     assert _validated(tmp_path, row)["c_b_window_mol_m3"] == pytest.approx(600.0)
+
+
+# --- net-flux cup and inlet-reference CP (round 2) ---------------------------
+
+FACTOR = 998.2 / 0.05844
+
+
+def test_cupnet_window_cancels_sign_and_reports_difference():
+    cups = bulk_cup.cup_by_cell(BOUNDARY_CUPS, [7, 8])
+    flows = {k: (-(v / FACTOR) * 2.0e-3 * 1.001, -2.0e-3) for k, v in BOUNDARY_CUPS.items()}
+    out, rows = bulk_cup.cupnet_window(
+        flows, [7, 8], AREAS, density_kg_per_m3=998.2, molecular_weight_kg_per_mol=0.05844,
+        cups_massavg_by_cell=cups,
+        c_b_cup_window=window_area_weighted_average(cups, AREAS, [7, 8]))
+    assert out["c_b_cupnet_minus_cup_rel"] == pytest.approx(0.001)
+    assert out["c_b_cupnet_cup_max_cell_abs_rel"] == pytest.approx(0.001)
+    assert out["c_b_cupnet_status"].startswith("ok:")
+    names = {r["metric"] for r in rows}
+    assert {"pp_salt_flowrate_unit_cell_boundary_6", "pp_massflowrate_unit_cell_boundary_8",
+            "pp_salt_molar_concentration_unit_cell_boundary_7_net_mol_m3",
+            "pp_c_b_cupnet_cell_8_mol_m3"} <= names
+
+
+@pytest.mark.parametrize("flows, fragment", [
+    ({6: (1.0, 1.0), 7: (None, 1.0), 8: (1.0, 1.0)}, "boundary 7: flow-rate report missing"),
+    ({6: (1.0, 0.0), 7: (1.0, 1.0), 8: (1.0, 1.0)}, "zero net mass flow"),
+    ({6: (1.0, -1.0), 7: (1.0, 1.0), 8: (1.0, 1.0)}, "disagree in sign"),
+])
+def test_cupnet_window_blank_with_reason(flows, fragment):
+    out, _rows = bulk_cup.cupnet_window(
+        flows, [7, 8], AREAS, density_kg_per_m3=998.2, molecular_weight_kg_per_mol=0.05844,
+        cups_massavg_by_cell={7: 601.0, 8: 602.0}, c_b_cup_window=601.5)
+    assert out["c_b_cupnet_window_mol_m3"] is None
+    assert out["c_b_cupnet_status"].startswith("blank:") and fragment in out["c_b_cupnet_status"]
+
+
+def test_report_stores_cupnet_and_inlet_meanfirst():
+    faces = _faces()
+    report = concentration_cp_report(
+        faces, {}, 598.3, {}, c_b_meanfirst=601.9,
+        extra_meanfirst_bulks={"cupnet": 602.4, "inlet": 597.8, "none": None})
+    assert report["cp_meanfirst_live_window_avg_cupnet"] == pytest.approx(
+        meanfirst_cp_metrics(faces, 602.4)["cp_meanfirst_live_window_avg"])
+    inlet = meanfirst_cp_metrics(faces, 597.8)
+    assert report["cp_meanfirst_window_avg_inlet"] == pytest.approx(inlet["cp_meanfirst_window_avg"])
+    assert report["cp_meanfirst_live_exclusion_threshold_inlet_mol_m3"] == pytest.approx(597.8)
+    assert report["cp_meanfirst_live_window_avg_none"] is None
+    names = {r["metric"] for r in concentration_cp_summary_rows(report)}
+    assert {"cp_meanfirst_live_window_avg_cupnet", "cp_meanfirst_window_avg_inlet",
+            "cm_area_mean_window_live_meanfirst_inlet"} <= names
+    for name in bulk_cup.EXTRA_SUMMARY_METRICS:
+        assert mfbo_keeps_summary_metric(name), name
+
+
+def test_inlet_cp_from_old_and_cup_based_columns():
+    old = {k: str(v) for k, v in cup_columns(1.2, 1.21).items()}
+    old["live_exclusion_threshold_mol_m3"] = "597.8"
+    value, status = bulk_cup.inlet_cp_from_columns(old, live=True)
+    cm = 10.0 + 1.2 * 590.0
+    assert value == pytest.approx((cm - 10.0) / (597.8 - 10.0)) and status.startswith("ok: recomputed")
+    all_faces, _ = bulk_cup.inlet_cp_from_columns(old, live=False)
+    assert all_faces == pytest.approx(1.21 * 590.0 / 587.8)
+    old["live_exclusion_threshold_mol_m3"] = "596.0"
+    assert bulk_cup.inlet_cp_from_columns(old, live=True)[1].startswith("blank: saved live set")
+    # Cup-based leaf: the mid-plane cm_area_mean_window_live is never used.
+    cup = dict(old, c_b_cup_window_mol_m3="601.9", cm_area_mean_window_live="999",
+               cm_area_mean_window_live_meanfirst=str(cm),
+               cp_meanfirst_live_exclusion_threshold_mol_m3="597.8")
+    assert bulk_cup.inlet_cp_from_columns(cup, live=True)[0] == pytest.approx((cm - 10) / 587.8)
+    extracted = dict(cup, cp_meanfirst_live_window_avg_inlet="1.3")
+    assert bulk_cup.inlet_cp_from_columns(extracted, live=True) == (1.3, "ok: extracted")
+    no_c0 = {k: v for k, v in old.items() if k != "c_inlet_ref_mol_m3"}
+    value, status = bulk_cup.inlet_cp_from_columns(no_c0, live=False, default_c_0=597.8)
+    assert value is not None and "constant c_0" in status
+
+
+def test_cupnet_cp_from_columns_blank_until_extracted():
+    assert bulk_cup.cupnet_cp_from_columns({}, live=True)[1].startswith("blank: not extracted")
+    assert bulk_cup.cupnet_cp_from_columns(
+        {"cp_meanfirst_live_window_avg_cupnet": "1.1"}, live=True) == (1.1, "ok: extracted")
+    status = bulk_cup.cupnet_cp_from_columns(
+        {"c_b_cupnet_status": "blank: boundary 7: zero net mass flow"}, live=True)[1]
+    assert "zero net mass flow" in status
+
+
+def test_compare_and_seminar_carry_four_definitions(tmp_path):
+    geo, run = "D2450_a45", "u0p2_p6M"
+    mesh = "max035_min006_cpg5_bl4_peel2_y1h020_bms034"
+    mesh_ids = dict.fromkeys(CAMPAIGN.CAMPAIGN_GEO_ID_ORDER, mesh)
+    v2_leaf = CAMPAIGN.run_leaf(tmp_path / "v2", geo, CAMPAIGN.production_mesh_id(geo), run)
+    _write(v2_leaf, {**cup_columns(None, 1.10), "cp_q999_window_flux": 1.5})
+    v3_leaf = CAMPAIGN.run_leaf(tmp_path / "v3", geo, mesh, run)
+    _write(v3_leaf, {**cup_columns(1.20, 1.21), "cp_q999_window_flux": 1.6,
+                     "live_exclusion_threshold_mol_m3": 597.8,
+                     "cp_meanfirst_live_window_avg_cupnet": 1.19})
+    rows = CAMPAIGN.comparison_rows(tmp_path / "v2", tmp_path / "v3", mesh_ids)
+    row = next(r for r in rows if r["geo_id"] == geo and r["run_id"] == run)
+    assert row["v3_cp"] == pytest.approx(1.20)  # benchmark unchanged
+    assert row["v3_cp_cup_net"] == pytest.approx(1.19)
+    assert row["v2_cp_cup_net"] is None and row["v2_cp_cup_net_status"].startswith("blank: not extracted")
+    assert row["v3_cp_inlet"] == pytest.approx(1.20 * 590.0 / 587.8)
+    assert row["v2_cp_inlet"] == pytest.approx(1.10 * 590.0 / 587.8)
+    assert (row["cp_definition"], row["cp_midplane_definition"], row["cp_cup_net_definition"],
+            row["cp_inlet_definition"]) == ("cup_massavg", "midplane", "cup_net", "inlet_c0")
+    assert set(row) == set(CAMPAIGN.COMPARE_COLUMNS)
+    seminar = CAMPAIGN.seminar_rows(tmp_path / "v3", mesh_ids)
+    srow = next(r for r in seminar if r["geo_id"] == geo and r["run_id"] == run)
+    assert srow["cp_meanfirst_live_window_avg_cupnet"] == pytest.approx(1.19)
+    assert srow["cp_meanfirst_window_avg_inlet"] == pytest.approx(1.21 * 590.0 / 587.8)
+    assert srow["cp_inlet_definition"] == "inlet_c0"
+    assert set(srow) == set(CAMPAIGN.SEMINAR_CASES_COLUMNS)
+
+
+def test_v2_not_accepted_blanks_every_definition(tmp_path):
+    geo, run = "D2450_a45", "u0p2_p6M"
+    mesh = "max035_min006_cpg5_bl4_peel2_y1h020_bms034"
+    v2_leaf = CAMPAIGN.run_leaf(tmp_path / "v2", geo, CAMPAIGN.production_mesh_id(geo), run)
+    _write(v2_leaf, {**cup_columns(None, 1.10), "cp_q999_window_flux": 27.9})
+    rows = CAMPAIGN.comparison_rows(tmp_path / "v2", tmp_path / "v3",
+                                    dict.fromkeys(CAMPAIGN.CAMPAIGN_GEO_ID_ORDER, mesh))
+    row = next(r for r in rows if r["geo_id"] == geo and r["run_id"] == run)
+    assert row["v2_cp"] is None and row["v2_cp_midplane"] is None and row["v2_cp_inlet"] is None

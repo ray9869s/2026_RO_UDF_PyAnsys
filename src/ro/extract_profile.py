@@ -227,6 +227,19 @@ _MFBO_SUMMARY_METRICS = frozenset(
         "cm_area_mean_window_live_meanfirst",
         "cp_meanfirst_live_window_avg_midplane",
         "cp_meanfirst_window_avg_midplane",
+        # Net-flux cup and inlet-reference CP (ro.bulk_cup EXTRA_SUMMARY_METRICS).
+        "c_b_cupnet_window_mol_m3",
+        "c_b_cupnet_minus_cup_rel",
+        "c_b_cupnet_cup_max_cell_abs_rel",
+        "c_b_cupnet_status",
+        "cp_meanfirst_live_window_avg_cupnet",
+        "cp_meanfirst_window_avg_cupnet",
+        "cp_meanfirst_live_window_avg_inlet",
+        "cp_meanfirst_window_avg_inlet",
+        "cp_meanfirst_live_exclusion_threshold_cupnet_mol_m3",
+        "cp_meanfirst_live_exclusion_threshold_inlet_mol_m3",
+        "cm_area_mean_window_live_meanfirst_cupnet",
+        "cm_area_mean_window_live_meanfirst_inlet",
     }
 )
 
@@ -241,6 +254,10 @@ _CELL_METRIC = re.compile(
     r"|pp_salt_molar_concentration_unit_cell_boundary_\d+_massavg_mol_m3"
     r"|pp_c_b_midplane_cell_\d+_mol_m3"
     r"|pp_c_b_cup_cell_\d+_mol_m3"
+    r"|pp_c_b_cupnet_cell_\d+_mol_m3"
+    r"|pp_salt_flowrate_unit_cell_boundary_\d+"
+    r"|pp_massflowrate_unit_cell_boundary_\d+"
+    r"|pp_salt_molar_concentration_unit_cell_boundary_\d+_net_mol_m3"
     r"|pp_midplane_area_cell_\d+_m2"
     r"|pp_membrane_area_cell_\d+_m2"
     r"|pp_cm_mol_m3_cell_\d+"

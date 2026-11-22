@@ -355,3 +355,219 @@ def recompute_meanfirst_cup(
         return out
     out["status"] = f"ok: recomputed from saved columns ({weighting} cell weights)"
     return out
+
+
+# ---------------------------------------------------------------------------
+# More c_b definitions, stored so the paper can choose (2026-11-22, round 2)
+# ---------------------------------------------------------------------------
+#
+# cup_massavg  x-normal boundary surface-massavg (weight |rho u.n|; reverse
+#              flow counted positive). The benchmark above.
+# cup_net      x-normal boundary net-flux cup: Fluent "Flow Rate" of the salt
+#              mass fraction (integral of Y rho u.n dA, signed) over "Mass
+#              Flow Rate" (integral of rho u.n dA). Reverse flow cancels;
+#              convective flux only (axial diffusion across the plane is not
+#              in either integral).
+# midplane     z-normal channel mid-plane surface-massavg (c_b_window_mol_m3).
+# inlet        the inlet concentration c_0 (c_inlet_ref_mol_m3).
+
+SURFACE_FLOW_RATE = "surface-flowrate"
+SURFACE_MASS_FLOW_RATE = "surface-massflowrate"
+
+DEFINITION_CUP_MASSAVG = "cup_massavg"
+DEFINITION_CUP_NET = "cup_net"
+DEFINITION_MIDPLANE = "midplane"
+DEFINITION_INLET = "inlet_c0"
+
+C_B_CUPNET_WINDOW = "c_b_cupnet_window_mol_m3"
+C_B_CUPNET_REL_DIFF = "c_b_cupnet_minus_cup_rel"
+C_B_CUPNET_MAX_CELL_REL_DIFF = "c_b_cupnet_cup_max_cell_abs_rel"
+C_B_CUPNET_STATUS = "c_b_cupnet_status"
+MEANFIRST_LIVE_CUPNET = "cp_meanfirst_live_window_avg_cupnet"
+MEANFIRST_ALL_CUPNET = "cp_meanfirst_window_avg_cupnet"
+MEANFIRST_LIVE_INLET = "cp_meanfirst_live_window_avg_inlet"
+MEANFIRST_ALL_INLET = "cp_meanfirst_window_avg_inlet"
+
+
+def meanfirst_threshold_name(label):
+    return f"cp_meanfirst_live_exclusion_threshold_{label}_mol_m3"
+
+
+def meanfirst_live_cm_name(label):
+    return f"cm_area_mean_window_live_meanfirst_{label}"
+
+
+EXTRA_SUMMARY_METRICS = (
+    C_B_CUPNET_WINDOW,
+    C_B_CUPNET_REL_DIFF,
+    C_B_CUPNET_MAX_CELL_REL_DIFF,
+    C_B_CUPNET_STATUS,
+    MEANFIRST_LIVE_CUPNET,
+    MEANFIRST_ALL_CUPNET,
+    MEANFIRST_LIVE_INLET,
+    MEANFIRST_ALL_INLET,
+    meanfirst_threshold_name("cupnet"),
+    meanfirst_threshold_name("inlet"),
+    meanfirst_live_cm_name("cupnet"),
+    meanfirst_live_cm_name("inlet"),
+)
+
+
+def salt_flowrate_report_name(boundary_index):
+    return f"pp_salt_flowrate_unit_cell_boundary_{int(boundary_index)}"
+
+
+def massflowrate_report_name(boundary_index):
+    return f"pp_massflowrate_unit_cell_boundary_{int(boundary_index)}"
+
+
+def boundary_cupnet_name(boundary_index):
+    return (
+        "pp_salt_molar_concentration_unit_cell_boundary_"
+        f"{int(boundary_index)}_net_mol_m3"
+    )
+
+
+def cupnet_cell_name(cell_number):
+    return f"pp_c_b_cupnet_cell_{int(cell_number)}_mol_m3"
+
+
+def net_flux_cup_mass_fraction(salt_flow, mass_flow):
+    """Net-flux cup mass fraction ``salt_flow / mass_flow``; raises with why."""
+    if salt_flow is None or mass_flow is None:
+        raise CupError("flow-rate report missing")
+    salt, mass = float(salt_flow), float(mass_flow)
+    if not (math.isfinite(salt) and math.isfinite(mass)):
+        raise CupError(f"non-finite flow rate (salt {salt!r}, mass {mass!r})")
+    if mass == 0.0:
+        raise CupError("zero net mass flow")
+    ratio = salt / mass
+    if ratio <= 0.0:
+        raise CupError(f"salt and mass flow disagree in sign (salt {salt!r}, mass {mass!r})")
+    return ratio
+
+
+def cupnet_window(
+    flow_by_boundary,
+    cell_numbers,
+    weights_by_cell,
+    *,
+    density_kg_per_m3,
+    molecular_weight_kg_per_mol,
+    cups_massavg_by_cell,
+    c_b_cup_window,
+):
+    """Net-flux cup per boundary, per cell and window, plus its rows.
+
+    ``flow_by_boundary``: ``{k: (salt_flow, mass_flow)}``. Never raises: a
+    missing or unusable report leaves the window None and says why.
+    """
+    rows = []
+    out = {
+        C_B_CUPNET_WINDOW: None,
+        C_B_CUPNET_REL_DIFF: None,
+        C_B_CUPNET_MAX_CELL_REL_DIFF: None,
+        C_B_CUPNET_STATUS: "",
+    }
+    factor = float(density_kg_per_m3) / float(molecular_weight_kg_per_mol)
+    boundaries = sorted({k for cell in cell_numbers for k in (cell - 1, cell)})
+    molar, problems = {}, []
+    for k in boundaries:
+        salt, mass = flow_by_boundary.get(k, (None, None))
+        rows.append({"metric": salt_flowrate_report_name(k), "value": salt, "unit": "kg/s"})
+        rows.append({"metric": massflowrate_report_name(k), "value": mass, "unit": "kg/s"})
+        try:
+            molar[k] = net_flux_cup_mass_fraction(salt, mass) * factor
+        except CupError as exc:
+            problems.append(f"boundary {k}: {exc}")
+            molar[k] = None
+        rows.append({"metric": boundary_cupnet_name(k), "value": molar[k], "unit": "mol/m3"})
+    if problems:
+        out[C_B_CUPNET_STATUS] = "blank: " + "; ".join(problems)
+        return out, rows
+    cells = {cell: 0.5 * (molar[cell - 1] + molar[cell]) for cell in cell_numbers}
+    for cell in cell_numbers:
+        rows.append({"metric": cupnet_cell_name(cell), "value": cells[cell], "unit": "mol/m3"})
+    try:
+        window = weighted_window(cells, weights_by_cell, cell_numbers)
+    except CupError as exc:
+        out[C_B_CUPNET_STATUS] = f"blank: {exc}"
+        return out, rows
+    worst = max(
+        abs(cells[c] - float(cups_massavg_by_cell[c])) / float(cups_massavg_by_cell[c])
+        for c in cell_numbers
+    )
+    out.update({
+        C_B_CUPNET_WINDOW: window,
+        C_B_CUPNET_REL_DIFF: (window - float(c_b_cup_window)) / float(c_b_cup_window),
+        C_B_CUPNET_MAX_CELL_REL_DIFF: worst,
+        C_B_CUPNET_STATUS: f"ok: max cell |net - massavg|/massavg {worst:.3%}",
+    })
+    return out, rows
+
+
+def _close(a, b, rel=1e-12):
+    return abs(a - b) <= rel * max(abs(a), abs(b), 1.0)
+
+
+def inlet_cp_from_columns(wide, *, live, default_c_0=None):
+    """Inlet-reference mean-first CP ``(cm - cp)/(c_0 - cp)`` for one leaf.
+
+    Returns ``(value, status)``. A leaf extracted with the inlet columns is
+    read directly. Otherwise:
+
+    * all faces: ``cm_area_mean_window`` and ``cp_ref_area`` (always exact);
+    * live: the saved live means apply only when their live threshold is
+      ``c_0``. A cup-based leaf (``c_b_cup_window_mol_m3``) saved the
+      mean-first live mean ``cm_area_mean_window_live_meanfirst`` with
+      ``cp_meanfirst_live_exclusion_threshold_mol_m3``; an earlier leaf
+      ``cm_area_mean_window_live`` with ``live_exclusion_threshold_mol_m3``.
+      ``cm_area_mean_window_live`` on a cup-based leaf is the mid-plane
+      face set and is never paired with ``cp_ref_area_live``.
+    """
+    saved_key = MEANFIRST_LIVE_INLET if live else MEANFIRST_ALL_INLET
+    saved = _float(wide, saved_key)
+    if saved is not None:
+        return saved, "ok: extracted"
+    c_0 = _float(wide, "c_inlet_ref_mol_m3")
+    source = "c_inlet_ref_mol_m3"
+    if c_0 is None:
+        if default_c_0 is None:
+            return None, "blank: no c_inlet_ref_mol_m3"
+        c_0, source = float(default_c_0), "constant c_0 (column absent)"
+    if live:
+        if _float(wide, C_B_CUP_WINDOW) is not None:
+            keys = (MEANFIRST_LIVE_CM, "cp_ref_area_live", MEANFIRST_LIVE_THRESHOLD)
+        else:
+            keys = ("cm_area_mean_window_live", "cp_ref_area_live", "live_exclusion_threshold_mol_m3")
+    else:
+        keys = ("cm_area_mean_window", "cp_ref_area", None)
+    cm, cp_ref = _float(wide, keys[0]), _float(wide, keys[1])
+    missing = [k for k, v in ((keys[0], cm), (keys[1], cp_ref)) if v is None]
+    if missing:
+        return None, "blank: no " + ", ".join(missing)
+    if keys[2] is not None:
+        threshold = _float(wide, keys[2])
+        if threshold is None:
+            return None, f"blank: no {keys[2]}"
+        if not _close(threshold, c_0):
+            return None, (
+                f"blank: saved live set is c_p < {threshold:.6g}, not c_0 {c_0:.6g}; re-extract"
+            )
+    try:
+        value = _ratio(cm, cp_ref, c_0)
+    except CupError as exc:
+        return None, f"blank: {exc}"
+    return value, f"ok: recomputed from saved columns ({source})"
+
+
+def cupnet_cp_from_columns(wide, *, live):
+    """Net-flux cup CP: only a leaf extracted with the net-flux reports has it."""
+    key = MEANFIRST_LIVE_CUPNET if live else MEANFIRST_ALL_CUPNET
+    value = _float(wide, key)
+    if value is not None:
+        return value, "ok: extracted"
+    status = str(wide.get(C_B_CUPNET_STATUS) or "").strip()
+    if status:
+        return None, status if status.startswith("blank") else f"blank: {status}"
+    return None, "blank: not extracted with the net-flux reports (needs a re-extract)"
